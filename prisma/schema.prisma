@@ -38,5 +38,26 @@ model Branch {
   createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id])
+  students Student[]
 }
+
+model Student {
+  id        String        @id @default(cuid())
+  branchId  String
+  name      String
+  phone     String?
+  status    StudentStatus @default(ACTIVE)
+  joinedAt  DateTime      @default(now())
+  createdAt DateTime      @default(now())
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@index([branchId])
+}
+
+enum StudentStatus {
+  ACTIVE
+  INACTIVE
+}
+
 
