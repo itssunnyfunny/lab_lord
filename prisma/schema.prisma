@@ -39,6 +39,7 @@ model Branch {
 
   organization Organization @relation(fields: [organizationId], references: [id])
   students Student[]
+  seats Seat[]
 }
 
 model Student {
@@ -60,4 +61,14 @@ enum StudentStatus {
   INACTIVE
 }
 
+model Seat {
+  id        String   @id @default(cuid())
+  branchId  String
+  label     String   // e.g. "A1", "12", "Desk-05"
+  createdAt DateTime @default(now())
 
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@index([branchId])
+  @@unique([branchId, label])
+}
