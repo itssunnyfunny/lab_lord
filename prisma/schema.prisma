@@ -51,6 +51,7 @@ model Student {
   status    StudentStatus @default(ACTIVE)
   joinedAt  DateTime      @default(now())
   createdAt DateTime      @default(now())
+  seatAllocations SeatAllocation[]
 
   branch Branch @relation(fields: [branchId], references: [id])
 
@@ -69,6 +70,7 @@ model Seat {
   createdAt DateTime @default(now())
 
   branch Branch @relation(fields: [branchId], references: [id])
+  seatAllocations SeatAllocation[]
 
   @@index([branchId])
   @@unique([branchId, label])
@@ -81,9 +83,27 @@ model Shift {
   startTime String?  // "06:00" (string for now)
   endTime   String?  // "12:00"
   createdAt DateTime @default(now())
+  seatAllocations SeatAllocation[]
 
   branch Branch @relation(fields: [branchId], references: [id])
 
   @@index([branchId])
   @@unique([branchId, name])
 }
+
+model SeatAllocation {
+  id        String   @id @default(cuid())
+  seatId    String
+  studentId String
+  shiftId   String
+  startDate DateTime @default(now())
+  endDate   DateTime?
+
+  seat    Seat    @relation(fields: [seatId], references: [id])
+  student Student @relation(fields: [studentId], references: [id])
+  shift   Shift   @relation(fields: [shiftId], references: [id])
+
+  @@index([seatId, shiftId])
+  @@index([studentId])
+}
+
