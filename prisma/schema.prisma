@@ -40,6 +40,7 @@ model Branch {
   organization Organization @relation(fields: [organizationId], references: [id])
   students Student[]
   seats Seat[]
+  shifts Shift[]
 }
 
 model Student {
@@ -71,4 +72,18 @@ model Seat {
 
   @@index([branchId])
   @@unique([branchId, label])
+}
+
+model Shift {
+  id        String   @id @default(cuid())
+  branchId  String
+  name      String   // "Morning", "Evening", "Reserved"
+  startTime String?  // "06:00" (string for now)
+  endTime   String?  // "12:00"
+  createdAt DateTime @default(now())
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@index([branchId])
+  @@unique([branchId, name])
 }
