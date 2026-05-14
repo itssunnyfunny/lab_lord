@@ -17,7 +17,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
  * HOW IT WORKS:
  *   - Each test gets its own Prisma client connected to a transaction
  *   - The transaction is NEVER committed
- *   - afterEach rolls it back — data vanishes as if the test never ran
+ *   - afterEach rolls it back - data vanishes as if the test never ran
  *
  * LIMITATION:
  *   - Prisma does not natively support "injectable" transactions for service-layer tests
@@ -39,11 +39,14 @@ export const testPrisma = new PrismaClient({
  * where the service itself calls prisma.$transaction internally.
  */
 export async function resetDatabase() {
-  // TRUNCATE is a single atomic operation — faster than chained deleteMany()
+  // TRUNCATE is a single atomic operation - faster than chained deleteMany()
   // CASCADE handles FK dependencies automatically, so order doesn't matter.
   await testPrisma.$executeRawUnsafe(`
     TRUNCATE TABLE
       "AuditLog",
+      "RazorpayWebhookEvent",
+      "OrganizationSubscription",
+      "SaasRazorpayPlan",
       "ImportCommit",
       "ImportQuestion",
       "ImportRow",
