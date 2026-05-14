@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
 import {
@@ -8,6 +8,7 @@ import {
     Briefcase,
     Building2,
     Calendar,
+    CheckCircle2,
     Clock,
     CreditCard,
     GitBranch,
@@ -16,6 +17,8 @@ import {
     MapPin,
     Phone,
     Shield,
+    Sparkles,
+    XCircle,
 } from "lucide-react";
 import { AppButton, PageLoadingSkeleton } from "@/components/ui";
 import {
@@ -39,12 +42,61 @@ import {
     pageMutedTextClass,
 } from "@/components/ui/pageSurface";
 import {
+    formSuccessBannerClass,
+    formWarningBannerClass,
+} from "@/components/ui/formSurface";
+import {
     parseIntegerField,
     validateOptionalEmail,
     validateOptionalText,
     validateRequiredPhone,
     validateRequiredText,
 } from "@/lib/formValidation";
+import { billing, type BillingCheckoutPayload, type BillingOverview, type BillingPlanDto, type OrganizationSubscriptionDto } from "@/lib/api/billing";
+import type { BillingPlanId } from "@/lib/billingPlans";
+import { cn } from "@/lib/utils";
+
+type RazorpayHandlerResponse = {
+    razorpay_payment_id: string;
+    razorpay_subscription_id?: string;
+    razorpay_signature: string;
+};
+
+type RazorpayFailureResponse = {
+    error?: {
+        code?: string;
+        description?: string;
+        reason?: string;
+        metadata?: Record<string, string | undefined>;
+    };
+};
+
+type RazorpayInstance = {
+    open: () => void;
+    on: (event: "payment.failed", handler: (response: RazorpayFailureResponse) => void) => void;
+};
+
+type RazorpayOptions = {
+    key: string;
+    name: string;
+    description: string;
+    subscription_id: string;
+    prefill: BillingCheckoutPayload["prefill"];
+    notes: BillingCheckoutPayload["notes"];
+    theme: { color: string };
+    retry: { enabled: boolean };
+    modal: {
+        confirm_close: boolean;
+        ondismiss: () => void | Promise<void>;
+    };
+    handler: (response: RazorpayHandlerResponse) => void | Promise<void>;
+};
+
+declare global {
+    interface Window {
+        Razorpay?: new (options: RazorpayOptions) => RazorpayInstance;
+    }
+}
 
 interface BranchSummary {
     id: string;
@@ -67,6 +119,7 @@ interface OrgDetails {
     paymentGraceDays: number;
     ownerId: string;
     owner?: { id: string; name: string | null; email: string };
+    subscription?: OrganizationSubscriptionDto | null;
     createdAt: string;
     branches: BranchSummary[];
     _count: { branches: number };
@@ -91,10 +144,40 @@ const SECTIONS = [
     { id: "contact", label: "Contact", icon: MapPin },
     { id: "regional", label: "Regional Defaults", icon: Clock },
     { id: "branches", label: "Branches", icon: GitBranch },
+    { id: "billing", label: "Billing", icon: CreditCard },
     { id: "system", label: "System Info", icon: Shield },
 ];
 
 const BUSINESS_TYPES = ["Study Hall", "Library", "Coaching Center", "Tuition Class", "Other"];
+
+let razorpayCheckoutScriptPromise: Promise<void> | null = null;
+
+function loadRazorpayCheckoutScript() {
+    if (typeof window === "undefined") {
+        return Promise.reject(new Error("Razorpay Checkout can only run in the browser"));
+    }
+    if (window.Razorpay) return Promise.resolve();
+    if (razorpayCheckoutScriptPromise) return razorpayCheckoutScriptPromise;
+
+    razorpayCheckoutScriptPromise = new Promise((resolve, reject) => {
+        const existing = document.querySelector<HTMLScriptElement>("script[data-razorpay-checkout]");
+        if (existing) {
+            existing.addEventListener("load", () => resolve(), { once: true });
+            existing.addEventListener("error", () => reject(new Error("Failed to load Razorpay Checkout")), { once: true });
+            return;
+        }
+
+        const script = document.createElement("script");
+        script.src = "https://checkout.razorpay.com/v1/checkout.js";
+        script.async = true;
+        script.dataset.razorpayCheckout = "true";
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Failed to load Razorpay Checkout"));
+        document.body.appendChild(script);
+    });
+
+    return razorpayCheckoutScriptPromise;
+}
 
 function toForm(org: OrgDetails): OrgForm {
     return {
@@ -123,9 +206,29 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
     const [saving, setSaving] = useState(false);
     const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
     const [saveError, setSaveError] = useState("");
+    const [billingOverview, setBillingOverview] = useState<BillingOverview | null>(null);
+    const [billingLoading, setBillingLoading] = useState(true);
+    const [billingAction, setBillingAction] = useState<BillingPlanId | null>(null);
+    const [billingNotice, setBillingNotice] = useState<{ tone: "success" | "warning" | "error"; message: string } | null>(null);
     const { markTouched, markSubmitted, resetFieldErrors, visibleError } = useInlineFieldErrors<
         "name" | "businessType" | "legalName" | "contactEmail" | "contactPhone" | "address" | "paymentGraceDays"
     >();
+
+    const loadBilling = useCallback(async () => {
+        setBillingLoading(true);
+        try {
+            const overview = await billing.getOverview(orgId);
+            setBillingOverview(overview);
+            setBillingNotice(prev => prev?.tone === "error" ? null : prev);
+        } catch (err) {
+            setBillingNotice({
+                tone: "error",
+                message: err instanceof Error ? err.message : "Failed to load billing plans.",
+            });
+        } finally {
+            setBillingLoading(false);
+        }
+    }, [orgId]);
 
     useEffect(() => {
         async function load() {
@@ -139,14 +242,16 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
                 setOrg(data);
                 setForm(toForm(data));
                 resetFieldErrors();
+                await loadBilling();
             } catch (err) {
                 setFetchError(err instanceof Error ? err.message : "Something went wrong.");
+                setBillingLoading(false);
             } finally {
                 setLoading(false);
             }
         }
         load();
-    }, [orgId, resetFieldErrors]);
+    }, [orgId, loadBilling, resetFieldErrors]);
 
     const hasChanges = useMemo(() => {
         if (!org || !form) return false;
@@ -164,6 +269,86 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
         setSaveStatus("idle");
         setSaveError("");
         resetFieldErrors();
+    };
+
+    const startSubscription = async (planId: BillingPlanId) => {
+        setBillingAction(planId);
+        setBillingNotice(null);
+
+        try {
+            const checkout = await billing.createSubscription(orgId, planId);
+            setBillingOverview(prev => prev ? { ...prev, current: checkout.subscription } : prev);
+
+            await loadRazorpayCheckoutScript();
+            if (!window.Razorpay) throw new Error("Razorpay Checkout did not load");
+
+            let completed = false;
+            const razorpay = new window.Razorpay({
+                key: checkout.keyId,
+                name: checkout.name,
+                description: checkout.description,
+                subscription_id: checkout.subscriptionId,
+                prefill: checkout.prefill,
+                notes: checkout.notes,
+                theme: { color: "#22c55e" },
+                retry: { enabled: true },
+                modal: {
+                    confirm_close: true,
+                    ondismiss: async () => {
+                        if (completed) return;
+                        setBillingNotice({
+                            tone: "warning",
+                            message: "Checkout closed. The subscription stays pending until Razorpay confirms a final state.",
+                        });
+                        setBillingAction(null);
+                        await loadBilling();
+                    },
+                },
+                handler: async (response) => {
+                    completed = true;
+                    try {
+                        const result = await billing.verifySubscription(orgId, {
+                            razorpay_subscription_id: response.razorpay_subscription_id ?? checkout.subscriptionId,
+                            razorpay_payment_id: response.razorpay_payment_id,
+                            razorpay_signature: response.razorpay_signature,
+                        });
+                        setBillingOverview(prev => prev ? { ...prev, current: result.subscription } : prev);
+                        setBillingNotice({
+                            tone: result.subscription.status === "ACTIVE" ? "success" : "warning",
+                            message: result.subscription.status === "ACTIVE"
+                                ? "Subscription is active."
+                                : "Subscription authorization is verified. Razorpay may finish activation shortly.",
+                        });
+                        await loadBilling();
+                    } catch (err) {
+                        setBillingNotice({
+                            tone: "error",
+                            message: err instanceof Error ? err.message : "Razorpay verification failed.",
+                        });
+                    } finally {
+                        setBillingAction(null);
+                    }
+                },
+            });
+
+            razorpay.on("payment.failed", async (response) => {
+                completed = true;
+                setBillingNotice({
+                    tone: "error",
+                    message: response.error?.description || response.error?.reason || "Razorpay payment failed. No subscription was activated.",
+                });
+                setBillingAction(null);
+                await loadBilling();
+            });
+
+            razorpay.open();
+        } catch (err) {
+            setBillingNotice({
+                tone: "error",
+                message: err instanceof Error ? err.message : "Unable to start Razorpay Checkout.",
+            });
+            setBillingAction(null);
+        }
     };
 
     const validateForm = () => {
@@ -375,6 +560,54 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
                     </div>
                 </SettingsPanel>
 
+                <SettingsPanel id="billing" title="Billing" description="Workspace subscription and Razorpay billing state." icon={CreditCard}>
+                    {billingNotice && (
+                        <div className={cn(
+                            "mx-5 my-4 flex items-center gap-2 px-4 py-2 text-sm",
+                            billingNotice.tone === "success"
+                                ? formSuccessBannerClass
+                                : billingNotice.tone === "warning"
+                                    ? formWarningBannerClass
+                                    : "rounded-[var(--ui-radius-panel)] border border-red-500/25 bg-red-500/10 text-red-200"
+                        )}>
+                            {billingNotice.tone === "error" ? <AlertCircle size={14} /> : <CheckCircle2 size={14} />}
+                            <span>{billingNotice.message}</span>
+                        </div>
+                    )}
+
+                    <div className="px-5 py-4">
+                        {billingLoading ? (
+                            <div className="flex min-h-28 items-center justify-center text-sm text-[color:var(--text-primary)]">
+                                <Loader2 className="mr-2 animate-spin" size={18} />
+                                Loading billing plans...
+                            </div>
+                        ) : (
+                            <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
+                                {(billingOverview?.plans ?? []).map(plan => (
+                                    <BillingPlanCard
+                                        key={plan.id}
+                                        plan={plan}
+                                        current={billingOverview?.current ?? null}
+                                        busyPlan={billingAction}
+                                        onStart={startSubscription}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {billingOverview?.current && (
+                        <div className="grid gap-3 px-5 py-4 md:grid-cols-3">
+                            <ReadOnlyBillingMetric label="Current plan" value={billingOverview.current.shortName} />
+                            <ReadOnlyBillingMetric label="Status" value={billingOverview.current.status} />
+                            <ReadOnlyBillingMetric
+                                label="Next charge"
+                                value={billingOverview.current.chargeAt ? format(new Date(billingOverview.current.chargeAt), "PP") : "Not scheduled"}
+                            />
+                        </div>
+                    )}
+                </SettingsPanel>
+
                 <SettingsPanel id="system" title="System Info" description="Owner and identifiers are read-only." icon={Shield}>
                     <ReadOnlyRow label="Owner" value={<span className="inline-flex items-center gap-2"><Mail size={14} />{org.owner?.email || org.ownerId}</span>} />
                     <ReadOnlyRow label="Organization ID" value={<span className="font-mono">{org.id}</span>} />
@@ -396,5 +629,116 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
                 onReset={reset}
             />
         </>
+    );
+}
+
+const TERMINAL_BILLING_STATUSES = new Set(["CANCELLED", "COMPLETED", "EXPIRED"]);
+
+function formatPlanAmount(plan: BillingPlanDto) {
+    if (plan.amount == null || plan.custom) return "Custom";
+    return new Intl.NumberFormat("en-IN", {
+        style: "currency",
+        currency: plan.currency,
+        maximumFractionDigits: 0,
+    }).format(plan.amount);
+}
+
+function isCurrentBillingPlan(plan: BillingPlanDto, current: OrganizationSubscriptionDto | null) {
+    return current?.plan === plan.id && !TERMINAL_BILLING_STATUSES.has(current.status);
+}
+
+function BillingPlanCard({
+    plan,
+    current,
+    busyPlan,
+    onStart,
+}: {
+    plan: BillingPlanDto;
+    current: OrganizationSubscriptionDto | null;
+    busyPlan: BillingPlanId | null;
+    onStart: (plan: BillingPlanId) => void;
+}) {
+    const isCurrent = isCurrentBillingPlan(plan, current);
+    const isBusy = busyPlan === plan.id;
+    const disabled = Boolean(busyPlan) || isCurrent || !plan.active;
+    const buttonLabel = plan.comingSoon
+        ? "Coming soon"
+        : plan.custom
+            ? "Custom"
+            : isCurrent
+                ? "Current plan"
+                : `Start ${plan.shortName}`;
+
+    return (
+        <div className={cn(
+            "flex min-h-[340px] flex-col rounded-[var(--ui-radius-panel)] border p-4",
+            plan.featured
+                ? "border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)]"
+                : "border-[color:var(--ui-panel-border)] bg-[color:var(--ui-form-surface-bg)]"
+        )}>
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">{plan.shortName}</h3>
+                    <SettingsSubtleText className="mt-1">{plan.description}</SettingsSubtleText>
+                </div>
+                {plan.featured && (
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-form-muted-surface-bg)] px-2 py-1 text-[10px] font-semibold uppercase text-[color:var(--ui-badge-cyan-text)]">
+                        <Sparkles size={11} />
+                        Popular
+                    </span>
+                )}
+            </div>
+
+            <div className="mt-5">
+                <span className="text-2xl font-semibold text-[color:var(--text-primary)]">{formatPlanAmount(plan)}</span>
+                {!plan.custom && <span className="ml-1 text-xs text-[color:var(--text-secondary)]">/ month</span>}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+                {isCurrent && current && (
+                    <span className="rounded-full border border-[color:var(--ui-badge-success-border)] bg-[color:var(--ui-badge-success-bg)] px-2 py-1 text-[10px] font-semibold uppercase text-[color:var(--ui-badge-success-text)]">
+                        {current.status}
+                    </span>
+                )}
+                {!plan.active && (
+                    <span className="rounded-full border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)] px-2 py-1 text-[10px] font-semibold uppercase text-[color:var(--text-secondary)]">
+                        {plan.custom ? "Custom" : "Soon"}
+                    </span>
+                )}
+            </div>
+
+            <div className="mt-5 flex-1 space-y-2.5">
+                {plan.features.map(feature => (
+                    <div key={feature} className="flex gap-2 text-sm text-[color:var(--text-secondary)]">
+                        {plan.active ? (
+                            <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-[color:var(--ui-badge-success-text)]" />
+                        ) : (
+                            <XCircle size={15} className="mt-0.5 shrink-0 text-[color:var(--text-secondary)]" />
+                        )}
+                        <span>{feature}</span>
+                    </div>
+                ))}
+            </div>
+
+            <AppButton
+                variant={plan.featured ? "primary" : "secondary"}
+                size="sm"
+                className="mt-5 w-full"
+                disabled={disabled}
+                isLoading={isBusy}
+                onClick={() => onStart(plan.id)}
+            >
+                {buttonLabel}
+            </AppButton>
+        </div>
+    );
+}
+
+function ReadOnlyBillingMetric({ label, value }: { label: string; value: string }) {
+    return (
+        <div className="rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-surface-bg)] px-4 py-3">
+            <div className="text-xs text-[color:var(--text-secondary)]">{label}</div>
+            <div className="mt-1 truncate text-sm font-semibold text-[color:var(--text-primary)]">{value}</div>
+        </div>
     );
 }
