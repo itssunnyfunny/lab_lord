@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
+  getRazorpayKeyId,
   hmacSha256Hex,
   toRazorpaySubunits,
   verifyRazorpayPaymentSignature,
@@ -14,6 +15,19 @@ describe("razorpay security helpers", () => {
 
   it("converts INR major units to paise", () => {
     expect(toRazorpaySubunits(1200, "INR")).toBe(120000);
+  });
+
+  it("accepts local test key aliases", () => {
+    vi.stubEnv("Test_API_Key", "rzp_test_alias");
+    vi.stubEnv("Test_Key_Secret", "secret");
+    const signature = hmacSha256Hex("pay_456|sub_123", "secret");
+
+    expect(getRazorpayKeyId()).toBe("rzp_test_alias");
+    expect(verifyRazorpaySubscriptionSignature({
+      subscriptionId: "sub_123",
+      paymentId: "pay_456",
+      signature,
+    })).toBe(true);
   });
 
   it("verifies order checkout signatures with orderId|paymentId", () => {

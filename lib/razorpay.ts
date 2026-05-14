@@ -118,8 +118,21 @@ export function setRazorpayClientForTests(client: RazorpayApiClient | null) {
   testClient = client;
 }
 
+function firstConfiguredEnv(names: string[]) {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
 export function getRazorpayKeyId() {
-  const keyId = process.env.RAZORPAY_KEY_ID?.trim();
+  const keyId = firstConfiguredEnv([
+    "RAZORPAY_KEY_ID",
+    "RAZORPAY_TEST_KEY_ID",
+    "TEST_API_KEY",
+    "Test_API_Key",
+  ]);
   if (!keyId) {
     throw new Error("Razorpay is not configured: RAZORPAY_KEY_ID is missing");
   }
@@ -127,7 +140,12 @@ export function getRazorpayKeyId() {
 }
 
 function getRazorpayKeySecret() {
-  const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+  const keySecret = firstConfiguredEnv([
+    "RAZORPAY_KEY_SECRET",
+    "RAZORPAY_TEST_KEY_SECRET",
+    "TEST_KEY_SECRET",
+    "Test_Key_Secret",
+  ]);
   if (!keySecret) {
     throw new Error("Razorpay is not configured: RAZORPAY_KEY_SECRET is missing");
   }
@@ -135,7 +153,12 @@ function getRazorpayKeySecret() {
 }
 
 export function getRazorpayWebhookSecrets() {
-  const current = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
+  const current = firstConfiguredEnv([
+    "RAZORPAY_WEBHOOK_SECRET",
+    "RAZORPAY_TEST_WEBHOOK_SECRET",
+    "TEST_WEBHOOK_SECRET",
+    "Test_Webhook_Secret",
+  ]);
   if (!current) {
     throw new Error("Razorpay webhook is not configured: RAZORPAY_WEBHOOK_SECRET is missing");
   }
