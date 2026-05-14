@@ -30,21 +30,23 @@ model User {
 }
 
 model Organization {
-  id               String   @id @default(cuid())
-  name             String
-  ownerId          String
-  businessType     String?
-  legalName        String?
-  contactEmail     String?
-  contactPhone     String?
-  address          String?
-  timezone         String   @default("Asia/Kolkata")
-  currency         String   @default("INR")
-  weekStartsOn     Int      @default(1)
-  paymentGraceDays Int      @default(0)
-  createdAt        DateTime @default(now())
-  branches         Branch[]
-  owner            User     @relation(fields: [ownerId], references: [id])
+  id                    String                    @id @default(cuid())
+  name                  String
+  ownerId               String
+  businessType          String?
+  legalName             String?
+  contactEmail          String?
+  contactPhone          String?
+  address               String?
+  timezone              String                    @default("Asia/Kolkata")
+  currency              String                    @default("INR")
+  weekStartsOn          Int                       @default(1)
+  paymentGraceDays      Int                       @default(0)
+  createdAt             DateTime                  @default(now())
+  branches              Branch[]
+  subscription          OrganizationSubscription?
+  razorpayWebhookEvents RazorpayWebhookEvent[]
+  owner                 User                      @relation(fields: [ownerId], references: [id])
 }
 
 model Branch {
@@ -453,8 +455,87 @@ enum PaymentMethod {
   BANK_TRANSFER
 }
 
+enum SaasPlan {
+  BASIC
+  PRO
+  AGENT_CONTROL
+  CUSTOM
+}
+
+enum SaasSubscriptionStatus {
+  CREATED
+  AUTHENTICATED
+  ACTIVE
+  PENDING
+  HALTED
+  CANCELLED
+  COMPLETED
+  EXPIRED
+}
+
+model SaasRazorpayPlan {
+  id             String   @id @default(cuid())
+  plan           SaasPlan @unique
+  amount         Int
+  amountSubunits Int
+  currency       String   @default("INR")
+  period         String   @default("monthly")
+  interval       Int      @default(1)
+  razorpayPlanId String   @unique
+  createdAt      DateTime @default(now())
+}
+
+model OrganizationSubscription {
+  id                     String                 @id @default(cuid())
+  organizationId         String                 @unique
+  plan                   SaasPlan
+  amount                 Int
+  amountSubunits         Int
+  currency               String                 @default("INR")
+  period                 String                 @default("monthly")
+  interval               Int                    @default(1)
+  totalCount             Int
+  razorpayPlanId         String
+  razorpaySubscriptionId String                 @unique
+  razorpayCustomerId     String?
+  status                 SaasSubscriptionStatus @default(CREATED)
+  authPaymentId          String?
+  currentStart           DateTime?
+  currentEnd             DateTime?
+  chargeAt               DateTime?
+  endedAt                DateTime?
+  createdByUserId        String?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  organization           Organization           @relation(fields: [organizationId], references: [id])
+  webhookEvents          RazorpayWebhookEvent[]
+
+  @@index([status])
+  @@index([plan])
+}
+
+model RazorpayWebhookEvent {
+  id                         String                    @id @default(cuid())
+  eventId                    String                    @unique
+  event                      String
+  organizationId             String?
+  organizationSubscriptionId String?
+  razorpayPaymentId          String?
+  razorpaySubscriptionId     String?
+  payloadHash                String
+  receivedAt                 DateTime                  @default(now())
+  processedAt                DateTime?
+  processingError            String?
+  organization               Organization?             @relation(fields: [organizationId], references: [id])
+  organizationSubscription   OrganizationSubscription? @relation(fields: [organizationSubscriptionId], references: [id])
+
+  @@index([organizationId])
+  @@index([organizationSubscriptionId])
+  @@index([razorpayPaymentId])
+  @@index([razorpaySubscriptionId])
+}
+
 enum AuditAction {
   PAYMENT_MARKED_PAID
   PAYMENT_WAIVED
 }
-
