@@ -59,6 +59,7 @@ export class OrganizationService {
                     select: { id: true, name: true, city: true, createdAt: true },
                     orderBy: { createdAt: "desc" },
                 },
+                subscription: true,
                 _count: { select: { branches: true } },
             },
         });
