@@ -12,7 +12,7 @@ import {
   landingTitleClass,
 } from "@/components/ui/landingSurface";
 import { LandingReveal } from "@/components/landing/LandingReveal";
-import { publicBillingPlans, type BillingPlan } from "@/lib/billingPlans";
+import { publicBillingPlans, type BillingPlan, type BillingPlanId } from "@/lib/billingPlans";
 
 const plans = publicBillingPlans();
 
@@ -26,9 +26,9 @@ function formatPrice(plan: Pick<BillingPlan, "amount" | "currency" | "custom">) 
 }
 
 export function LandingPricing({
-  onDashboardClick,
+  onPlanSelect,
 }: {
-  onDashboardClick: (source: string) => void;
+  onPlanSelect: (planId: BillingPlanId) => void;
 }) {
   return (
     <section id="pricing" className={`${landingSectionClass} overflow-hidden bg-[color:var(--ui-form-muted-surface-bg)]`}>
@@ -87,7 +87,7 @@ export function LandingPricing({
 
               <button
                 type="button"
-                onClick={plan.active ? () => onDashboardClick(`landing_pricing_${plan.id.toLowerCase()}`) : undefined}
+                onClick={plan.active ? () => onPlanSelect(plan.id) : undefined}
                 disabled={!plan.active}
                 className={`${plan.featured ? `${landingPrimaryButtonClass} landing-cta-shine` : landingSecondaryButtonClass} mt-6 w-full disabled:cursor-not-allowed disabled:opacity-60`}
               >

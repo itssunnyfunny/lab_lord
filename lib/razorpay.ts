@@ -260,6 +260,10 @@ async function razorpayRequest<T>(path: string, options: RazorpayRequestOptions 
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("Razorpay rejected the configured API key/secret. Check that the local test Key ID and Key Secret belong to the same Razorpay test-mode account.");
+    }
+
     const description =
       payload?.error?.description ||
       payload?.error?.reason ||

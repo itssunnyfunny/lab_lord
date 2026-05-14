@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { format } from "date-fns";
 import {
     AlertCircle,
@@ -53,7 +53,7 @@ import {
     validateRequiredText,
 } from "@/lib/formValidation";
 import { billing, type BillingCheckoutPayload, type BillingOverview, type BillingPlanDto, type OrganizationSubscriptionDto } from "@/lib/api/billing";
-import type { BillingPlanId } from "@/lib/billingPlans";
+import { isBillingPlanId, type BillingPlanId } from "@/lib/billingPlans";
 import { cn } from "@/lib/utils";
 
 type RazorpayHandlerResponse = {
@@ -197,6 +197,9 @@ function toForm(org: OrgDetails): OrgForm {
 export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: string }> }) {
     const { orgId } = use(params);
     const router = useRouter();
+    const searchParams = useSearchParams();
+    const billingPlanParam = searchParams.get("billingPlan");
+    const requestedBillingPlanId = isBillingPlanId(billingPlanParam) ? billingPlanParam : null;
 
     const [org, setOrg] = useState<OrgDetails | null>(null);
     const [form, setForm] = useState<OrgForm | null>(null);
@@ -209,6 +212,7 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
     const [billingOverview, setBillingOverview] = useState<BillingOverview | null>(null);
     const [billingLoading, setBillingLoading] = useState(true);
     const [billingAction, setBillingAction] = useState<BillingPlanId | null>(null);
+    const [autoStartedPlan, setAutoStartedPlan] = useState<BillingPlanId | null>(null);
     const [billingNotice, setBillingNotice] = useState<{ tone: "success" | "warning" | "error"; message: string } | null>(null);
     const { markTouched, markSubmitted, resetFieldErrors, visibleError } = useInlineFieldErrors<
         "name" | "businessType" | "legalName" | "contactEmail" | "contactPhone" | "address" | "paymentGraceDays"
@@ -271,7 +275,7 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
         resetFieldErrors();
     };
 
-    const startSubscription = async (planId: BillingPlanId) => {
+    const startSubscription = useCallback(async (planId: BillingPlanId) => {
         setBillingAction(planId);
         setBillingNotice(null);
 
@@ -349,7 +353,48 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
             });
             setBillingAction(null);
         }
-    };
+    }, [loadBilling, orgId]);
+
+    useEffect(() => {
+        if (!requestedBillingPlanId) return;
+        setActiveSection("billing");
+
+        const selectedPlan = billingOverview?.plans.find(plan => plan.id === requestedBillingPlanId);
+        if (!selectedPlan || billingLoading) return;
+
+        if (isCurrentBillingPlan(selectedPlan, billingOverview?.current ?? null)) {
+            if (autoStartedPlan !== requestedBillingPlanId) {
+                setAutoStartedPlan(requestedBillingPlanId);
+                setBillingNotice({
+                    tone: "success",
+                    message: `${selectedPlan.shortName} is already your current plan.`,
+                });
+            }
+            return;
+        }
+
+        if (!selectedPlan.active) {
+            if (autoStartedPlan !== requestedBillingPlanId) {
+                setAutoStartedPlan(requestedBillingPlanId);
+                setBillingNotice({
+                    tone: "warning",
+                    message: `${selectedPlan.shortName} is not available for checkout yet.`,
+                });
+            }
+            return;
+        }
+
+        if (billingAction || autoStartedPlan === requestedBillingPlanId) return;
+        setAutoStartedPlan(requestedBillingPlanId);
+        void startSubscription(requestedBillingPlanId);
+    }, [
+        autoStartedPlan,
+        billingAction,
+        billingLoading,
+        billingOverview,
+        requestedBillingPlanId,
+        startSubscription,
+    ]);
 
     const validateForm = () => {
         const errors: Partial<Record<"name" | "businessType" | "legalName" | "contactEmail" | "contactPhone" | "address" | "paymentGraceDays", string>> = {};

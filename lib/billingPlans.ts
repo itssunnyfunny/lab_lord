@@ -94,6 +94,10 @@ export function getBillingPlan(planId: string): BillingPlan | null {
   return BILLING_PLANS.find(plan => plan.id === planId) ?? null;
 }
 
+export function isBillingPlanId(planId: string | null | undefined): planId is BillingPlanId {
+  return typeof planId === "string" && BILLING_PLANS.some(plan => plan.id === planId);
+}
+
 export function getActiveBillingPlan(planId: string): BillingPlan {
   const plan = getBillingPlan(planId);
   if (!plan) throw new Error("Unknown subscription plan");
