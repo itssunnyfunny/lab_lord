@@ -4,6 +4,7 @@ import type { ImportPlanCheck } from "@/importing/contracts/import-preview.contr
 
 type PlanRow = {
     id?: string;
+    rowId?: string;
     rowNumber?: number;
     status: string;
     skipped?: boolean;
@@ -249,9 +250,9 @@ export function createImportPlanVersion(input: {
             importOptions: input.mapping.importOptions ?? {},
             columnMappings: input.mapping.columnMappings,
             rows: input.rows.map(row => ({
-                id: row.id,
+                id: row.id ?? row.rowId,
                 status: row.status,
-                skipped: row.skipped,
+                skipped: Boolean(row.skipped),
                 normalizedData: row.normalizedData,
                 issues: row.issues,
                 warnings: row.warnings,

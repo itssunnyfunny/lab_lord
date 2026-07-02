@@ -777,8 +777,11 @@ export class ImportSessionService {
                     ...(edit.normalizedData ? {
                         normalizedData: asJson(edit.normalizedData),
                         mappedData: asJson(markManualNormalizedData(existingRow?.mappedData ?? {})),
+                        issues: asJson([]),
+                        warnings: asJson([]),
                         confidence: 100,
                         skipped: false,
+                        status: "NEEDS_REVIEW" as ImportRowStatus,
                     } : {}),
                 },
             });

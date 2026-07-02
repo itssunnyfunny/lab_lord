@@ -28,7 +28,7 @@ import {
     normalizedFromImportDraft,
     numberFromDraft,
 } from "@/importing/utils/manual-row-draft";
-import { buildImportPlanChecks, getBlockingImportPlanChecks } from "@/importing/utils/import-plan-checks";
+import { buildImportPlanChecks, createImportPlanVersion, getBlockingImportPlanChecks } from "@/importing/utils/import-plan-checks";
 import { inferConfirmedPaymentMapping } from "@/importing/utils/payment-mapping-inference";
 import { assertImportRowLimit, MAX_IMPORT_ROWS, statusForValidation } from "@/importing/services/import-session.service";
 import { validateRequiredImportFields } from "@/importing/validators/import-required-fields.validator";
@@ -575,6 +575,32 @@ describe("import mapping and validation", () => {
         });
 
         expect(getBlockingImportPlanChecks(checks).map(check => check.code)).toContain("PAYMENT_PLAN");
+    });
+
+    it("builds the same plan version from preview rowId and commit row id", () => {
+        const base = {
+            sessionId: "session_1",
+            status: "READY_TO_COMMIT",
+            mapping: {
+                entityTypesDetected: ["STUDENT"],
+                columnMappings: [],
+                importOptions: { paymentCycle: "SKIP_PAYMENTS", paymentAction: "SKIP_PAYMENTS" },
+            },
+        };
+        const row = {
+            status: "READY",
+            normalizedData: { student: { name: "Asha" } },
+            issues: [],
+            warnings: [],
+        };
+
+        expect(createImportPlanVersion({
+            ...base,
+            rows: [{ ...row, rowId: "row_1" }],
+        })).toBe(createImportPlanVersion({
+            ...base,
+            rows: [{ ...row, id: "row_1", skipped: false }],
+        }));
     });
 
     it("does not count deferred allocation rows as seat links in the import plan", () => {
