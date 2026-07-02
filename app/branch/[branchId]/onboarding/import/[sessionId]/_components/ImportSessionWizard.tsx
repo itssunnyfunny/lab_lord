@@ -75,6 +75,19 @@ function Metric({
     );
 }
 
+type CommitResponse = {
+    status: string;
+    summary?: Record<string, number>;
+    errors?: unknown[];
+};
+
+function sessionStatusFromCommit(status: string) {
+    if (status === "SUCCESS") return "COMMITTED";
+    if (status === "PARTIAL") return "PARTIAL";
+    if (status === "FAILED") return "FAILED";
+    return "COMMITTING";
+}
+
 export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizardProps) {
     const router = useRouter();
     const [detail, setDetail] = useState<ImportDetail | null>(null);
@@ -103,12 +116,15 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
         setLoading(true);
         setError(null);
         try {
-            setDetail(await importSessions.detail<ImportDetail>(branchId, sessionId, {
+            const nextDetail = await importSessions.detail<ImportDetail>(branchId, sessionId, {
                 rowFilter,
                 limit: 120,
-            }));
+            });
+            setDetail(nextDetail);
+            return nextDetail;
         } catch (loadError) {
             setError(loadError instanceof Error ? loadError.message : "Failed to load import session.");
+            return null;
         } finally {
             setLoading(false);
         }
@@ -401,17 +417,54 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
     }, [branchId, commitMode, sessionId]);
 
     const commit = async () => {
-        if (!preview?.planVersion) return;
+        if (!preview?.planVersion) {
+            setConfirmOpen(false);
+            setError("Refresh the final preview before importing.");
+            setActiveStep("preview");
+            return;
+        }
+        const planVersion = preview.planVersion;
+        const mode = commitMode;
+        const plannedStudents = preview.summary.createStudents;
+        const plannedSkipped = preview.summary.blockedRows + preview.summary.skippedRows;
+
         setSaving(true);
         setError(null);
+        setNotice(`Importing ${plannedStudents} student${plannedStudents === 1 ? "" : "s"}${plannedSkipped > 0 ? ` and leaving ${plannedSkipped} row${plannedSkipped === 1 ? "" : "s"} staged` : ""}.`);
+        setConfirmOpen(false);
         try {
-            await importSessions.commit(branchId, sessionId, preview.planVersion, commitMode);
-            setConfirmOpen(false);
+            const result = await importSessions.commit<CommitResponse>(branchId, sessionId, planVersion, mode);
             setPreview(null);
-            await load();
+            const refreshedDetail = await load();
+            if (!refreshedDetail) {
+                setDetail(prev => prev ? {
+                    ...prev,
+                    status: sessionStatusFromCommit(result.status),
+                    commits: [{
+                        status: result.status,
+                        summary: result.summary ?? {},
+                        errors: result.errors ?? [],
+                        createdAt: new Date().toISOString(),
+                    }, ...(prev.commits ?? [])],
+                } : prev);
+            }
             setActiveStep("result");
+            if (result.status === "FAILED") {
+                setError("Import failed. Review the result details below before trying again.");
+                setNotice(null);
+            } else if (!refreshedDetail) {
+                setError("Import finished, but the result report could not refresh. Use Refresh session to reload the saved report.");
+                setNotice(null);
+            } else {
+                const createdStudents = result.summary?.createdStudents ?? plannedStudents;
+                setNotice(`Import finished. ${createdStudents} student${createdStudents === 1 ? "" : "s"} created.`);
+            }
         } catch (commitError) {
+            setConfirmOpen(false);
             setError(commitError instanceof Error ? commitError.message : "Import failed.");
+            setNotice(null);
+            setActiveStep("preview");
+            await load();
         } finally {
             setSaving(false);
         }
