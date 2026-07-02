@@ -223,6 +223,60 @@ describe("ImportCommitService", () => {
         }));
     });
 
+    it("safe partial ignores payment blockers from rows that will not import", async () => {
+        const detail = {
+            ...readyDetail,
+            status: "VALIDATED",
+            mapping: {
+                importOptions: {
+                    paymentCycle: "CURRENT_MONTH",
+                    paymentAction: "IMPORT_PAID_UNPAID",
+                },
+            },
+            rows: [
+                {
+                    ...readyDetail.rows[0],
+                    warnings: [{
+                        code: "PAYMENT_STATUS_MAPPING_UNCONFIRMED",
+                        field: "payment.status",
+                        message: "Paid/unpaid mapping must be confirmed before importing payment status.",
+                        severity: "warning",
+                    }],
+                    normalizedData: {
+                        ...readyDetail.rows[0].normalizedData,
+                        payment: { amount: 1200, status: "PAID", rawStatus: "PAID" },
+                    },
+                },
+                {
+                    id: "row_2",
+                    rowNumber: 3,
+                    status: "BLOCKED",
+                    skipped: false,
+                    issues: [{ code: "MISSING_STUDENT_NAME", message: "Student name is required.", severity: "error" }],
+                    warnings: [{
+                        code: "AMBIGUOUS_PAYMENT_STATUS",
+                        field: "payment.status",
+                        message: "Payment value \"PARTIAL\" is unclear.",
+                        severity: "warning",
+                    }],
+                    normalizedData: {
+                        payment: { amount: 1200, status: "UNCLEAR", rawStatus: "PARTIAL" },
+                    },
+                },
+            ],
+        };
+        mocks.revalidateSession.mockResolvedValueOnce(detail);
+        const { ImportCommitService } = await import("@/importing/services/import-commit.service");
+
+        const result = await ImportCommitService.commitSession("user_1", "branch_1", "session_1", "SAFE_PARTIAL", planVersionFor(detail));
+
+        expect(result.status).toBe("PARTIAL");
+        expect(result.summary.createdStudents).toBe(1);
+        expect(result.summary.skippedRows).toBe(1);
+        expect(mocks.createImportedStudent).toHaveBeenCalledTimes(1);
+        expect(mocks.markPaymentAsPaid).toHaveBeenCalled();
+    });
+
     it("refuses blocked rows in STRICT_ALL_OR_NOTHING mode", async () => {
         const detail = {
             ...readyDetail,
@@ -450,5 +504,63 @@ describe("ImportCommitService", () => {
         const preview = await ImportPreviewService.getPreview("user_1", "branch_1", "session_1");
 
         expect(preview.summary.createAllocations).toBe(3);
+    });
+
+    it("previews safe partial as committable when blocked rows have unresolved payment words", async () => {
+        mocks.revalidateSession.mockResolvedValueOnce({
+            status: "VALIDATED",
+            mapping: {
+                importOptions: {
+                    paymentCycle: "CURRENT_MONTH",
+                    paymentAction: "IMPORT_PAID_UNPAID",
+                },
+            },
+            questions: [],
+            rows: [
+                {
+                    id: "row_1",
+                    rowNumber: 2,
+                    status: "WARNING",
+                    skipped: false,
+                    issues: [],
+                    warnings: [{
+                        code: "PAYMENT_STATUS_MAPPING_UNCONFIRMED",
+                        field: "payment.status",
+                        message: "Paid/unpaid mapping must be confirmed before importing payment status.",
+                        severity: "warning",
+                    }],
+                    normalizedData: {
+                        student: { name: "Asha", phone: "9876543210", monthlyFee: 1200 },
+                        payment: { amount: 1200, status: "PAID", rawStatus: "PAID" },
+                    },
+                },
+                {
+                    id: "row_2",
+                    rowNumber: 3,
+                    status: "BLOCKED",
+                    skipped: false,
+                    issues: [{ code: "MISSING_STUDENT_NAME", message: "Student name is required.", severity: "error" }],
+                    warnings: [{
+                        code: "AMBIGUOUS_PAYMENT_STATUS",
+                        field: "payment.status",
+                        message: "Payment value \"PARTIAL\" is unclear.",
+                        severity: "warning",
+                    }],
+                    normalizedData: {
+                        payment: { amount: 1200, status: "UNCLEAR", rawStatus: "PARTIAL" },
+                    },
+                },
+            ],
+        });
+        const { ImportPreviewService } = await import("@/importing/services/import-preview.service");
+
+        const preview = await ImportPreviewService.getPreview("user_1", "branch_1", "session_1", "SAFE_PARTIAL");
+
+        expect(preview.canCommit).toBe(true);
+        expect(preview.summary.createStudents).toBe(1);
+        expect(preview.summary.blockedRows).toBe(1);
+        expect(preview.checks.find(check => check.code === "PAYMENT_WORDS")).toMatchObject({
+            status: "pass",
+        });
     });
 });

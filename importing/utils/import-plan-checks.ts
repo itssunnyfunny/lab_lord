@@ -55,13 +55,20 @@ function hasCustomPeriodRange(options: ImportMappingState["importOptions"]) {
 export function buildImportPlanChecks(input: PlanCheckInput): ImportPlanCheck[] {
     const rows = input.rows;
     const importableRows = activeRows(rows);
+    const rowsInCommitScope = input.mode === "SAFE_PARTIAL" ? importableRows : rows.filter(row => !row.skipped);
     const blocked = blockedRows(rows);
     const options = input.mapping.importOptions ?? {};
     const action = options.paymentAction;
     const cycle = options.paymentCycle;
     const actionEnabled = Boolean(action && action !== "SKIP_PAYMENTS");
     const cycleEnabled = Boolean(cycle && cycle !== "SKIP_PAYMENTS");
-    const paymentDataRows = rows.filter(hasPaymentData).length;
+    const paymentRowsInScope = rowsInCommitScope.filter(hasPaymentData);
+    const paymentDataRows = paymentRowsInScope.length;
+    const unclearPaymentRowsInScope = rowsInCommitScope.filter(row => row.normalizedData?.payment?.status === "UNCLEAR").length;
+    const deterministicScopedPaymentWords =
+        input.mode === "SAFE_PARTIAL" &&
+        paymentDataRows > 0 &&
+        unclearPaymentRowsInScope === 0;
     const studentRows = importableRows.filter(row => row.normalizedData?.student?.name).length;
     const allocationRows = importableRows.filter(row =>
         !skipsAllocation(row) &&
@@ -77,7 +84,10 @@ export function buildImportPlanChecks(input: PlanCheckInput): ImportPlanCheck[] 
             !skipsAllocation(row)
         );
     }).length;
-    const paymentWarnings = rows.flatMap(row => issueList(row.warnings)).filter(issue => issue.code.startsWith("PAYMENT"));
+    const paymentWarnings = rowsInCommitScope
+        .flatMap(row => issueList(row.warnings))
+        .filter(issue => issue.code.startsWith("PAYMENT"))
+        .filter(issue => !deterministicScopedPaymentWords || issue.code !== "PAYMENT_STATUS_MAPPING_UNCONFIRMED");
     const aiStatus = input.mapping.analysis?.ai?.status;
     const checks: ImportPlanCheck[] = [];
 
@@ -184,11 +194,13 @@ export function buildImportPlanChecks(input: PlanCheckInput): ImportPlanCheck[] 
         checks.push({
             code: "PAYMENT_WORDS",
             label: "Paid/unpaid words",
-            status: options.paymentMapping?.confirmed ? "pass" : "block",
+            status: options.paymentMapping?.confirmed || deterministicScopedPaymentWords ? "pass" : "block",
             message: options.paymentMapping?.confirmed
                 ? "Paid, unpaid, and waived values are confirmed."
+                : deterministicScopedPaymentWords
+                    ? "Ready rows use deterministic payment words. Blocked rows can be resolved later."
                 : "Paid/unpaid values need confirmation.",
-            action: options.paymentMapping?.confirmed ? undefined : "Confirm detected payment values in Payments.",
+            action: options.paymentMapping?.confirmed || deterministicScopedPaymentWords ? undefined : "Confirm detected payment values in Payments.",
         });
     }
 

@@ -591,7 +591,11 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
                     )}
 
                     {activeStep === "result" && (
-                        <ResultStep branchId={branchId} detail={detail} />
+                        <ResultStep
+                            branchId={branchId}
+                            detail={detail}
+                            onGoPreview={() => setActiveStep("preview")}
+                        />
                     )}
 
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

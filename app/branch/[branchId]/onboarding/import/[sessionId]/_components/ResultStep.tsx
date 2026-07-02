@@ -10,6 +10,7 @@ import type { ImportDetail } from "./types";
 type ResultStepProps = {
     branchId: string;
     detail: ImportDetail;
+    onGoPreview: () => void;
 };
 
 function formatSummaryLabel(label: string) {
@@ -34,7 +35,7 @@ const knownCommitSummaryKeys = new Set([
     "failedRows",
 ]);
 
-export function ResultStep({ branchId, detail }: ResultStepProps) {
+export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
     const router = useRouter();
     const latestCommit = detail.commits?.[0];
     const summary = latestCommit?.summary;
@@ -89,7 +90,17 @@ export function ResultStep({ branchId, detail }: ResultStepProps) {
                 description={latestCommit ? "The latest commit report for this import session." : "No import has been committed yet."}
             >
                 {!latestCommit ? (
-                    <StepNotice tone={resultNotice.tone} title={resultNotice.title} message={resultNotice.message} />
+                    <div className="space-y-4">
+                        <StepNotice tone={resultNotice.tone} title={resultNotice.title} message={resultNotice.message} />
+                        <div className="flex flex-wrap gap-2">
+                            <AppButton variant="primary" icon={ArrowRight} onClick={onGoPreview}>
+                                Go to final preview
+                            </AppButton>
+                            <AppButton variant="secondary" onClick={() => router.push(`/branch/${branchId}/onboarding/import`)}>
+                                Back to imports
+                            </AppButton>
+                        </div>
+                    </div>
                 ) : (
                     <div className="space-y-5">
                         <StepNotice tone={resultNotice.tone} title={resultNotice.title} message={resultNotice.message} />
@@ -149,40 +160,36 @@ export function ResultStep({ branchId, detail }: ResultStepProps) {
                 )}
             </AppPanel>
 
-            <AppPanel title="Next" description="Open the records created or continue operating the branch.">
-                <div className="grid gap-3 md:grid-cols-4">
-                    {[
-                        ["View students", UsersRound, `/branch/${branchId}/students`],
-                        ["Review payments", ReceiptText, `/branch/${branchId}/payments`],
-                        ["Map allocations", Sofa, `/branch/${branchId}/allocations`],
-                        ["Dashboard", LayoutDashboard, `/branch/${branchId}`],
-                    ].map(([label, Icon, href]) => {
-                        const ActionIcon = Icon as typeof UsersRound;
-                        return (
-                            <button
-                                key={label as string}
-                                type="button"
-                                onClick={() => router.push(href as string)}
-                                className={cn(
-                                    "flex min-h-24 items-center justify-between gap-3 rounded-[8px] border p-4 text-left transition-colors hover:bg-white/[0.04]",
-                                    "border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)]"
-                                )}
-                            >
-                                <div>
-                                    <ActionIcon className="h-5 w-5 text-cyan-300" />
-                                    <p className="mt-2 text-sm font-semibold text-[color:var(--text-primary)]">{label as string}</p>
-                                </div>
-                                <ArrowRight className="h-4 w-4 text-[color:var(--text-muted)]" />
-                            </button>
-                        );
-                    })}
-                </div>
-            </AppPanel>
-
-            {!latestCommit && (
-                <AppButton variant="secondary" onClick={() => router.push(`/branch/${branchId}/onboarding/import`)}>
-                    Back to imports
-                </AppButton>
+            {latestCommit && (
+                <AppPanel title="Next" description="Open the records created or continue operating the branch.">
+                    <div className="grid gap-3 md:grid-cols-4">
+                        {[
+                            ["View students", UsersRound, `/branch/${branchId}/students`],
+                            ["Review payments", ReceiptText, `/branch/${branchId}/payments`],
+                            ["Map allocations", Sofa, `/branch/${branchId}/allocations`],
+                            ["Dashboard", LayoutDashboard, `/branch/${branchId}`],
+                        ].map(([label, Icon, href]) => {
+                            const ActionIcon = Icon as typeof UsersRound;
+                            return (
+                                <button
+                                    key={label as string}
+                                    type="button"
+                                    onClick={() => router.push(href as string)}
+                                    className={cn(
+                                        "flex min-h-24 items-center justify-between gap-3 rounded-[8px] border p-4 text-left transition-colors hover:bg-white/[0.04]",
+                                        "border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)]"
+                                    )}
+                                >
+                                    <div>
+                                        <ActionIcon className="h-5 w-5 text-cyan-300" />
+                                        <p className="mt-2 text-sm font-semibold text-[color:var(--text-primary)]">{label as string}</p>
+                                    </div>
+                                    <ArrowRight className="h-4 w-4 text-[color:var(--text-muted)]" />
+                                </button>
+                            );
+                        })}
+                    </div>
+                </AppPanel>
             )}
         </div>
     );

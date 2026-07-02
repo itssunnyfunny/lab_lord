@@ -28,9 +28,14 @@ export function PreviewStep({
     onConfirmImport,
 }: PreviewStepProps) {
     const previewFresh = isPreviewFresh(preview, commitMode);
-    const commitLabel = commitMode === "SAFE_PARTIAL"
-        ? "Skip blocked rows and import ready rows"
-        : "Confirm strict import";
+    const rowsNotImported = (preview?.summary.blockedRows ?? 0) + (preview?.summary.skippedRows ?? 0);
+    const commitLabel = !preview
+        ? "Refresh final preview"
+        : commitMode === "SAFE_PARTIAL"
+            ? rowsNotImported > 0
+                ? `Import ${preview.summary.createStudents} ready, skip ${rowsNotImported}`
+                : `Import ${preview.summary.createStudents} students`
+            : "Import all rows";
     const modeLabel = commitMode === "SAFE_PARTIAL"
         ? "Ready rows only"
         : "All rows must pass";
@@ -104,6 +109,9 @@ export function PreviewStep({
                                 <Badge variant={preview.canCommit ? "success" : "danger"}>{preview.canCommit ? "Ready" : "Blocked"}</Badge>
                                 <Badge variant={previewFresh ? "success" : "warning"}>{previewFresh ? "Fresh plan" : "Refresh needed"}</Badge>
                                 <Badge variant="cyan">{modeLabel}</Badge>
+                                {preview.canCommit && previewFresh && (
+                                    <Badge variant="purple">Database write ready</Badge>
+                                )}
                                 <span className={cn("text-xs", pageMutedTextClass)}>{new Date(preview.generatedAt).toLocaleString()}</span>
                             </div>
 
@@ -165,8 +173,8 @@ export function PreviewStep({
                     <AppButton
                         variant="primary"
                         icon={UploadCloud}
-                        onClick={onConfirmImport}
-                        disabled={!preview?.canCommit || !previewFresh}
+                        onClick={preview ? onConfirmImport : onRefreshPreview}
+                        disabled={preview ? !preview.canCommit || !previewFresh : false}
                         isLoading={saving}
                     >
                         {commitLabel}
