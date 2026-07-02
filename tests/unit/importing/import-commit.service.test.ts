@@ -5,9 +5,14 @@ const mocks = vi.hoisted(() => ({
     revalidateSession: vi.fn(),
     authorize: vi.fn(),
     prisma: {
+        $transaction: vi.fn(),
         seat: { findMany: vi.fn() },
         shift: { findMany: vi.fn() },
         multiShift: { findMany: vi.fn() },
+        payment: { deleteMany: vi.fn() },
+        auditLog: { deleteMany: vi.fn() },
+        seatAllocation: { deleteMany: vi.fn() },
+        student: { deleteMany: vi.fn() },
         importSession: { findFirst: vi.fn(), update: vi.fn() },
         importRow: { update: vi.fn() },
         importCommit: { create: vi.fn() },
@@ -129,6 +134,11 @@ describe("ImportCommitService", () => {
         mocks.prisma.seat.findMany.mockResolvedValue([{ id: "seat_1", label: "A1" }]);
         mocks.prisma.shift.findMany.mockResolvedValue([{ id: "shift_1", name: "Morning" }]);
         mocks.prisma.multiShift.findMany.mockResolvedValue([]);
+        mocks.prisma.$transaction.mockImplementation(async callback => callback(mocks.prisma));
+        mocks.prisma.payment.deleteMany.mockResolvedValue({ count: 1 });
+        mocks.prisma.auditLog.deleteMany.mockResolvedValue({ count: 0 });
+        mocks.prisma.seatAllocation.deleteMany.mockResolvedValue({ count: 1 });
+        mocks.prisma.student.deleteMany.mockResolvedValue({ count: 1 });
         mocks.prisma.importSession.findFirst.mockResolvedValue({ status: "READY_TO_COMMIT", updatedAt: new Date("2026-06-24T00:00:00.000Z") });
         mocks.prisma.importSession.update.mockResolvedValue({});
         mocks.prisma.importRow.update.mockResolvedValue({});
@@ -418,6 +428,33 @@ describe("ImportCommitService", () => {
 
         expect(mocks.ensureMonthlyPaymentForStudent).toHaveBeenCalled();
         expect(mocks.markPaymentAsPaid).toHaveBeenCalledWith("user_1", "payment_1", "UPI", "TXN1");
+    });
+
+    it("rolls back row-created records when a later row step fails", async () => {
+        mocks.revalidateSession.mockResolvedValueOnce(readyDetail);
+        mocks.markPaymentAsPaid.mockRejectedValueOnce(new Error("Paid update failed"));
+        const { ImportCommitService } = await import("@/importing/services/import-commit.service");
+
+        const result = await ImportCommitService.commitSession("user_1", "branch_1", "session_1", "SAFE_PARTIAL", planVersionFor(readyDetail));
+
+        expect(result.status).toBe("FAILED");
+        expect(result.summary.createdStudents).toBe(0);
+        expect(result.summary.createdAllocations).toBe(0);
+        expect(result.summary.generatedPayments).toBe(0);
+        expect(result.summary.failedRows).toBe(1);
+        expect(mocks.prisma.auditLog.deleteMany).toHaveBeenCalledWith({ where: { paymentId: "payment_1" } });
+        expect(mocks.prisma.payment.deleteMany).toHaveBeenCalledWith({ where: { id: "payment_1" } });
+        expect(mocks.prisma.seatAllocation.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["allocation_1"] } } });
+        expect(mocks.prisma.student.deleteMany).toHaveBeenCalledWith({ where: { id: "student_1" } });
+        expect(mocks.prisma.importRow.update).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ status: "FAILED" }),
+        }));
+        expect(mocks.prisma.importCommit.create).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ status: "FAILED" }),
+        }));
+        expect(mocks.prisma.importSession.update).toHaveBeenLastCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ status: "FAILED" }),
+        }));
     });
 
     it("refuses commits when payment action and cycle conflict", async () => {

@@ -34,6 +34,72 @@ function defersAllocation(row: { warnings: unknown }) {
     );
 }
 
+function createCommitSummary(skippedRows = 0): Record<string, number> {
+    return {
+        createdStudents: 0,
+        createdSeats: 0,
+        createdShifts: 0,
+        createdMultiShifts: 0,
+        createdAllocations: 0,
+        generatedPayments: 0,
+        markedPaid: 0,
+        markedWaived: 0,
+        skippedRows,
+        failedRows: 0,
+    };
+}
+
+function addCommitSummary(target: Record<string, number>, source: Record<string, number>) {
+    for (const [key, value] of Object.entries(source)) {
+        target[key] = (target[key] ?? 0) + value;
+    }
+}
+
+function stringId(value: unknown) {
+    return typeof value === "string" && value.trim() ? value : null;
+}
+
+function stringIds(value: unknown) {
+    return Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+        : [];
+}
+
+async function cleanupCreatedEntities(createdEntityIds: Record<string, unknown>) {
+    const paymentId = stringId(createdEntityIds.paymentId);
+    const allocationIds = stringIds(createdEntityIds.allocationIds);
+    const studentId = stringId(createdEntityIds.studentId);
+    const multiShiftId = stringId(createdEntityIds.multiShiftId);
+    const shiftId = stringId(createdEntityIds.shiftId);
+    const seatId = stringId(createdEntityIds.seatId);
+
+    if (!paymentId && allocationIds.length === 0 && !studentId && !multiShiftId && !shiftId && !seatId) {
+        return;
+    }
+
+    await prisma.$transaction(async tx => {
+        if (paymentId) {
+            await tx.auditLog.deleteMany({ where: { paymentId } });
+            await tx.payment.deleteMany({ where: { id: paymentId } });
+        }
+        if (allocationIds.length > 0) {
+            await tx.seatAllocation.deleteMany({ where: { id: { in: allocationIds } } });
+        }
+        if (studentId) {
+            await tx.student.deleteMany({ where: { id: studentId } });
+        }
+        if (multiShiftId) {
+            await tx.multiShift.deleteMany({ where: { id: multiShiftId } });
+        }
+        if (shiftId) {
+            await tx.shift.deleteMany({ where: { id: shiftId } });
+        }
+        if (seatId) {
+            await tx.seat.deleteMany({ where: { id: seatId } });
+        }
+    });
+}
+
 function resolvePaymentPeriod(option: ImportMappingState["importOptions"], joinedAt: Date) {
     const today = new Date();
     const cycle = option?.paymentCycle ?? "SKIP_PAYMENTS";
@@ -191,18 +257,7 @@ export class ImportCommitService {
             data: { status: "COMMITTING" },
         });
 
-        const summary = {
-            createdStudents: 0,
-            createdSeats: 0,
-            createdShifts: 0,
-            createdMultiShifts: 0,
-            createdAllocations: 0,
-            generatedPayments: 0,
-            markedPaid: 0,
-            markedWaived: 0,
-            skippedRows: rows.length - importableRows.length,
-            failedRows: 0,
-        };
+        const summary = createCommitSummary(rows.length - importableRows.length);
         const errors: { rowId?: string; rowNumber?: number; message: string }[] = [];
 
         try {
@@ -212,8 +267,20 @@ export class ImportCommitService {
                 const normalized = row.normalizedData
                     ? promoteKnownMultiShiftAllocation(row.normalizedData, context)
                     : null;
-                if (!normalized?.student?.name) continue;
+                if (!normalized?.student?.name) {
+                    summary.failedRows++;
+                    errors.push({ rowId: row.id, rowNumber: row.rowNumber, message: "Student name is missing on an importable row." });
+                    await prisma.importRow.update({
+                        where: { id: row.id },
+                        data: {
+                            status: "FAILED",
+                            issues: asJson([{ code: "COMMIT_FAILED", message: "Student name is missing on an importable row.", severity: "error" }]),
+                        },
+                    });
+                    continue;
+                }
                 const createdEntityIds: Record<string, unknown> = {};
+                const rowSummary = createCommitSummary();
 
                 try {
                     const seatLabel = normalized.allocation?.seatLabel ?? normalized.seat?.label;
@@ -226,7 +293,7 @@ export class ImportCommitService {
                         const seat = await SeatService.createSeat(userId, branchId, seatLabel);
                         context.seatsByLabel.set(key(seat.label), seat);
                         createdEntityIds.seatId = seat.id;
-                        summary.createdSeats++;
+                        rowSummary.createdSeats++;
                     }
 
                     if (!allocationDeferred && shiftName && !context.shiftsByName.has(key(shiftName)) && mapping.importOptions?.createUnknownShifts) {
@@ -238,7 +305,7 @@ export class ImportCommitService {
                         });
                         context.shiftsByName.set(key(shift.name), shift);
                         createdEntityIds.shiftId = shift.id;
-                        summary.createdShifts++;
+                        rowSummary.createdShifts++;
                     }
 
                     if (!allocationDeferred && multiShiftName && !context.multiShiftsByName.has(key(multiShiftName)) && mapping.importOptions?.createUnknownMultiShifts) {
@@ -254,7 +321,7 @@ export class ImportCommitService {
                             });
                             context = await this.loadBusinessContext(branchId);
                             createdEntityIds.multiShiftId = multiShift.id;
-                            summary.createdMultiShifts++;
+                            rowSummary.createdMultiShifts++;
                         }
                     }
 
@@ -286,17 +353,17 @@ export class ImportCommitService {
                         feeLinkedMultiShiftId,
                     });
                     createdEntityIds.studentId = student.id;
-                    summary.createdStudents++;
+                    rowSummary.createdStudents++;
 
                     if (!allocationDeferred && seat && multiShift) {
                         const shiftIds = multiShift.components.map(component => component.shiftId);
                         const allocations = await SeatAllocationService.assignSeatToShifts(userId, seat.id, student.id, shiftIds, multiShift.id);
                         createdEntityIds.allocationIds = allocations.map(allocation => allocation.id);
-                        summary.createdAllocations += allocations.length;
+                        rowSummary.createdAllocations += allocations.length;
                     } else if (!allocationDeferred && seat && shift) {
                         const allocations = await SeatAllocationService.assignSeatToShifts(userId, seat.id, student.id, [shift.id]);
                         createdEntityIds.allocationIds = allocations.map(allocation => allocation.id);
-                        summary.createdAllocations += allocations.length;
+                        rowSummary.createdAllocations += allocations.length;
                     }
 
                     if (mapping.importOptions?.paymentAction && mapping.importOptions.paymentAction !== "SKIP_PAYMENTS") {
@@ -310,16 +377,16 @@ export class ImportCommitService {
                                 amount: normalized.payment?.amount ?? normalized.student.monthlyFee,
                             });
                             createdEntityIds.paymentId = payment.id;
-                            summary.generatedPayments++;
+                            rowSummary.generatedPayments++;
 
                             if (mapping.importOptions.paymentAction === "IMPORT_PAID_UNPAID" && normalized.payment?.status === "PAID") {
                                 const method = normalized.payment.method ?? mapping.importOptions.paymentMapping?.defaultMethod as PaymentMethod | undefined;
                                 await PaymentService.markPaymentAsPaid(userId, payment.id, method, normalized.payment.referenceId);
-                                summary.markedPaid++;
+                                rowSummary.markedPaid++;
                             }
                             if (mapping.importOptions.paymentAction === "IMPORT_PAID_UNPAID" && normalized.payment?.status === "WAIVED") {
                                 await PaymentService.markPaymentAsWaived(userId, payment.id);
-                                summary.markedWaived++;
+                                rowSummary.markedWaived++;
                             }
                         }
                     }
@@ -331,22 +398,31 @@ export class ImportCommitService {
                             createdEntityIds: asJson(createdEntityIds),
                         },
                     });
+                    addCommitSummary(summary, rowSummary);
                 } catch (error) {
+                    let cleanupMessage: string | null = null;
+                    try {
+                        await cleanupCreatedEntities(createdEntityIds);
+                        context = await this.loadBusinessContext(branchId);
+                    } catch (cleanupError) {
+                        cleanupMessage = ` Cleanup failed: ${messageOf(cleanupError)}`;
+                    }
                     summary.failedRows++;
-                    errors.push({ rowId: row.id, rowNumber: row.rowNumber, message: messageOf(error) });
+                    errors.push({ rowId: row.id, rowNumber: row.rowNumber, message: `${messageOf(error)}${cleanupMessage ?? ""}` });
                     await prisma.importRow.update({
                         where: { id: row.id },
                         data: {
                             status: "FAILED",
-                            issues: asJson([{ code: "COMMIT_FAILED", message: messageOf(error), severity: "error" }]),
+                            issues: asJson([{ code: "COMMIT_FAILED", message: `${messageOf(error)}${cleanupMessage ?? ""}`, severity: "error" }]),
                         },
                     });
                 }
             }
 
             const isPartial = errors.length > 0 || summary.skippedRows > 0;
-            const status = isPartial ? "PARTIAL" : "COMMITTED";
-            const commitStatus = isPartial ? "PARTIAL" : "SUCCESS";
+            const hasCreatedStudents = summary.createdStudents > 0;
+            const status = errors.length > 0 && !hasCreatedStudents ? "FAILED" : isPartial ? "PARTIAL" : "COMMITTED";
+            const commitStatus = errors.length > 0 && !hasCreatedStudents ? "FAILED" : isPartial ? "PARTIAL" : "SUCCESS";
 
             await prisma.importCommit.create({
                 data: {
