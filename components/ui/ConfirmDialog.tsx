@@ -9,7 +9,7 @@ import { createPortal } from "react-dom";
 interface ConfirmDialogProps {
     isOpen: boolean;
     onClose: () => void;
-    onConfirm: () => void;
+    onConfirm: () => void | Promise<void>;
     title: string;
     description: React.ReactNode;
     confirmText?: string;
@@ -96,7 +96,7 @@ export function ConfirmDialog({
                     </Button>
                     <Button
                         variant={tone.buttonVariant}
-                        onClick={onConfirm}
+                        onClick={() => void onConfirm()}
                         isLoading={loading}
                     >
                         {confirmText}

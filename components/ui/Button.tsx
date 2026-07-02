@@ -34,12 +34,13 @@ const sizeClasses = {
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-    ({ className, variant = "primary", size = "md", isLoading, icon: Icon, children, ...props }, ref) => {
+    ({ className, variant = "primary", size = "md", isLoading, icon: Icon, children, disabled, type = "button", ...props }, ref) => {
 
         return (
             <button
                 ref={ref}
-                disabled={isLoading || props.disabled}
+                type={type}
+                disabled={isLoading || disabled}
                 className={cn(
                     "group inline-flex cursor-pointer items-center justify-center gap-2 rounded-[var(--ui-radius-control)] border font-semibold tracking-[0.01em] transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--ui-control-disabled-opacity)]",
                     variantClasses[variant],

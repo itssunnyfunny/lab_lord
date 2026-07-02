@@ -49,6 +49,7 @@ export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
     const setupCreated = summaryNumber(summary, "createdSeats") +
         summaryNumber(summary, "createdShifts") +
         summaryNumber(summary, "createdMultiShifts");
+    const canContinueToBranch = Boolean(latestCommit && latestCommit.status !== "FAILED" && createdStudents > 0);
     const resultNotice = !latestCommit
         ? {
             tone: "cyan" as const,
@@ -160,7 +161,7 @@ export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
                 )}
             </AppPanel>
 
-            {latestCommit && (
+            {canContinueToBranch && (
                 <AppPanel title="Next" description="Open the records created or continue operating the branch.">
                     <div className="grid gap-3 md:grid-cols-4">
                         {[
@@ -190,6 +191,17 @@ export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
                         })}
                     </div>
                 </AppPanel>
+            )}
+
+            {latestCommit && !canContinueToBranch && (
+                <div className="flex flex-wrap gap-2">
+                    <AppButton variant="primary" icon={ArrowRight} onClick={onGoPreview}>
+                        Back to final preview
+                    </AppButton>
+                    <AppButton variant="secondary" onClick={() => router.push(`/branch/${branchId}/onboarding/import`)}>
+                        Back to imports
+                    </AppButton>
+                </div>
             )}
         </div>
     );
