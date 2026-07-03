@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { format, subMonths } from "date-fns";
 import { createImportPlanVersion } from "@/importing/utils/import-plan-checks";
 
 const mocks = vi.hoisted(() => ({
@@ -130,6 +131,8 @@ function planVersionFor(detail: {
 describe("ImportCommitService", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-07-03T00:00:00.000Z"));
         mocks.authorize.mockResolvedValue(true);
         mocks.prisma.seat.findMany.mockResolvedValue([{ id: "seat_1", label: "A1" }]);
         mocks.prisma.shift.findMany.mockResolvedValue([{ id: "shift_1", name: "Morning" }]);
@@ -148,6 +151,10 @@ describe("ImportCommitService", () => {
         mocks.ensureMonthlyPaymentForStudent.mockResolvedValue({ id: "payment_1" });
         mocks.markPaymentAsPaid.mockResolvedValue({ id: "payment_1", status: "PAID" });
         mocks.markPaymentAsWaived.mockResolvedValue({ id: "payment_1", status: "WAIVED" });
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
     it("does not run when the session is not READY_TO_COMMIT", async () => {
@@ -430,6 +437,65 @@ describe("ImportCommitService", () => {
         expect(mocks.markPaymentAsPaid).toHaveBeenCalledWith("user_1", "payment_1", "UPI", "TXN1");
     });
 
+    it("starts at the current joined-date cycle without creating future dues", async () => {
+        const detail = {
+            ...readyDetail,
+            mapping: {
+                importOptions: {
+                    paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
+                    paymentAction: "GENERATE_DUE",
+                    paymentHistoryMode: "START_CURRENT_JOINED_CYCLE",
+                },
+            },
+            rows: [{
+                ...readyDetail.rows[0],
+                normalizedData: {
+                    student: { name: "Asha", phone: "9876543210", monthlyFee: 1200, joinedAt: "2026-01-12T00:00:00.000Z" },
+                },
+            }],
+        };
+        mocks.revalidateSession.mockResolvedValueOnce(detail);
+        const { ImportCommitService } = await import("@/importing/services/import-commit.service");
+
+        const result = await ImportCommitService.commitSession("user_1", "branch_1", "session_1", "SAFE_PARTIAL", planVersionFor(detail));
+        const createInput = mocks.createImportedStudent.mock.calls[0][2];
+
+        expect(result.summary.generatedPayments).toBe(0);
+        expect(result.summary.skippedHistoricalPayments).toBe(5);
+        expect(format(createInput.billingStartAt, "yyyy-MM-dd")).toBe("2026-06-12");
+        expect(mocks.ensureMonthlyPaymentForStudent).not.toHaveBeenCalled();
+    });
+
+    it("can generate joined-date history and mark every due cycle paid", async () => {
+        const detail = {
+            ...readyDetail,
+            mapping: {
+                importOptions: {
+                    paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
+                    paymentAction: "GENERATE_DUE",
+                    paymentHistoryMode: "FROM_JOINED_MARK_PAID",
+                },
+            },
+            rows: [{
+                ...readyDetail.rows[0],
+                normalizedData: {
+                    student: { name: "Asha", phone: "9876543210", monthlyFee: 1200, joinedAt: "2026-01-01T00:00:00.000Z" },
+                },
+            }],
+        };
+        mocks.revalidateSession.mockResolvedValueOnce(detail);
+        const { ImportCommitService } = await import("@/importing/services/import-commit.service");
+
+        const result = await ImportCommitService.commitSession("user_1", "branch_1", "session_1", "SAFE_PARTIAL", planVersionFor(detail));
+
+        expect(mocks.ensureMonthlyPaymentForStudent).toHaveBeenCalledTimes(6);
+        expect(mocks.markPaymentAsPaid).toHaveBeenCalledTimes(6);
+        expect(result.summary.generatedPayments).toBe(6);
+        expect(result.summary.markedPaid).toBe(6);
+        expect(result.summary.historicalPaid).toBe(5);
+        expect(result.summary.currentCyclePayments).toBe(1);
+    });
+
     it("rolls back row-created records when a later row step fails", async () => {
         mocks.revalidateSession.mockResolvedValueOnce(readyDetail);
         mocks.markPaymentAsPaid.mockRejectedValueOnce(new Error("Paid update failed"));
@@ -442,8 +508,8 @@ describe("ImportCommitService", () => {
         expect(result.summary.createdAllocations).toBe(0);
         expect(result.summary.generatedPayments).toBe(0);
         expect(result.summary.failedRows).toBe(1);
-        expect(mocks.prisma.auditLog.deleteMany).toHaveBeenCalledWith({ where: { paymentId: "payment_1" } });
-        expect(mocks.prisma.payment.deleteMany).toHaveBeenCalledWith({ where: { id: "payment_1" } });
+        expect(mocks.prisma.auditLog.deleteMany).toHaveBeenCalledWith({ where: { paymentId: { in: ["payment_1"] } } });
+        expect(mocks.prisma.payment.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["payment_1"] } } });
         expect(mocks.prisma.seatAllocation.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["allocation_1"] } } });
         expect(mocks.prisma.student.deleteMany).toHaveBeenCalledWith({ where: { id: "student_1" } });
         expect(mocks.prisma.importRow.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -500,7 +566,12 @@ describe("ImportCommitService", () => {
                 issues: [],
                 warnings: [],
                 normalizedData: {
-                    student: { name: "Asha", phone: "9876543210", monthlyFee: 1200 },
+                    student: {
+                        name: "Asha",
+                        phone: "9876543210",
+                        monthlyFee: 1200,
+                        joinedAt: subMonths(new Date(), 1).toISOString(),
+                    },
                 },
             }],
         });

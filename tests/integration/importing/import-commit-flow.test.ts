@@ -1,13 +1,18 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ImportCommitService } from "@/importing/services/import-commit.service";
 import { ImportPreviewService } from "@/importing/services/import-preview.service";
 import { markManualNormalizedData } from "@/importing/pipeline/import-extraction.pipeline";
 import { createSeat, createTestWorld } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
+import { freezeTime, restoreTime } from "@/tests/setup/time";
 
 describe("Import commit flow integration", () => {
     afterAll(async () => { await disconnectDatabase(); });
-    beforeEach(async () => { await resetDatabase(); });
+    beforeEach(async () => {
+        freezeTime(new Date("2026-07-05T00:00:00.000Z"));
+        await resetDatabase();
+    });
+    afterEach(() => { restoreTime(); });
 
     it("migrates a ready staged row into branch students, allocation, and payment records", async () => {
         const { user, branch } = await createTestWorld({
@@ -34,8 +39,9 @@ describe("Import commit flow integration", () => {
                     questions: [],
                     warnings: [],
                     importOptions: {
-                        paymentCycle: "CURRENT_MONTH",
+                        paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
                         paymentAction: "IMPORT_PAID_UNPAID",
+                        paymentHistoryMode: "START_CURRENT_JOINED_CYCLE",
                         paymentMapping: {
                             paidValues: ["PAID"],
                             unpaidValues: ["DUE"],
@@ -125,7 +131,7 @@ describe("Import commit flow integration", () => {
         expect(importedRow.status).toBe("IMPORTED");
         expect(importedRow.createdEntityIds).toMatchObject({
             studentId: student.id,
-            paymentId: payment.id,
+            paymentIds: [payment.id],
             allocationIds: [allocation.id],
         });
 

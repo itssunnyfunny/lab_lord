@@ -7,7 +7,6 @@ import {
     isPaymentSkipped,
     joinImportValues,
     paymentActionChangeOptions,
-    paymentCycleChangeOptions,
     paymentSkipOptions,
     splitImportValues,
 } from "@/importing/utils/import-wizard-view-model";
@@ -15,6 +14,13 @@ import { pageInsetSurfaceClass, pageMutedTextClass } from "@/components/ui/pageS
 import { pickerGroupLabelClass, pickerSectionLabelClass } from "@/components/ui/pickerSurface";
 import { importFieldClass, importOptionClass, importSelectClass, StepNotice } from "./shared";
 import type { PaymentDraft } from "./types";
+
+const paymentHistoryOptions: Array<{ value: NonNullable<ImportOptions["paymentHistoryMode"]>; label: string }> = [
+    { value: "START_CURRENT_JOINED_CYCLE", label: "Start current joined cycle" },
+    { value: "FROM_JOINED_MARK_PAID", label: "From joined date, mark paid" },
+    { value: "FROM_JOINED_MARK_DUE", label: "From joined date, mark due" },
+    { value: "FROM_JOINED_PAID_THROUGH_PREVIOUS", label: "Paid through previous cycle" },
+];
 
 type PaymentsStepProps = {
     options: ImportOptions;
@@ -38,11 +44,15 @@ export function PaymentsStep({
     const paymentWordDraftHasValues = [paymentDraft.paid, paymentDraft.unpaid, paymentDraft.waived]
         .some(value => splitImportValues(value).length > 0);
     const needsPaymentDecision = detectedPaymentValues.length > 0 && !skipPayments && !options.paymentAction;
-    const updatePaymentCycle = (paymentCycle: ImportOptions["paymentCycle"] | "") => {
-        onUpdateOptions(paymentCycleChangeOptions(options, paymentCycle));
-    };
     const updatePaymentAction = (paymentAction: ImportOptions["paymentAction"] | "") => {
         onUpdateOptions(paymentActionChangeOptions(options, paymentAction));
+    };
+    const updatePaymentHistory = (paymentHistoryMode: ImportOptions["paymentHistoryMode"]) => {
+        onUpdateOptions({
+            paymentHistoryMode,
+            paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
+            ...(!options.paymentAction || options.paymentAction === "SKIP_PAYMENTS" ? { paymentAction: "GENERATE_DUE" as const } : {}),
+        });
     };
 
     return (
@@ -73,18 +83,16 @@ export function PaymentsStep({
 
                     <div className="grid gap-4 lg:grid-cols-2">
                         <label className="space-y-2">
-                            <span className={pickerSectionLabelClass}>Payment cycle</span>
+                            <span className={pickerSectionLabelClass}>Payment history</span>
                             <select
-                                value={options.paymentCycle ?? ""}
-                                onChange={event => updatePaymentCycle(event.target.value as ImportOptions["paymentCycle"] | "")}
+                                value={options.paymentHistoryMode ?? "START_CURRENT_JOINED_CYCLE"}
+                                onChange={event => updatePaymentHistory(event.target.value as ImportOptions["paymentHistoryMode"])}
                                 className={cn("w-full", importSelectClass)}
+                                disabled={skipPayments}
                             >
-                                <option value="" className={importOptionClass}>Choose cycle</option>
-                                <option value="CURRENT_MONTH" className={importOptionClass}>Current month</option>
-                                <option value="PREVIOUS_MONTH" className={importOptionClass}>Previous month</option>
-                                <option value="CUSTOM_PERIOD" className={importOptionClass}>Custom period</option>
-                                <option value="USE_JOINED_AT_ANNIVERSARY" className={importOptionClass}>Joined date cycle</option>
-                                <option value="SKIP_PAYMENTS" className={importOptionClass}>Skip payments</option>
+                                {paymentHistoryOptions.map(option => (
+                                    <option key={option.value} value={option.value} className={importOptionClass}>{option.label}</option>
+                                ))}
                             </select>
                         </label>
                         <label className="space-y-2">
@@ -101,6 +109,15 @@ export function PaymentsStep({
                             </select>
                         </label>
                     </div>
+
+                    {!skipPayments && (
+                        <div className={cn("p-4", pageInsetSurfaceClass)}>
+                            <p className="text-sm font-semibold text-[color:var(--text-primary)]">Joined-date billing cycle</p>
+                            <p className={cn("mt-1 text-xs leading-5", pageMutedTextClass)}>
+                                Payments use each student&apos;s joined date as the monthly due day. Future due dates are not created during import.
+                            </p>
+                        </div>
+                    )}
 
                     {options.paymentCycle === "CUSTOM_PERIOD" && (
                         <div className="grid gap-3 sm:grid-cols-2">

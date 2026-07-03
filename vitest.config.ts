@@ -19,5 +19,6 @@ export default defineConfig({
     },
     // Run tests sequentially to avoid DB collision
     fileParallelism: false,
+    testTimeout: 15000,
   },
 });

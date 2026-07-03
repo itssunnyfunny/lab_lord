@@ -2,6 +2,7 @@ import { ImportSessionService } from "./import-session.service";
 import type { CommitMode, ImportIssue, ImportMappingState, ImportNormalizedRow } from "@/importing/contracts/import-session.contract";
 import type { ImportPreview } from "@/importing/contracts/import-preview.contract";
 import { buildImportPlanChecks, createImportPlanVersion, getBlockingImportPlanChecks } from "@/importing/utils/import-plan-checks";
+import { buildImportPaymentPlan, summarizeImportPaymentPlans } from "@/importing/utils/import-payment-plan";
 
 function defersAllocation(warnings: ImportIssue[]) {
     return warnings.some(warning => warning.code.startsWith("ALLOCATION_SKIPPED_"));
@@ -62,16 +63,10 @@ export class ImportPreviewService {
         }
 
         const mappingState = detail.mapping as ImportMappingState;
-        const mapping = mappingState as { importOptions?: { paymentAction?: string; paymentCycle?: string } } | null;
-        const generatesMonthlyPayments = Boolean(
-            mapping?.importOptions?.paymentAction &&
-            mapping.importOptions.paymentAction !== "SKIP_PAYMENTS" &&
-            mapping.importOptions.paymentCycle !== "SKIP_PAYMENTS"
-        );
-        const importsPaymentStatuses = mapping?.importOptions?.paymentAction === "IMPORT_PAID_UNPAID";
-        const paymentRows = generatesMonthlyPayments
-            ? importableRows.filter(row => row.normalizedData?.student?.name)
-            : importableRows.filter(row => row.normalizedData?.payment);
+        const paymentPlans = importableRows
+            .filter(row => row.normalizedData?.student?.name)
+            .map(row => buildImportPaymentPlan(row.normalizedData as ImportNormalizedRow, mappingState));
+        const paymentSummary = summarizeImportPaymentPlans(paymentPlans);
         const hasOpenQuestions = detail.questions?.some((question: { status?: string }) => question.status === "OPEN") ?? false;
         const checks = buildImportPlanChecks({
             mapping: mappingState,
@@ -100,9 +95,7 @@ export class ImportPreviewService {
                 createShifts: createShifts.size,
                 createMultiShifts: createMultiShifts.size,
                 createAllocations: importableRows.reduce((total, row) => total + allocationLinkCount(row), 0),
-                generatePayments: paymentRows.length,
-                markPaid: importsPaymentStatuses ? paymentRows.filter(row => row.normalizedData?.payment?.status === "PAID").length : 0,
-                markWaived: importsPaymentStatuses ? paymentRows.filter(row => row.normalizedData?.payment?.status === "WAIVED").length : 0,
+                ...paymentSummary,
                 skippedRows: rows.filter(row => row.status === "SKIPPED").length,
                 blockedRows: rows.filter(row => ["BLOCKED", "CONFLICT"].includes(row.status)).length,
                 warningRows: rows.filter(row => row.warnings.length > 0).length,

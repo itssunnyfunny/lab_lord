@@ -83,6 +83,15 @@ function sanitizeSuggestedImportOptions(value: unknown): Partial<ImportOptions> 
         next.paymentAction = value.paymentAction as ImportOptions["paymentAction"];
     }
 
+    if (typeof value.paymentHistoryMode === "string" && [
+        "START_CURRENT_JOINED_CYCLE",
+        "FROM_JOINED_MARK_PAID",
+        "FROM_JOINED_MARK_DUE",
+        "FROM_JOINED_PAID_THROUGH_PREVIOUS",
+    ].includes(value.paymentHistoryMode)) {
+        next.paymentHistoryMode = value.paymentHistoryMode as ImportOptions["paymentHistoryMode"];
+    }
+
     if (typeof value.customPeriodStart === "string") next.customPeriodStart = value.customPeriodStart;
     if (typeof value.customPeriodEnd === "string") next.customPeriodEnd = value.customPeriodEnd;
     if (typeof value.skipUnknownSeatAllocations === "boolean") next.skipUnknownSeatAllocations = value.skipUnknownSeatAllocations;

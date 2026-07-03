@@ -33,6 +33,10 @@ export type ImportPreview = {
         generatePayments: number;
         markPaid: number;
         markWaived: number;
+        historicalPaid: number;
+        historicalDue: number;
+        currentCyclePayments: number;
+        skippedHistoricalPayments: number;
         skippedRows: number;
         blockedRows: number;
         warningRows: number;
@@ -46,6 +50,9 @@ export type ImportPaymentPreview = {
     enabled: boolean;
     action?: string;
     cycle?: string;
+    historyMode?: string;
+    generatedCount?: number;
+    skippedHistoricalPayments?: number;
     amount: number | null;
     amountSource: "UPLOADED" | "MONTHLY_FEE" | "SHIFT_PRICE" | "MULTI_SHIFT_PRICE" | "BRANCH_DEFAULT" | "NONE";
     status?: string;

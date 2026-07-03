@@ -149,7 +149,7 @@ export function PreviewStep({
                                         {paymentsSkipped ? "Skipped for now" : `${preview.summary.generatePayments} payments planned`}
                                     </p>
                                     <p className={cn("mt-1 text-xs leading-5", pageMutedTextClass)}>
-                                        {paymentsSkipped ? "No due or paid records will be created." : "Payment records follow the saved payment policy."}
+                                        {paymentsSkipped ? "No due or paid records will be created." : "Payment records follow joined-date billing and stop at today."}
                                     </p>
                                 </div>
                             </div>

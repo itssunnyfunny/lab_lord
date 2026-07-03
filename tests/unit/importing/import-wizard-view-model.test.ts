@@ -77,10 +77,12 @@ describe("import wizard view model", () => {
         expect(paymentCycleChangeOptions({ paymentAction: "SKIP_PAYMENTS" }, "CURRENT_MONTH")).toEqual({
             paymentCycle: "CURRENT_MONTH",
             paymentAction: "GENERATE_DUE",
+            paymentHistoryMode: "START_CURRENT_JOINED_CYCLE",
         });
         expect(paymentActionChangeOptions({ paymentCycle: "SKIP_PAYMENTS" }, "IMPORT_PAID_UNPAID")).toEqual({
             paymentAction: "IMPORT_PAID_UNPAID",
-            paymentCycle: "CURRENT_MONTH",
+            paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
+            paymentHistoryMode: "START_CURRENT_JOINED_CYCLE",
         });
     });
 

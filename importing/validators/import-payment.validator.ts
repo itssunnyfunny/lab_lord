@@ -29,8 +29,8 @@ export function validateImportPayment(
         });
         result.questions.push({
             field: "payment.period",
-            question: "Which payment cycle should this file represent?",
-            options: ["CURRENT_MONTH", "PREVIOUS_MONTH", "CUSTOM_PERIOD", "USE_JOINED_AT_ANNIVERSARY", "SKIP_PAYMENTS"],
+            question: "Should payments use each student's joined-date cycle?",
+            options: ["USE_JOINED_AT_ANNIVERSARY", "SKIP_PAYMENTS"],
         });
     }
 
