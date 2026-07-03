@@ -82,6 +82,30 @@ describe("BranchService Integration", () => {
       expect(count).toBe(5);
     });
 
+    it("creates custom numbered seats when seatNumbering is supplied", async () => {
+      const user = await createUser();
+      const org = await createOrg({ ownerId: user.id });
+
+      const branch = await BranchService.createBranchForOrg({
+        organizationId: org.id,
+        userId: user.id,
+        name: "Custom Seat Branch",
+        contactPhone: "9876543210",
+        seatCount: 5,
+        seatNumbering: {
+          mode: "RANGE",
+          ranges: [
+            { prefix: "A", start: 1, end: 2, separator: "" },
+            { prefix: "B", start: 1, end: 2, separator: "" },
+            { prefix: "C", start: 1, end: 1, separator: "" },
+          ],
+        },
+      });
+
+      const seats = await testPrisma.seat.findMany({ where: { branchId: branch.id } });
+      expect(seats.map(seat => seat.label).sort()).toEqual(["A1", "A2", "B1", "B2", "C1"]);
+    });
+
     it("adds calling user as MANAGER on the new branch", async () => {
       const user = await createUser();
       const org = await createOrg({ ownerId: user.id });

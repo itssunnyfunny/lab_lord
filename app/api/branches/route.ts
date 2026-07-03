@@ -10,6 +10,7 @@ import {
     validateRequiredText,
     validateShiftDrafts,
 } from "@/lib/formValidation";
+import { generateSeatLabelsForSeatCount, validateSeatNumberingConfig } from "@/lib/seatNumbering";
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Internal Server Error";
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
         }
 
         const body = await req.json();
-        const { organizationId, name, contactPhone, city, defaultFee, seatCount, shifts } = body;
+        const { organizationId, name, contactPhone, city, defaultFee, seatCount, seatNumbering, shifts } = body;
 
         if (!organizationId || typeof organizationId !== "string") {
             return NextResponse.json({ error: "organizationId is required" }, { status: 400 });
@@ -47,6 +48,10 @@ export async function POST(req: Request) {
         if (!defaultFeeResult.ok) return NextResponse.json({ error: defaultFeeResult.error }, { status: 400 });
         const seatCountResult = parseIntegerField(seatCount, "Total seats", { required: true, min: 1, max: FORM_LIMITS.seatsMax });
         if (!seatCountResult.ok) return NextResponse.json({ error: seatCountResult.error }, { status: 400 });
+        const seatNumberingResult = validateSeatNumberingConfig(seatNumbering, seatCountResult.value);
+        if (!seatNumberingResult.ok) return NextResponse.json({ error: seatNumberingResult.error }, { status: 400 });
+        const seatLabelsResult = generateSeatLabelsForSeatCount(seatCountResult.value, seatNumberingResult.value);
+        if (!seatLabelsResult.ok) return NextResponse.json({ error: seatLabelsResult.error }, { status: 400 });
         const shiftsResult = Array.isArray(shifts) ? validateShiftDrafts(shifts) : { ok: true as const, value: undefined };
         if (!shiftsResult.ok) return NextResponse.json({ error: shiftsResult.error }, { status: 400 });
 
@@ -58,6 +63,7 @@ export async function POST(req: Request) {
             city: cityResult.value,
             defaultFee: defaultFeeResult.value ?? 0,
             seatCount: seatCountResult.value,
+            seatNumbering: seatNumberingResult.value,
             shifts: shiftsResult.value,
         });
 

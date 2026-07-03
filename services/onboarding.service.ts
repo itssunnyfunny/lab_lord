@@ -13,6 +13,7 @@ import {
     ensureDefaultFullTimeMultiShift,
     includesDefaultPrimaryShiftNames,
 } from "@/services/defaultShifts";
+import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 
 interface CreateNetworkParams {
     userId: string;
@@ -27,6 +28,7 @@ interface CreateNetworkParams {
         defaultFee?: number;
     };
     seatCount?: number;
+    seatNumbering?: SeatNumberingConfig;
     includeFullTimeMultiShift?: boolean;
     shifts?: {
         name: string;
@@ -64,6 +66,8 @@ export class OnboardingService {
             max: FORM_LIMITS.seatsMax,
         });
         if (!seatCountResult.ok) throw new Error(seatCountResult.error);
+        const seatLabelsResult = generateSeatLabelsForSeatCount(seatCountResult.value, params.seatNumbering);
+        if (!seatLabelsResult.ok) throw new Error(seatLabelsResult.error);
         const shiftsResult = params.shifts ? validateShiftDrafts(params.shifts, { allowEmpty: false }) : null;
         if (shiftsResult && !shiftsResult.ok) throw new Error(shiftsResult.error);
         const shiftsToCreate = shiftsResult?.ok && shiftsResult.value.length > 0
@@ -162,10 +166,10 @@ export class OnboardingService {
             // 4. Create Seats
             // Generate seats based on seatCount (e.g. "1", "2", ...)
             // ⚡ Bolt: Bulk seat creation. Reduces DB roundtrips from N to 1
-            if (seatCountResult.value && seatCountResult.value > 0) {
-                const seatsData = Array.from({ length: seatCountResult.value }, (_, i) => ({
+            if (seatLabelsResult.value.length > 0) {
+                const seatsData = seatLabelsResult.value.map(label => ({
                     branchId: branch.id,
-                    label: `${i + 1}`,
+                    label,
                 }));
                 await tx.seat.createMany({
                     data: seatsData,

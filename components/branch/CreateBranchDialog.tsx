@@ -4,6 +4,11 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { X, MapPin, Loader2, Phone, Plus, AlertCircle, AlertTriangle } from "lucide-react";
 import {
+    SeatNumberingBuilder,
+    createSimpleSeatNumbering,
+    resolveSeatNumberingForCount,
+} from "@/components/seats/SeatNumberingBuilder";
+import {
     formControlClass,
     formDialogFooterClass,
     formDialogHeaderClass,
@@ -29,6 +34,7 @@ import {
     validateRequiredText,
     validateShiftDrafts,
 } from "@/lib/formValidation";
+import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 import { cn } from "@/lib/utils";
 
 function formatMins(mins: number) {
@@ -74,6 +80,7 @@ export function CreateBranchDialog({
         contactPhone: "",
         city: "",
         seatCount: "",
+        seatNumbering: createSimpleSeatNumbering(),
         defaultFee: "",
     });
     const [shifts, setShifts] = useState<ShiftDraft[]>(DEFAULT_SHIFTS);
@@ -84,7 +91,7 @@ export function CreateBranchDialog({
         markSubmitted,
         resetFieldErrors,
         visibleError,
-    } = useInlineFieldErrors<"name" | "contactPhone" | "city" | "seatCount" | "defaultFee" | "shifts">();
+    } = useInlineFieldErrors<"name" | "contactPhone" | "city" | "seatCount" | "seatNumbering" | "defaultFee" | "shifts">();
 
     // Compute overlaps continuously
     const overlaps = (() => {
@@ -116,7 +123,7 @@ export function CreateBranchDialog({
     if (!isOpen) return null;
 
     const validateForm = () => {
-        const errors: Partial<Record<"name" | "contactPhone" | "city" | "seatCount" | "defaultFee" | "shifts", string>> = {};
+        const errors: Partial<Record<"name" | "contactPhone" | "city" | "seatCount" | "seatNumbering" | "defaultFee" | "shifts", string>> = {};
         const nameResult = validateRequiredText(formData.name, "Branch name", 120);
         const contactPhoneResult = validateRequiredPhone(formData.contactPhone, "Contact phone");
         const cityResult = validateOptionalText(formData.city, "City / area", FORM_LIMITS.cityMax);
@@ -130,11 +137,18 @@ export function CreateBranchDialog({
             max: FORM_LIMITS.moneyMax,
         });
         const shiftsResult = validateShiftDrafts(shifts);
+        const seatNumberingConfig = seatCountResult.ok
+            ? resolveSeatNumberingForCount(formData.seatNumbering as SeatNumberingConfig, seatCountResult.value ?? 0)
+            : formData.seatNumbering as SeatNumberingConfig;
+        const seatNumberingResult = seatCountResult.ok
+            ? generateSeatLabelsForSeatCount(seatCountResult.value, seatNumberingConfig)
+            : { ok: true as const, value: [] };
 
         if (!nameResult.ok) errors.name = nameResult.error;
         if (!contactPhoneResult.ok) errors.contactPhone = contactPhoneResult.error;
         if (!cityResult.ok) errors.city = cityResult.error;
         if (!seatCountResult.ok) errors.seatCount = seatCountResult.error;
+        if (!seatNumberingResult.ok) errors.seatNumbering = seatNumberingResult.error;
         if (!defaultFeeResult.ok) errors.defaultFee = defaultFeeResult.error;
         if (!shiftsResult.ok) errors.shifts = shiftsResult.error;
         if (overlaps.size > 0) errors.shifts = "Resolve all shift time overlaps before continuing.";
@@ -144,18 +158,26 @@ export function CreateBranchDialog({
             !contactPhoneResult.ok ||
             !cityResult.ok ||
             !seatCountResult.ok ||
+            !seatNumberingResult.ok ||
             !defaultFeeResult.ok ||
             !shiftsResult.ok ||
             overlaps.size > 0
         ) return { errors, values: null };
-        return { errors, values: { nameResult, contactPhoneResult, cityResult, seatCountResult, defaultFeeResult, shiftsResult } };
+        return { errors, values: { nameResult, contactPhoneResult, cityResult, seatCountResult, seatNumberingConfig, defaultFeeResult, shiftsResult } };
     };
 
     const validation = validateForm();
+    const seatCountPreviewResult = parseIntegerField(formData.seatCount, "Total seats", {
+        required: true,
+        min: 1,
+        max: FORM_LIMITS.seatsMax,
+    });
+    const seatCountPreview = seatCountPreviewResult.ok ? seatCountPreviewResult.value : undefined;
     const nameError = visibleError("name", validation.errors);
     const contactPhoneError = visibleError("contactPhone", validation.errors);
     const cityError = visibleError("city", validation.errors);
     const seatCountError = visibleError("seatCount", validation.errors);
+    const seatNumberingError = visibleError("seatNumbering", validation.errors);
     const defaultFeeError = visibleError("defaultFee", validation.errors);
     const shiftsError = visibleError("shifts", validation.errors);
 
@@ -190,7 +212,7 @@ export function CreateBranchDialog({
         if (Object.values(result.errors).some(Boolean) || !result.values) {
             return;
         }
-        const { nameResult, contactPhoneResult, cityResult, seatCountResult, defaultFeeResult, shiftsResult } = result.values;
+        const { nameResult, contactPhoneResult, cityResult, seatCountResult, seatNumberingConfig, defaultFeeResult, shiftsResult } = result.values;
 
         setLoading(true);
         try {
@@ -203,6 +225,7 @@ export function CreateBranchDialog({
                     contactPhone: contactPhoneResult.value,
                     city: cityResult.value,
                     seatCount: seatCountResult.value,
+                    seatNumbering: seatNumberingConfig,
                     defaultFee: defaultFeeResult.value ?? 0,
                     shifts: shiftsResult.value,
                 }),
@@ -215,7 +238,7 @@ export function CreateBranchDialog({
 
             const branch = await res.json();
             // Reset form
-            setFormData({ name: "", contactPhone: "", city: "", seatCount: "", defaultFee: "" });
+            setFormData({ name: "", contactPhone: "", city: "", seatCount: "", seatNumbering: createSimpleSeatNumbering(), defaultFee: "" });
             setShifts(DEFAULT_SHIFTS);
             resetFieldErrors();
             onSuccess(branch);
@@ -228,7 +251,7 @@ export function CreateBranchDialog({
 
     const handleClose = () => {
         if (loading) return;
-        setFormData({ name: "", contactPhone: "", city: "", seatCount: "", defaultFee: "" });
+        setFormData({ name: "", contactPhone: "", city: "", seatCount: "", seatNumbering: createSimpleSeatNumbering(), defaultFee: "" });
         setShifts(DEFAULT_SHIFTS);
         setError(null);
         resetFieldErrors();
@@ -341,6 +364,20 @@ export function CreateBranchDialog({
                             />
                             <FieldError id="create-branch-seat-count-error" error={seatCountError} />
                         </div>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className={formLabelClass}>Seat numbering</label>
+                        <SeatNumberingBuilder
+                            value={formData.seatNumbering as SeatNumberingConfig}
+                            expectedCount={seatCountPreview}
+                            onChange={(seatNumbering) => {
+                                markTouched("seatNumbering");
+                                setFormData(prev => ({ ...prev, seatNumbering }));
+                            }}
+                            disabled={loading}
+                        />
+                        <FieldError id="create-branch-seat-numbering-error" error={seatNumberingError} />
                     </div>
 
                     {/* Default Monthly Fee */}
