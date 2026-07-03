@@ -85,6 +85,10 @@ export const importOptionLabels: Record<string, string> = {
     SKIP_PAYMENTS: "Skip payments",
     GENERATE_DUE: "Generate due payments",
     IMPORT_PAID_UNPAID: "Import paid/unpaid",
+    START_CURRENT_JOINED_CYCLE: "Start current joined cycle",
+    FROM_JOINED_MARK_PAID: "From joined date, mark paid",
+    FROM_JOINED_MARK_DUE: "From joined date, mark due",
+    FROM_JOINED_PAID_THROUGH_PREVIOUS: "Paid through previous cycle",
     CASH: "Cash",
     UPI: "UPI",
     BANK_TRANSFER: "Bank transfer",
@@ -148,6 +152,7 @@ export function paymentCycleChangeOptions(
     if (paymentCycle === "SKIP_PAYMENTS") return paymentSkipOptions();
     return {
         paymentCycle: paymentCycle || undefined,
+        ...(paymentCycle ? { paymentHistoryMode: current?.paymentHistoryMode ?? "START_CURRENT_JOINED_CYCLE" as const } : {}),
         ...(current?.paymentAction === "SKIP_PAYMENTS" && paymentCycle ? { paymentAction: "GENERATE_DUE" as const } : {}),
     };
 }
@@ -159,7 +164,8 @@ export function paymentActionChangeOptions(
     if (paymentAction === "SKIP_PAYMENTS") return paymentSkipOptions();
     return {
         paymentAction: paymentAction || undefined,
-        ...(current?.paymentCycle === "SKIP_PAYMENTS" && paymentAction ? { paymentCycle: "CURRENT_MONTH" as const } : {}),
+        ...(paymentAction ? { paymentHistoryMode: current?.paymentHistoryMode ?? "START_CURRENT_JOINED_CYCLE" as const } : {}),
+        ...(!current?.paymentCycle || current.paymentCycle === "SKIP_PAYMENTS" ? { paymentCycle: "USE_JOINED_AT_ANNIVERSARY" as const } : {}),
     };
 }
 

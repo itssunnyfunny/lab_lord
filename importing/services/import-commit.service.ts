@@ -1,4 +1,3 @@
-import { addMonths, endOfMonth, startOfDay, startOfMonth, subMonths } from "date-fns";
 import { prisma } from "@/lib/prisma";
 import { MultiShiftService } from "@/services/multiShift.service";
 import { PaymentService } from "@/services/payment.service";
@@ -10,6 +9,7 @@ import { StudentService } from "@/services/student.service";
 import type { CommitMode, ImportCommitResult, ImportMappingState, ImportNormalizedRow } from "@/importing/contracts/import-session.contract";
 import { promoteKnownMultiShiftAllocation } from "@/importing/utils/shift-alias-resolver";
 import { buildImportPlanChecks, createImportPlanVersion, getBlockingImportPlanChecks } from "@/importing/utils/import-plan-checks";
+import { buildImportPaymentPlan, importPaymentHistoryMode } from "@/importing/utils/import-payment-plan";
 import { ImportSessionService } from "./import-session.service";
 import type { PaymentMethod } from "@/app/generated/prisma/enums";
 import type { Prisma } from "@/app/generated/prisma/client";
@@ -44,6 +44,10 @@ function createCommitSummary(skippedRows = 0): Record<string, number> {
         generatedPayments: 0,
         markedPaid: 0,
         markedWaived: 0,
+        historicalPaid: 0,
+        historicalDue: 0,
+        currentCyclePayments: 0,
+        skippedHistoricalPayments: 0,
         skippedRows,
         failedRows: 0,
     };
@@ -66,21 +70,24 @@ function stringIds(value: unknown) {
 }
 
 async function cleanupCreatedEntities(createdEntityIds: Record<string, unknown>) {
-    const paymentId = stringId(createdEntityIds.paymentId);
+    const paymentIds = [
+        ...stringIds(createdEntityIds.paymentIds),
+        stringId(createdEntityIds.paymentId),
+    ].filter((id): id is string => Boolean(id));
     const allocationIds = stringIds(createdEntityIds.allocationIds);
     const studentId = stringId(createdEntityIds.studentId);
     const multiShiftId = stringId(createdEntityIds.multiShiftId);
     const shiftId = stringId(createdEntityIds.shiftId);
     const seatId = stringId(createdEntityIds.seatId);
 
-    if (!paymentId && allocationIds.length === 0 && !studentId && !multiShiftId && !shiftId && !seatId) {
+    if (paymentIds.length === 0 && allocationIds.length === 0 && !studentId && !multiShiftId && !shiftId && !seatId) {
         return;
     }
 
     await prisma.$transaction(async tx => {
-        if (paymentId) {
-            await tx.auditLog.deleteMany({ where: { paymentId } });
-            await tx.payment.deleteMany({ where: { id: paymentId } });
+        if (paymentIds.length > 0) {
+            await tx.auditLog.deleteMany({ where: { paymentId: { in: paymentIds } } });
+            await tx.payment.deleteMany({ where: { id: { in: paymentIds } } });
         }
         if (allocationIds.length > 0) {
             await tx.seatAllocation.deleteMany({ where: { id: { in: allocationIds } } });
@@ -98,38 +105,6 @@ async function cleanupCreatedEntities(createdEntityIds: Record<string, unknown>)
             await tx.seat.deleteMany({ where: { id: seatId } });
         }
     });
-}
-
-function resolvePaymentPeriod(option: ImportMappingState["importOptions"], joinedAt: Date) {
-    const today = new Date();
-    const cycle = option?.paymentCycle ?? "SKIP_PAYMENTS";
-
-    if (cycle === "CURRENT_MONTH") {
-        return { periodStart: startOfMonth(today), periodEnd: endOfMonth(today), dueDate: endOfMonth(today) };
-    }
-    if (cycle === "PREVIOUS_MONTH") {
-        const previous = subMonths(today, 1);
-        return { periodStart: startOfMonth(previous), periodEnd: endOfMonth(previous), dueDate: endOfMonth(previous) };
-    }
-    if (cycle === "CUSTOM_PERIOD" && option?.customPeriodStart && option.customPeriodEnd) {
-        const periodStart = startOfDay(new Date(option.customPeriodStart));
-        const periodEnd = startOfDay(new Date(option.customPeriodEnd));
-        if (Number.isNaN(periodStart.getTime()) || Number.isNaN(periodEnd.getTime()) || periodStart > periodEnd) return null;
-        return {
-            periodStart,
-            periodEnd,
-            dueDate: periodEnd,
-        };
-    }
-    if (cycle === "USE_JOINED_AT_ANNIVERSARY") {
-        return {
-            periodStart: startOfDay(joinedAt),
-            periodEnd: startOfDay(addMonths(joinedAt, 1)),
-            dueDate: startOfDay(addMonths(joinedAt, 1)),
-        };
-    }
-
-    return null;
 }
 
 export class ImportCommitService {
@@ -169,7 +144,12 @@ export class ImportCommitService {
         );
         const needsPayments = mapping.importOptions?.paymentAction && mapping.importOptions.paymentAction !== "SKIP_PAYMENTS";
         const importsPaymentStatuses = mapping.importOptions?.paymentAction === "IMPORT_PAID_UNPAID";
-        const needsPaid = importsPaymentStatuses && rows.some(row => row.normalizedData?.payment?.status === "PAID");
+        const historyMode = importPaymentHistoryMode(mapping.importOptions);
+        const historyMarksPaid = historyMode === "FROM_JOINED_MARK_PAID" || historyMode === "FROM_JOINED_PAID_THROUGH_PREVIOUS";
+        const needsPaid = Boolean(needsPayments && (
+            historyMarksPaid ||
+            importsPaymentStatuses && rows.some(row => row.normalizedData?.payment?.status === "PAID")
+        ));
         const needsWaived = importsPaymentStatuses && rows.some(row => row.normalizedData?.payment?.status === "WAIVED");
 
         if (needsManageBranch) await StaffService.authorize(userId, branchId, "manage_branch");
@@ -343,10 +323,18 @@ export class ImportCommitService {
                         ? undefined
                         : feeLinkedMultiShift?.id;
                     const joinedAt = normalized.student.joinedAt ? new Date(normalized.student.joinedAt) : new Date();
+                    const paymentPlan = buildImportPaymentPlan({
+                        ...normalized,
+                        student: {
+                            ...normalized.student,
+                            joinedAt: joinedAt.toISOString(),
+                        },
+                    }, mapping);
                     const student = await StudentService.createImportedStudent(userId, branchId, {
                         name: normalized.student.name,
                         phone: normalized.student.phone,
                         joinedAt,
+                        billingStartAt: paymentPlan.billingStartAt,
                         monthlyFee: normalized.student.monthlyFee,
                         admissionFee: 0,
                         feeLinkedShiftId,
@@ -366,30 +354,35 @@ export class ImportCommitService {
                         rowSummary.createdAllocations += allocations.length;
                     }
 
-                    if (mapping.importOptions?.paymentAction && mapping.importOptions.paymentAction !== "SKIP_PAYMENTS") {
-                        const period = resolvePaymentPeriod(mapping.importOptions, joinedAt);
-                        if (period) {
+                    if (paymentPlan.enabled && paymentPlan.items.length > 0) {
+                        const paymentIds: string[] = [];
+                        for (const item of paymentPlan.items) {
                             const payment = await PaymentService.ensureMonthlyPaymentForStudent(userId, branchId, {
                                 studentId: student.id,
-                                periodStart: period.periodStart,
-                                periodEnd: period.periodEnd,
-                                dueDate: period.dueDate,
+                                periodStart: item.cycle.periodStart,
+                                periodEnd: item.cycle.periodEnd,
+                                dueDate: item.cycle.dueDate,
                                 amount: normalized.payment?.amount ?? normalized.student.monthlyFee,
                             });
-                            createdEntityIds.paymentId = payment.id;
+                            paymentIds.push(payment.id);
+                            createdEntityIds.paymentIds = paymentIds;
                             rowSummary.generatedPayments++;
+                            if (item.bucket === "historical" && item.status === "PAID") rowSummary.historicalPaid++;
+                            if (item.bucket === "historical" && item.status === "DUE") rowSummary.historicalDue++;
+                            if (item.bucket === "current") rowSummary.currentCyclePayments++;
 
-                            if (mapping.importOptions.paymentAction === "IMPORT_PAID_UNPAID" && normalized.payment?.status === "PAID") {
-                                const method = normalized.payment.method ?? mapping.importOptions.paymentMapping?.defaultMethod as PaymentMethod | undefined;
-                                await PaymentService.markPaymentAsPaid(userId, payment.id, method, normalized.payment.referenceId);
+                            if (item.status === "PAID") {
+                                const method = normalized.payment?.method ?? mapping.importOptions?.paymentMapping?.defaultMethod as PaymentMethod | undefined;
+                                await PaymentService.markPaymentAsPaid(userId, payment.id, method, normalized.payment?.referenceId);
                                 rowSummary.markedPaid++;
                             }
-                            if (mapping.importOptions.paymentAction === "IMPORT_PAID_UNPAID" && normalized.payment?.status === "WAIVED") {
+                            if (item.status === "WAIVED") {
                                 await PaymentService.markPaymentAsWaived(userId, payment.id);
                                 rowSummary.markedWaived++;
                             }
                         }
                     }
+                    rowSummary.skippedHistoricalPayments += paymentPlan.skippedHistoricalPayments;
 
                     await prisma.importRow.update({
                         where: { id: row.id },

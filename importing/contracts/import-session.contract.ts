@@ -157,6 +157,12 @@ export type PaymentImportAction =
     | "IMPORT_PAID_UNPAID"
     | "SKIP_PAYMENTS";
 
+export type PaymentHistoryMode =
+    | "START_CURRENT_JOINED_CYCLE"
+    | "FROM_JOINED_MARK_PAID"
+    | "FROM_JOINED_MARK_DUE"
+    | "FROM_JOINED_PAID_THROUGH_PREVIOUS";
+
 export type ImportPaymentMapping = {
     paidValues: string[];
     unpaidValues: string[];
@@ -169,6 +175,7 @@ export type ImportPaymentMapping = {
 export type ImportOptions = {
     paymentCycle?: PaymentCycleOption;
     paymentAction?: PaymentImportAction;
+    paymentHistoryMode?: PaymentHistoryMode;
     customPeriodStart?: string;
     customPeriodEnd?: string;
     paymentMapping?: ImportPaymentMapping;

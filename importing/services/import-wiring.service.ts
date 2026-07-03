@@ -27,6 +27,7 @@ import {
     stagedAllocationConflictWarnings,
     stagedRowsForRequestedShifts,
 } from "@/importing/utils/staged-allocation-conflicts";
+import { buildImportPaymentPlan } from "@/importing/utils/import-payment-plan";
 
 type SessionRow = {
     id: string;
@@ -171,11 +172,15 @@ function buildPaymentPreview(
     const source = paymentAmountSource(normalized);
     const amount = normalized.payment?.amount ?? normalized.student?.monthlyFee ?? null;
     const blockers = [...issues, ...warnings].filter(issue => issue.code.startsWith("PAYMENT"));
+    const plan = buildImportPaymentPlan(normalized, mapping);
 
     return {
         enabled,
         action,
         cycle,
+        historyMode: plan.historyMode,
+        generatedCount: plan.items.length,
+        skippedHistoricalPayments: plan.skippedHistoricalPayments,
         amount,
         amountSource: source,
         status: normalized.payment?.status,
@@ -183,7 +188,7 @@ function buildPaymentPreview(
         referenceId: normalized.payment?.referenceId,
         blockers,
         message: enabled
-            ? `Payment amount will use ${source.toLowerCase().replace(/_/g, " ")}${amount !== null ? ` (${amount})` : ""}.`
+            ? `${plan.items.length} joined-date cycle${plan.items.length === 1 ? "" : "s"} will be created${plan.skippedHistoricalPayments > 0 ? `; ${plan.skippedHistoricalPayments} old cycle${plan.skippedHistoricalPayments === 1 ? "" : "s"} skipped` : ""}. Amount uses ${source.toLowerCase().replace(/_/g, " ")}${amount !== null ? ` (${amount})` : ""}.`
             : "Payments are not enabled for this row yet.",
     };
 }

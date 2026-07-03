@@ -195,7 +195,7 @@ describe("ImportQuestionService", () => {
         const updateInput = mocks.prisma.importSession.update.mock.calls[0][0];
         expect(updateInput.data.mapping.questions).toEqual([]);
         expect(updateInput.data.mapping.importOptions.paymentAction).toBe("IMPORT_PAID_UNPAID");
-        expect(updateInput.data.mapping.importOptions.paymentCycle).toBeUndefined();
+        expect(updateInput.data.mapping.importOptions.paymentCycle).toBe("USE_JOINED_AT_ANNIVERSARY");
     });
 
     it("treats skip payments as both cycle and action so payment prompts stop", async () => {

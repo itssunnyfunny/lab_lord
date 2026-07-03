@@ -11,6 +11,12 @@ function asJson(value: unknown): Prisma.InputJsonValue {
 
 const paymentCycleAnswers = ["CURRENT_MONTH", "PREVIOUS_MONTH", "CUSTOM_PERIOD", "USE_JOINED_AT_ANNIVERSARY"] as const;
 const paymentActionAnswers = ["GENERATE_DUE", "IMPORT_PAID_UNPAID"] as const;
+const paymentHistoryAnswers = [
+    "START_CURRENT_JOINED_CYCLE",
+    "FROM_JOINED_MARK_PAID",
+    "FROM_JOINED_MARK_DUE",
+    "FROM_JOINED_PAID_THROUGH_PREVIOUS",
+] as const;
 
 function answerValue(answer: unknown) {
     return typeof answer === "string"
@@ -41,10 +47,19 @@ function answerToOptions(question: { field: string | null }, answer: unknown): P
         return { paymentCycle: "SKIP_PAYMENTS", paymentAction: "SKIP_PAYMENTS" };
     }
     if (paymentActionAnswers.includes(value as typeof paymentActionAnswers[number])) {
-        return { paymentAction: value as ImportOptions["paymentAction"] };
+        return {
+            paymentAction: value as ImportOptions["paymentAction"],
+            paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
+        };
     }
     if (paymentCycleAnswers.includes(value as typeof paymentCycleAnswers[number])) {
         return { paymentCycle: value as ImportOptions["paymentCycle"] };
+    }
+    if (paymentHistoryAnswers.includes(value as typeof paymentHistoryAnswers[number])) {
+        return {
+            paymentHistoryMode: value as ImportOptions["paymentHistoryMode"],
+            paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
+        };
     }
     if (question.field === "student.joinedAt") {
         return { defaultJoinedAt: value === "USE_TODAY" ? new Date().toISOString() : value };
