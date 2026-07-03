@@ -301,6 +301,7 @@ export class StudentService {
                     feeLinkedShiftId: feeData.feeLinkedShiftId,
                     feeLinkedMultiShiftId: feeData.feeLinkedMultiShiftId,
                     joinedAt,
+                    billingStartAt: data.billingStartAt ?? null,
                 },
             });
 

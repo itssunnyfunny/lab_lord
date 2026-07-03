@@ -9,7 +9,7 @@ import {
   createUser,
 } from "@/tests/factories";
 import { freezeTime, advanceMonths, restoreTime } from "@/tests/setup/time";
-import { addMonths } from "date-fns";
+import { addMonths, format } from "date-fns";
 
 /**
  * INTEGRATION TESTS: PaymentService
@@ -101,9 +101,9 @@ describe("PaymentService Integration", () => {
 
       expect(result.generatedCount).toBe(1);
       expect(monthlyPayments.map(payment => payment.status)).toEqual(["DUE", "DUE"]);
-      expect(monthlyPayments.map(payment => payment.dueDate.toISOString())).toEqual([
-        addMonths(BASE, 1).toISOString(),
-        addMonths(BASE, 2).toISOString(),
+      expect(monthlyPayments.map(payment => format(payment.dueDate, "yyyy-MM-dd"))).toEqual([
+        format(addMonths(BASE, 1), "yyyy-MM-dd"),
+        format(addMonths(BASE, 2), "yyyy-MM-dd"),
       ]);
     });
 

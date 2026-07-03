@@ -4,7 +4,8 @@ import { StaffService } from "@/services/staff.service";
 import { PaymentStatus, StudentStatus, PaymentType, PaymentMethod } from "@/types";
 import type { StaffAction } from "@/types";
 import type { Prisma } from "@/app/generated/prisma/client";
-import { addMonths, startOfDay, isBefore, startOfMonth, endOfMonth } from "date-fns";
+import { startOfDay, startOfMonth, endOfMonth } from "date-fns";
+import { dueCyclesThrough } from "@/utils/studentBillingCycles";
 
 const STUDENT_GENERATION_BATCH_SIZE = 250;
 const PAYMENT_INSERT_BATCH_SIZE = 1000;
@@ -105,6 +106,7 @@ export class PaymentService {
                     id: true,
                     branchId: true,
                     joinedAt: true,
+                    billingStartAt: true,
                     monthlyFee: true,
                 },
                 orderBy: { id: "asc" },
@@ -121,26 +123,17 @@ export class PaymentService {
             const batchPaymentsToCreate: Prisma.PaymentCreateManyInput[] = [];
 
             for (const student of students) {
-                let month = 1;
-
-                while (true) {
-                    const dueDate = addMonths(student.joinedAt, month);
-                    const dueDateNormalized = startOfDay(dueDate);
-
-                    if (isBefore(today, dueDateNormalized)) break;
-
+                for (const cycle of dueCyclesThrough(student.joinedAt, today, student.billingStartAt)) {
                     batchPaymentsToCreate.push({
                         branchId: student.branchId,
                         studentId: student.id,
                         amount: student.monthlyFee,
                         status: PaymentStatus.DUE,
                         type: PaymentType.MONTHLY,
-                        periodStart: startOfDay(addMonths(student.joinedAt, month - 1)),
-                        periodEnd: dueDate,
-                        dueDate,
+                        periodStart: cycle.periodStart,
+                        periodEnd: cycle.periodEnd,
+                        dueDate: cycle.dueDate,
                     });
-
-                    month++;
                 }
             }
 
