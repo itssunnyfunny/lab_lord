@@ -76,6 +76,49 @@ describe("SeatService Integration", () => {
     });
   });
 
+  describe("generateSeats", () => {
+    it("creates a generated batch of seats", async () => {
+      const { user, branch } = await createTestWorld();
+
+      const seats = await SeatService.generateSeats(user.id, branch.id, {
+        mode: "RANGE",
+        ranges: [{ prefix: "A", start: 1, end: 3, separator: "" }],
+      });
+
+      expect(seats.map(seat => seat.label)).toEqual(["A1", "A2", "A3"]);
+    });
+
+    it("rejects duplicate generated labels without creating a partial batch", async () => {
+      const { user, branch } = await createTestWorld();
+      await createSeat({ branchId: branch.id, label: "A1" });
+
+      await expect(
+        SeatService.generateSeats(user.id, branch.id, {
+          mode: "RANGE",
+          ranges: [{ prefix: "A", start: 1, end: 3, separator: "" }],
+        })
+      ).rejects.toThrow(/already exists/i);
+
+      const labels = (await testPrisma.seat.findMany({ where: { branchId: branch.id } }))
+        .map(seat => seat.label);
+      expect(labels).not.toContain("A2");
+      expect(labels).not.toContain("A3");
+    });
+
+    it("requires manage_branch access", async () => {
+      const { branch } = await createTestWorld();
+      const staffUser = await createUser();
+      await createStaff({ userId: staffUser.id, branchId: branch.id, role: "STAFF" });
+
+      await expect(
+        SeatService.generateSeats(staffUser.id, branch.id, {
+          mode: "SIMPLE",
+          count: 2,
+        })
+      ).rejects.toThrow(/Unauthorized/i);
+    });
+  });
+
   // ─── listSeats ─────────────────────────────────────────────────────────────
 
   describe("listSeats", () => {
@@ -100,6 +143,17 @@ describe("SeatService Integration", () => {
       const seats = await SeatService.listSeats(staffUser.id, branch.id);
 
       expect(seats.some(s => s.id === seat.id)).toBe(true);
+    });
+
+    it("sorts labels naturally", async () => {
+      const { user, branch } = await createTestWorld();
+      await Promise.all(
+        ["A10", "A2", "A1"].map(label => createSeat({ branchId: branch.id, label }))
+      );
+
+      const seats = await SeatService.listSeats(user.id, branch.id);
+
+      expect(seats.map(seat => seat.label).filter(label => label.startsWith("A"))).toEqual(["A1", "A2", "A10"]);
     });
 
     it("excludes ended allocations (endDate ≠ null)", async () => {

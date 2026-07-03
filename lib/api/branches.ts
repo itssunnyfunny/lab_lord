@@ -1,5 +1,6 @@
 import { apiClient } from "./core";
 import type { Student, Seat, Payment, Staff, Shift, Branch } from "@/app/generated/prisma/browser";
+import type { SeatNumberingConfig } from "@/lib/seatNumbering";
 import type { BranchAccess } from "@/types";
 
 export const branches = {
@@ -27,6 +28,10 @@ export const branches = {
 
     createSeat: async (branchId: string, label: string): Promise<Seat> => {
         return apiClient.post(`/branches/${branchId}/seats`, { label });
+    },
+
+    generateSeats: async (branchId: string, seatNumbering: SeatNumberingConfig): Promise<{ created: number; seats: Seat[] }> => {
+        return apiClient.post(`/branches/${branchId}/seats/generate`, { seatNumbering });
     },
 
     getPayments: async (branchId: string, status?: string): Promise<Payment[]> => {

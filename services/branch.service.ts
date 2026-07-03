@@ -25,6 +25,7 @@ import {
     ensureDefaultFullTimeMultiShift,
     includesDefaultPrimaryShiftNames,
 } from "@/services/defaultShifts";
+import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 
 interface CreateBranchForOrgParams {
     organizationId: string;
@@ -34,6 +35,7 @@ interface CreateBranchForOrgParams {
     city?: string;
     defaultFee?: number;
     seatCount?: number;
+    seatNumbering?: SeatNumberingConfig;
     shifts?: {
         name: string;
         startTime: string | null;
@@ -63,7 +65,7 @@ export class BranchService {
      * in a single atomic transaction.
      */
     static async createBranchForOrg(params: CreateBranchForOrgParams) {
-        const { organizationId, userId, name, contactPhone, city, defaultFee, seatCount, shifts } = params;
+        const { organizationId, userId, name, contactPhone, city, defaultFee, seatCount, shifts, seatNumbering } = params;
         const nameResult = validateRequiredText(name, "Branch name", 120);
         if (!nameResult.ok) throw new Error(nameResult.error);
         const contactPhoneResult = validateRequiredPhone(contactPhone, "Contact phone");
@@ -80,6 +82,8 @@ export class BranchService {
             max: FORM_LIMITS.seatsMax,
         });
         if (!seatCountResult.ok) throw new Error(seatCountResult.error);
+        const seatLabelsResult = generateSeatLabelsForSeatCount(seatCountResult.value, seatNumbering);
+        if (!seatLabelsResult.ok) throw new Error(seatLabelsResult.error);
         const shiftsResult = shifts ? validateShiftDrafts(shifts, { allowEmpty: false }) : null;
         if (shiftsResult && !shiftsResult.ok) throw new Error(shiftsResult.error);
 
@@ -130,10 +134,10 @@ export class BranchService {
             // 3. Create seats
             // ⚡ Bolt: Replaced O(n) individual seat creations with single bulk insert
             // Expected Impact: Reduces DB roundtrips from N to 1 during branch creation
-            if (seatCountResult.value && seatCountResult.value > 0) {
-                const seatsData = Array.from({ length: seatCountResult.value }, (_, i) => ({
+            if (seatLabelsResult.value.length > 0) {
+                const seatsData = seatLabelsResult.value.map(label => ({
                     branchId: branch.id,
-                    label: `${i + 1}`,
+                    label,
                 }));
                 await tx.seat.createMany({
                     data: seatsData,

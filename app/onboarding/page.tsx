@@ -5,6 +5,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppButton } from "@/components/ui";
 import {
+    SeatNumberingBuilder,
+    createSimpleSeatNumbering,
+    resolveSeatNumberingForCount,
+} from "@/components/seats/SeatNumberingBuilder";
+import {
     entryContentClass,
     entryIconFrameClass,
     entryInlineInfoClass,
@@ -39,6 +44,7 @@ import {
     validateMultiShiftDrafts,
     validateShiftDrafts,
 } from "@/lib/formValidation";
+import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 import { cn } from "@/lib/utils";
 
 interface OnboardingShiftDraft {
@@ -62,7 +68,7 @@ interface OnboardingResponse {
     };
 }
 
-type FieldKey = "orgName" | "ownerPhone" | "businessType" | "branchName" | "city" | "seatCount" | "shifts" | "multiShifts";
+type FieldKey = "orgName" | "ownerPhone" | "businessType" | "branchName" | "city" | "seatCount" | "seatNumbering" | "shifts" | "multiShifts";
 type OnboardingStep = 1 | 2 | 3;
 
 const DEFAULT_SHIFT_IDS = {
@@ -136,6 +142,7 @@ export default function OnboardingPage() {
         branchName: "",
         city: "",
         seatCount: "",
+        seatNumbering: createSimpleSeatNumbering(),
         shifts: DEFAULT_ONBOARDING_SHIFTS,
         multiShifts: DEFAULT_ONBOARDING_MULTI_SHIFTS,
     });
@@ -275,6 +282,12 @@ export default function OnboardingPage() {
         const multiShiftsResult = shiftsResult.ok
             ? validateMultiShiftDrafts(getMultiShiftInputs(), shiftsResult.value)
             : { ok: true as const, value: [] };
+        const seatNumberingConfig = seatCountResult.ok
+            ? resolveSeatNumberingForCount(formData.seatNumbering as SeatNumberingConfig, seatCountResult.value ?? 0)
+            : formData.seatNumbering as SeatNumberingConfig;
+        const seatNumberingResult = seatCountResult.ok
+            ? generateSeatLabelsForSeatCount(seatCountResult.value, seatNumberingConfig)
+            : { ok: true as const, value: [] };
 
         if (!orgNameResult.ok) errors.orgName = orgNameResult.error;
         if (!ownerPhoneResult.ok) errors.ownerPhone = ownerPhoneResult.error;
@@ -282,6 +295,7 @@ export default function OnboardingPage() {
         if (!branchNameResult.ok) errors.branchName = branchNameResult.error;
         if (!cityResult.ok) errors.city = cityResult.error;
         if (!seatCountResult.ok) errors.seatCount = seatCountResult.error;
+        if (!seatNumberingResult.ok) errors.seatNumbering = seatNumberingResult.error;
         if (!shiftsResult.ok) errors.shifts = shiftsResult.error;
         if (!multiShiftsResult.ok) errors.multiShifts = multiShiftsResult.error;
 
@@ -292,6 +306,7 @@ export default function OnboardingPage() {
             !branchNameResult.ok ||
             !cityResult.ok ||
             !seatCountResult.ok ||
+            !seatNumberingResult.ok ||
             !shiftsResult.ok ||
             !multiShiftsResult.ok
         ) {
@@ -300,17 +315,24 @@ export default function OnboardingPage() {
 
         return {
             errors,
-            values: { orgNameResult, ownerPhoneResult, businessTypeResult, branchNameResult, cityResult, seatCountResult, shiftsResult, multiShiftsResult },
+            values: { orgNameResult, ownerPhoneResult, businessTypeResult, branchNameResult, cityResult, seatCountResult, seatNumberingConfig, shiftsResult, multiShiftsResult },
         };
     };
 
     const validation = validateForm();
+    const seatCountPreviewResult = parseIntegerField(formData.seatCount, "Total seats", {
+        required: true,
+        min: 1,
+        max: FORM_LIMITS.seatsMax,
+    });
+    const seatCountPreview = seatCountPreviewResult.ok ? seatCountPreviewResult.value : undefined;
     const orgNameError = visibleError("orgName", validation.errors);
     const ownerPhoneError = visibleError("ownerPhone", validation.errors);
     const businessTypeError = visibleError("businessType", validation.errors);
     const branchNameError = visibleError("branchName", validation.errors);
     const cityError = visibleError("city", validation.errors);
     const seatCountError = visibleError("seatCount", validation.errors);
+    const seatNumberingError = visibleError("seatNumbering", validation.errors);
     const shiftsError = visibleError("shifts", validation.errors);
     const multiShiftsError = visibleError("multiShifts", validation.errors);
 
@@ -329,7 +351,7 @@ export default function OnboardingPage() {
         const result = validateForm();
         if (Object.values(result.errors).some(Boolean) || !result.values) return;
 
-        const { orgNameResult, ownerPhoneResult, businessTypeResult, branchNameResult, cityResult, seatCountResult, shiftsResult, multiShiftsResult } = result.values;
+        const { orgNameResult, ownerPhoneResult, businessTypeResult, branchNameResult, cityResult, seatCountResult, seatNumberingConfig, shiftsResult, multiShiftsResult } = result.values;
         setLoading(true);
 
         try {
@@ -340,6 +362,7 @@ export default function OnboardingPage() {
                 branchName: branchNameResult.value,
                 city: cityResult.value,
                 seatCount: seatCountResult.value,
+                seatNumbering: seatNumberingConfig,
                 shifts: shiftsResult.value,
                 multiShifts: multiShiftsResult.value,
             }) as OnboardingResponse;
@@ -554,6 +577,21 @@ export default function OnboardingPage() {
                                         />
                                         <FieldError id="onboarding-seat-count-error" error={seatCountError} />
                                     </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label className={cn("block", formLabelClass)}>Seat numbering</label>
+                                    <SeatNumberingBuilder
+                                        value={formData.seatNumbering as SeatNumberingConfig}
+                                        expectedCount={seatCountPreview}
+                                        onChange={(seatNumbering) => {
+                                            markTouched("seatNumbering");
+                                            setFormData(prev => ({ ...prev, seatNumbering }));
+                                            setError(null);
+                                        }}
+                                        disabled={loading}
+                                    />
+                                    <FieldError id="onboarding-seat-numbering-error" error={seatNumberingError} />
                                 </div>
 
                                 <div className="space-y-5">

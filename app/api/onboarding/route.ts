@@ -9,6 +9,7 @@ import {
     validateRequiredText,
     validateShiftDrafts,
 } from "@/lib/formValidation";
+import { generateSeatLabelsForSeatCount, validateSeatNumberingConfig } from "@/lib/seatNumbering";
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Failed to complete setup";
@@ -22,7 +23,7 @@ export async function POST(req: Request) {
         }
 
         const body = await req.json();
-        const { orgName, ownerPhone, businessType, branchName, city, defaultFee, seatCount, shifts, multiShifts, includeFullTimeMultiShift } = body;
+        const { orgName, ownerPhone, businessType, branchName, city, defaultFee, seatCount, seatNumbering, shifts, multiShifts, includeFullTimeMultiShift } = body;
 
         const orgNameResult = validateRequiredText(orgName, "Organization name", 120);
         if (!orgNameResult.ok) return NextResponse.json({ error: orgNameResult.error }, { status: 400 });
@@ -38,6 +39,10 @@ export async function POST(req: Request) {
         if (!defaultFeeResult.ok) return NextResponse.json({ error: defaultFeeResult.error }, { status: 400 });
         const seatCountResult = parseIntegerField(seatCount, "Total seats", { required: true, min: 1, max: FORM_LIMITS.seatsMax });
         if (!seatCountResult.ok) return NextResponse.json({ error: seatCountResult.error }, { status: 400 });
+        const seatNumberingResult = validateSeatNumberingConfig(seatNumbering, seatCountResult.value);
+        if (!seatNumberingResult.ok) return NextResponse.json({ error: seatNumberingResult.error }, { status: 400 });
+        const seatLabelsResult = generateSeatLabelsForSeatCount(seatCountResult.value, seatNumberingResult.value);
+        if (!seatLabelsResult.ok) return NextResponse.json({ error: seatLabelsResult.error }, { status: 400 });
         const shiftsResult = Array.isArray(shifts) ? validateShiftDrafts(shifts) : { ok: true as const, value: undefined };
         if (!shiftsResult.ok) return NextResponse.json({ error: shiftsResult.error }, { status: 400 });
         if (multiShifts !== undefined && !Array.isArray(multiShifts)) {
@@ -60,6 +65,7 @@ export async function POST(req: Request) {
                 defaultFee: defaultFeeResult.value ?? 0,
             },
             seatCount: seatCountResult.value,
+            seatNumbering: seatNumberingResult.value,
             shifts: shiftsResult.value,
             multiShifts,
             includeFullTimeMultiShift,

@@ -89,7 +89,36 @@ describe("POST /api/branches", () => {
       city: "Delhi",
       defaultFee: 1500,
       seatCount: 10,
+      seatNumbering: { mode: "SIMPLE", count: 10 },
       shifts: undefined,
     });
+  });
+
+  it("passes custom seat numbering to the service", async () => {
+    mocks.getSessionUser.mockResolvedValue({ id: "owner_1", email: "owner@test.com" });
+    mocks.isOwner.mockResolvedValue(true);
+    mocks.createBranchForOrg.mockResolvedValue({ id: "branch_1", name: "Second Branch" });
+    const { POST } = await import("@/app/api/branches/route");
+
+    const seatNumbering = {
+      mode: "RANGE",
+      ranges: [
+        { prefix: "A", start: 1, end: 2, separator: "" },
+        { prefix: "B", start: 1, end: 1, separator: "" },
+      ],
+    };
+    const response = await POST(request({
+      organizationId: "org_1",
+      name: "Second Branch",
+      contactPhone: "9876543210",
+      seatCount: 3,
+      seatNumbering,
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mocks.createBranchForOrg).toHaveBeenCalledWith(expect.objectContaining({
+      seatCount: 3,
+      seatNumbering,
+    }));
   });
 });

@@ -103,6 +103,24 @@ describe("OnboardingService Integration", () => {
       expect(seatCount).toBe(10);
     });
 
+    it("creates custom numbered seats when seatNumbering is supplied", async () => {
+      const user = await createUser();
+      const { branch } = await OnboardingService.createNetwork({
+        ...baseParams(user.id),
+        seatCount: 4,
+        seatNumbering: {
+          mode: "RANGE",
+          ranges: [
+            { prefix: "A", start: 1, end: 2, separator: "" },
+            { prefix: "B", start: 1, end: 2, separator: "" },
+          ],
+        },
+      });
+
+      const seats = await testPrisma.seat.findMany({ where: { branchId: branch.id } });
+      expect(seats.map(seat => seat.label).sort()).toEqual(["A1", "A2", "B1", "B2"]);
+    });
+
     it("adds the user as MANAGER on the new branch", async () => {
       const user = await createUser();
       const { branch } = await OnboardingService.createNetwork(baseParams(user.id));
