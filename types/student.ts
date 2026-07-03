@@ -22,6 +22,7 @@ export type CreateImportedStudentDto = {
     feeLinkedShiftId?: string | null;
     feeLinkedMultiShiftId?: string | null;
     joinedAt?: Date;
+    billingStartAt?: Date | null;
 };
 
 export type UpdateStudentProfileDto = {

@@ -119,6 +119,7 @@ export async function createStudent(overrides: {
   feeLinkedShiftId?: string | null;
   feeLinkedMultiShiftId?: string | null;
   joinedAt?: Date;
+  billingStartAt?: Date | null;
   id?: string;
 }) {
   return testPrisma.student.create({
@@ -131,6 +132,7 @@ export async function createStudent(overrides: {
       feeLinkedShiftId: overrides.feeLinkedShiftId ?? null,
       feeLinkedMultiShiftId: overrides.feeLinkedMultiShiftId ?? null,
       joinedAt: overrides.joinedAt ?? new Date("2026-01-01T00:00:00.000Z"),
+      billingStartAt: overrides.billingStartAt ?? null,
       status: "ACTIVE",
     },
   });
