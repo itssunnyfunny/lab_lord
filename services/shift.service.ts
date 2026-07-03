@@ -5,6 +5,7 @@ import { CreateShiftDto } from "@/types";
 import type { StaffAction } from "@/types";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { parseNullableTime, timesOverlap } from "@/utils/shiftTime";
+import { sortSeatsByLabel } from "@/lib/seatNumbering";
 import {
     FORM_LIMITS,
     parseIntegerField,
@@ -354,11 +355,10 @@ export class ShiftService {
                     select: { seatId: true },
                 })).map(a => a.seatId);
 
-                const availableSeats = await tx.seat.findMany({
+                const availableSeats = sortSeatsByLabel(await tx.seat.findMany({
                     where: { branchId, id: { notIn: occupiedSeatIds } },
                     orderBy: { label: "asc" },
-                    take: sourceAllocations.length,
-                });
+                })).slice(0, sourceAllocations.length);
 
                 if (availableSeats.length < sourceAllocations.length) {
                     throw new Error("Not enough unoccupied seats available in target shift.");
@@ -447,10 +447,10 @@ export class ShiftService {
                 });
 
                 // Fetch all seats and all active allocations for the branch to manage seat capacity locally
-                const allSeats = await tx.seat.findMany({
+                const allSeats = sortSeatsByLabel(await tx.seat.findMany({
                     where: { branchId },
                     orderBy: { label: "asc" },
-                });
+                }));
 
                 // We'll track seat allocations locally to account for newly assigned seats within the loop
                 const branchActiveAllocs = await tx.seatAllocation.findMany({

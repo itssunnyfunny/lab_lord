@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { sortSeatsByLabel } from "@/lib/seatNumbering";
 import { StaffService } from "@/services/staff.service";
 import { SeatService } from "@/services/seat.service";
 import type {
@@ -100,6 +101,7 @@ async function getValidationContext(branchId: string) {
     });
 
     if (!branch) throw new Error("Branch not found");
+    const sortedSeats = sortSeatsByLabel(branch.seats);
 
     const activeAllocations = await prisma.seatAllocation.findMany({
         where: { endDate: null, seat: { branchId } },
@@ -112,7 +114,7 @@ async function getValidationContext(branchId: string) {
     return {
         branchDefaultFee: branch.defaultFee ?? 0,
         defaultAdmissionFee: branch.defaultAdmissionFee ?? 0,
-        seatsByLabel: new Map(branch.seats.map(seat => [key(seat.label), seat])),
+        seatsByLabel: new Map(sortedSeats.map(seat => [key(seat.label), seat])),
         shiftsByName,
         shiftsById,
         multiShiftsByName: new Map(branch.multiShifts.map(multiShift => [

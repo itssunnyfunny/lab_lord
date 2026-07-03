@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { sortSeatsByLabel } from "@/lib/seatNumbering";
 import { StaffService } from "@/services/staff.service";
 import { mapImportColumns } from "@/importing/ai/import-column-mapper.ai";
 import type {
@@ -298,11 +299,12 @@ async function getImportBranchContext(branchId: string): Promise<ImportBranchCon
     });
 
     if (!branch) throw new Error("Branch not found");
+    const sortedSeats = sortSeatsByLabel(branch.seats);
 
     return {
         defaultFee: branch.defaultFee ?? 0,
         defaultAdmissionFee: branch.defaultAdmissionFee ?? 0,
-        seats: branch.seats,
+        seats: sortedSeats,
         shifts: branch.shifts,
         multiShifts: branch.multiShifts.map(multiShift => ({
             id: multiShift.id,
@@ -581,6 +583,7 @@ export class ImportSessionService {
         });
 
         if (!branch) throw new Error("Branch not found");
+        const sortedSeats = sortSeatsByLabel(branch.seats);
         const activeAllocations = await prisma.seatAllocation.findMany({
             where: { endDate: null, seat: { branchId } },
             include: { seat: { select: { label: true } }, shift: { select: { name: true, startTime: true, endTime: true } } },
@@ -589,7 +592,7 @@ export class ImportSessionService {
         return {
             branchDefaultFee: branch.defaultFee ?? 0,
             defaultAdmissionFee: branch.defaultAdmissionFee ?? 0,
-            seatsByLabel: new Map(branch.seats.map(seat => [seat.label.toLowerCase(), seat])),
+            seatsByLabel: new Map(sortedSeats.map(seat => [seat.label.toLowerCase(), seat])),
             shiftsByName: new Map(branch.shifts.map(shift => [shift.name.toLowerCase(), shift])),
             multiShiftsByName: new Map(branch.multiShifts.map(multiShift => [
                 multiShift.name.toLowerCase(),
@@ -608,7 +611,7 @@ export class ImportSessionService {
             aiBranchContext: {
                 defaultFee: branch.defaultFee ?? 0,
                 defaultAdmissionFee: branch.defaultAdmissionFee ?? 0,
-                seats: branch.seats.map(seat => seat.label),
+                seats: sortedSeats.map(seat => seat.label),
                 shifts: branch.shifts.map(shift => ({
                     name: shift.name,
                     startTime: shift.startTime,

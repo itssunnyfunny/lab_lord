@@ -3,7 +3,15 @@ import { StaffService } from "@/services/staff.service";
 import type { StaffAction } from "@/types";
 import { parseNullableTime, timesOverlap } from "@/utils/shiftTime";
 import { validateSeatLabel } from "@/lib/formValidation";
+import { generateSeatLabels, sortSeatsByLabel, validateSeatNumberingConfig } from "@/lib/seatNumbering";
 import { endOfDay } from "date-fns";
+
+function isUniqueConstraintError(error: unknown) {
+    return typeof error === "object"
+        && error !== null
+        && "code" in error
+        && error.code === "P2002";
+}
 
 export type SeatOccupancySnapshot = {
     branchId: string
@@ -65,10 +73,56 @@ export class SeatService {
         });
     }
 
+    static async generateSeats(userId: string, branchId: string, seatNumbering: unknown) {
+        await this.assertBranchAccess(userId, branchId, "manage_branch");
+
+        const numberingResult = validateSeatNumberingConfig(seatNumbering);
+        if (!numberingResult.ok) throw new Error(numberingResult.error);
+
+        const labelsResult = generateSeatLabels(numberingResult.value);
+        if (!labelsResult.ok) throw new Error(labelsResult.error);
+        const labels = labelsResult.value;
+        if (labels.length === 0) throw new Error("Seat numbering must create at least one seat.");
+
+        try {
+            return await prisma.$transaction(async (tx) => {
+                const existingSeats = await tx.seat.findMany({
+                    where: { branchId },
+                    select: { label: true },
+                });
+                const existingByKey = new Map(existingSeats.map(seat => [seat.label.toLowerCase(), seat.label]));
+                const duplicateLabel = labels.find(label => existingByKey.has(label.toLowerCase()));
+
+                if (duplicateLabel) {
+                    const existing = existingByKey.get(duplicateLabel.toLowerCase()) ?? duplicateLabel;
+                    throw new Error(`Seat with label "${existing}" already exists in this branch.`);
+                }
+
+                await tx.seat.createMany({
+                    data: labels.map(label => ({ branchId, label })),
+                });
+
+                const createdSeats = await tx.seat.findMany({
+                    where: {
+                        branchId,
+                        label: { in: labels },
+                    },
+                });
+
+                return sortSeatsByLabel(createdSeats);
+            });
+        } catch (error) {
+            if (isUniqueConstraintError(error)) {
+                throw new Error("One or more generated seat labels already exists in this branch.");
+            }
+            throw error;
+        }
+    }
+
     static async listSeats(userId: string, branchId: string, shiftId?: string) {
         await this.assertBranchAccess(userId, branchId, "seat_allocation");
 
-        return prisma.seat.findMany({
+        const seats = await prisma.seat.findMany({
             where: {
                 branchId,
             },
@@ -110,6 +164,8 @@ export class SeatService {
                 label: "asc",
             },
         });
+
+        return sortSeatsByLabel(seats);
     }
 
     static async generateOccupancySnapshot(branchId: string, asOf?: Date): Promise<SeatOccupancySnapshot> {
@@ -246,7 +302,7 @@ export class SeatService {
             });
             const shiftTimeMap = new Map(allShifts.map(s => [s.id, s]));
 
-            const seats = await prisma.seat.findMany({
+            const seats = sortSeatsByLabel(await prisma.seat.findMany({
                 where: { branchId },
                 include: {
                     seatAllocations: {
@@ -260,7 +316,7 @@ export class SeatService {
                     },
                 },
                 orderBy: { label: "asc" },
-            });
+            }));
 
             for (const componentId of componentShiftIds) {
                 const s = shiftTimeMap.get(componentId);
@@ -329,10 +385,11 @@ export class SeatService {
 
         const shiftTimeMap = new Map(allShifts.map(s => [s.id, s]));
 
-        const totalSeats = seats.length;
+        const sortedSeats = sortSeatsByLabel(seats);
+        const totalSeats = sortedSeats.length;
         let occupiedCount = 0;
 
-        const mappedSeats = seats.map(s => {
+        const mappedSeats = sortedSeats.map(s => {
             // Find any active allocation that conflicts with the requested shift's time window
             let occupiedBy: string | null = null;
 

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSessionUser } from "@/lib/auth";
 import { StaffService } from "@/services/staff.service";
+import { sortSeatsByLabel } from "@/lib/seatNumbering";
 
 interface Params {
     params: Promise<{ branchId: string; multiShiftId: string }>;
@@ -59,7 +60,7 @@ export async function GET(_req: Request, { params }: Params) {
         const shiftTimeMap = new Map(allShifts.map(s => [s.id, s]));
 
         // All seats with their active allocations
-        const seats = await prisma.seat.findMany({
+        const seats = sortSeatsByLabel(await prisma.seat.findMany({
             where: { branchId },
             include: {
                 seatAllocations: {
@@ -68,7 +69,7 @@ export async function GET(_req: Request, { params }: Params) {
                 },
             },
             orderBy: { label: "asc" },
-        });
+        }));
 
         let occupiedCount = 0;
 
