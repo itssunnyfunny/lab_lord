@@ -86,6 +86,7 @@ model Student {
   phone           String?
   status          StudentStatus    @default(ACTIVE)
   joinedAt        DateTime         @default(now())
+  billingStartAt  DateTime?
   monthlyFee      Int              @default(0)
   feeLinkedShiftId String?
   feeLinkedMultiShiftId String?
@@ -97,6 +98,7 @@ model Student {
   branch          Branch           @relation(fields: [branchId], references: [id])
 
   @@index([branchId])
+  @@index([branchId, billingStartAt])
   @@index([feeLinkedShiftId])
   @@index([feeLinkedMultiShiftId])
 }
