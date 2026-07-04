@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { StaffInviteService } from "@/services/staffInvite.service";
 import { getSessionUser } from "@/lib/auth";
 import { StaffRole } from "@/types";
+import { checkRateLimit, getRequestRateLimitKey } from "@/lib/rateLimit";
 
 function isStaffRole(role: unknown): role is StaffRole {
     return role === StaffRole.MANAGER || role === StaffRole.STAFF;
@@ -64,6 +65,16 @@ export async function POST(
         const user = await getSessionUser();
         if (!user) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
+        // Security: Rate limit invite creation per user/branch to prevent abuse and brute-force attacks
+        const rateLimitKey = getRequestRateLimitKey(req, `staff-invite-${branchId}`, user.id);
+        const rateLimit = checkRateLimit(rateLimitKey, { limit: 5, windowMs: 60000 });
+        if (!rateLimit.allowed) {
+            return NextResponse.json(
+                { error: "Too many requests" },
+                { status: 429, headers: { "Retry-After": rateLimit.retryAfter.toString() } }
+            );
         }
 
         const body = await req.json().catch(() => ({}));
