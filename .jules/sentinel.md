@@ -1,0 +1,4 @@
+## 2024-07-05 - Missing Rate Limiting on Branch-Specific Sensitive Endpoints
+**Vulnerability:** The staff-invite creation endpoint was missing rate limiting, allowing potential brute-force or spam attacks to generate unlimited invites.
+**Learning:** Branch-specific endpoints (like staff-invites) require rate limiting that incorporates the `branchId` into the rate limit key to properly scope limits per user per branch. Rate limiting checks must happen after authentication but before parsing the request body to conserve server compute resources.
+**Prevention:** Always implement `checkRateLimit` and `getRequestRateLimitKey` on sensitive, state-mutating API routes, using composite keys like `${user.id}:${branchId}` where appropriate, and ensure a 429 status code with a `Retry-After` header is returned on rejection.
