@@ -118,20 +118,21 @@ export class SeatAllocationService {
                 }
             }
 
-            // 6. Load ALL active shifts in branch for conflict lookups
-            const allBranchShifts = await tx.shift.findMany({
-                where: { branchId, status: "ACTIVE" },
-                select: { id: true, name: true, startTime: true, endTime: true },
-            });
+            // ⚡ Bolt: Fetch branch shifts, seat allocations, and student allocations concurrently
+            // Impact: Eliminates sequential database roundtrips during seat assignment conflict resolution, reducing transaction lock duration
+            const [allBranchShifts, activeSeatAllocations, activeStudentAllocations] = await Promise.all([
+                tx.shift.findMany({
+                    where: { branchId, status: "ACTIVE" },
+                    select: { id: true, name: true, startTime: true, endTime: true },
+                }),
+                tx.seatAllocation.findMany({
+                    where: { seatId, endDate: null },
+                }),
+                tx.seatAllocation.findMany({
+                    where: { studentId, endDate: null },
+                }),
+            ]);
             const shiftTimeMap = new Map(allBranchShifts.map(s => [s.id, s]));
-
-            // 7. Load existing active seat allocations (for seat + student conflict checks)
-            const activeSeatAllocations = await tx.seatAllocation.findMany({
-                where: { seatId, endDate: null },
-            });
-            const activeStudentAllocations = await tx.seatAllocation.findMany({
-                where: { studentId, endDate: null },
-            });
 
             const allocationsToCreate = [];
 

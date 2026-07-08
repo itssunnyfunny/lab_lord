@@ -22,3 +22,7 @@
 ## 2025-05-24 - [Memory Optimization for Aggregations]
 **Learning:** Found an O(N) memory and bandwidth overhead in `analytics/payment.analytics.ts` where thousands of payment rows were fetched into application memory via `findMany` just to calculate sums.
 **Action:** Replaced `findMany` with Prisma's `aggregate({ _sum: { amount: true } })` to push the computation to the database, resulting in O(1) memory usage and significantly faster execution for large datasets.
+
+## 2026-07-08 - [Reduce Transaction Duration via Concurrent Queries]
+**Learning:** Sequential, independent database reads inside a Prisma transaction unnecessarily prolong the transaction duration, which can lead to higher database lock contention during concurrent mutating operations.
+**Action:** Use Promise.all to fetch independent read-only queries (like lookup maps or validation data) concurrently within a transaction to minimize the total time locks are held.
