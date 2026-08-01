@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BillingService } from "@/services/billing.service";
-import { hmacSha256Hex, setRazorpayClientForTests, type RazorpayApiClient } from "@/lib/razorpay";
+import { hmacSha256Hex, setRazorpayClientForTests, sha256Hex, type RazorpayApiClient } from "@/lib/razorpay";
 import { createOrg, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
 
@@ -70,6 +70,15 @@ function createFakeRazorpayClient() {
       charge_at: 1769904000,
       ended_at: null,
     })),
+    cancelSubscription: vi.fn(async subscriptionId => ({
+      id: subscriptionId,
+      entity: "subscription",
+      plan_id: "plan_basic",
+      customer_id: "cust_test",
+      status: "cancelled",
+      total_count: 120,
+      ended_at: 1767225600,
+    })),
   };
 
   return client;
@@ -137,6 +146,51 @@ describe("BillingService SaaS subscriptions", () => {
       BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "CUSTOM" })
     ).rejects.toThrow("not available");
     expect(fakeRazorpay.createPlan).not.toHaveBeenCalled();
+  });
+
+  it("serializes concurrent checkout requests for the same organization", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+
+    const [first, second] = await Promise.all([
+      BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" }),
+      BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" }),
+    ]);
+
+    expect(first.subscriptionId).toBe("sub_basic");
+    expect(second.subscriptionId).toBe("sub_basic");
+    expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(1);
+    await expect(testPrisma.organizationSubscription.count({
+      where: { organizationId: org.id },
+    })).resolves.toBe(1);
+  });
+
+  it("cancels a gateway subscription when local persistence fails", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    vi.mocked(fakeRazorpay.createSubscription).mockImplementationOnce(async input => ({
+      id: "sub_orphan",
+      entity: "subscription",
+      plan_id: input.plan_id,
+      customer_id: { invalid: true } as never,
+      status: "created",
+      total_count: input.total_count,
+    }));
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+
+    await expect(
+      BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" })
+    ).rejects.toThrow();
+
+    expect(fakeRazorpay.cancelSubscription).toHaveBeenCalledWith("sub_orphan", {
+      cancel_at_cycle_end: false,
+    });
+    await expect(testPrisma.organizationSubscription.findUnique({
+      where: { organizationId: org.id },
+    })).resolves.toBeNull();
   });
 
   it("verifies checkout signatures server-side before activating a subscription", async () => {
@@ -215,5 +269,92 @@ describe("BillingService SaaS subscriptions", () => {
       authPaymentId: "pay_webhook",
       razorpayCustomerId: "cust_webhook",
     });
+  });
+
+  it("retries a previously failed webhook event", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const rawBody = JSON.stringify({
+      event: "subscription.activated",
+      payload: {
+        subscription: {
+          entity: {
+            id: "sub_basic",
+            entity: "subscription",
+            plan_id: "plan_basic",
+            status: "active",
+            total_count: 120,
+          },
+        },
+      },
+    });
+    const payloadHash = sha256Hex(rawBody);
+    await testPrisma.razorpayWebhookEvent.create({
+      data: {
+        eventId: "evt_retry",
+        event: "subscription.activated",
+        payloadHash,
+        processingError: "Temporary database failure",
+        processedAt: null,
+      },
+    });
+
+    const result = await BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_retry"
+    );
+
+    expect(result).toMatchObject({ ok: true, event: "subscription.activated" });
+    const event = await testPrisma.razorpayWebhookEvent.findUnique({
+      where: { eventId: "evt_retry" },
+    });
+    expect(event?.processedAt).not.toBeNull();
+    expect(event?.processingError).toBeNull();
+  });
+
+  it("does not let stale webhooks regress an active or cancelled subscription", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    async function sendStatus(status: string, eventId: string) {
+      const body = JSON.stringify({
+        event: `subscription.${status}`,
+        payload: {
+          subscription: {
+            entity: {
+              id: "sub_basic",
+              entity: "subscription",
+              plan_id: "plan_basic",
+              status,
+              total_count: 120,
+            },
+          },
+        },
+      });
+      return BillingService.handleRazorpayWebhook(
+        body,
+        hmacSha256Hex(body, "webhook_secret"),
+        eventId
+      );
+    }
+
+    await sendStatus("active", "evt_active");
+    await sendStatus("authenticated", "evt_stale_authenticated");
+    await expect(testPrisma.organizationSubscription.findUnique({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject({ status: "ACTIVE" });
+
+    await sendStatus("cancelled", "evt_cancelled");
+    await sendStatus("active", "evt_stale_active");
+    await expect(testPrisma.organizationSubscription.findUnique({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject({ status: "CANCELLED" });
   });
 });

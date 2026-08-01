@@ -1,7 +1,8 @@
 "use client";
 
-import { use, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Script from "next/script";
 import { format } from "date-fns";
 import {
     AlertCircle,
@@ -13,6 +14,7 @@ import {
     CreditCard,
     GitBranch,
     Hash,
+    Loader2,
     Mail,
     MapPin,
     Phone,
@@ -150,35 +152,6 @@ const SECTIONS = [
 
 const BUSINESS_TYPES = ["Study Hall", "Library", "Coaching Center", "Tuition Class", "Other"];
 
-let razorpayCheckoutScriptPromise: Promise<void> | null = null;
-
-function loadRazorpayCheckoutScript() {
-    if (typeof window === "undefined") {
-        return Promise.reject(new Error("Razorpay Checkout can only run in the browser"));
-    }
-    if (window.Razorpay) return Promise.resolve();
-    if (razorpayCheckoutScriptPromise) return razorpayCheckoutScriptPromise;
-
-    razorpayCheckoutScriptPromise = new Promise((resolve, reject) => {
-        const existing = document.querySelector<HTMLScriptElement>("script[data-razorpay-checkout]");
-        if (existing) {
-            existing.addEventListener("load", () => resolve(), { once: true });
-            existing.addEventListener("error", () => reject(new Error("Failed to load Razorpay Checkout")), { once: true });
-            return;
-        }
-
-        const script = document.createElement("script");
-        script.src = "https://checkout.razorpay.com/v1/checkout.js";
-        script.async = true;
-        script.dataset.razorpayCheckout = "true";
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error("Failed to load Razorpay Checkout"));
-        document.body.appendChild(script);
-    });
-
-    return razorpayCheckoutScriptPromise;
-}
-
 function toForm(org: OrgDetails): OrgForm {
     return {
         name: org.name ?? "",
@@ -195,6 +168,14 @@ function toForm(org: OrgDetails): OrgForm {
 }
 
 export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: string }> }) {
+    return (
+        <Suspense fallback={<PageLoadingSkeleton label="Loading organization settings" variant="settings" maxWidth="content" />}>
+            <OrgSettingsContent params={params} />
+        </Suspense>
+    );
+}
+
+function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) {
     const { orgId } = use(params);
     const router = useRouter();
     const searchParams = useSearchParams();
@@ -213,6 +194,9 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
     const [billingLoading, setBillingLoading] = useState(true);
     const [billingAction, setBillingAction] = useState<BillingPlanId | null>(null);
     const [autoStartedPlan, setAutoStartedPlan] = useState<BillingPlanId | null>(null);
+    const [checkoutScriptReady, setCheckoutScriptReady] = useState(
+        () => typeof window !== "undefined" && Boolean(window.Razorpay)
+    );
     const [billingNotice, setBillingNotice] = useState<{ tone: "success" | "warning" | "error"; message: string } | null>(null);
     const { markTouched, markSubmitted, resetFieldErrors, visibleError } = useInlineFieldErrors<
         "name" | "businessType" | "legalName" | "contactEmail" | "contactPhone" | "address" | "paymentGraceDays"
@@ -276,15 +260,20 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
     };
 
     const startSubscription = useCallback(async (planId: BillingPlanId) => {
+        if (!checkoutScriptReady || !window.Razorpay) {
+            setBillingNotice({
+                tone: "warning",
+                message: "Razorpay Checkout is still loading. Please try again in a moment.",
+            });
+            return;
+        }
+
         setBillingAction(planId);
         setBillingNotice(null);
 
         try {
             const checkout = await billing.createSubscription(orgId, planId);
             setBillingOverview(prev => prev ? { ...prev, current: checkout.subscription } : prev);
-
-            await loadRazorpayCheckoutScript();
-            if (!window.Razorpay) throw new Error("Razorpay Checkout did not load");
 
             let completed = false;
             const razorpay = new window.Razorpay({
@@ -353,7 +342,7 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
             });
             setBillingAction(null);
         }
-    }, [loadBilling, orgId]);
+    }, [checkoutScriptReady, loadBilling, orgId]);
 
     useEffect(() => {
         if (!requestedBillingPlanId) return;
@@ -384,7 +373,7 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
             return;
         }
 
-        if (billingAction || autoStartedPlan === requestedBillingPlanId) return;
+        if (!checkoutScriptReady || billingAction || autoStartedPlan === requestedBillingPlanId) return;
         setAutoStartedPlan(requestedBillingPlanId);
         void startSubscription(requestedBillingPlanId);
     }, [
@@ -392,6 +381,7 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
         billingAction,
         billingLoading,
         billingOverview,
+        checkoutScriptReady,
         requestedBillingPlanId,
         startSubscription,
     ]);
@@ -521,6 +511,19 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
 
     return (
         <>
+            <Script
+                id="razorpay-checkout"
+                src="https://checkout.razorpay.com/v1/checkout.js"
+                strategy="afterInteractive"
+                onReady={() => setCheckoutScriptReady(true)}
+                onError={() => {
+                    setCheckoutScriptReady(false);
+                    setBillingNotice({
+                        tone: "error",
+                        message: "Razorpay Checkout could not be loaded. Check your connection and refresh the page.",
+                    });
+                }}
+            />
             <SettingsWorkspace
                 title="Organization Settings"
                 subtitle="Configure business identity, contact details, and workspace defaults."
@@ -634,6 +637,7 @@ export default function OrgSettingsPage({ params }: { params: Promise<{ orgId: s
                                         plan={plan}
                                         current={billingOverview?.current ?? null}
                                         busyPlan={billingAction}
+                                        checkoutReady={checkoutScriptReady}
                                         onStart={startSubscription}
                                     />
                                 ))}
@@ -696,23 +700,27 @@ function BillingPlanCard({
     plan,
     current,
     busyPlan,
+    checkoutReady,
     onStart,
 }: {
     plan: BillingPlanDto;
     current: OrganizationSubscriptionDto | null;
     busyPlan: BillingPlanId | null;
+    checkoutReady: boolean;
     onStart: (plan: BillingPlanId) => void;
 }) {
     const isCurrent = isCurrentBillingPlan(plan, current);
     const isBusy = busyPlan === plan.id;
-    const disabled = Boolean(busyPlan) || isCurrent || !plan.active;
+    const disabled = !checkoutReady || Boolean(busyPlan) || isCurrent || !plan.active;
     const buttonLabel = plan.comingSoon
         ? "Coming soon"
         : plan.custom
             ? "Custom"
             : isCurrent
                 ? "Current plan"
-                : `Start ${plan.shortName}`;
+                : !checkoutReady
+                    ? "Loading checkout..."
+                    : `Start ${plan.shortName}`;
 
     return (
         <div className={cn(

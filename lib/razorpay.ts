@@ -110,6 +110,10 @@ export interface RazorpayApiClient {
     notes: Record<string, string>;
   }): Promise<RazorpaySubscription>;
   fetchSubscription(subscriptionId: string): Promise<RazorpaySubscription>;
+  cancelSubscription(
+    subscriptionId: string,
+    input: { cancel_at_cycle_end: boolean }
+  ): Promise<RazorpaySubscription>;
 }
 
 let testClient: RazorpayApiClient | null = null;
@@ -336,6 +340,16 @@ class DefaultRazorpayClient implements RazorpayApiClient {
 
   fetchSubscription(subscriptionId: string) {
     return razorpayRequest<RazorpaySubscription>(`/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  }
+
+  cancelSubscription(subscriptionId: string, input: { cancel_at_cycle_end: boolean }) {
+    return razorpayRequest<RazorpaySubscription>(
+      `/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`,
+      {
+        method: "POST",
+        body: input,
+      }
+    );
   }
 }
 

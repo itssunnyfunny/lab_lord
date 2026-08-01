@@ -61,6 +61,18 @@ function mapSubscriptionStatus(status: string | null | undefined): SaasSubscript
     : "PENDING";
 }
 
+function resolveWebhookStatus(
+  current: SaasSubscriptionStatus,
+  incoming: SaasSubscriptionStatus
+): SaasSubscriptionStatus {
+  if (TERMINAL_STATUSES.has(current)) return current;
+  if (TERMINAL_STATUSES.has(incoming)) return incoming;
+  if (incoming === "CREATED") return current;
+  if (incoming === "AUTHENTICATED" && current !== "CREATED") return current;
+  if (current === "HALTED" && incoming === "PENDING") return current;
+  return incoming;
+}
+
 function timestampToDate(value: unknown) {
   if (value === null) return null;
   if (typeof value !== "number") return undefined;
@@ -165,65 +177,97 @@ export class BillingService {
     const selectedPlan = getActiveBillingPlan(input.plan);
     const org = await OrganizationService.getOrganizationForOwner(organizationId, userId);
     const razorpayPlan = await this.ensureRazorpayPlan(selectedPlan);
-    const existing = await prisma.organizationSubscription.findUnique({
-      where: { organizationId },
-    });
+    const razorpay = getRazorpayClient();
+    let createdGatewaySubscriptionId: string | null = null;
+    let subscription: OrganizationSubscription;
 
-    if (existing) {
-      if (existing.plan === selectedPlan.id && CHECKOUT_REUSABLE_STATUSES.has(existing.status)) {
-        return this.toCheckoutPayload(org, existing, selectedPlan);
-      }
+    try {
+      subscription = await prisma.$transaction(async tx => {
+        const lockedOrganizations = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "Organization"
+          WHERE "id" = ${organizationId}
+          FOR UPDATE
+        `;
+        if (lockedOrganizations.length === 0) throw new Error("Organization not found");
 
-      if (!TERMINAL_STATUSES.has(existing.status)) {
-        if (existing.plan === selectedPlan.id) {
-          throw new Error(`This organization already has a ${existing.status.toLowerCase()} ${selectedPlan.shortName} subscription`);
+        const existing = await tx.organizationSubscription.findUnique({
+          where: { organizationId },
+        });
+
+        if (existing) {
+          if (existing.plan === selectedPlan.id && CHECKOUT_REUSABLE_STATUSES.has(existing.status)) {
+            return existing;
+          }
+
+          if (!TERMINAL_STATUSES.has(existing.status)) {
+            if (existing.plan === selectedPlan.id) {
+              throw new Error(`This organization already has a ${existing.status.toLowerCase()} ${selectedPlan.shortName} subscription`);
+            }
+            throw new Error("Cancel or complete the current subscription before changing plans");
+          }
         }
-        throw new Error("Cancel or complete the current subscription before changing plans");
+
+        const totalCount = getSubscriptionCycles();
+        const gatewaySubscription = await razorpay.createSubscription({
+          plan_id: razorpayPlan.razorpayPlanId,
+          total_count: totalCount,
+          quantity: 1,
+          customer_notify: true,
+          notes: {
+            app: "lab_lords",
+            billing_type: "saas_subscription",
+            organization_id: organizationId,
+            plan: selectedPlan.id,
+          },
+        });
+        createdGatewaySubscriptionId = gatewaySubscription.id;
+
+        const recordData = {
+          organizationId,
+          plan: selectedPlan.id as SaasPlan,
+          amount: selectedPlan.amount ?? 0,
+          amountSubunits: toRazorpaySubunits(selectedPlan.amount ?? 0, selectedPlan.currency),
+          currency: selectedPlan.currency,
+          period: selectedPlan.period,
+          interval: selectedPlan.interval,
+          totalCount,
+          razorpayPlanId: razorpayPlan.razorpayPlanId,
+          razorpaySubscriptionId: gatewaySubscription.id,
+          razorpayCustomerId: gatewaySubscription.customer_id ?? null,
+          status: mapSubscriptionStatus(gatewaySubscription.status),
+          currentStart: timestampToDate(gatewaySubscription.current_start) ?? null,
+          currentEnd: timestampToDate(gatewaySubscription.current_end) ?? null,
+          chargeAt: timestampToDate(gatewaySubscription.charge_at) ?? null,
+          endedAt: timestampToDate(gatewaySubscription.ended_at) ?? null,
+          createdByUserId: userId,
+        };
+
+        return existing
+          ? tx.organizationSubscription.update({
+            where: { organizationId },
+            data: recordData,
+          })
+          : tx.organizationSubscription.create({
+            data: recordData,
+          });
+      }, { maxWait: 10_000, timeout: 30_000 });
+    } catch (error) {
+      if (createdGatewaySubscriptionId) {
+        try {
+          await razorpay.cancelSubscription(createdGatewaySubscriptionId, {
+            cancel_at_cycle_end: false,
+          });
+        } catch (compensationError) {
+          console.error("[SAAS_SUBSCRIPTION_COMPENSATION_FAILED]", {
+            organizationId,
+            razorpaySubscriptionId: createdGatewaySubscriptionId,
+            error: compensationError,
+          });
+        }
       }
+      throw error;
     }
-
-    const totalCount = getSubscriptionCycles();
-    const gatewaySubscription = await getRazorpayClient().createSubscription({
-      plan_id: razorpayPlan.razorpayPlanId,
-      total_count: totalCount,
-      quantity: 1,
-      customer_notify: true,
-      notes: {
-        app: "lab_lords",
-        billing_type: "saas_subscription",
-        organization_id: organizationId,
-        plan: selectedPlan.id,
-      },
-    });
-
-    const recordData = {
-      organizationId,
-      plan: selectedPlan.id as SaasPlan,
-      amount: selectedPlan.amount ?? 0,
-      amountSubunits: toRazorpaySubunits(selectedPlan.amount ?? 0, selectedPlan.currency),
-      currency: selectedPlan.currency,
-      period: selectedPlan.period,
-      interval: selectedPlan.interval,
-      totalCount,
-      razorpayPlanId: razorpayPlan.razorpayPlanId,
-      razorpaySubscriptionId: gatewaySubscription.id,
-      razorpayCustomerId: gatewaySubscription.customer_id ?? null,
-      status: mapSubscriptionStatus(gatewaySubscription.status),
-      currentStart: timestampToDate(gatewaySubscription.current_start) ?? null,
-      currentEnd: timestampToDate(gatewaySubscription.current_end) ?? null,
-      chargeAt: timestampToDate(gatewaySubscription.charge_at) ?? null,
-      endedAt: timestampToDate(gatewaySubscription.ended_at) ?? null,
-      createdByUserId: userId,
-    };
-
-    const subscription = existing
-      ? await prisma.organizationSubscription.update({
-        where: { organizationId },
-        data: recordData,
-      })
-      : await prisma.organizationSubscription.create({
-        data: recordData,
-      });
 
     return this.toCheckoutPayload(org, subscription, selectedPlan);
   }
@@ -293,9 +337,8 @@ export class BillingService {
     const payloadHash = sha256Hex(rawBody);
     const safeEventId = eventId?.trim() || `evt_${payloadHash}`;
 
-    let webhookEvent;
     try {
-      webhookEvent = await prisma.razorpayWebhookEvent.create({
+      await prisma.razorpayWebhookEvent.create({
         data: {
           eventId: safeEventId,
           event,
@@ -309,46 +352,69 @@ export class BillingService {
       if (existing.payloadHash !== payloadHash) {
         throw new Error("Razorpay webhook event id collision");
       }
-      if (existing.processedAt) {
-        return {
-          ok: true,
-          event: existing.event,
-          duplicate: true,
-          organizationId: existing.organizationId,
-          organizationSubscriptionId: existing.organizationSubscriptionId,
-          razorpayPaymentId: existing.razorpayPaymentId,
-          razorpaySubscriptionId: existing.razorpaySubscriptionId,
-        };
-      }
-      webhookEvent = existing;
     }
 
     try {
-      const result = await this.applyWebhookPayload(parsed);
-      await prisma.razorpayWebhookEvent.update({
-        where: { id: webhookEvent.id },
-        data: {
-          organizationId: result.organizationId ?? null,
-          organizationSubscriptionId: result.organizationSubscriptionId ?? null,
-          razorpayPaymentId: result.razorpayPaymentId ?? null,
-          razorpaySubscriptionId: result.razorpaySubscriptionId ?? null,
-          processedAt: new Date(),
-          processingError: null,
-        },
-      });
+      return await prisma.$transaction(async tx => {
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "RazorpayWebhookEvent"
+          WHERE "eventId" = ${safeEventId}
+          FOR UPDATE
+        `;
+        const webhookEvent = await tx.razorpayWebhookEvent.findUnique({
+          where: { eventId: safeEventId },
+        });
+        if (!webhookEvent) throw new Error("Razorpay webhook event disappeared");
+        if (webhookEvent.payloadHash !== payloadHash) {
+          throw new Error("Razorpay webhook event id collision");
+        }
+        if (webhookEvent.processedAt) {
+          return {
+            ok: true,
+            event: webhookEvent.event,
+            duplicate: true,
+            organizationId: webhookEvent.organizationId,
+            organizationSubscriptionId: webhookEvent.organizationSubscriptionId,
+            razorpayPaymentId: webhookEvent.razorpayPaymentId,
+            razorpaySubscriptionId: webhookEvent.razorpaySubscriptionId,
+          };
+        }
 
-      return {
-        ok: true,
-        ...result,
-      };
+        const result = await this.applyWebhookPayload(parsed, tx);
+        await tx.razorpayWebhookEvent.update({
+          where: { id: webhookEvent.id },
+          data: {
+            organizationId: result.organizationId ?? null,
+            organizationSubscriptionId: result.organizationSubscriptionId ?? null,
+            razorpayPaymentId: result.razorpayPaymentId ?? null,
+            razorpaySubscriptionId: result.razorpaySubscriptionId ?? null,
+            processedAt: new Date(),
+            processingError: null,
+          },
+        });
+
+        return {
+          ok: true,
+          ...result,
+        };
+      }, { maxWait: 10_000, timeout: 30_000 });
     } catch (error) {
-      await prisma.razorpayWebhookEvent.update({
-        where: { id: webhookEvent.id },
-        data: {
-          processedAt: new Date(),
-          processingError: error instanceof Error ? error.message : "Webhook processing failed",
-        },
-      });
+      try {
+        await prisma.razorpayWebhookEvent.updateMany({
+          where: {
+            eventId: safeEventId,
+            payloadHash,
+            processedAt: null,
+          },
+          data: {
+            processedAt: null,
+            processingError: error instanceof Error ? error.message : "Webhook processing failed",
+          },
+        });
+      } catch (recordingError) {
+        console.error("[RAZORPAY_WEBHOOK_ERROR_RECORDING_FAILED]", recordingError);
+      }
       throw error;
     }
   }
@@ -446,7 +512,10 @@ export class BillingService {
     };
   }
 
-  private static async applyWebhookPayload(payload: Record<string, unknown>): Promise<WebhookProcessingResult> {
+  private static async applyWebhookPayload(
+    payload: Record<string, unknown>,
+    tx: Prisma.TransactionClient
+  ): Promise<WebhookProcessingResult> {
     const event = typeof payload.event === "string" ? payload.event : "unknown";
     const payloadRoot = isRecord(payload.payload) ? payload.payload : {};
     const subscriptionEntity = getWebhookEntity<RazorpaySubscription>(payloadRoot, "subscription");
@@ -462,7 +531,7 @@ export class BillingService {
       };
     }
 
-    const subscription = await prisma.organizationSubscription.findUnique({
+    const subscription = await tx.organizationSubscription.findUnique({
       where: { razorpaySubscriptionId: subscriptionId },
     });
 
@@ -476,7 +545,12 @@ export class BillingService {
 
     const updateData: Prisma.OrganizationSubscriptionUpdateInput = {};
     if (subscriptionEntity) {
-      Object.assign(updateData, subscriptionSnapshotData(subscriptionEntity));
+      const snapshot = subscriptionSnapshotData(subscriptionEntity);
+      snapshot.status = resolveWebhookStatus(
+        subscription.status as SaasSubscriptionStatus,
+        mapSubscriptionStatus(subscriptionEntity.status)
+      );
+      Object.assign(updateData, snapshot);
     }
 
     if (paymentId && (event === "subscription.charged" || event === "payment.captured" || !subscription.authPaymentId)) {
@@ -484,7 +558,7 @@ export class BillingService {
     }
 
     if (Object.keys(updateData).length > 0) {
-      await prisma.organizationSubscription.update({
+      await tx.organizationSubscription.update({
         where: { id: subscription.id },
         data: updateData,
       });
