@@ -22,6 +22,13 @@ vi.mock("@/lib/prisma", () => ({
     staff: {
       findUnique: vi.fn(),
     },
+    organization: {
+      findUnique: vi.fn().mockResolvedValue({
+        id: "org_1",
+        subscription: null,
+        _count: { branches: 1 },
+      }),
+    },
   },
 }));
 

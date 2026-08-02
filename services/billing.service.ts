@@ -11,8 +11,9 @@ import {
   type RazorpaySubscription,
 } from "@/lib/razorpay";
 import { OrganizationService } from "@/services/organization.service";
-import type { OrganizationSubscription, Prisma } from "@/app/generated/prisma/client";
-import type { SaasPlan, SaasSubscriptionStatus } from "@/types";
+import { EntitlementService } from "@/services/entitlement.service";
+import type { OrganizationSubscription, OrganizationSubscriptionHistory, Prisma } from "@/app/generated/prisma/client";
+import type { SaasPlan, SaasSubscriptionHistorySource, SaasSubscriptionStatus } from "@/types";
 
 type CheckoutInput = {
   plan: string;
@@ -22,6 +23,10 @@ type VerifySubscriptionInput = {
   razorpay_subscription_id?: unknown;
   razorpay_payment_id?: unknown;
   razorpay_signature?: unknown;
+};
+
+type CancelSubscriptionInput = {
+  cancelAtCycleEnd?: unknown;
 };
 
 type WebhookProcessingResult = {
@@ -140,9 +145,56 @@ function serializeSubscription(subscription: OrganizationSubscription | null | u
     currentEnd: subscription.currentEnd,
     chargeAt: subscription.chargeAt,
     endedAt: subscription.endedAt,
+    cancelAtCycleEnd: subscription.cancelAtCycleEnd,
+    cancellationRequestedAt: subscription.cancellationRequestedAt,
+    cancellationScheduledAt: subscription.cancellationScheduledAt,
+    cancelledAt: subscription.cancelledAt,
     createdAt: subscription.createdAt,
     updatedAt: subscription.updatedAt,
   };
+}
+
+function serializeHistoryEntry(entry: OrganizationSubscriptionHistory) {
+  return {
+    id: entry.id,
+    razorpaySubscriptionId: entry.razorpaySubscriptionId,
+    razorpayPaymentId: entry.razorpayPaymentId,
+    plan: entry.plan,
+    fromStatus: entry.fromStatus,
+    toStatus: entry.toStatus,
+    source: entry.source,
+    event: entry.event,
+    amountSubunits: entry.amountSubunits,
+    currency: entry.currency,
+    createdAt: entry.createdAt,
+  };
+}
+
+async function recordSubscriptionHistory(
+  tx: Prisma.TransactionClient,
+  subscription: OrganizationSubscription,
+  input: {
+    source: SaasSubscriptionHistorySource;
+    fromStatus?: SaasSubscriptionStatus | null;
+    event?: string | null;
+    razorpayPaymentId?: string | null;
+  }
+) {
+  return tx.organizationSubscriptionHistory.create({
+    data: {
+      organizationId: subscription.organizationId,
+      organizationSubscriptionId: subscription.id,
+      razorpaySubscriptionId: subscription.razorpaySubscriptionId,
+      razorpayPaymentId: input.razorpayPaymentId ?? null,
+      plan: subscription.plan,
+      fromStatus: input.fromStatus ?? null,
+      toStatus: subscription.status,
+      source: input.source,
+      event: input.event ?? null,
+      amountSubunits: subscription.amountSubunits,
+      currency: subscription.currency,
+    },
+  });
 }
 
 function isSuccessfulPayment(payment: RazorpayPayment | null) {
@@ -163,13 +215,21 @@ export class BillingService {
 
   static async listPlansForOrganization(userId: string, organizationId: string) {
     await OrganizationService.getOrganizationForOwner(organizationId, userId);
-    const subscription = await prisma.organizationSubscription.findUnique({
-      where: { organizationId },
-    });
+    const [subscription, history, entitlements] = await Promise.all([
+      prisma.organizationSubscription.findUnique({ where: { organizationId } }),
+      prisma.organizationSubscriptionHistory.findMany({
+        where: { organizationId },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      }),
+      EntitlementService.getOrganizationProfile(organizationId),
+    ]);
 
     return {
       plans: publicBillingPlans(),
       current: serializeSubscription(subscription),
+      history: history.map(serializeHistoryEntry),
+      entitlements,
     };
   }
 
@@ -240,17 +300,26 @@ export class BillingService {
           currentEnd: timestampToDate(gatewaySubscription.current_end) ?? null,
           chargeAt: timestampToDate(gatewaySubscription.charge_at) ?? null,
           endedAt: timestampToDate(gatewaySubscription.ended_at) ?? null,
+          cancelAtCycleEnd: false,
+          cancellationRequestedAt: null,
+          cancellationScheduledAt: null,
+          cancelledAt: null,
           createdByUserId: userId,
         };
 
-        return existing
+        const stored = await (existing
           ? tx.organizationSubscription.update({
             where: { organizationId },
             data: recordData,
           })
           : tx.organizationSubscription.create({
             data: recordData,
-          });
+          }));
+        await recordSubscriptionHistory(tx, stored, {
+          source: "CHECKOUT",
+          fromStatus: existing?.status ?? null,
+        });
+        return stored;
       }, { maxWait: 10_000, timeout: 30_000 });
     } catch (error) {
       if (createdGatewaySubscriptionId) {
@@ -313,16 +382,98 @@ export class BillingService {
       snapshot.status = "AUTHENTICATED";
     }
 
-    const updated = await prisma.organizationSubscription.update({
-      where: { id: subscription.id },
-      data: {
-        ...snapshot,
-        authPaymentId: paymentId,
-      },
+    const updated = await prisma.$transaction(async tx => {
+      const stored = await tx.organizationSubscription.update({
+        where: { id: subscription.id },
+        data: {
+          ...snapshot,
+          authPaymentId: paymentId,
+        },
+      });
+      await recordSubscriptionHistory(tx, stored, {
+        source: "VERIFICATION",
+        fromStatus: subscription.status,
+        razorpayPaymentId: paymentId,
+      });
+      return stored;
     });
 
     return {
       verified: true,
+      subscription: serializeSubscription(updated),
+    };
+  }
+
+  static async cancelSubscription(
+    userId: string,
+    organizationId: string,
+    input: CancelSubscriptionInput
+  ) {
+    await OrganizationService.getOrganizationForOwner(organizationId, userId);
+    if (typeof input.cancelAtCycleEnd !== "boolean") {
+      throw new Error("cancelAtCycleEnd must be a boolean");
+    }
+    const cancelAtCycleEnd = input.cancelAtCycleEnd;
+
+    const razorpay = getRazorpayClient();
+    const updated = await prisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "Organization"
+        WHERE "id" = ${organizationId}
+        FOR UPDATE
+      `;
+      const subscription = await tx.organizationSubscription.findUnique({
+        where: { organizationId },
+      });
+      if (!subscription) throw new Error("Subscription not found");
+      if (TERMINAL_STATUSES.has(subscription.status)) {
+        throw new Error("Subscription has already ended");
+      }
+      if (cancelAtCycleEnd && subscription.cancelAtCycleEnd) {
+        return subscription;
+      }
+      if (cancelAtCycleEnd && subscription.status !== "ACTIVE") {
+        throw new Error("Only an active subscription can be cancelled at the end of its billing cycle");
+      }
+
+      const gatewaySubscription = await razorpay.cancelSubscription(
+        subscription.razorpaySubscriptionId,
+        { cancel_at_cycle_end: cancelAtCycleEnd }
+      );
+      if (gatewaySubscription.id !== subscription.razorpaySubscriptionId) {
+        throw new Error("Razorpay subscription mismatch during cancellation");
+      }
+
+      const snapshot = subscriptionSnapshotData(gatewaySubscription);
+      const gatewayStatus = mapSubscriptionStatus(gatewaySubscription.status);
+      const cancellationRequestedAt = new Date();
+      const cancelledImmediately = TERMINAL_STATUSES.has(gatewayStatus);
+      const stored = await tx.organizationSubscription.update({
+        where: { id: subscription.id },
+        data: {
+          ...snapshot,
+          cancelAtCycleEnd: cancelAtCycleEnd && !cancelledImmediately,
+          cancellationRequestedAt,
+          cancellationScheduledAt: cancelAtCycleEnd
+            ? timestampToDate(gatewaySubscription.change_scheduled_at) ?? subscription.currentEnd
+            : null,
+          cancelledAt: cancelledImmediately
+            ? timestampToDate(gatewaySubscription.ended_at) ?? cancellationRequestedAt
+            : null,
+        },
+      });
+      await recordSubscriptionHistory(tx, stored, {
+        source: "CUSTOMER_CANCELLATION",
+        fromStatus: subscription.status,
+        event: cancelAtCycleEnd ? "cancel_at_cycle_end" : "cancel_immediately",
+      });
+      return stored;
+    }, { maxWait: 10_000, timeout: 30_000 });
+
+    return {
+      cancelled: TERMINAL_STATUSES.has(updated.status),
+      scheduled: updated.cancelAtCycleEnd,
       subscription: serializeSubscription(updated),
     };
   }
@@ -546,10 +697,15 @@ export class BillingService {
     const updateData: Prisma.OrganizationSubscriptionUpdateInput = {};
     if (subscriptionEntity) {
       const snapshot = subscriptionSnapshotData(subscriptionEntity);
-      snapshot.status = resolveWebhookStatus(
+      const resolvedStatus = resolveWebhookStatus(
         subscription.status as SaasSubscriptionStatus,
         mapSubscriptionStatus(subscriptionEntity.status)
       );
+      snapshot.status = resolvedStatus;
+      if (resolvedStatus === "CANCELLED") {
+        snapshot.cancelAtCycleEnd = false;
+        snapshot.cancelledAt = timestampToDate(subscriptionEntity.ended_at) ?? new Date();
+      }
       Object.assign(updateData, snapshot);
     }
 
@@ -558,9 +714,15 @@ export class BillingService {
     }
 
     if (Object.keys(updateData).length > 0) {
-      await tx.organizationSubscription.update({
+      const stored = await tx.organizationSubscription.update({
         where: { id: subscription.id },
         data: updateData,
+      });
+      await recordSubscriptionHistory(tx, stored, {
+        source: "WEBHOOK",
+        fromStatus: subscription.status,
+        event,
+        razorpayPaymentId: paymentId,
       });
     }
 

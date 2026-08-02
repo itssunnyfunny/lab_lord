@@ -1,5 +1,18 @@
 export type BillingPlanId = "BASIC" | "PRO" | "AGENT_CONTROL" | "CUSTOM";
 
+export const BILLING_ENTITLEMENTS = [
+  "MULTI_BRANCH",
+  "STAFF_MANAGEMENT",
+  "ADVANCED_ANALYTICS",
+  "AGENT_CONTROL",
+] as const;
+
+export type BillingEntitlement = typeof BILLING_ENTITLEMENTS[number];
+
+export type BillingPlanLimits = {
+  maxBranches: number | null;
+};
+
 export type BillingPlan = {
   id: BillingPlanId;
   name: string;
@@ -14,6 +27,8 @@ export type BillingPlan = {
   custom?: boolean;
   description: string;
   features: string[];
+  entitlements: BillingEntitlement[];
+  limits: BillingPlanLimits;
 };
 
 export const BILLING_PLANS: BillingPlan[] = [
@@ -33,6 +48,8 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Payment ledger and audit history",
       "Owner workspace settings",
     ],
+    entitlements: [],
+    limits: { maxBranches: 1 },
   },
   {
     id: "PRO",
@@ -51,6 +68,8 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Staff roles and permission controls",
       "Advanced analytics and follow-up workflows",
     ],
+    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS"],
+    limits: { maxBranches: 3 },
   },
   {
     id: "AGENT_CONTROL",
@@ -69,6 +88,8 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Custom automation policies",
       "Priority rollout access",
     ],
+    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AGENT_CONTROL"],
+    limits: { maxBranches: null },
   },
   {
     id: "CUSTOM",
@@ -87,6 +108,8 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Security and workflow reviews",
       "Tailored agent and reporting roadmap",
     ],
+    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AGENT_CONTROL"],
+    limits: { maxBranches: null },
   },
 ];
 
@@ -120,5 +143,7 @@ export function publicBillingPlans() {
     custom: Boolean(plan.custom),
     description: plan.description,
     features: plan.features,
+    entitlements: plan.entitlements,
+    limits: plan.limits,
   }));
 }

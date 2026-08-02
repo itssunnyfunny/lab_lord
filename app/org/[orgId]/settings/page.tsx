@@ -38,6 +38,7 @@ import {
     SettingsWorkspace,
 } from "@/components/settings/SettingsWorkspace";
 import { useInlineFieldErrors } from "@/components/ui/InlineFieldError";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
     pageErrorIconClass,
     pageErrorStateClass,
@@ -194,6 +195,8 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     const [billingLoading, setBillingLoading] = useState(true);
     const [billingAction, setBillingAction] = useState<BillingPlanId | null>(null);
     const [autoStartedPlan, setAutoStartedPlan] = useState<BillingPlanId | null>(null);
+    const [cancelMode, setCancelMode] = useState<"cycle_end" | "immediate" | null>(null);
+    const [cancellingSubscription, setCancellingSubscription] = useState(false);
     const [checkoutScriptReady, setCheckoutScriptReady] = useState(
         () => typeof window !== "undefined" && Boolean(window.Razorpay)
     );
@@ -343,6 +346,31 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
             setBillingAction(null);
         }
     }, [checkoutScriptReady, loadBilling, orgId]);
+
+    const confirmCancellation = useCallback(async () => {
+        if (!cancelMode) return;
+        setCancellingSubscription(true);
+        setBillingNotice(null);
+        try {
+            const result = await billing.cancelSubscription(orgId, cancelMode === "cycle_end");
+            setBillingOverview(prev => prev ? { ...prev, current: result.subscription } : prev);
+            setBillingNotice({
+                tone: result.scheduled ? "warning" : "success",
+                message: result.scheduled
+                    ? "Cancellation is scheduled for the end of the current billing cycle."
+                    : "The subscription has been cancelled.",
+            });
+            setCancelMode(null);
+            await loadBilling();
+        } catch (err) {
+            setBillingNotice({
+                tone: "error",
+                message: err instanceof Error ? err.message : "Unable to cancel the subscription.",
+            });
+        } finally {
+            setCancellingSubscription(false);
+        }
+    }, [cancelMode, loadBilling, orgId]);
 
     useEffect(() => {
         if (!requestedBillingPlanId) return;
@@ -646,13 +674,64 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                     </div>
 
                     {billingOverview?.current && (
-                        <div className="grid gap-3 px-5 py-4 md:grid-cols-3">
-                            <ReadOnlyBillingMetric label="Current plan" value={billingOverview.current.shortName} />
-                            <ReadOnlyBillingMetric label="Status" value={billingOverview.current.status} />
-                            <ReadOnlyBillingMetric
-                                label="Next charge"
-                                value={billingOverview.current.chargeAt ? format(new Date(billingOverview.current.chargeAt), "PP") : "Not scheduled"}
-                            />
+                        <div className="space-y-3 px-5 py-4">
+                            <div className="grid gap-3 md:grid-cols-3">
+                                <ReadOnlyBillingMetric label="Current plan" value={billingOverview.current.shortName} />
+                                <ReadOnlyBillingMetric label="Status" value={billingOverview.current.status} />
+                                <ReadOnlyBillingMetric
+                                    label="Next charge"
+                                    value={billingOverview.current.chargeAt ? format(new Date(billingOverview.current.chargeAt), "PP") : "Not scheduled"}
+                                />
+                            </div>
+
+                            {billingOverview.current.cancelAtCycleEnd ? (
+                                <div className={cn(formWarningBannerClass, "px-4 py-3 text-sm")}>
+                                    Cancellation is scheduled
+                                    {billingOverview.current.cancellationScheduledAt
+                                        ? ` for ${format(new Date(billingOverview.current.cancellationScheduledAt), "PP")}`
+                                        : " for the end of the current billing cycle"}.
+                                </div>
+                            ) : !TERMINAL_BILLING_STATUSES.has(billingOverview.current.status) ? (
+                                <div className="flex flex-wrap justify-end gap-2">
+                                    {billingOverview.current.status === "ACTIVE" && (
+                                        <AppButton
+                                            variant="secondary"
+                                            size="sm"
+                                            onClick={() => setCancelMode("cycle_end")}
+                                        >
+                                            Cancel at cycle end
+                                        </AppButton>
+                                    )}
+                                    <AppButton
+                                        variant="danger"
+                                        size="sm"
+                                        onClick={() => setCancelMode("immediate")}
+                                    >
+                                        Cancel immediately
+                                    </AppButton>
+                                </div>
+                            ) : null}
+                        </div>
+                    )}
+
+                    {(billingOverview?.history.length ?? 0) > 0 && (
+                        <div className="border-t border-[color:var(--ui-form-section-divider)] px-5 py-4">
+                            <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Subscription history</h3>
+                            <div className="mt-3 space-y-2">
+                                {billingOverview?.history.slice(0, 8).map(entry => (
+                                    <div
+                                        key={entry.id}
+                                        className="flex flex-col gap-1 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-surface-bg)] px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between"
+                                    >
+                                        <span className="font-medium text-[color:var(--text-primary)]">
+                                            {entry.plan} · {entry.fromStatus ? `${entry.fromStatus} → ` : ""}{entry.toStatus}
+                                        </span>
+                                        <span className="text-[color:var(--text-secondary)]">
+                                            {entry.source.replaceAll("_", " ")} · {format(new Date(entry.createdAt), "PPp")}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     )}
                 </SettingsPanel>
@@ -676,6 +755,18 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                 error={saveError}
                 onSave={save}
                 onReset={reset}
+            />
+            <ConfirmDialog
+                isOpen={cancelMode !== null}
+                onClose={() => setCancelMode(null)}
+                onConfirm={confirmCancellation}
+                loading={cancellingSubscription}
+                variant="danger"
+                title={cancelMode === "cycle_end" ? "Cancel at cycle end?" : "Cancel subscription immediately?"}
+                description={cancelMode === "cycle_end"
+                    ? "Your current access remains available until this billing cycle ends. Razorpay will not renew the subscription afterward."
+                    : "This ends the subscription immediately and cannot be undone. Premium entitlements will be removed now."}
+                confirmText={cancelMode === "cycle_end" ? "Schedule cancellation" : "Cancel now"}
             />
         </>
     );

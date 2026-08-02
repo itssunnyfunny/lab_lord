@@ -8,6 +8,7 @@ export {
   PaymentStatus,
   PaymentType,
   SaasPlan,
+  SaasSubscriptionHistorySource,
   SaasSubscriptionStatus,
   StaffPermissionAction,
   StaffRole,

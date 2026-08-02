@@ -11,6 +11,7 @@ import {
     validateShiftDrafts,
 } from "@/lib/formValidation";
 import { generateSeatLabelsForSeatCount, validateSeatNumberingConfig } from "@/lib/seatNumbering";
+import { SubscriptionEntitlementError } from "@/services/entitlement.service";
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Internal Server Error";
@@ -71,6 +72,9 @@ export async function POST(req: Request) {
     } catch (error: unknown) {
         const message = getErrorMessage(error);
         console.error("Error creating branch:", error);
+        if (error instanceof SubscriptionEntitlementError) {
+            return NextResponse.json({ error: message, code: error.code }, { status: 403 });
+        }
         return NextResponse.json(
             { error: message },
             { status: message.includes("not found") ? 404 : 400 }

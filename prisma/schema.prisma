@@ -45,6 +45,7 @@ model Organization {
   createdAt             DateTime                  @default(now())
   branches              Branch[]
   subscription          OrganizationSubscription?
+  subscriptionHistory   OrganizationSubscriptionHistory[]
   razorpayWebhookEvents RazorpayWebhookEvent[]
   owner                 User                      @relation(fields: [ownerId], references: [id])
 }
@@ -473,6 +474,14 @@ enum SaasSubscriptionStatus {
   EXPIRED
 }
 
+enum SaasSubscriptionHistorySource {
+  CHECKOUT
+  VERIFICATION
+  WEBHOOK
+  CUSTOMER_CANCELLATION
+  SYSTEM
+}
+
 model SaasRazorpayPlan {
   id             String   @id @default(cuid())
   plan           SaasPlan @unique
@@ -504,14 +513,41 @@ model OrganizationSubscription {
   currentEnd             DateTime?
   chargeAt               DateTime?
   endedAt                DateTime?
+  cancelAtCycleEnd        Boolean                @default(false)
+  cancellationRequestedAt DateTime?
+  cancellationScheduledAt DateTime?
+  cancelledAt            DateTime?
   createdByUserId        String?
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
   organization           Organization           @relation(fields: [organizationId], references: [id])
   webhookEvents          RazorpayWebhookEvent[]
+  history                OrganizationSubscriptionHistory[]
 
   @@index([status])
   @@index([plan])
+}
+
+model OrganizationSubscriptionHistory {
+  id                         String                        @id @default(cuid())
+  organizationId             String
+  organizationSubscriptionId String?
+  razorpaySubscriptionId     String
+  razorpayPaymentId          String?
+  plan                       SaasPlan
+  fromStatus                 SaasSubscriptionStatus?
+  toStatus                   SaasSubscriptionStatus
+  source                     SaasSubscriptionHistorySource
+  event                      String?
+  amountSubunits             Int
+  currency                   String
+  createdAt                  DateTime                      @default(now())
+  organization               Organization                  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationSubscription   OrganizationSubscription?     @relation(fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationSubscriptionId, createdAt])
+  @@index([razorpaySubscriptionId])
 }
 
 model RazorpayWebhookEvent {

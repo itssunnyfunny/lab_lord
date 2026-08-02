@@ -1,5 +1,5 @@
 import { apiClient } from "./core";
-import type { BillingPlanId } from "@/lib/billingPlans";
+import type { BillingEntitlement, BillingPlanId } from "@/lib/billingPlans";
 
 export type BillingPlanDto = {
   id: BillingPlanId;
@@ -15,6 +15,8 @@ export type BillingPlanDto = {
   custom: boolean;
   description: string;
   features: string[];
+  entitlements: BillingEntitlement[];
+  limits: { maxBranches: number | null };
 };
 
 export type OrganizationSubscriptionDto = {
@@ -35,13 +37,43 @@ export type OrganizationSubscriptionDto = {
   currentEnd: string | null;
   chargeAt: string | null;
   endedAt: string | null;
+  cancelAtCycleEnd: boolean;
+  cancellationRequestedAt: string | null;
+  cancellationScheduledAt: string | null;
+  cancelledAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type OrganizationSubscriptionHistoryDto = {
+  id: string;
+  razorpaySubscriptionId: string;
+  razorpayPaymentId: string | null;
+  plan: BillingPlanId;
+  fromStatus: string | null;
+  toStatus: string;
+  source: string;
+  event: string | null;
+  amountSubunits: number;
+  currency: string;
+  createdAt: string;
+};
+
+export type OrganizationEntitlementProfileDto = {
+  organizationId: string;
+  plan: BillingPlanId | null;
+  subscriptionStatus: string | null;
+  grandfathered: boolean;
+  entitlements: BillingEntitlement[];
+  limits: { maxBranches: number | null };
+  usage: { branches: number };
 };
 
 export type BillingOverview = {
   plans: BillingPlanDto[];
   current: OrganizationSubscriptionDto | null;
+  history: OrganizationSubscriptionHistoryDto[];
+  entitlements: OrganizationEntitlementProfileDto;
 };
 
 export type BillingCheckoutPayload = {
@@ -67,6 +99,12 @@ export type BillingVerificationResult = {
   subscription: OrganizationSubscriptionDto;
 };
 
+export type BillingCancellationResult = {
+  cancelled: boolean;
+  scheduled: boolean;
+  subscription: OrganizationSubscriptionDto;
+};
+
 export const billing = {
   getOverview(orgId: string): Promise<BillingOverview> {
     return apiClient.get(`/organizations/${orgId}/billing`);
@@ -85,5 +123,9 @@ export const billing = {
     }
   ): Promise<BillingVerificationResult> {
     return apiClient.post(`/organizations/${orgId}/billing/subscription/verify`, payload);
+  },
+
+  cancelSubscription(orgId: string, cancelAtCycleEnd: boolean): Promise<BillingCancellationResult> {
+    return apiClient.post(`/organizations/${orgId}/billing/subscription/cancel`, { cancelAtCycleEnd });
   },
 };

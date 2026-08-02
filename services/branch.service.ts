@@ -26,6 +26,7 @@ import {
     includesDefaultPrimaryShiftNames,
 } from "@/services/defaultShifts";
 import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
+import { EntitlementService } from "@/services/entitlement.service";
 
 interface CreateBranchForOrgParams {
     organizationId: string;
@@ -93,6 +94,7 @@ export class BranchService {
         });
         if (!org) throw new Error("Organization not found");
         if (org.ownerId !== userId) throw new Error("Unauthorized");
+        await EntitlementService.assertCanCreateBranch(organizationId);
 
         return await prisma.$transaction(async (tx) => {
             // 1. Create the branch
@@ -158,6 +160,7 @@ export class BranchService {
         if (!nameResult.ok) throw new Error(nameResult.error);
         const contactPhoneResult = validateRequiredPhone(data.contactPhone, "Contact phone");
         if (!contactPhoneResult.ok) throw new Error(contactPhoneResult.error);
+        await EntitlementService.assertCanCreateBranch(data.organizationId);
 
         const branch = await prisma.branch.create({
             data: {

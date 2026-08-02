@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { StaffService } from "@/services/staff.service";
 import { getSessionUser } from "@/lib/auth";
 import { StaffRole } from "@/types";
+import { SubscriptionEntitlementError } from "@/services/entitlement.service";
 
 function isStaffRole(role: unknown): role is StaffRole {
     return role === StaffRole.MANAGER || role === StaffRole.STAFF;
@@ -65,7 +66,7 @@ export async function POST(
         const message = error instanceof Error ? error.message : "Failed to add staff";
         return NextResponse.json(
             { error: message },
-            { status: 400 }
+            { status: error instanceof SubscriptionEntitlementError ? 403 : 400 }
         );
     }
 }

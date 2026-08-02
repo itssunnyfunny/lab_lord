@@ -10,6 +10,7 @@ import {
     StaffPermissionUpdate,
     StaffRole,
 } from "@/types";
+import { EntitlementService } from "@/services/entitlement.service";
 
 // ==========================================
 // 1. TYPES & PERMISSION MATRIX
@@ -93,9 +94,32 @@ function buildStaffPermissions(
     }, {} as Record<StaffAction, boolean>);
 }
 
+async function applySubscriptionPermissions(
+    organizationId: string,
+    permissions: Record<StaffAction, boolean>
+) {
+    const profile = await EntitlementService.getOrganizationProfile(organizationId);
+    if (!profile.entitlements.includes("STAFF_MANAGEMENT")) {
+        permissions.staff_management = false;
+    }
+    if (!profile.entitlements.includes("ADVANCED_ANALYTICS")) {
+        permissions.analytics = false;
+    }
+    return permissions;
+}
+
 export class StaffService {
     private static normalizeEmail(email: string) {
         return email.trim().toLowerCase();
+    }
+
+    private static async assertActionEntitlement(organizationId: string, action: StaffAction) {
+        if (action === "staff_management") {
+            await EntitlementService.assertOrganizationEntitlement(organizationId, "STAFF_MANAGEMENT");
+        }
+        if (action === "analytics") {
+            await EntitlementService.assertOrganizationEntitlement(organizationId, "ADVANCED_ANALYTICS");
+        }
     }
 
     // ==========================================
@@ -122,6 +146,7 @@ export class StaffService {
         }
 
         if (branch.organization.ownerId === userId) {
+            await this.assertActionEntitlement(branch.organizationId, action);
             return true; // ✅ Owner is always allowed
         }
 
@@ -151,7 +176,10 @@ export class StaffService {
             const permissionAction = ACTION_TO_PERMISSION_ACTION[action];
             const override = staffMember.permissionOverrides.find(item => item.action === permissionAction);
             if (override) {
-                if (override.allowed) return true;
+                if (override.allowed) {
+                    await this.assertActionEntitlement(branch.organizationId, action);
+                    return true;
+                }
                 throw new Error(`Unauthorized: Permission '${action}' is disabled for this staff member`);
             }
         }
@@ -159,6 +187,7 @@ export class StaffService {
         // 3. Match Role against Matrix
         const allowedRoles = PERMISSION_MATRIX[action];
         if (allowedRoles.includes(staffMember.role)) {
+            await this.assertActionEntitlement(branch.organizationId, action);
             return true; // ✅ Role is allowed
         }
 
@@ -183,7 +212,10 @@ export class StaffService {
                 organizationId: branch.organizationId,
                 isOwner: true,
                 role: "OWNER",
-                permissions: buildOwnerPermissions(),
+                permissions: await applySubscriptionPermissions(
+                    branch.organizationId,
+                    buildOwnerPermissions()
+                ),
             };
         }
 
@@ -215,7 +247,10 @@ export class StaffService {
             isOwner: false,
             role: staffMember.role,
             staffId: staffMember.id,
-            permissions: buildStaffPermissions(staffMember.role, staffMember.permissionOverrides),
+            permissions: await applySubscriptionPermissions(
+                branch.organizationId,
+                buildStaffPermissions(staffMember.role, staffMember.permissionOverrides)
+            ),
         };
     }
 
@@ -420,6 +455,7 @@ export class StaffService {
      */
     static async listStaff(actorId: string, branchId: string) {
         await this.authorize(actorId, branchId, "manage_branch");
+        await EntitlementService.assertBranchEntitlement(branchId, "STAFF_MANAGEMENT");
 
         return db.staff.findMany({
             where: { branchId },

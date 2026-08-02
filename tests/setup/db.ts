@@ -44,6 +44,7 @@ export async function resetDatabase() {
   await testPrisma.$executeRawUnsafe(`
     TRUNCATE TABLE
       "AuditLog",
+      "OrganizationSubscriptionHistory",
       "RazorpayWebhookEvent",
       "OrganizationSubscription",
       "SaasRazorpayPlan",

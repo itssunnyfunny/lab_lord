@@ -3,6 +3,7 @@ import { getSessionUser } from "@/lib/auth";
 import { BranchService } from "@/services/branch.service";
 import { OrganizationService } from "@/services/organization.service";
 import { validateRequiredPhone, validateRequiredText } from "@/lib/formValidation";
+import { SubscriptionEntitlementError } from "@/services/entitlement.service";
 
 // Correctly type the params as a Promise for Next.js 15+
 interface Params {
@@ -77,6 +78,9 @@ export async function POST(req: Request, { params }: Params) {
 
         return NextResponse.json(branch, { status: 201 });
     } catch (error) {
+        if (error instanceof SubscriptionEntitlementError) {
+            return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
+        }
         console.error("Error creating branch:", error);
         return NextResponse.json(
             { error: "Internal Server Error" },

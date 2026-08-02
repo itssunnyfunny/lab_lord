@@ -72,6 +72,8 @@ export type RazorpaySubscription = {
   paid_count?: number;
   remaining_count?: number;
   short_url?: string | null;
+  has_scheduled_changes?: boolean;
+  change_scheduled_at?: number | null;
   notes?: Record<string, string> | null;
 };
 

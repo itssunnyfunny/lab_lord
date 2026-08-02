@@ -70,14 +70,17 @@ function createFakeRazorpayClient() {
       charge_at: 1769904000,
       ended_at: null,
     })),
-    cancelSubscription: vi.fn(async subscriptionId => ({
+    cancelSubscription: vi.fn(async (subscriptionId, input) => ({
       id: subscriptionId,
       entity: "subscription",
       plan_id: "plan_basic",
       customer_id: "cust_test",
-      status: "cancelled",
+      status: input.cancel_at_cycle_end ? "active" : "cancelled",
       total_count: 120,
-      ended_at: 1767225600,
+      current_end: input.cancel_at_cycle_end ? 1769904000 : null,
+      ended_at: input.cancel_at_cycle_end ? null : 1767225600,
+      has_scheduled_changes: input.cancel_at_cycle_end,
+      change_scheduled_at: input.cancel_at_cycle_end ? 1769904000 : null,
     })),
   };
 
@@ -131,6 +134,9 @@ describe("BillingService SaaS subscriptions", () => {
       razorpaySubscriptionId: "sub_basic",
       status: "CREATED",
     });
+    await expect(testPrisma.organizationSubscriptionHistory.findMany({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject([{ source: "CHECKOUT", fromStatus: null, toStatus: "CREATED" }]);
   });
 
   it("blocks coming-soon and custom plans from checkout", async () => {
@@ -211,6 +217,62 @@ describe("BillingService SaaS subscriptions", () => {
     const stored = await testPrisma.organizationSubscription.findUnique({ where: { organizationId: org.id } });
     expect(stored?.authPaymentId).toBe("pay_auth");
     expect(stored?.currentEnd?.toISOString()).toBe("2026-02-01T00:00:00.000Z");
+    const history = await testPrisma.organizationSubscriptionHistory.findMany({
+      where: { organizationId: org.id },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(history.map(entry => entry.source)).toEqual(["CHECKOUT", "VERIFICATION"]);
+  });
+
+  it("lets an owner schedule cancellation at the end of an active cycle", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await BillingService.verifySubscriptionSuccess(user.id, org.id, {
+      razorpay_subscription_id: "sub_basic",
+      razorpay_payment_id: "pay_auth",
+      razorpay_signature: hmacSha256Hex("pay_auth|sub_basic", "secret"),
+    });
+
+    const result = await BillingService.cancelSubscription(user.id, org.id, {
+      cancelAtCycleEnd: true,
+    });
+
+    expect(result).toMatchObject({ cancelled: false, scheduled: true });
+    expect(result.subscription).toMatchObject({
+      status: "ACTIVE",
+      cancelAtCycleEnd: true,
+    });
+    expect(fakeRazorpay.cancelSubscription).toHaveBeenCalledWith("sub_basic", {
+      cancel_at_cycle_end: true,
+    });
+    const lastHistory = await testPrisma.organizationSubscriptionHistory.findFirst({
+      where: { organizationId: org.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(lastHistory).toMatchObject({
+      source: "CUSTOMER_CANCELLATION",
+      event: "cancel_at_cycle_end",
+      fromStatus: "ACTIVE",
+      toStatus: "ACTIVE",
+    });
+  });
+
+  it("lets an owner cancel a pending checkout immediately", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    const result = await BillingService.cancelSubscription(user.id, org.id, {
+      cancelAtCycleEnd: false,
+    });
+
+    expect(result).toMatchObject({ cancelled: true, scheduled: false });
+    expect(result.subscription).toMatchObject({ status: "CANCELLED", cancelAtCycleEnd: false });
   });
 
   it("processes Razorpay subscription webhooks idempotently", async () => {
