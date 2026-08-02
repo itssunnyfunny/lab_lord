@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { BillingService } from "@/services/billing.service";
 
@@ -15,7 +15,7 @@ function errorStatus(message: string) {
 }
 
 export async function POST(
-  req: NextRequest,
+  _req: Request,
   context: { params: Promise<{ orgId: string }> }
 ) {
   try {
@@ -23,7 +23,7 @@ export async function POST(
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { orgId } = await context.params;
-    const result = await BillingService.cancelSubscription(user.id, orgId, await req.json());
+    const result = await BillingService.cancelSubscription(user.id, orgId);
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";

@@ -105,7 +105,11 @@ async function applySubscriptionPermissions(
     if (!profile.entitlements.includes("ADVANCED_ANALYTICS")) {
         permissions.analytics = false;
     }
-    return permissions;
+    return {
+        permissions,
+        effectivePlan: profile.effectivePlan,
+        entitlements: profile.entitlements,
+    };
 }
 
 export class StaffService {
@@ -206,16 +210,17 @@ export class StaffService {
         }
 
         if (branch.organization.ownerId === userId) {
+            const subscriptionAccess = await applySubscriptionPermissions(
+                branch.organizationId,
+                buildOwnerPermissions()
+            );
             return {
                 branchId,
                 branchName: branch.name,
                 organizationId: branch.organizationId,
                 isOwner: true,
                 role: "OWNER",
-                permissions: await applySubscriptionPermissions(
-                    branch.organizationId,
-                    buildOwnerPermissions()
-                ),
+                ...subscriptionAccess,
             };
         }
 
@@ -240,6 +245,10 @@ export class StaffService {
             throw new Error("Unauthorized: Not a staff member of this branch");
         }
 
+        const subscriptionAccess = await applySubscriptionPermissions(
+            branch.organizationId,
+            buildStaffPermissions(staffMember.role, staffMember.permissionOverrides)
+        );
         return {
             branchId,
             branchName: branch.name,
@@ -247,10 +256,7 @@ export class StaffService {
             isOwner: false,
             role: staffMember.role,
             staffId: staffMember.id,
-            permissions: await applySubscriptionPermissions(
-                branch.organizationId,
-                buildStaffPermissions(staffMember.role, staffMember.permissionOverrides)
-            ),
+            ...subscriptionAccess,
         };
     }
 

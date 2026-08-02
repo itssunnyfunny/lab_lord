@@ -1,4 +1,5 @@
 import { StaffRole } from "./enums";
+import type { BillingEntitlement, BillingPlanId } from "@/lib/billingPlans";
 
 export const STAFF_ACTIONS = [
     "manage_org",
@@ -41,4 +42,6 @@ export type BranchAccess = {
     role: BranchAccessRole;
     staffId?: string;
     permissions: Record<StaffAction, boolean>;
+    effectivePlan: BillingPlanId;
+    entitlements: BillingEntitlement[];
 };

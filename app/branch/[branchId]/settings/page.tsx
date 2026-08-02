@@ -42,6 +42,7 @@ import { useInlineFieldErrors } from "@/components/ui/InlineFieldError";
 import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
 import { cn } from "@/lib/utils";
 import { formWarningBannerClass } from "@/components/ui/formSurface";
+import type { BranchAccess } from "@/types";
 import {
     pageErrorIconClass,
     pageErrorStateClass,
@@ -143,13 +144,14 @@ export default function BranchSettingsPage({ params }: { params: Promise<{ branc
 
     return (
         <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.settings}>
-            <BranchSettingsContent branchId={branchId} />
+            {access => <BranchSettingsContent branchId={branchId} access={access} />}
         </BranchAccessGuard>
     );
 }
 
-function BranchSettingsContent({ branchId }: { branchId: string }) {
+function BranchSettingsContent({ branchId, access }: { branchId: string; access: BranchAccess }) {
     const router = useRouter();
+    const hasAiAccess = access.entitlements.includes("AI_ACCESS");
 
     const [branch, setBranch] = useState<BranchData | null>(null);
     const [form, setForm] = useState<BranchForm | null>(null);
@@ -410,11 +412,12 @@ function BranchSettingsContent({ branchId }: { branchId: string }) {
                         <SettingsToggle
                             checked={form.aiEnabled}
                             onChange={value => updateForm("aiEnabled", value)}
-                            label={form.aiEnabled ? "AI generation enabled" : "AI generation disabled"}
-                            description={form.aiEnabled ? "Branch AI reports can run using the current branch data." : "AI report generation will return a disabled state for this branch."}
+                            disabled={!hasAiAccess}
+                            label={!hasAiAccess ? "AI requires the Standard plan" : form.aiEnabled ? "AI generation enabled" : "AI generation disabled"}
+                            description={!hasAiAccess ? "Upgrade the organization to Standard to enable AI reports and message drafting." : form.aiEnabled ? "Branch AI reports can run using the current branch data." : "AI report generation will return a disabled state for this branch."}
                         />
                     </SettingsField>
-                    {!form.aiEnabled && (
+                    {hasAiAccess && !form.aiEnabled && (
                         <div className="px-5 py-4">
                             <div className={cn("px-4 py-3 text-sm", formWarningBannerClass)}>
                                 AI is off for this branch. Existing reports remain visible, but new generation is blocked.

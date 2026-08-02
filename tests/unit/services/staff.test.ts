@@ -25,7 +25,11 @@ vi.mock("@/lib/prisma", () => ({
     organization: {
       findUnique: vi.fn().mockResolvedValue({
         id: "org_1",
-        subscription: null,
+        subscription: {
+          plan: "PRO",
+          status: "ACTIVE",
+          currentEnd: new Date("2099-01-01T00:00:00.000Z"),
+        },
         _count: { branches: 1 },
       }),
     },
@@ -187,7 +191,9 @@ describe("StaffService.getBranchAccess()", () => {
       organizationId: "org_1",
       isOwner: true,
       role: "OWNER",
+      effectivePlan: "PRO",
     });
+    expect(access.entitlements).toContain("AI_ACCESS");
     for (const action of STAFF_ACTIONS) {
       expect(access.permissions[action]).toBe(true);
     }

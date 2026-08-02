@@ -12,7 +12,7 @@ function createFakeRazorpayClient() {
     fetchPayment: vi.fn(async (paymentId: string) => ({
       id: paymentId,
       entity: "payment",
-      amount: 39900,
+      amount: 29900,
       currency: "INR",
       status: "captured",
       order_id: null,
@@ -23,7 +23,7 @@ function createFakeRazorpayClient() {
     capturePayment: vi.fn(async (paymentId: string) => ({
       id: paymentId,
       entity: "payment",
-      amount: 39900,
+      amount: 29900,
       currency: "INR",
       status: "captured",
       order_id: null,
@@ -114,9 +114,9 @@ describe("BillingService SaaS subscriptions", () => {
 
     expect(checkout.keyId).toBe("rzp_test_key");
     expect(checkout.subscriptionId).toBe("sub_basic");
-    expect(checkout.amount).toBe(39900);
+    expect(checkout.amount).toBe(29900);
     expect(fakeRazorpay.createPlan).toHaveBeenCalledWith(expect.objectContaining({
-      item: expect.objectContaining({ amount: 39900, currency: "INR" }),
+      item: expect.objectContaining({ amount: 29900, currency: "INR" }),
       notes: expect.objectContaining({ plan: "BASIC", billing_type: "saas_plan" }),
     }));
     expect(fakeRazorpay.createSubscription).toHaveBeenCalledWith(expect.objectContaining({
@@ -128,8 +128,8 @@ describe("BillingService SaaS subscriptions", () => {
     const stored = await testPrisma.organizationSubscription.findUnique({ where: { organizationId: org.id } });
     expect(stored).toMatchObject({
       plan: "BASIC",
-      amount: 399,
-      amountSubunits: 39900,
+      amount: 299,
+      amountSubunits: 29900,
       razorpayPlanId: "plan_basic",
       razorpaySubscriptionId: "sub_basic",
       status: "CREATED",
@@ -152,6 +152,79 @@ describe("BillingService SaaS subscriptions", () => {
       BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "CUSTOM" })
     ).rejects.toThrow("not available");
     expect(fakeRazorpay.createPlan).not.toHaveBeenCalled();
+  });
+
+  it("publishes only the Basic and Standard monthly plans", async () => {
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+
+    const overview = await BillingService.listPlansForOrganization(user.id, org.id);
+
+    expect(overview.plans.map(plan => ({ id: plan.id, name: plan.shortName, amount: plan.amount }))).toEqual([
+      { id: "BASIC", name: "Basic", amount: 299 },
+      { id: "PRO", name: "Standard", amount: 499 },
+    ]);
+    expect(overview.entitlements).toMatchObject({
+      plan: null,
+      effectivePlan: "BASIC",
+      fallbackAccess: true,
+    });
+  });
+
+  it("replaces a stale Razorpay price mapping without changing existing subscriptions", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    vi.mocked(fakeRazorpay.createPlan).mockImplementationOnce(async input => ({
+      id: "plan_basic_299",
+      entity: "plan",
+      interval: input.interval,
+      period: input.period,
+      item: { ...input.item },
+    }));
+    setRazorpayClientForTests(fakeRazorpay);
+    const legacyOwner = await createUser({ email: "legacy-owner@example.com" });
+    const legacyOrg = await createOrg({ ownerId: legacyOwner.id, name: "Legacy Lab" });
+    await testPrisma.saasRazorpayPlan.create({
+      data: {
+        plan: "BASIC",
+        amount: 399,
+        amountSubunits: 39900,
+        currency: "INR",
+        period: "monthly",
+        interval: 1,
+        razorpayPlanId: "plan_basic_399",
+      },
+    });
+    await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: legacyOrg.id,
+        plan: "BASIC",
+        amount: 399,
+        amountSubunits: 39900,
+        currency: "INR",
+        period: "monthly",
+        interval: 1,
+        totalCount: 120,
+        razorpayPlanId: "plan_basic_399",
+        razorpaySubscriptionId: "sub_legacy_basic",
+        status: "ACTIVE",
+      },
+    });
+    const newOwner = await createUser({ email: "new-owner@example.com" });
+    const newOrg = await createOrg({ ownerId: newOwner.id, name: "New Lab" });
+
+    const checkout = await BillingService.createSubscriptionCheckout(newOwner.id, newOrg.id, { plan: "BASIC" });
+
+    expect(checkout.amount).toBe(29900);
+    await expect(testPrisma.saasRazorpayPlan.findUnique({ where: { plan: "BASIC" } })).resolves.toMatchObject({
+      amount: 299,
+      amountSubunits: 29900,
+      razorpayPlanId: "plan_basic_299",
+    });
+    await expect(testPrisma.organizationSubscription.findUnique({ where: { organizationId: legacyOrg.id } })).resolves.toMatchObject({
+      amount: 399,
+      amountSubunits: 39900,
+      razorpayPlanId: "plan_basic_399",
+    });
   });
 
   it("serializes concurrent checkout requests for the same organization", async () => {
@@ -236,9 +309,7 @@ describe("BillingService SaaS subscriptions", () => {
       razorpay_signature: hmacSha256Hex("pay_auth|sub_basic", "secret"),
     });
 
-    const result = await BillingService.cancelSubscription(user.id, org.id, {
-      cancelAtCycleEnd: true,
-    });
+    const result = await BillingService.cancelSubscription(user.id, org.id);
 
     expect(result).toMatchObject({ cancelled: false, scheduled: true });
     expect(result.subscription).toMatchObject({
@@ -260,19 +331,17 @@ describe("BillingService SaaS subscriptions", () => {
     });
   });
 
-  it("lets an owner cancel a pending checkout immediately", async () => {
+  it("does not offer cycle-end cancellation before a subscription is active", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id });
     await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
 
-    const result = await BillingService.cancelSubscription(user.id, org.id, {
-      cancelAtCycleEnd: false,
-    });
-
-    expect(result).toMatchObject({ cancelled: true, scheduled: false });
-    expect(result.subscription).toMatchObject({ status: "CANCELLED", cancelAtCycleEnd: false });
+    await expect(BillingService.cancelSubscription(user.id, org.id)).rejects.toThrow(
+      "Only an active subscription"
+    );
+    expect(fakeRazorpay.cancelSubscription).not.toHaveBeenCalled();
   });
 
   it("processes Razorpay subscription webhooks idempotently", async () => {
@@ -302,7 +371,7 @@ describe("BillingService SaaS subscriptions", () => {
           entity: {
             id: "pay_webhook",
             entity: "payment",
-            amount: 39900,
+            amount: 29900,
             currency: "INR",
             status: "captured",
             order_id: null,

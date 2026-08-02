@@ -1,8 +1,12 @@
 import { apiClient } from "./core";
-import type { BillingEntitlement, BillingPlanId } from "@/lib/billingPlans";
+import type {
+  BillingEntitlement,
+  BillingPlanId,
+  CheckoutBillingPlanId,
+} from "@/lib/billingPlans";
 
 export type BillingPlanDto = {
-  id: BillingPlanId;
+  id: CheckoutBillingPlanId;
   name: string;
   shortName: string;
   amount: number | null;
@@ -62,8 +66,9 @@ export type OrganizationSubscriptionHistoryDto = {
 export type OrganizationEntitlementProfileDto = {
   organizationId: string;
   plan: BillingPlanId | null;
+  effectivePlan: BillingPlanId;
   subscriptionStatus: string | null;
-  grandfathered: boolean;
+  fallbackAccess: boolean;
   entitlements: BillingEntitlement[];
   limits: { maxBranches: number | null };
   usage: { branches: number };
@@ -110,7 +115,7 @@ export const billing = {
     return apiClient.get(`/organizations/${orgId}/billing`);
   },
 
-  createSubscription(orgId: string, plan: BillingPlanId): Promise<BillingCheckoutPayload> {
+  createSubscription(orgId: string, plan: CheckoutBillingPlanId): Promise<BillingCheckoutPayload> {
     return apiClient.post(`/organizations/${orgId}/billing/subscription`, { plan });
   },
 
@@ -125,7 +130,7 @@ export const billing = {
     return apiClient.post(`/organizations/${orgId}/billing/subscription/verify`, payload);
   },
 
-  cancelSubscription(orgId: string, cancelAtCycleEnd: boolean): Promise<BillingCancellationResult> {
-    return apiClient.post(`/organizations/${orgId}/billing/subscription/cancel`, { cancelAtCycleEnd });
+  cancelSubscription(orgId: string): Promise<BillingCancellationResult> {
+    return apiClient.post(`/organizations/${orgId}/billing/subscription/cancel`);
   },
 };

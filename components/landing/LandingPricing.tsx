@@ -12,7 +12,11 @@ import {
   landingTitleClass,
 } from "@/components/ui/landingSurface";
 import { LandingReveal } from "@/components/landing/LandingReveal";
-import { publicBillingPlans, type BillingPlan, type BillingPlanId } from "@/lib/billingPlans";
+import {
+  publicBillingPlans,
+  type BillingPlan,
+  type CheckoutBillingPlanId,
+} from "@/lib/billingPlans";
 
 const plans = publicBillingPlans();
 
@@ -28,7 +32,7 @@ function formatPrice(plan: Pick<BillingPlan, "amount" | "currency" | "custom">) 
 export function LandingPricing({
   onPlanSelect,
 }: {
-  onPlanSelect: (planId: BillingPlanId) => void;
+  onPlanSelect: (planId: CheckoutBillingPlanId) => void;
 }) {
   return (
     <section id="pricing" className={`${landingSectionClass} overflow-hidden bg-[color:var(--ui-form-muted-surface-bg)]`}>
@@ -39,7 +43,7 @@ export function LandingPricing({
             <p className={landingEyebrowClass}>Pricing</p>
             <h2 className={`${landingTitleClass} mt-3`}>Choose your Lab Lords plan.</h2>
             <p className={`${landingDescriptionClass} mt-4 max-w-2xl`}>
-              Start with the current monthly plans, then move up when agent control and custom rollout options are ready.
+              Start with core operations, then add staff controls, advanced analytics, and AI when your team is ready.
             </p>
           </LandingReveal>
 
@@ -49,14 +53,14 @@ export function LandingPricing({
                 <Sparkles size={17} />
               </div>
               <div>
-                <p className="text-sm font-semibold text-[color:var(--text-primary)]">No lock-in theatre</p>
-                <p className={`${landingSubtleTextClass} mt-1 text-xs`}>Current plans start at Rs.399/month while agent control is staged for rollout.</p>
+                <p className="text-sm font-semibold text-[color:var(--text-primary)]">Two clear monthly plans</p>
+                <p className={`${landingSubtleTextClass} mt-1 text-xs`}>Start at Rs.299/month and cancel future renewal from billing settings.</p>
               </div>
             </div>
           </LandingReveal>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {plans.map((plan, index) => (
             <LandingReveal
               key={plan.id}

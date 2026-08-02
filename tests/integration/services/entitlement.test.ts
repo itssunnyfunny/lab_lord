@@ -13,8 +13,8 @@ async function createSubscription(
     data: {
       organizationId,
       plan,
-      amount: plan === "BASIC" ? 399 : 599,
-      amountSubunits: plan === "BASIC" ? 39900 : 59900,
+      amount: plan === "BASIC" ? 299 : 499,
+      amountSubunits: plan === "BASIC" ? 29900 : 49900,
       currency: "INR",
       period: "monthly",
       interval: 1,
@@ -36,15 +36,20 @@ describe("subscription entitlements", () => {
     await resetDatabase();
   });
 
-  it("grandfathers organizations that have never subscribed", async () => {
+  it("gives organizations without a subscription Basic fallback access", async () => {
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id });
 
     const profile = await EntitlementService.getOrganizationProfile(org.id);
 
-    expect(profile.grandfathered).toBe(true);
-    expect(profile.limits.maxBranches).toBeNull();
-    expect(profile.entitlements).toContain("ADVANCED_ANALYTICS");
+    expect(profile).toMatchObject({
+      plan: null,
+      effectivePlan: "BASIC",
+      fallbackAccess: true,
+      limits: { maxBranches: 1 },
+    });
+    expect(profile.entitlements).not.toContain("ADVANCED_ANALYTICS");
+    expect(profile.entitlements).not.toContain("AI_ACCESS");
   });
 
   it("limits Basic organizations to one branch and core features", async () => {
@@ -60,7 +65,7 @@ describe("subscription entitlements", () => {
     await expect(StaffService.listStaff(user.id, branch.id)).rejects.toThrow("upgraded subscription");
   });
 
-  it("enables Pro multi-branch, staff, and analytics capabilities", async () => {
+  it("enables Standard multi-branch, staff, analytics, and AI capabilities", async () => {
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id });
     await createSubscription(org.id, "PRO");
@@ -70,9 +75,11 @@ describe("subscription entitlements", () => {
 
     const profile = await EntitlementService.assertCanCreateBranch(org.id);
     expect(profile).toMatchObject({
-      grandfathered: false,
+      effectivePlan: "PRO",
+      fallbackAccess: false,
       limits: { maxBranches: 3 },
     });
+    expect(profile.entitlements).toContain("AI_ACCESS");
     await expect(StaffService.authorize(user.id, branch.id, "analytics")).resolves.toBe(true);
     await expect(StaffService.listStaff(user.id, branch.id)).resolves.toEqual([]);
   });
@@ -85,6 +92,9 @@ describe("subscription entitlements", () => {
     const profile = await EntitlementService.getOrganizationProfile(org.id);
 
     expect(profile.entitlements).not.toContain("ADVANCED_ANALYTICS");
+    expect(profile.entitlements).not.toContain("AI_ACCESS");
+    expect(profile.effectivePlan).toBe("BASIC");
+    expect(profile.fallbackAccess).toBe(true);
     expect(profile.limits.maxBranches).toBe(1);
   });
 });

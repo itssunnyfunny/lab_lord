@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import {
-  BILLING_ENTITLEMENTS,
   getBillingPlan,
   type BillingEntitlement,
   type BillingPlanId,
@@ -28,8 +27,9 @@ function subscriptionHasPremiumAccess(subscription: OrganizationSubscription) {
 export type OrganizationEntitlementProfile = {
   organizationId: string;
   plan: BillingPlanId | null;
+  effectivePlan: BillingPlanId;
   subscriptionStatus: string | null;
-  grandfathered: boolean;
+  fallbackAccess: boolean;
   entitlements: BillingEntitlement[];
   limits: { maxBranches: number | null };
   usage: { branches: number };
@@ -48,13 +48,16 @@ export class EntitlementService {
     if (!organization) throw new Error("Organization not found");
 
     if (!organization.subscription) {
+      const basicPlan = getBillingPlan("BASIC");
+      if (!basicPlan) throw new Error("Basic subscription plan configuration is missing");
       return {
         organizationId,
         plan: null,
+        effectivePlan: "BASIC",
         subscriptionStatus: null,
-        grandfathered: true,
-        entitlements: [...BILLING_ENTITLEMENTS],
-        limits: { maxBranches: null },
+        fallbackAccess: true,
+        entitlements: [...basicPlan.entitlements],
+        limits: { ...basicPlan.limits },
         usage: { branches: organization._count.branches },
       };
     }
@@ -68,8 +71,9 @@ export class EntitlementService {
     return {
       organizationId,
       plan: organization.subscription.plan as BillingPlanId,
+      effectivePlan: entitledPlan.id,
       subscriptionStatus: organization.subscription.status,
-      grandfathered: false,
+      fallbackAccess: entitledPlan.id !== selectedPlan?.id,
       entitlements: [...entitledPlan.entitlements],
       limits: { ...entitledPlan.limits },
       usage: { branches: organization._count.branches },

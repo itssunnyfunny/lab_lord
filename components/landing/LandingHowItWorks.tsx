@@ -44,9 +44,10 @@ const steps = [
 ];
 
 const migrationPoints = [
-  "No schema changes needed for the landing redesign",
-  "Fits the existing Clerk auth and dashboard routes",
-  "Uses the app's current dark operational UI language",
+  "Import your existing student records",
+  "Configure branches, seats, and shifts",
+  "Invite managers with controlled access",
+  "Start tracking payments and dues",
 ];
 
 export function LandingHowItWorks() {

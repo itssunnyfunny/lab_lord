@@ -16,6 +16,7 @@ import {
   createOrg,
   createPayment,
   createSeat,
+  createSaasSubscription,
   createShift,
   createStudent,
   createTestWorld,
@@ -345,6 +346,7 @@ describe("Analytics corrections", () => {
     it("returns slot-based utilization counts for branch cards", async () => {
       const asOf = new Date("2026-06-01T00:00:00.000Z");
       const { user, branch, shift, seat } = await createTestWorld();
+      await createSaasSubscription({ organizationId: branch.organizationId, plan: "PRO" });
       authMock.sessionUser = { id: user.id, email: user.email };
       const secondShift = await createShift({
         branchId: branch.id,
@@ -382,6 +384,7 @@ describe("Analytics corrections", () => {
       const user = await createUser();
       authMock.sessionUser = { id: user.id, email: user.email };
       const org = await createOrg({ ownerId: user.id });
+      await createSaasSubscription({ organizationId: org.id, plan: "PRO" });
       const branch = await createBranch({ organizationId: org.id });
       await createShift({ branchId: branch.id });
       await createSeat({ branchId: branch.id });

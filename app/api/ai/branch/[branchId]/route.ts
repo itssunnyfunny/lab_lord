@@ -2,6 +2,7 @@ import { runBranchAI } from "@/ai/orchestrator/branchAI.orchestrator"
 import { getSessionUser } from "@/lib/auth"
 import { checkRateLimit, getRequestRateLimitKey } from "@/lib/rateLimit"
 import { StaffService } from "@/services/staff.service"
+import { EntitlementService } from "@/services/entitlement.service"
 
 export async function GET(
     request: Request,
@@ -15,6 +16,7 @@ export async function GET(
         }
 
         await StaffService.authorize(user.id, params.branchId, "analytics")
+        await EntitlementService.assertBranchEntitlement(params.branchId, "AI_ACCESS")
 
         const rateLimit = checkRateLimit(
             getRequestRateLimitKey(request, "ai-report", `${user.id}:${params.branchId}`),

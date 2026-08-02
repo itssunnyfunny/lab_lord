@@ -56,6 +56,8 @@ describe("BranchSidebar", () => {
       organizationId: "org_1",
       isOwner: true,
       role: "OWNER",
+      effectivePlan: "PRO",
+      entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
       permissions: {
         ...permissions,
         manage_org: true,
@@ -81,6 +83,8 @@ describe("BranchSidebar", () => {
       isOwner: false,
       role: "MANAGER",
       staffId: "staff_1",
+      effectivePlan: "PRO",
+      entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
       permissions,
     };
 

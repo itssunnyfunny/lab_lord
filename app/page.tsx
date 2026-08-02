@@ -4,7 +4,10 @@ import { useUser } from "@clerk/nextjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { organizations } from "@/lib/api/organizations";
-import { isBillingPlanId, type BillingPlanId } from "@/lib/billingPlans";
+import {
+  isCheckoutBillingPlanId,
+  type CheckoutBillingPlanId,
+} from "@/lib/billingPlans";
 import { trackEvent } from "@/lib/tracking";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { LandingHero } from "@/components/landing/LandingHero";
@@ -24,7 +27,7 @@ type LandingContentProps = {
 
 const PENDING_BILLING_PLAN_KEY = "lab_lords_pending_billing_plan_v1";
 
-function rememberPendingBillingPlan(planId: BillingPlanId) {
+function rememberPendingBillingPlan(planId: CheckoutBillingPlanId) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(PENDING_BILLING_PLAN_KEY, planId);
 }
@@ -32,7 +35,7 @@ function rememberPendingBillingPlan(planId: BillingPlanId) {
 function readPendingBillingPlan() {
   if (typeof window === "undefined") return null;
   const planId = window.localStorage.getItem(PENDING_BILLING_PLAN_KEY);
-  if (isBillingPlanId(planId)) return planId;
+  if (isCheckoutBillingPlanId(planId)) return planId;
   window.localStorage.removeItem(PENDING_BILLING_PLAN_KEY);
   return null;
 }
@@ -74,7 +77,7 @@ function LandingContent({ isLoaded, isSignedIn }: LandingContentProps) {
     router.push("/app");
   };
 
-  const handlePlanPurchase = useCallback(async (planId: BillingPlanId, trackClick = true) => {
+  const handlePlanPurchase = useCallback(async (planId: CheckoutBillingPlanId, trackClick = true) => {
     if (!isLoaded) return;
     if (trackClick) {
       trackEvent("landing_cta_clicked", {

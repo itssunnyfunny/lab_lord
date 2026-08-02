@@ -21,6 +21,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { SidebarItem } from "./SidebarItem";
 import { useBranchAccess } from "@/hooks/useBranchAccess";
 import type { StaffAction } from "@/types";
+import type { BillingEntitlement } from "@/lib/billingPlans";
 import { LogoMark } from "@/components/brand/AppLogo";
 import {
     chromeSidebarClass,
@@ -34,6 +35,7 @@ type BranchNavItem = {
     label: string;
     href: string;
     permission?: StaffAction;
+    entitlement?: BillingEntitlement;
     active: (pathname: string | null) => boolean;
 };
 
@@ -53,6 +55,11 @@ export function BranchSidebar() {
         return access?.permissions[permission] ?? false;
     };
 
+    const hasEntitlement = (entitlement?: BillingEntitlement) => {
+        if (!entitlement) return true;
+        return access?.entitlements.includes(entitlement) ?? false;
+    };
+
     const overviewItems: BranchNavItem[] = [
         { icon: LayoutDashboard, label: "Dashboard", href: basePath, active: current => current === basePath },
         { icon: BarChart2, label: "Analytics", href: `${basePath}/analytics`, permission: "analytics", active: current => current === `${basePath}/analytics` },
@@ -70,8 +77,8 @@ export function BranchSidebar() {
     ];
 
     const intelligenceItems: BranchNavItem[] = [
-        { icon: FileText, label: "AI Reports", href: `${basePath}/ai/reports`, permission: "analytics", active: current => current === `${basePath}/ai/reports` },
-        { icon: MessageSquare, label: "AI Messages", href: `${basePath}/ai/messages`, permission: "analytics", active: current => current === `${basePath}/ai/messages` },
+        { icon: FileText, label: "AI Reports", href: `${basePath}/ai/reports`, permission: "analytics", entitlement: "AI_ACCESS", active: current => current === `${basePath}/ai/reports` },
+        { icon: MessageSquare, label: "AI Messages", href: `${basePath}/ai/messages`, permission: "analytics", entitlement: "AI_ACCESS", active: current => current === `${basePath}/ai/messages` },
     ];
 
     const renderItems = (items: BranchNavItem[]) => items.map(item => (
@@ -86,7 +93,7 @@ export function BranchSidebar() {
     ));
 
     const renderSection = (label: string, items: BranchNavItem[]) => {
-        const visibleItems = items.filter(item => canSee(item.permission));
+        const visibleItems = items.filter(item => canSee(item.permission) && hasEntitlement(item.entitlement));
         if (visibleItems.length === 0) return null;
 
         return (

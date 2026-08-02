@@ -25,10 +25,6 @@ type VerifySubscriptionInput = {
   razorpay_signature?: unknown;
 };
 
-type CancelSubscriptionInput = {
-  cancelAtCycleEnd?: unknown;
-};
-
 type WebhookProcessingResult = {
   event: string;
   duplicate?: boolean;
@@ -406,14 +402,9 @@ export class BillingService {
 
   static async cancelSubscription(
     userId: string,
-    organizationId: string,
-    input: CancelSubscriptionInput
+    organizationId: string
   ) {
     await OrganizationService.getOrganizationForOwner(organizationId, userId);
-    if (typeof input.cancelAtCycleEnd !== "boolean") {
-      throw new Error("cancelAtCycleEnd must be a boolean");
-    }
-    const cancelAtCycleEnd = input.cancelAtCycleEnd;
 
     const razorpay = getRazorpayClient();
     const updated = await prisma.$transaction(async tx => {
@@ -430,16 +421,16 @@ export class BillingService {
       if (TERMINAL_STATUSES.has(subscription.status)) {
         throw new Error("Subscription has already ended");
       }
-      if (cancelAtCycleEnd && subscription.cancelAtCycleEnd) {
+      if (subscription.cancelAtCycleEnd) {
         return subscription;
       }
-      if (cancelAtCycleEnd && subscription.status !== "ACTIVE") {
+      if (subscription.status !== "ACTIVE") {
         throw new Error("Only an active subscription can be cancelled at the end of its billing cycle");
       }
 
       const gatewaySubscription = await razorpay.cancelSubscription(
         subscription.razorpaySubscriptionId,
-        { cancel_at_cycle_end: cancelAtCycleEnd }
+        { cancel_at_cycle_end: true }
       );
       if (gatewaySubscription.id !== subscription.razorpaySubscriptionId) {
         throw new Error("Razorpay subscription mismatch during cancellation");
@@ -453,11 +444,10 @@ export class BillingService {
         where: { id: subscription.id },
         data: {
           ...snapshot,
-          cancelAtCycleEnd: cancelAtCycleEnd && !cancelledImmediately,
+          cancelAtCycleEnd: !cancelledImmediately,
           cancellationRequestedAt,
-          cancellationScheduledAt: cancelAtCycleEnd
-            ? timestampToDate(gatewaySubscription.change_scheduled_at) ?? subscription.currentEnd
-            : null,
+          cancellationScheduledAt:
+            timestampToDate(gatewaySubscription.change_scheduled_at) ?? subscription.currentEnd,
           cancelledAt: cancelledImmediately
             ? timestampToDate(gatewaySubscription.ended_at) ?? cancellationRequestedAt
             : null,
@@ -466,7 +456,7 @@ export class BillingService {
       await recordSubscriptionHistory(tx, stored, {
         source: "CUSTOMER_CANCELLATION",
         fromStatus: subscription.status,
-        event: cancelAtCycleEnd ? "cancel_at_cycle_end" : "cancel_immediately",
+        event: "cancel_at_cycle_end",
       });
       return stored;
     }, { maxWait: 10_000, timeout: 30_000 });
@@ -572,42 +562,42 @@ export class BillingService {
 
   private static async ensureRazorpayPlan(plan: BillingPlan) {
     const amountSubunits = toRazorpaySubunits(plan.amount ?? 0, plan.currency);
-    const existing = await prisma.saasRazorpayPlan.findUnique({
-      where: { plan: plan.id as SaasPlan },
-    });
+    return prisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ locked: string }>>`
+        SELECT pg_advisory_xact_lock(hashtext(${`lab-lords:razorpay-plan:${plan.id}`}))::text AS locked
+      `;
+      const existing = await tx.saasRazorpayPlan.findUnique({
+        where: { plan: plan.id as SaasPlan },
+      });
 
-    if (existing) {
-      if (
-        existing.amount !== plan.amount ||
-        existing.amountSubunits !== amountSubunits ||
-        existing.currency !== plan.currency ||
-        existing.period !== plan.period ||
-        existing.interval !== plan.interval
-      ) {
-        throw new Error(`Stored Razorpay plan for ${plan.shortName} does not match the billing catalog`);
-      }
-      return existing;
-    }
+      const mappingMatchesCatalog = existing
+        && existing.amount === plan.amount
+        && existing.amountSubunits === amountSubunits
+        && existing.currency === plan.currency
+        && existing.period === plan.period
+        && existing.interval === plan.interval;
 
-    const gatewayPlan = await getRazorpayClient().createPlan({
-      period: plan.period,
-      interval: plan.interval,
-      item: {
-        name: plan.name,
-        amount: amountSubunits,
-        currency: plan.currency,
-        description: plan.description,
-      },
-      notes: {
-        app: "lab_lords",
-        billing_type: "saas_plan",
-        plan: plan.id,
-      },
-    });
+      if (mappingMatchesCatalog) return existing;
 
-    try {
-      return await prisma.saasRazorpayPlan.create({
-        data: {
+      const gatewayPlan = await getRazorpayClient().createPlan({
+        period: plan.period,
+        interval: plan.interval,
+        item: {
+          name: plan.name,
+          amount: amountSubunits,
+          currency: plan.currency,
+          description: plan.description,
+        },
+        notes: {
+          app: "lab_lords",
+          billing_type: "saas_plan",
+          plan: plan.id,
+        },
+      });
+
+      return tx.saasRazorpayPlan.upsert({
+        where: { plan: plan.id as SaasPlan },
+        create: {
           plan: plan.id as SaasPlan,
           amount: plan.amount ?? 0,
           amountSubunits,
@@ -616,15 +606,16 @@ export class BillingService {
           interval: plan.interval,
           razorpayPlanId: gatewayPlan.id,
         },
+        update: {
+          amount: plan.amount ?? 0,
+          amountSubunits,
+          currency: plan.currency,
+          period: plan.period,
+          interval: plan.interval,
+          razorpayPlanId: gatewayPlan.id,
+        },
       });
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) throw error;
-      const raced = await prisma.saasRazorpayPlan.findUnique({
-        where: { plan: plan.id as SaasPlan },
-      });
-      if (!raced) throw error;
-      return raced;
-    }
+    }, { maxWait: 10_000, timeout: 30_000 });
   }
 
   private static toCheckoutPayload(

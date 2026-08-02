@@ -206,6 +206,35 @@ export async function createStaff(overrides: {
   });
 }
 
+export async function createSaasSubscription(overrides: {
+  organizationId: string;
+  plan?: "BASIC" | "PRO";
+  status?: "ACTIVE" | "EXPIRED";
+}) {
+  const plan = overrides.plan ?? "PRO";
+  const status = overrides.status ?? "ACTIVE";
+  const amount = plan === "BASIC" ? 299 : 499;
+  return testPrisma.organizationSubscription.create({
+    data: {
+      id: uid(),
+      organizationId: overrides.organizationId,
+      plan,
+      amount,
+      amountSubunits: amount * 100,
+      currency: "INR",
+      period: "monthly",
+      interval: 1,
+      totalCount: 120,
+      razorpayPlanId: `plan_${plan.toLowerCase()}_${uid()}`,
+      razorpaySubscriptionId: `sub_${plan.toLowerCase()}_${uid()}`,
+      status,
+      currentEnd: status === "ACTIVE"
+        ? new Date(Date.now() + 86_400_000)
+        : new Date(Date.now() - 86_400_000),
+    },
+  });
+}
+
 // ─── Convenience: full world ───────────────────────────────────────────────────
 
 /**

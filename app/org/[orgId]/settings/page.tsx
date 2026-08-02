@@ -56,7 +56,10 @@ import {
     validateRequiredText,
 } from "@/lib/formValidation";
 import { billing, type BillingCheckoutPayload, type BillingOverview, type BillingPlanDto, type OrganizationSubscriptionDto } from "@/lib/api/billing";
-import { isBillingPlanId, type BillingPlanId } from "@/lib/billingPlans";
+import {
+    isCheckoutBillingPlanId,
+    type CheckoutBillingPlanId,
+} from "@/lib/billingPlans";
 import { cn } from "@/lib/utils";
 
 type RazorpayHandlerResponse = {
@@ -181,7 +184,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     const router = useRouter();
     const searchParams = useSearchParams();
     const billingPlanParam = searchParams.get("billingPlan");
-    const requestedBillingPlanId = isBillingPlanId(billingPlanParam) ? billingPlanParam : null;
+    const requestedBillingPlanId = isCheckoutBillingPlanId(billingPlanParam) ? billingPlanParam : null;
 
     const [org, setOrg] = useState<OrgDetails | null>(null);
     const [form, setForm] = useState<OrgForm | null>(null);
@@ -193,9 +196,9 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     const [saveError, setSaveError] = useState("");
     const [billingOverview, setBillingOverview] = useState<BillingOverview | null>(null);
     const [billingLoading, setBillingLoading] = useState(true);
-    const [billingAction, setBillingAction] = useState<BillingPlanId | null>(null);
-    const [autoStartedPlan, setAutoStartedPlan] = useState<BillingPlanId | null>(null);
-    const [cancelMode, setCancelMode] = useState<"cycle_end" | "immediate" | null>(null);
+    const [billingAction, setBillingAction] = useState<CheckoutBillingPlanId | null>(null);
+    const [autoStartedPlan, setAutoStartedPlan] = useState<CheckoutBillingPlanId | null>(null);
+    const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
     const [cancellingSubscription, setCancellingSubscription] = useState(false);
     const [checkoutScriptReady, setCheckoutScriptReady] = useState(
         () => typeof window !== "undefined" && Boolean(window.Razorpay)
@@ -262,7 +265,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
         resetFieldErrors();
     };
 
-    const startSubscription = useCallback(async (planId: BillingPlanId) => {
+    const startSubscription = useCallback(async (planId: CheckoutBillingPlanId) => {
         if (!checkoutScriptReady || !window.Razorpay) {
             setBillingNotice({
                 tone: "warning",
@@ -348,11 +351,11 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     }, [checkoutScriptReady, loadBilling, orgId]);
 
     const confirmCancellation = useCallback(async () => {
-        if (!cancelMode) return;
+        if (!cancelDialogOpen) return;
         setCancellingSubscription(true);
         setBillingNotice(null);
         try {
-            const result = await billing.cancelSubscription(orgId, cancelMode === "cycle_end");
+            const result = await billing.cancelSubscription(orgId);
             setBillingOverview(prev => prev ? { ...prev, current: result.subscription } : prev);
             setBillingNotice({
                 tone: result.scheduled ? "warning" : "success",
@@ -360,7 +363,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                     ? "Cancellation is scheduled for the end of the current billing cycle."
                     : "The subscription has been cancelled.",
             });
-            setCancelMode(null);
+            setCancelDialogOpen(false);
             await loadBilling();
         } catch (err) {
             setBillingNotice({
@@ -370,7 +373,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
         } finally {
             setCancellingSubscription(false);
         }
-    }, [cancelMode, loadBilling, orgId]);
+    }, [cancelDialogOpen, loadBilling, orgId]);
 
     useEffect(() => {
         if (!requestedBillingPlanId) return;
@@ -691,23 +694,14 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                                         ? ` for ${format(new Date(billingOverview.current.cancellationScheduledAt), "PP")}`
                                         : " for the end of the current billing cycle"}.
                                 </div>
-                            ) : !TERMINAL_BILLING_STATUSES.has(billingOverview.current.status) ? (
+                            ) : billingOverview.current.status === "ACTIVE" ? (
                                 <div className="flex flex-wrap justify-end gap-2">
-                                    {billingOverview.current.status === "ACTIVE" && (
-                                        <AppButton
-                                            variant="secondary"
-                                            size="sm"
-                                            onClick={() => setCancelMode("cycle_end")}
-                                        >
-                                            Cancel at cycle end
-                                        </AppButton>
-                                    )}
                                     <AppButton
-                                        variant="danger"
+                                        variant="secondary"
                                         size="sm"
-                                        onClick={() => setCancelMode("immediate")}
+                                        onClick={() => setCancelDialogOpen(true)}
                                     >
-                                        Cancel immediately
+                                        Cancel at cycle end
                                     </AppButton>
                                 </div>
                             ) : null}
@@ -757,16 +751,14 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                 onReset={reset}
             />
             <ConfirmDialog
-                isOpen={cancelMode !== null}
-                onClose={() => setCancelMode(null)}
+                isOpen={cancelDialogOpen}
+                onClose={() => setCancelDialogOpen(false)}
                 onConfirm={confirmCancellation}
                 loading={cancellingSubscription}
                 variant="danger"
-                title={cancelMode === "cycle_end" ? "Cancel at cycle end?" : "Cancel subscription immediately?"}
-                description={cancelMode === "cycle_end"
-                    ? "Your current access remains available until this billing cycle ends. Razorpay will not renew the subscription afterward."
-                    : "This ends the subscription immediately and cannot be undone. Premium entitlements will be removed now."}
-                confirmText={cancelMode === "cycle_end" ? "Schedule cancellation" : "Cancel now"}
+                title="Cancel at cycle end?"
+                description="Your current access remains available until this billing cycle ends. Razorpay will not renew the subscription afterward. Already-paid fees are handled under the Cancellation and Refund Policy."
+                confirmText="Schedule cancellation"
             />
         </>
     );
@@ -796,9 +788,9 @@ function BillingPlanCard({
 }: {
     plan: BillingPlanDto;
     current: OrganizationSubscriptionDto | null;
-    busyPlan: BillingPlanId | null;
+    busyPlan: CheckoutBillingPlanId | null;
     checkoutReady: boolean;
-    onStart: (plan: BillingPlanId) => void;
+    onStart: (plan: CheckoutBillingPlanId) => void;
 }) {
     const isCurrent = isCurrentBillingPlan(plan, current);
     const isBusy = busyPlan === plan.id;

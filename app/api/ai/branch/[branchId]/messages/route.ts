@@ -2,6 +2,7 @@ import { draftOverdueMessages } from "@/ai/messageDrafting/branchMessageDrafter"
 import { getSessionUser } from "@/lib/auth"
 import { checkRateLimit, getRequestRateLimitKey } from "@/lib/rateLimit"
 import { StaffService } from "@/services/staff.service"
+import { EntitlementService } from "@/services/entitlement.service"
 import { NextRequest, NextResponse } from "next/server"
 
 export async function GET(
@@ -16,6 +17,7 @@ export async function GET(
         }
 
         await StaffService.authorize(user.id, branchId, "analytics")
+        await EntitlementService.assertBranchEntitlement(branchId, "AI_ACCESS")
 
         const { searchParams } = new URL(req.url)
         const result = await draftOverdueMessages(branchId, {
@@ -51,6 +53,7 @@ export async function POST(
         }
 
         await StaffService.authorize(user.id, branchId, "analytics")
+        await EntitlementService.assertBranchEntitlement(branchId, "AI_ACCESS")
 
         const rateLimit = checkRateLimit(
             getRequestRateLimitKey(req, "ai-message-generation", `${user.id}:${branchId}`),

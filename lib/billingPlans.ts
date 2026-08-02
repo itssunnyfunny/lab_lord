@@ -1,10 +1,11 @@
 export type BillingPlanId = "BASIC" | "PRO" | "AGENT_CONTROL" | "CUSTOM";
+export type CheckoutBillingPlanId = "BASIC" | "PRO";
 
 export const BILLING_ENTITLEMENTS = [
   "MULTI_BRANCH",
   "STAFF_MANAGEMENT",
   "ADVANCED_ANALYTICS",
-  "AGENT_CONTROL",
+  "AI_ACCESS",
 ] as const;
 
 export type BillingEntitlement = typeof BILLING_ENTITLEMENTS[number];
@@ -22,6 +23,7 @@ export type BillingPlan = {
   period: "monthly";
   interval: 1;
   active: boolean;
+  visible: boolean;
   featured?: boolean;
   comingSoon?: boolean;
   custom?: boolean;
@@ -36,12 +38,13 @@ export const BILLING_PLANS: BillingPlan[] = [
     id: "BASIC",
     name: "Lab Lords Basic",
     shortName: "Basic",
-    amount: 399,
+    amount: 299,
     currency: "INR",
     period: "monthly",
     interval: 1,
     active: true,
-    description: "For one focused workspace getting the lab operations online.",
+    visible: true,
+    description: "Core operations for one study hall or education workspace.",
     features: [
       "Core branch and seat management",
       "Student profiles and due tracking",
@@ -53,22 +56,24 @@ export const BILLING_PLANS: BillingPlan[] = [
   },
   {
     id: "PRO",
-    name: "Lab Lords Pro",
-    shortName: "Pro",
-    amount: 599,
+    name: "Lab Lords Standard",
+    shortName: "Standard",
+    amount: 499,
     currency: "INR",
     period: "monthly",
     interval: 1,
     active: true,
+    visible: true,
     featured: true,
-    description: "For growing labs that need stronger operations and staff controls.",
+    description: "For growing teams that need staff controls, analytics, and AI assistance.",
     features: [
       "Everything in Basic",
       "Multi-branch operating view",
       "Staff roles and permission controls",
       "Advanced analytics and follow-up workflows",
+      "AI reports and AI message drafting",
     ],
-    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS"],
+    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
     limits: { maxBranches: 3 },
   },
   {
@@ -80,6 +85,7 @@ export const BILLING_PLANS: BillingPlan[] = [
     period: "monthly",
     interval: 1,
     active: false,
+    visible: false,
     comingSoon: true,
     description: "AI agent control, deeper automations, and custom command surfaces.",
     features: [
@@ -88,7 +94,7 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Custom automation policies",
       "Priority rollout access",
     ],
-    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AGENT_CONTROL"],
+    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
     limits: { maxBranches: null },
   },
   {
@@ -100,6 +106,7 @@ export const BILLING_PLANS: BillingPlan[] = [
     period: "monthly",
     interval: 1,
     active: false,
+    visible: false,
     custom: true,
     description: "For larger teams that need custom onboarding, controls, or contracts.",
     features: [
@@ -108,7 +115,7 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Security and workflow reviews",
       "Tailored agent and reporting roadmap",
     ],
-    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AGENT_CONTROL"],
+    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
     limits: { maxBranches: null },
   },
 ];
@@ -121,15 +128,26 @@ export function isBillingPlanId(planId: string | null | undefined): planId is Bi
   return typeof planId === "string" && BILLING_PLANS.some(plan => plan.id === planId);
 }
 
+export function isCheckoutBillingPlanId(
+  planId: string | null | undefined
+): planId is CheckoutBillingPlanId {
+  const plan = typeof planId === "string" ? getBillingPlan(planId) : null;
+  return Boolean(plan?.visible && plan.active && plan.amount != null);
+}
+
 export function getActiveBillingPlan(planId: string): BillingPlan {
   const plan = getBillingPlan(planId);
   if (!plan) throw new Error("Unknown subscription plan");
-  if (!plan.active || plan.amount == null) throw new Error(`${plan.shortName} is not available for checkout yet`);
+  if (!plan.visible || !plan.active || plan.amount == null) {
+    throw new Error(`${plan.shortName} is not available for checkout yet`);
+  }
   return plan;
 }
 
 export function publicBillingPlans() {
-  return BILLING_PLANS.map(plan => ({
+  return BILLING_PLANS.filter(
+    (plan): plan is BillingPlan & { id: CheckoutBillingPlanId } => plan.visible
+  ).map(plan => ({
     id: plan.id,
     name: plan.name,
     shortName: plan.shortName,
