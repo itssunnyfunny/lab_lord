@@ -32,3 +32,24 @@ export async function POST(
     return NextResponse.json({ error: message }, { status: errorStatus(message) });
   }
 }
+
+export async function PATCH(
+  req: NextRequest,
+  context: { params: Promise<{ orgId: string }> }
+) {
+  try {
+    const user = await getSessionUser();
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const { orgId } = await context.params;
+    const idempotencyKey = req.headers.get("idempotency-key")?.trim();
+    if (!idempotencyKey) return NextResponse.json({ error: "Idempotency-Key is required" }, { status: 400 });
+    const body = await req.json();
+    return NextResponse.json(
+      await BillingService.changeWorkspacePlan(user.id, orgId, body.plan, idempotencyKey),
+      { status: 202 }
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: message }, { status: errorStatus(message) });
+  }
+}

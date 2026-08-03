@@ -405,6 +405,57 @@ describe("BillingService SaaS subscriptions", () => {
     expect(fakeRazorpay.cancelSubscription).not.toHaveBeenCalled();
   });
 
+  it("keeps billing recovery available while a V2 organization is read-only", async () => {
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: org.id,
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        razorpaySubscriptionId: "sub_recovery",
+        status: "HALTED",
+        providerPaymentMethod: "CARD",
+      },
+    });
+
+    await expect(BillingService.getRecoveryCheckout(user.id, org.id)).resolves.toMatchObject({
+      subscriptionId: "sub_recovery",
+      subscription_card_change: true,
+      method: { card: true, upi: false },
+    });
+  });
+
+  it("keeps an early V2 cancellation local and undoable until the cutoff", async () => {
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    const now = new Date("2026-08-03T00:00:00.000Z");
+    await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: org.id,
+        plan: "PRO",
+        amount: 499,
+        amountSubunits: 49900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_standard",
+        razorpaySubscriptionId: "sub_cancel_later",
+        status: "ACTIVE",
+        providerPaymentMethod: "CARD",
+        paidThrough: new Date("2026-08-20T00:00:00.000Z"),
+      },
+    });
+
+    const scheduled = await BillingService.scheduleWorkspaceCancellation(user.id, org.id, "cancel-early", now);
+    expect(scheduled).toMatchObject({ scheduled: true, undoable: true });
+    await expect(BillingService.undoWorkspaceCancellation(user.id, org.id, now))
+      .resolves.toEqual({ undone: true });
+  });
+
   it("processes Razorpay subscription webhooks idempotently", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);

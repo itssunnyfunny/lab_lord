@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
-import { getRazorpayClient, type RazorpaySubscription } from "@/lib/razorpay";
+import { getRazorpayClient } from "@/lib/razorpay";
 import type {
   BillingChangeType,
   OrganizationBillingChange,
@@ -169,7 +169,10 @@ export class BillingMutationService {
           throw new Error("Billing mutation lease was lost");
         }
 
-        const scheduled = !IMMEDIATE_TYPES.has(claimed.type) && claimed.type !== "CANCELLATION";
+        const cancellationScheduled = claimed.type === "CANCELLATION"
+          && !["cancelled", "completed", "expired"].includes(result.status.toLowerCase());
+        const scheduled = (!IMMEDIATE_TYPES.has(claimed.type) && claimed.type !== "CANCELLATION")
+          || cancellationScheduled;
         const awaitingPayment = ["PLAN_UPGRADE", "QUANTITY_INCREASE", "BRANCH_REACTIVATION"]
           .includes(claimed.type);
         const status = scheduled ? "SCHEDULED" : awaitingPayment ? "AWAITING_PAYMENT" : "APPLIED";
@@ -180,9 +183,19 @@ export class BillingMutationService {
             appliedAt: status === "APPLIED" ? new Date() : null,
           },
         });
+        const providerPlan = claimed.type === "TRIAL_SUBSCRIPTION_UPDATE"
+          ? await tx.saasRazorpayPlan.findUnique({ where: { razorpayPlanId: result.plan_id } })
+          : null;
         await tx.organizationSubscription.update({
           where: { organizationId },
           data: {
+            plan: providerPlan?.plan,
+            amount: providerPlan?.amount,
+            amountSubunits: providerPlan?.amountSubunits,
+            currency: providerPlan?.currency,
+            period: providerPlan?.period,
+            interval: providerPlan?.interval,
+            razorpayPlanId: providerPlan?.razorpayPlanId,
             status: providerStatus(result.status) as never,
             quantity: result.quantity ?? undefined,
             currentStart: result.current_start ? new Date(result.current_start * 1000) : undefined,
@@ -191,6 +204,10 @@ export class BillingMutationService {
             providerStartAt: result.start_at ? new Date(result.start_at * 1000) : undefined,
             authorizationExpiresAt: result.expire_by ? new Date(result.expire_by * 1000) : undefined,
             lastReconciledAt: new Date(),
+            cancelAtCycleEnd: claimed.type === "CANCELLATION" ? cancellationScheduled : undefined,
+            cancellationRequestedAt: claimed.type === "CANCELLATION" ? claimed.createdAt : undefined,
+            cancellationScheduledAt: claimed.type === "CANCELLATION" ? claimed.effectiveAt : undefined,
+            cancelledAt: claimed.type === "CANCELLATION" && !cancellationScheduled ? new Date() : undefined,
           },
         });
         await releaseLease(tx, organizationId, leaseToken);

@@ -15,7 +15,7 @@ function errorStatus(message: string) {
 }
 
 export async function POST(
-  _req: Request,
+  req: Request,
   context: { params: Promise<{ orgId: string }> }
 ) {
   try {
@@ -23,8 +23,24 @@ export async function POST(
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { orgId } = await context.params;
-    const result = await BillingService.cancelSubscription(user.id, orgId);
-    return NextResponse.json(result);
+    const idempotencyKey = req.headers.get("idempotency-key")?.trim() ?? `cancel:${orgId}:${Date.now()}`;
+    const result = await BillingService.scheduleWorkspaceCancellation(user.id, orgId, idempotencyKey);
+    return NextResponse.json(result, { status: 202 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: message }, { status: errorStatus(message) });
+  }
+}
+
+export async function DELETE(
+  _req: Request,
+  context: { params: Promise<{ orgId: string }> }
+) {
+  try {
+    const user = await getSessionUser();
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const { orgId } = await context.params;
+    return NextResponse.json(await BillingService.undoWorkspaceCancellation(user.id, orgId));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: errorStatus(message) });

@@ -91,6 +91,7 @@ type RazorpayOptions = {
     notes: BillingCheckoutPayload["notes"];
     theme: { color: string };
     retry: { enabled: boolean };
+    method?: BillingCheckoutPayload["method"];
     modal: {
         confirm_close: boolean;
         ondismiss: () => void | Promise<void>;
@@ -266,6 +267,22 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     };
 
     const startSubscription = useCallback(async (planId: CheckoutBillingPlanId) => {
+        if (billingOverview?.current
+            && !TERMINAL_BILLING_STATUSES.has(billingOverview.current.status)
+            && billingOverview.current.status !== "CREATED") {
+            setBillingAction(planId);
+            setBillingNotice(null);
+            try {
+                await billing.changePlan(orgId, planId);
+                setBillingNotice({ tone: "warning", message: "Your plan change is being reconciled with Razorpay." });
+                await loadBilling();
+            } catch (err) {
+                setBillingNotice({ tone: "error", message: err instanceof Error ? err.message : "Unable to change plan." });
+            } finally {
+                setBillingAction(null);
+            }
+            return;
+        }
         if (!checkoutScriptReady || !window.Razorpay) {
             setBillingNotice({
                 tone: "warning",
@@ -291,13 +308,14 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                 notes: checkout.notes,
                 theme: { color: "#22c55e" },
                 retry: { enabled: true },
+                method: checkout.method,
                 modal: {
                     confirm_close: true,
                     ondismiss: async () => {
                         if (completed) return;
                         setBillingNotice({
                             tone: "warning",
-                            message: "Checkout closed. The subscription stays pending until Razorpay confirms a final state.",
+                            message: "Checkout closed before payment. You can restart checkout for this plan when you are ready.",
                         });
                         setBillingAction(null);
                         await loadBilling();
@@ -348,7 +366,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
             });
             setBillingAction(null);
         }
-    }, [checkoutScriptReady, loadBilling, orgId]);
+    }, [billingOverview, checkoutScriptReady, loadBilling, orgId]);
 
     const confirmCancellation = useCallback(async () => {
         if (!cancelDialogOpen) return;
@@ -678,9 +696,14 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
 
                     {billingOverview?.current && (
                         <div className="space-y-3 px-5 py-4">
-                            <div className="grid gap-3 md:grid-cols-3">
+                            <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-5">
                                 <ReadOnlyBillingMetric label="Current plan" value={billingOverview.current.shortName} />
                                 <ReadOnlyBillingMetric label="Status" value={billingOverview.current.status} />
+                                <ReadOnlyBillingMetric label="Payment method" value={billingOverview.paymentMethod ?? "Not authorized"} />
+                                <ReadOnlyBillingMetric
+                                    label="Paid through"
+                                    value={billingOverview.current.paidThrough ? format(new Date(billingOverview.current.paidThrough), "PP") : "Awaiting paid invoice"}
+                                />
                                 <ReadOnlyBillingMetric
                                     label="Next charge"
                                     value={billingOverview.current.chargeAt ? format(new Date(billingOverview.current.chargeAt), "PP") : "Not scheduled"}
@@ -705,6 +728,68 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                                     </AppButton>
                                 </div>
                             ) : null}
+                        </div>
+                    )}
+
+                    {billingOverview?.trial && (
+                        <div className="mx-5 mt-4 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] px-4 py-3 text-sm text-[color:var(--text-primary)]">
+                            {billingOverview.trial.claimable ? (
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <span>Your owner account has one available 30-day Standard trial.</span>
+                                    <AppButton size="sm" onClick={async () => { await billing.claimTrial(orgId); await loadBilling(); }}>
+                                        Start trial here
+                                    </AppButton>
+                                </div>
+                            ) : (
+                                <span>
+                                    Standard trial: {billingOverview.trial.status.toLowerCase()}
+                                    {billingOverview.trial.endsAt ? ` until ${format(new Date(billingOverview.trial.endsAt), "PP")}` : ""}.
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    {billingOverview && (
+                        <div className="grid gap-3 px-5 pt-4 sm:grid-cols-2 lg:grid-cols-4">
+                            <ReadOnlyBillingMetric label="Price per branch" value={`₹${billingOverview.projection.unitAmount}/month`} />
+                            <ReadOnlyBillingMetric label="Billable branches" value={String(billingOverview.projection.quantity)} />
+                            <ReadOnlyBillingMetric label="Projected total" value={`₹${billingOverview.projection.monthlyTotal}/month`} />
+                            <ReadOnlyBillingMetric label="Access" value={billingOverview.entitlements.accessMode} />
+                        </div>
+                    )}
+
+                    {(billingOverview?.scheduledChanges.length ?? 0) > 0 && (
+                        <div className="border-t border-[color:var(--ui-form-section-divider)] px-5 py-4">
+                            <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Scheduled changes</h3>
+                            <div className="mt-3 space-y-2">
+                                {billingOverview?.scheduledChanges.map(change => (
+                                    <div key={change.id} className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] px-3 py-2 text-xs">
+                                        <span className="text-[color:var(--text-primary)]">
+                                            {change.type.replaceAll("_", " ")} · {change.status}
+                                            {change.effectiveAt ? ` · ${format(new Date(change.effectiveAt), "PP")}` : ""}
+                                        </span>
+                                        {(change.status === "QUEUED" || change.status === "SCHEDULED" || change.status === "FAILED") && (
+                                            <AppButton variant="secondary" size="sm" onClick={async () => { await billing.undoChange(orgId, change.id); await loadBilling(); }}>
+                                                Undo
+                                            </AppButton>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {(billingOverview?.invoices.length ?? 0) > 0 && (
+                        <div className="border-t border-[color:var(--ui-form-section-divider)] px-5 py-4">
+                            <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Invoices</h3>
+                            <div className="mt-3 space-y-2">
+                                {billingOverview?.invoices.map(invoice => (
+                                    <div key={invoice.id} className="flex justify-between rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] px-3 py-2 text-xs">
+                                        <span>{invoice.status.toUpperCase()}</span>
+                                        <span>₹{invoice.amountSubunits / 100}{invoice.paidAt ? ` · ${format(new Date(invoice.paidAt), "PP")}` : ""}</span>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     )}
 
@@ -776,7 +861,9 @@ function formatPlanAmount(plan: BillingPlanDto) {
 }
 
 function isCurrentBillingPlan(plan: BillingPlanDto, current: OrganizationSubscriptionDto | null) {
-    return current?.plan === plan.id && !TERMINAL_BILLING_STATUSES.has(current.status);
+    return current?.plan === plan.id
+        && current.status !== "CREATED"
+        && !TERMINAL_BILLING_STATUSES.has(current.status);
 }
 
 function BillingPlanCard({
@@ -827,7 +914,7 @@ function BillingPlanCard({
 
             <div className="mt-5">
                 <span className="text-2xl font-semibold text-[color:var(--text-primary)]">{formatPlanAmount(plan)}</span>
-                {!plan.custom && <span className="ml-1 text-xs text-[color:var(--text-secondary)]">/ month</span>}
+                {!plan.custom && <span className="ml-1 text-xs text-[color:var(--text-secondary)]">/ branch / month</span>}
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">

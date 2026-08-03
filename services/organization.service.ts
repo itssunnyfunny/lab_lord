@@ -68,10 +68,15 @@ export class OrganizationService {
     }
 
     static async getOrganizationForOwner(id: string, userId: string) {
+        const org = await this.getOrganizationForOwnerAccess(id, userId);
+        await EntitlementService.assertOrganizationWritable(id);
+        return org;
+    }
+
+    static async getOrganizationForOwnerAccess(id: string, userId: string) {
         const org = await this.getOrganizationById(id);
         if (!org) throw new Error("Organization not found");
         if (org.ownerId !== userId) throw new Error("Unauthorized");
-        await EntitlementService.assertOrganizationWritable(id);
         return org;
     }
 

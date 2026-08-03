@@ -85,6 +85,28 @@ export class BillingReconciliationService {
         SELECT "id" FROM "Organization" WHERE "id" = ${local.organizationId} FOR UPDATE
       `;
 
+      const providerPlan = await tx.saasRazorpayPlan.findUnique({
+        where: { razorpayPlanId: providerSubscription.plan_id },
+      });
+      const pendingChange = confirmedPaidPeriod
+        ? await tx.organizationBillingChange.findFirst({
+            where: {
+              organizationId: local.organizationId,
+              status: { in: ["AWAITING_PAYMENT", "SCHEDULED"] },
+            },
+            orderBy: { sequence: "asc" },
+          })
+        : null;
+      const providerMatchesChange = Boolean(
+        pendingChange
+        && (!pendingChange.toPlan || pendingChange.toPlan === providerPlan?.plan)
+        && (!pendingChange.toQuantity || pendingChange.toQuantity === providerSubscription.quantity)
+        && (!pendingChange.effectiveAt || pendingChange.effectiveAt <= now)
+      );
+      const confirmedPlanChange = providerMatchesChange && pendingChange?.toPlan
+        ? providerPlan
+        : null;
+
       for (const invoice of invoices.items) {
         await tx.organizationSubscriptionInvoice.upsert({
           where: { razorpayInvoiceId: invoice.id },
@@ -123,6 +145,13 @@ export class BillingReconciliationService {
       const stored = await tx.organizationSubscription.update({
         where: { id: local.id },
         data: {
+          plan: confirmedPlanChange?.plan,
+          amount: confirmedPlanChange?.amount,
+          amountSubunits: confirmedPlanChange?.amountSubunits,
+          currency: confirmedPlanChange?.currency,
+          period: confirmedPlanChange?.period,
+          interval: confirmedPlanChange?.interval,
+          razorpayPlanId: confirmedPlanChange?.razorpayPlanId,
           status: status(providerSubscription.status),
           quantity: providerSubscription.quantity ?? local.quantity,
           providerStartAt: date(providerSubscription.start_at),
@@ -144,20 +173,59 @@ export class BillingReconciliationService {
         },
       });
 
-      if (confirmedPaidPeriod) {
-        const change = await tx.organizationBillingChange.findFirst({
-          where: { organizationId: local.organizationId, status: "AWAITING_PAYMENT" },
-          orderBy: { sequence: "asc" },
+      if (confirmedPaidPeriod && paidThrough) {
+        const paymentDedupeId = paidInvoice?.id ?? confirmedPayment?.id ?? paidThrough.toISOString();
+        await tx.organizationSubscriptionHistory.upsert({
+          where: { dedupeKey: `paid:${local.razorpaySubscriptionId}:${paymentDedupeId}` },
+          create: {
+            organizationId: local.organizationId,
+            organizationSubscriptionId: local.id,
+            razorpaySubscriptionId: local.razorpaySubscriptionId,
+            razorpayPaymentId: confirmedPayment?.id ?? null,
+            plan: stored.plan,
+            fromStatus: local.status,
+            toStatus: stored.status,
+            source: "WEBHOOK",
+            event: "provider_paid_period_confirmed",
+            amountSubunits: stored.amountSubunits,
+            quantity: stored.quantity,
+            unitAmountSubunits: stored.amountSubunits,
+            totalAmountSubunits: stored.amountSubunits * stored.quantity,
+            paidThrough,
+            dedupeKey: `paid:${local.razorpaySubscriptionId}:${paymentDedupeId}`,
+            currency: stored.currency,
+          },
+          update: {
+            paidThrough,
+            quantity: stored.quantity,
+            totalAmountSubunits: stored.amountSubunits * stored.quantity,
+          },
         });
-        if (change) {
-          if (change.branchId && ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(change.type)) {
+        if (local.billingOfferId) {
+          await tx.organizationOfferGrant.updateMany({
+            where: {
+              organizationId: local.organizationId,
+              billingOfferId: local.billingOfferId,
+              status: "RESERVED",
+            },
+            data: { status: "REDEEMED", redeemedAt: now },
+          });
+        }
+        if (pendingChange && providerMatchesChange) {
+          if (pendingChange.branchId && ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(pendingChange.type)) {
             await tx.branch.update({
-              where: { id: change.branchId },
+              where: { id: pendingChange.branchId },
               data: { billingStatus: "ACTIVE", billingActivatedAt: now, billingArchivedAt: null },
             });
           }
+          if (pendingChange.branchId && pendingChange.type === "BRANCH_REMOVAL") {
+            await tx.branch.update({
+              where: { id: pendingChange.branchId },
+              data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
+            });
+          }
           await tx.organizationBillingChange.update({
-            where: { id: change.id },
+            where: { id: pendingChange.id },
             data: {
               status: "APPLIED",
               providerInvoiceId: paidInvoice?.id ?? null,

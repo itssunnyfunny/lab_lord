@@ -186,4 +186,95 @@ describe("serialized workspace billing mutations", () => {
       .resolves.toMatchObject({ status: "APPLIED", providerPaymentId: "pay_paid" });
     expect(result.subscription.paidThrough).not.toBeNull();
   });
+
+  it("keeps Standard until a scheduled Basic downgrade is confirmed at the provider", async () => {
+    const { owner, organization, subscription } = await setup();
+    await testPrisma.saasRazorpayPlan.create({
+      data: {
+        plan: "BASIC", amount: 299, amountSubunits: 29900, razorpayPlanId: "plan_basic", active: true,
+      },
+    });
+    const razorpay = fakeRazorpay();
+    setRazorpayClientForTests(razorpay);
+    const now = new Date();
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      idempotencyKey: "downgrade-basic",
+      type: "PLAN_DOWNGRADE",
+      fromPlan: "PRO",
+      toPlan: "BASIC",
+      fromQuantity: 1,
+      toQuantity: 1,
+      effectiveAt: now,
+      createdByUserId: owner.id,
+    });
+
+    await BillingMutationService.processNext(organization.id, now);
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }))
+      .resolves.toMatchObject({ plan: "PRO" });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "SCHEDULED" });
+
+    vi.mocked(razorpay.fetchSubscription).mockImplementationOnce(async () => {
+      const periodStart = Math.floor(now.getTime() / 1000) - 60;
+      return {
+        id: "sub_workspace",
+        entity: "subscription" as const,
+        plan_id: "plan_basic",
+        status: "active",
+        total_count: 120,
+        quantity: 1,
+        current_start: periodStart,
+        current_end: periodStart + 30 * 24 * 60 * 60,
+        payment_method: "card",
+      };
+    });
+    await BillingReconciliationService.reconcileByOrganization(organization.id, { paymentId: "pay_paid", now });
+
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }))
+      .resolves.toMatchObject({ plan: "BASIC", amount: 299, razorpayPlanId: "plan_basic" });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "APPLIED" });
+  });
+
+  it("redeems one offer and records one paid period across duplicate reconciliation", async () => {
+    const { organization, subscription } = await setup();
+    const offer = await testPrisma.billingOffer.create({
+      data: {
+        name: "Launch offer",
+        plan: "PRO",
+        razorpayOfferId: "offer_launch",
+        discountType: "PERCENTAGE",
+        discountValue: 20,
+        durationType: "LIMITED_CYCLES",
+        durationCycles: 3,
+      },
+    });
+    await testPrisma.organizationOfferGrant.create({
+      data: {
+        organizationId: organization.id,
+        billingOfferId: offer.id,
+        status: "RESERVED",
+        subscriptionId: subscription.razorpaySubscriptionId,
+      },
+    });
+    await testPrisma.organizationSubscription.update({
+      where: { id: subscription.id },
+      data: { billingOfferId: offer.id },
+    });
+    setRazorpayClientForTests(fakeRazorpay());
+
+    await BillingReconciliationService.reconcileByOrganization(organization.id, { paymentId: "pay_paid" });
+    await BillingReconciliationService.reconcileByOrganization(organization.id, { paymentId: "pay_paid" });
+
+    await expect(testPrisma.organizationOfferGrant.findUniqueOrThrow({
+      where: { organizationId_billingOfferId: { organizationId: organization.id, billingOfferId: offer.id } },
+    })).resolves.toMatchObject({ status: "REDEEMED" });
+    await expect(testPrisma.organizationSubscriptionInvoice.count({ where: { organizationId: organization.id } }))
+      .resolves.toBe(1);
+    await expect(testPrisma.organizationSubscriptionHistory.count({
+      where: { organizationId: organization.id, event: "provider_paid_period_confirmed" },
+    })).resolves.toBe(1);
+  });
 });

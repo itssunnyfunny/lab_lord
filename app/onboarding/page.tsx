@@ -1,7 +1,7 @@
 "use client";
 
 import type { ChangeEvent } from "react";
-import { useState } from "react";
+import { use, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppButton } from "@/components/ui";
 import {
@@ -46,6 +46,8 @@ import {
 } from "@/lib/formValidation";
 import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 import { cn } from "@/lib/utils";
+import { isCheckoutBillingPlanId } from "@/lib/billingPlans";
+import { getOrganizationBillingPath } from "@/lib/billingFlow";
 
 interface OnboardingShiftDraft {
     clientId: string;
@@ -63,6 +65,9 @@ interface OnboardingMultiShiftDraft {
 }
 
 interface OnboardingResponse {
+    org: {
+        id: string;
+    };
     branch: {
         id: string;
     };
@@ -122,7 +127,15 @@ const stepDescriptions: Record<OnboardingStep, string> = {
     3: "Choose whether this branch should begin with imported records or a clean workspace.",
 };
 
-export default function OnboardingPage() {
+export default function OnboardingPage({
+    searchParams,
+}: {
+    searchParams: Promise<{ billingPlan?: string }>;
+}) {
+    const query = use(searchParams);
+    const requestedBillingPlan = isCheckoutBillingPlanId(query.billingPlan)
+        ? query.billingPlan
+        : null;
     const router = useRouter();
     const [step, setStep] = useState<OnboardingStep>(1);
     const [loading, setLoading] = useState(false);
@@ -366,6 +379,11 @@ export default function OnboardingPage() {
                 shifts: shiftsResult.value,
                 multiShifts: multiShiftsResult.value,
             }) as OnboardingResponse;
+
+            if (requestedBillingPlan) {
+                router.push(getOrganizationBillingPath(res.org.id, requestedBillingPlan));
+                return;
+            }
 
             setCreatedBranchId(res.branch.id);
             resetFieldErrors();

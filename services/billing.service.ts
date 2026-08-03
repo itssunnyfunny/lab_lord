@@ -13,6 +13,7 @@ import {
 import { OrganizationService } from "@/services/organization.service";
 import { EntitlementService } from "@/services/entitlement.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
+import { BillingMutationService } from "@/services/billingMutation.service";
 import type { OrganizationSubscription, OrganizationSubscriptionHistory, Prisma } from "@/app/generated/prisma/client";
 import type { SaasPlan, SaasSubscriptionHistorySource, SaasSubscriptionStatus } from "@/types";
 
@@ -233,8 +234,8 @@ export class BillingService {
   static serializeSubscription = serializeSubscription;
 
   static async listPlansForOrganization(userId: string, organizationId: string) {
-    await OrganizationService.getOrganizationForOwner(organizationId, userId);
-    const [subscription, history, entitlements] = await Promise.all([
+    const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const [subscription, history, entitlements, invoices, scheduledChanges, availableTrial, offerGrant] = await Promise.all([
       prisma.organizationSubscription.findUnique({ where: { organizationId } }),
       prisma.organizationSubscriptionHistory.findMany({
         where: { organizationId },
@@ -242,19 +243,70 @@ export class BillingService {
         take: 20,
       }),
       EntitlementService.getOrganizationProfile(organizationId),
+      prisma.organizationSubscriptionInvoice.findMany({
+        where: { organizationId },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      }),
+      prisma.organizationBillingChange.findMany({
+        where: { organizationId, status: { in: ["QUEUED", "PROCESSING", "AWAITING_PAYMENT", "SCHEDULED", "FAILED"] } },
+        orderBy: { sequence: "asc" },
+      }),
+      prisma.ownerTrialGrant.findUnique({ where: { ownerId: userId } }),
+      prisma.organizationOfferGrant.findFirst({
+        where: { organizationId, status: { in: ["ELIGIBLE", "RESERVED"] } },
+        include: { billingOffer: true },
+        orderBy: { billingOffer: { priority: "desc" } },
+      }),
     ]);
 
+    const quantity = entitlements.usage.branches;
+    const selectedPlan = getBillingPlan(subscription?.plan ?? "PRO");
+    const unitAmount = selectedPlan?.amount ?? 0;
+    const discountCycles = offerGrant?.billingOffer.durationCycles ?? 0;
+    const rawTotal = unitAmount * quantity;
+    const discountedTotal = offerGrant
+      ? offerGrant.billingOffer.discountType === "PERCENTAGE"
+        ? Math.max(0, Math.round(rawTotal * (100 - offerGrant.billingOffer.discountValue) / 100))
+        : Math.max(0, rawTotal - offerGrant.billingOffer.discountValue)
+      : rawTotal;
+
     return {
+      billingModelVersion: organization.billingModelVersion,
       plans: publicBillingPlans(),
       current: serializeSubscription(subscription),
       history: history.map(serializeHistoryEntry),
       entitlements,
+      trial: availableTrial
+        ? {
+            status: availableTrial.status,
+            source: availableTrial.source,
+            organizationId: availableTrial.organizationId,
+            startedAt: availableTrial.trialStartedAt,
+            endsAt: availableTrial.trialEndsAt,
+            claimable: availableTrial.status === "AVAILABLE",
+          }
+        : null,
+      projection: {
+        plan: subscription?.plan ?? "PRO",
+        quantity,
+        unitAmount,
+        monthlyTotal: rawTotal,
+        nextChargeAt: subscription?.chargeAt ?? availableTrial?.trialEndsAt ?? null,
+        discountedTotal,
+        discountedCycles: discountCycles,
+        normalRenewalTotal: rawTotal,
+      },
+      paymentMethod: subscription?.providerPaymentMethod ?? null,
+      invoices,
+      scheduledChanges,
+      offer: offerGrant?.billingOffer ?? null,
     };
   }
 
   static async createSubscriptionCheckout(userId: string, organizationId: string, input: CheckoutInput) {
     const selectedPlan = getActiveBillingPlan(input.plan);
-    const org = await OrganizationService.getOrganizationForOwner(organizationId, userId);
+    const org = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     const workspaceBilling = org.billingModelVersion === "WORKSPACE_V2";
     const quantity = workspaceBilling
       ? await prisma.branch.count({
@@ -475,7 +527,7 @@ export class BillingService {
     organizationId: string,
     input: VerifySubscriptionInput
   ) {
-    await OrganizationService.getOrganizationForOwner(organizationId, userId);
+    await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     const subscriptionId = assertRazorpayId(input.razorpay_subscription_id, "sub");
     const paymentId = assertRazorpayId(input.razorpay_payment_id, "pay");
     if (typeof input.razorpay_signature !== "string" || !input.razorpay_signature.trim()) {
@@ -558,7 +610,7 @@ export class BillingService {
     userId: string,
     organizationId: string
   ) {
-    await OrganizationService.getOrganizationForOwner(organizationId, userId);
+    await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
 
     const razorpay = getRazorpayClient();
     const updated = await prisma.$transaction(async tx => {
@@ -620,6 +672,149 @@ export class BillingService {
       scheduled: updated.cancelAtCycleEnd,
       subscription: serializeSubscription(updated),
     };
+  }
+
+  static async changeWorkspacePlan(
+    userId: string,
+    organizationId: string,
+    planId: string,
+    idempotencyKey: string
+  ) {
+    const selectedPlan = getActiveBillingPlan(planId);
+    const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    if (organization.billingModelVersion !== "WORKSPACE_V2") {
+      throw new Error("Workspace billing is not enabled for this organization");
+    }
+    const subscription = organization.subscription;
+    if (!subscription) throw new Error("Subscription not found");
+    if (subscription.plan === selectedPlan.id) return { unchanged: true, subscription: serializeSubscription(subscription) };
+    if (subscription.status === "CREATED") {
+      return this.createSubscriptionCheckout(userId, organizationId, { plan: selectedPlan.id });
+    }
+    if (subscription.providerPaymentMethod !== "CARD") {
+      throw new Error("V1 subscription changes require card authorization");
+    }
+    const trialActive = organization.ownerTrialGrant?.status === "ACTIVE"
+      && organization.ownerTrialGrant.trialEndsAt != null
+      && organization.ownerTrialGrant.trialEndsAt > new Date();
+    const type = trialActive
+      ? "TRIAL_SUBSCRIPTION_UPDATE"
+      : subscription.plan === "BASIC" && selectedPlan.id === "PRO"
+        ? "PLAN_UPGRADE"
+        : "PLAN_DOWNGRADE";
+    const change = await BillingMutationService.enqueue({
+      organizationId,
+      subscriptionId: subscription.id,
+      idempotencyKey,
+      type,
+      fromPlan: subscription.plan,
+      toPlan: selectedPlan.id as SaasPlan,
+      fromQuantity: subscription.quantity,
+      toQuantity: subscription.quantity,
+      effectiveAt: type === "PLAN_DOWNGRADE" ? subscription.currentEnd : new Date(),
+      createdByUserId: userId,
+    });
+    const processed = await BillingMutationService.processNext(organizationId);
+    return { change: processed ?? change };
+  }
+
+  static async scheduleWorkspaceCancellation(
+    userId: string,
+    organizationId: string,
+    idempotencyKey: string,
+    now = new Date()
+  ) {
+    const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    if (organization.billingModelVersion !== "WORKSPACE_V2") {
+      return this.cancelSubscription(userId, organizationId);
+    }
+    const subscription = organization.subscription;
+    if (!subscription) throw new Error("Subscription not found");
+    const trialActive = organization.ownerTrialGrant?.status === "ACTIVE"
+      && organization.ownerTrialGrant.trialEndsAt != null
+      && organization.ownerTrialGrant.trialEndsAt > now;
+    const boundary = trialActive
+      ? organization.ownerTrialGrant!.trialEndsAt!
+      : subscription.paidThrough ?? subscription.currentEnd;
+    if (!boundary) throw new Error("Cancellation boundary is unavailable");
+    const undoCutoffAt = new Date(boundary.getTime() - 24 * 60 * 60 * 1000);
+    const change = await BillingMutationService.enqueue({
+      organizationId,
+      subscriptionId: subscription.id,
+      idempotencyKey,
+      type: "CANCELLATION",
+      effectiveAt: boundary,
+      undoCutoffAt,
+      createdByUserId: userId,
+    });
+    const late = now >= undoCutoffAt;
+    const processed = late ? await BillingMutationService.processNext(organizationId, now) : null;
+    return {
+      cancelled: false,
+      scheduled: true,
+      undoable: !late,
+      undoCutoffAt,
+      effectiveAt: boundary,
+      change: processed ?? change,
+      subscription: serializeSubscription(subscription),
+    };
+  }
+
+  static async undoWorkspaceCancellation(userId: string, organizationId: string, now = new Date()) {
+    await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const change = await prisma.organizationBillingChange.findFirst({
+      where: { organizationId, type: "CANCELLATION", status: "QUEUED" },
+      orderBy: { sequence: "desc" },
+    });
+    if (!change) throw new Error("Undoable cancellation not found");
+    if (!change.undoCutoffAt || change.undoCutoffAt <= now) {
+      throw new Error("The cancellation is no longer undoable");
+    }
+    await prisma.organizationBillingChange.update({
+      where: { id: change.id },
+      data: { status: "UNDONE", undoneAt: now },
+    });
+    return { undone: true };
+  }
+
+  static async getRecoveryCheckout(userId: string, organizationId: string) {
+    const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const subscription = organization.subscription;
+    if (!subscription || !["PENDING", "HALTED"].includes(subscription.status)) {
+      throw new Error("Payment recovery is only available for pending or halted subscriptions");
+    }
+    return {
+      keyId: getRazorpayKeyId(),
+      subscriptionId: subscription.razorpaySubscriptionId,
+      subscription_card_change: true,
+      method: { card: true, upi: false, netbanking: false, wallet: false },
+    };
+  }
+
+  static async reconcileMutation(userId: string, organizationId: string, changeId: string, paymentId?: string) {
+    await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const change = await prisma.organizationBillingChange.findFirst({
+      where: { id: changeId, organizationId },
+    });
+    if (!change) throw new Error("Billing change not found");
+    return BillingReconciliationService.reconcileByOrganization(organizationId, { paymentId });
+  }
+
+  static async undoWorkspaceChange(userId: string, organizationId: string, changeId: string) {
+    const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const change = await prisma.organizationBillingChange.findFirst({
+      where: { id: changeId, organizationId, status: { in: ["QUEUED", "SCHEDULED", "FAILED"] } },
+    });
+    if (!change) throw new Error("Undoable billing change not found");
+    if (change.type === "CANCELLATION") return this.undoWorkspaceCancellation(userId, organizationId);
+    if (change.status === "SCHEDULED" && organization.subscription?.providerPaymentMethod === "CARD") {
+      await getRazorpayClient().cancelScheduledChanges(organization.subscription.razorpaySubscriptionId);
+    }
+    await prisma.organizationBillingChange.update({
+      where: { id: change.id },
+      data: { status: "UNDONE", undoneAt: new Date() },
+    });
+    return { undone: true };
   }
 
   static async handleRazorpayWebhook(rawBody: string, signature: string | null, eventId: string | null) {

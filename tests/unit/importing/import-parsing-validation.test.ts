@@ -33,6 +33,7 @@ import { inferConfirmedPaymentMapping } from "@/importing/utils/payment-mapping-
 import { assertImportRowLimit, MAX_IMPORT_ROWS, statusForValidation } from "@/importing/services/import-session.service";
 import { validateRequiredImportFields } from "@/importing/validators/import-required-fields.validator";
 import { validateImportPayment } from "@/importing/validators/import-payment.validator";
+import type { ImportMappingState } from "@/importing/contracts/import-session.contract";
 import { validateImportAllocation } from "@/importing/validators/import-allocation.validator";
 import { validateImportSeat } from "@/importing/validators/import-seat.validator";
 import { validateImportShift } from "@/importing/validators/import-shift.validator";
@@ -585,7 +586,7 @@ describe("import mapping and validation", () => {
                 entityTypesDetected: ["STUDENT"],
                 columnMappings: [],
                 importOptions: { paymentCycle: "SKIP_PAYMENTS", paymentAction: "SKIP_PAYMENTS" },
-            },
+            } as ImportMappingState,
         };
         const row = {
             status: "READY",

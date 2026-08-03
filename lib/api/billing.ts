@@ -35,12 +35,19 @@ export type OrganizationSubscriptionDto = {
   period: string;
   interval: number;
   totalCount: number;
+  quantity: number;
+  unitAmount: number;
+  monthlyTotal: number;
   status: string;
   razorpaySubscriptionId: string;
   currentStart: string | null;
   currentEnd: string | null;
   chargeAt: string | null;
   endedAt: string | null;
+  providerStartAt: string | null;
+  authorizationExpiresAt: string | null;
+  providerPaymentMethod: string;
+  paidThrough: string | null;
   cancelAtCycleEnd: boolean;
   cancellationRequestedAt: string | null;
   cancellationScheduledAt: string | null;
@@ -72,6 +79,10 @@ export type OrganizationEntitlementProfileDto = {
   entitlements: BillingEntitlement[];
   limits: { maxBranches: number | null };
   usage: { branches: number };
+  accessMode: "FULL" | "WARNING" | "READ_ONLY";
+  canWrite: boolean;
+  accessReason: string;
+  trial: { status: string; endsAt: string | null } | null;
 };
 
 export type BillingOverview = {
@@ -79,6 +90,43 @@ export type BillingOverview = {
   current: OrganizationSubscriptionDto | null;
   history: OrganizationSubscriptionHistoryDto[];
   entitlements: OrganizationEntitlementProfileDto;
+  billingModelVersion: "LEGACY" | "WORKSPACE_V2";
+  trial: {
+    status: string;
+    source: string;
+    organizationId: string | null;
+    startedAt: string | null;
+    endsAt: string | null;
+    claimable: boolean;
+  } | null;
+  projection: {
+    plan: BillingPlanId;
+    quantity: number;
+    unitAmount: number;
+    monthlyTotal: number;
+    nextChargeAt: string | null;
+    discountedTotal: number;
+    discountedCycles: number;
+    normalRenewalTotal: number;
+  };
+  paymentMethod: string | null;
+  invoices: Array<{
+    id: string;
+    status: string;
+    amountSubunits: number;
+    currency: string;
+    paidAt: string | null;
+  }>;
+  scheduledChanges: Array<{
+    id: string;
+    type: string;
+    status: string;
+    effectiveAt: string | null;
+    undoCutoffAt: string | null;
+    toPlan: BillingPlanId | null;
+    toQuantity: number | null;
+    lastError: string | null;
+  }>;
 };
 
 export type BillingCheckoutPayload = {
@@ -89,6 +137,7 @@ export type BillingCheckoutPayload = {
   currency: string;
   name: string;
   description: string;
+  method: { card: true; upi: false; netbanking: false; wallet: false };
   plan: Pick<BillingPlanDto, "id" | "name" | "shortName" | "amount" | "currency" | "period">;
   prefill: {
     name?: string;
@@ -131,6 +180,26 @@ export const billing = {
   },
 
   cancelSubscription(orgId: string): Promise<BillingCancellationResult> {
-    return apiClient.post(`/organizations/${orgId}/billing/subscription/cancel`);
+    return apiClient.post(`/organizations/${orgId}/billing/subscription/cancel`, null, {
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    });
+  },
+
+  undoCancellation(orgId: string): Promise<{ undone: true }> {
+    return apiClient.delete(`/organizations/${orgId}/billing/subscription/cancel`);
+  },
+
+  claimTrial(orgId: string) {
+    return apiClient.post(`/organizations/${orgId}/billing/trial/claim`);
+  },
+
+  changePlan(orgId: string, plan: CheckoutBillingPlanId) {
+    return apiClient.patch(`/organizations/${orgId}/billing/subscription`, { plan }, {
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    });
+  },
+
+  undoChange(orgId: string, changeId: string) {
+    return apiClient.delete(`/organizations/${orgId}/billing/mutations/${changeId}`);
   },
 };
