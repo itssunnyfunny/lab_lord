@@ -5,6 +5,7 @@ import { SeatAllocationService } from "@/services/seatAllocation.service";
 import { StaffService } from "@/services/staff.service";
 import { startOfDay } from "date-fns";
 import type { Prisma } from "@/app/generated/prisma/client";
+import { EntitlementService } from "@/services/entitlement.service";
 import {
     compactText,
     FORM_LIMITS,
@@ -151,6 +152,7 @@ export class StudentService {
         data: CreateStudentDto
     ) {
         const branch = await this.verifyBranchAccess(userId, branchId);
+        await EntitlementService.assertBranchWritable(branchId);
         const nameResult = validateRequiredText(data.name, "Student name");
         if (!nameResult.ok) throw new Error(nameResult.error);
         const phoneResult = validateRequiredPhone(data.phone);
@@ -251,6 +253,7 @@ export class StudentService {
         data: CreateImportedStudentDto
     ) {
         const branch = await this.verifyBranchAccess(userId, branchId);
+        await EntitlementService.assertBranchWritable(branchId);
         const nameResult = validateRequiredText(data.name, "Student name");
         if (!nameResult.ok) throw new Error(nameResult.error);
         const phoneResult = validatePhone(data.phone ?? undefined);
@@ -347,6 +350,7 @@ export class StudentService {
         data: UpdateStudentProfileDto
     ) {
         const verifiedStudent = await this.verifyStudentAccess(userId, studentId);
+        await EntitlementService.assertBranchWritable(verifiedStudent.branchId);
         const nameResult = data.name !== undefined ? validateRequiredText(data.name, "Student name") : null;
         if (nameResult && !nameResult.ok) throw new Error(nameResult.error);
         const phoneResult = data.phone !== undefined ? validateRequiredPhone(data.phone) : null;
@@ -503,6 +507,7 @@ export class StudentService {
         dueResolution: DueResolution = "KEEP"
     ) {
         const verifiedStudent = await this.verifyStudentAccess(userId, studentId);
+        await EntitlementService.assertBranchWritable(verifiedStudent.branchId);
         const now = new Date();
 
         if (status === StudentStatus.INACTIVE) {

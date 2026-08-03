@@ -10,6 +10,7 @@ import {
     requiredPhone,
 } from "@/lib/settingsValidation";
 import { CreateOrganizationDto, UpdateOrganizationSettingsDto, WEEK_STARTS_ON } from "@/types";
+import { EntitlementService } from "@/services/entitlement.service";
 
 const ORG_SETTINGS_FIELDS = [
     "name",
@@ -70,6 +71,7 @@ export class OrganizationService {
         const org = await this.getOrganizationById(id);
         if (!org) throw new Error("Organization not found");
         if (org.ownerId !== userId) throw new Error("Unauthorized");
+        await EntitlementService.assertOrganizationWritable(id);
         return org;
     }
 

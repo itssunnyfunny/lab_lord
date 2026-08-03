@@ -2,6 +2,7 @@ import { randomBytes } from "crypto";
 import { prisma as db } from "@/lib/prisma";
 import { StaffRole } from "@/types";
 import { StaffService } from "@/services/staff.service";
+import { EntitlementService } from "@/services/entitlement.service";
 
 const DEFAULT_INVITE_TTL_DAYS = 7;
 
@@ -40,6 +41,7 @@ export class StaffInviteService {
         ttlDays = DEFAULT_INVITE_TTL_DAYS
     ) {
         await StaffService.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
 
         if (ttlDays < 1 || ttlDays > 30) {
             throw new Error("Invite expiry must be between 1 and 30 days.");
@@ -57,6 +59,7 @@ export class StaffInviteService {
 
     static async revokeInvite(actorId: string, branchId: string, inviteId: string) {
         await StaffService.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
 
         const invite = await db.staffInvite.findUnique({
             where: { id: inviteId },
@@ -118,6 +121,8 @@ export class StaffInviteService {
             if (!invite) {
                 throw new Error("Invite not found");
             }
+
+            await EntitlementService.assertBranchWritable(invite.branchId);
 
             if (invite.acceptedAt) {
                 throw new Error("Invite has already been accepted");

@@ -6,6 +6,7 @@ import type { StaffAction } from "@/types";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { startOfDay, startOfMonth, endOfMonth } from "date-fns";
 import { dueCyclesThrough } from "@/utils/studentBillingCycles";
+import { EntitlementService } from "@/services/entitlement.service";
 
 const STUDENT_GENERATION_BATCH_SIZE = 250;
 const PAYMENT_INSERT_BATCH_SIZE = 1000;
@@ -214,6 +215,7 @@ export class PaymentService {
         asOfDate: Date = new Date()
     ) {
         await this.assertBranchAccess(userId, branchId, "generate_payments");
+        await EntitlementService.assertBranchWritable(branchId);
         return this.generateMissingDuePayments({ branchId, asOfDate });
     }
 
@@ -247,6 +249,7 @@ export class PaymentService {
         }
     ) {
         await this.assertBranchAccess(userId, branchId, "generate_payments");
+        await EntitlementService.assertBranchWritable(branchId);
 
         const periodStart = startOfDay(data.periodStart);
         const periodEnd = startOfDay(data.periodEnd);
@@ -396,6 +399,7 @@ export class PaymentService {
         }
 
         await StaffService.authorize(userId, payment.branchId, "mark_payment_paid");
+        await EntitlementService.assertBranchWritable(payment.branchId);
 
         if (payment.status === PaymentStatus.PAID) {
             return payment; // Already paid, idempotent
@@ -464,6 +468,7 @@ export class PaymentService {
         }
 
         await StaffService.authorize(userId, payment.branchId, "waive_payments");
+        await EntitlementService.assertBranchWritable(payment.branchId);
 
         if (payment.status === PaymentStatus.WAIVED) {
             return payment; // Already waived, idempotent

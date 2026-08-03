@@ -275,6 +275,7 @@ export class StaffService {
         role: StaffRole
     ) {
         await this.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
         return this.createStaffMembership(branchId, targetUserId, role);
     }
 
@@ -285,6 +286,7 @@ export class StaffService {
         role: StaffRole
     ) {
         await this.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
 
         const email = this.normalizeEmail(targetEmail);
         if (!email) {
@@ -349,6 +351,7 @@ export class StaffService {
      */
     static async removeStaff(actorId: string, branchId: string, staffId: string) {
         await this.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
 
         return db.staff.delete({
             where: { id: staffId },
@@ -387,6 +390,7 @@ export class StaffService {
         }
     ) {
         await this.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
 
         const permissionUpdates = normalizePermissionUpdate(data.permissions);
         if (!data.role && permissionUpdates.length === 0) {

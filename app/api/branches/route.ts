@@ -11,7 +11,7 @@ import {
     validateShiftDrafts,
 } from "@/lib/formValidation";
 import { generateSeatLabelsForSeatCount, validateSeatNumberingConfig } from "@/lib/seatNumbering";
-import { SubscriptionEntitlementError } from "@/services/entitlement.service";
+import { BillingReadOnlyError, SubscriptionEntitlementError } from "@/services/entitlement.service";
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Internal Server Error";
@@ -66,13 +66,14 @@ export async function POST(req: Request) {
             seatCount: seatCountResult.value,
             seatNumbering: seatNumberingResult.value,
             shifts: shiftsResult.value,
+            idempotencyKey: req.headers.get("idempotency-key") ?? undefined,
         });
 
-        return NextResponse.json(branch, { status: 201 });
+        return NextResponse.json(branch, { status: branch.billingStatus === "PENDING_ACTIVATION" ? 202 : 201 });
     } catch (error: unknown) {
         const message = getErrorMessage(error);
         console.error("Error creating branch:", error);
-        if (error instanceof SubscriptionEntitlementError) {
+        if (error instanceof SubscriptionEntitlementError || error instanceof BillingReadOnlyError) {
             return NextResponse.json({ error: message, code: error.code }, { status: 403 });
         }
         return NextResponse.json(

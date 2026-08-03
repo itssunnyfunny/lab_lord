@@ -5,6 +5,7 @@ import { parseNullableTime, timesOverlap } from "@/utils/shiftTime";
 import { validateSeatLabel } from "@/lib/formValidation";
 import { generateSeatLabels, sortSeatsByLabel, validateSeatNumberingConfig } from "@/lib/seatNumbering";
 import { endOfDay } from "date-fns";
+import { EntitlementService } from "@/services/entitlement.service";
 
 function isUniqueConstraintError(error: unknown) {
     return typeof error === "object"
@@ -48,6 +49,7 @@ export class SeatService {
 
     static async createSeat(userId: string, branchId: string, label: string) {
         await this.assertBranchAccess(userId, branchId, "manage_branch");
+        await EntitlementService.assertBranchWritable(branchId);
         const labelResult = validateSeatLabel(label);
         if (!labelResult.ok) throw new Error(labelResult.error);
 
@@ -75,6 +77,7 @@ export class SeatService {
 
     static async generateSeats(userId: string, branchId: string, seatNumbering: unknown) {
         await this.assertBranchAccess(userId, branchId, "manage_branch");
+        await EntitlementService.assertBranchWritable(branchId);
 
         const numberingResult = validateSeatNumberingConfig(seatNumbering);
         if (!numberingResult.ok) throw new Error(numberingResult.error);
