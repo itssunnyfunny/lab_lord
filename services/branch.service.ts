@@ -452,9 +452,16 @@ export class BranchService {
     static async archiveDueBillingRemovals(now = new Date()) {
         const due = await prisma.organizationBillingChange.findMany({
             where: { type: "BRANCH_REMOVAL", status: "SCHEDULED", effectiveAt: { lte: now } },
+            include: { organizationSubscription: true },
         });
+        let archived = 0;
         for (const change of due) {
             if (!change.branchId) continue;
+            const providerConfirmed = !change.organizationSubscription
+                || (change.toQuantity === change.organizationSubscription.quantity
+                    && change.organizationSubscription.lastReconciledAt != null
+                    && change.organizationSubscription.lastReconciledAt >= (change.effectiveAt ?? now));
+            if (!providerConfirmed) continue;
             await prisma.$transaction([
                 prisma.branch.update({
                     where: { id: change.branchId },
@@ -465,8 +472,9 @@ export class BranchService {
                     data: { status: "APPLIED", appliedAt: now },
                 }),
             ]);
+            archived += 1;
         }
-        return { archived: due.length };
+        return { archived };
     }
 }
 

@@ -46,13 +46,13 @@ describe("subscription entitlements", () => {
       plan: null,
       effectivePlan: "BASIC",
       fallbackAccess: true,
-      limits: { maxBranches: 1 },
+      limits: { maxBranches: null },
     });
     expect(profile.entitlements).not.toContain("ADVANCED_ANALYTICS");
     expect(profile.entitlements).not.toContain("AI_ACCESS");
   });
 
-  it("limits Basic organizations to one branch and core features", async () => {
+  it("lets Basic add billable branches while keeping premium features unavailable", async () => {
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id });
     await createSubscription(org.id, "BASIC");
@@ -60,7 +60,10 @@ describe("subscription entitlements", () => {
       data: { organizationId: org.id, name: "Main", contactPhone: "+919876543210" },
     });
 
-    await expect(EntitlementService.assertCanCreateBranch(org.id)).rejects.toThrow("up to 1 branch");
+    await expect(EntitlementService.assertCanCreateBranch(org.id)).resolves.toMatchObject({
+      effectivePlan: "BASIC",
+      limits: { maxBranches: null },
+    });
     await expect(StaffService.authorize(user.id, branch.id, "analytics")).rejects.toThrow("upgraded subscription");
     await expect(StaffService.listStaff(user.id, branch.id)).rejects.toThrow("upgraded subscription");
   });
@@ -77,7 +80,7 @@ describe("subscription entitlements", () => {
     expect(profile).toMatchObject({
       effectivePlan: "PRO",
       fallbackAccess: false,
-      limits: { maxBranches: 3 },
+      limits: { maxBranches: null },
     });
     expect(profile.entitlements).toContain("AI_ACCESS");
     await expect(StaffService.authorize(user.id, branch.id, "analytics")).resolves.toBe(true);
@@ -95,6 +98,6 @@ describe("subscription entitlements", () => {
     expect(profile.entitlements).not.toContain("AI_ACCESS");
     expect(profile.effectivePlan).toBe("BASIC");
     expect(profile.fallbackAccess).toBe(true);
-    expect(profile.limits.maxBranches).toBe(1);
+    expect(profile.limits.maxBranches).toBeNull();
   });
 });
