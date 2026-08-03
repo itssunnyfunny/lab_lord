@@ -235,6 +235,7 @@ export class BillingService {
     const razorpayPlan = await this.ensureRazorpayPlan(selectedPlan);
     const razorpay = getRazorpayClient();
     let createdGatewaySubscriptionId: string | null = null;
+    const supersededSubscription = { current: null as OrganizationSubscription | null };
     let subscription: OrganizationSubscription;
 
     try {
@@ -256,7 +257,16 @@ export class BillingService {
             return existing;
           }
 
-          if (!TERMINAL_STATUSES.has(existing.status)) {
+          if (existing.status === "CREATED") {
+            const cancelledGatewaySubscription = await razorpay.cancelSubscription(
+              existing.razorpaySubscriptionId,
+              { cancel_at_cycle_end: false }
+            );
+            if (cancelledGatewaySubscription.id !== existing.razorpaySubscriptionId) {
+              throw new Error("Razorpay subscription mismatch while replacing checkout");
+            }
+            supersededSubscription.current = existing;
+          } else if (!TERMINAL_STATUSES.has(existing.status)) {
             if (existing.plan === selectedPlan.id) {
               throw new Error(`This organization already has a ${existing.status.toLowerCase()} ${selectedPlan.shortName} subscription`);
             }
@@ -311,6 +321,22 @@ export class BillingService {
           : tx.organizationSubscription.create({
             data: recordData,
           }));
+        if (supersededSubscription.current) {
+          await tx.organizationSubscriptionHistory.create({
+            data: {
+              organizationId,
+              organizationSubscriptionId: stored.id,
+              razorpaySubscriptionId: supersededSubscription.current.razorpaySubscriptionId,
+              plan: supersededSubscription.current.plan,
+              fromStatus: supersededSubscription.current.status,
+              toStatus: "CANCELLED",
+              source: "SYSTEM",
+              event: "checkout_replaced",
+              amountSubunits: supersededSubscription.current.amountSubunits,
+              currency: supersededSubscription.current.currency,
+            },
+          });
+        }
         await recordSubscriptionHistory(tx, stored, {
           source: "CHECKOUT",
           fromStatus: existing?.status ?? null,
@@ -328,6 +354,43 @@ export class BillingService {
             organizationId,
             razorpaySubscriptionId: createdGatewaySubscriptionId,
             error: compensationError,
+          });
+        }
+      }
+      const replacedSubscription = supersededSubscription.current;
+      if (replacedSubscription) {
+        try {
+          await prisma.$transaction(async tx => {
+            const current = await tx.organizationSubscription.findUnique({
+              where: { id: replacedSubscription.id },
+            });
+            if (
+              !current
+              || current.status !== "CREATED"
+              || current.razorpaySubscriptionId !== replacedSubscription.razorpaySubscriptionId
+            ) return;
+
+            const cancelledAt = new Date();
+            const stored = await tx.organizationSubscription.update({
+              where: { id: current.id },
+              data: {
+                status: "CANCELLED",
+                cancelAtCycleEnd: false,
+                cancelledAt,
+                endedAt: cancelledAt,
+              },
+            });
+            await recordSubscriptionHistory(tx, stored, {
+              source: "SYSTEM",
+              fromStatus: current.status,
+              event: "checkout_replacement_failed",
+            });
+          });
+        } catch (reconciliationError) {
+          console.error("[SAAS_SUBSCRIPTION_REPLACEMENT_RECONCILIATION_FAILED]", {
+            organizationId,
+            razorpaySubscriptionId: replacedSubscription.razorpaySubscriptionId,
+            error: reconciliationError,
           });
         }
       }
@@ -566,8 +629,9 @@ export class BillingService {
       await tx.$queryRaw<Array<{ locked: string }>>`
         SELECT pg_advisory_xact_lock(hashtext(${`lab-lords:razorpay-plan:${plan.id}`}))::text AS locked
       `;
-      const existing = await tx.saasRazorpayPlan.findUnique({
-        where: { plan: plan.id as SaasPlan },
+      const existing = await tx.saasRazorpayPlan.findFirst({
+        where: { plan: plan.id as SaasPlan, active: true },
+        orderBy: { createdAt: "desc" },
       });
 
       const mappingMatchesCatalog = existing
@@ -595,9 +659,13 @@ export class BillingService {
         },
       });
 
-      return tx.saasRazorpayPlan.upsert({
-        where: { plan: plan.id as SaasPlan },
-        create: {
+      await tx.saasRazorpayPlan.updateMany({
+        where: { plan: plan.id as SaasPlan, active: true },
+        data: { active: false },
+      });
+
+      return tx.saasRazorpayPlan.create({
+        data: {
           plan: plan.id as SaasPlan,
           amount: plan.amount ?? 0,
           amountSubunits,
@@ -605,14 +673,7 @@ export class BillingService {
           period: plan.period,
           interval: plan.interval,
           razorpayPlanId: gatewayPlan.id,
-        },
-        update: {
-          amount: plan.amount ?? 0,
-          amountSubunits,
-          currency: plan.currency,
-          period: plan.period,
-          interval: plan.interval,
-          razorpayPlanId: gatewayPlan.id,
+          active: true,
         },
       });
     }, { maxWait: 10_000, timeout: 30_000 });

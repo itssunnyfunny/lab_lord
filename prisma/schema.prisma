@@ -27,6 +27,7 @@ model User {
   auditLogs              AuditLog[]
   importSessionsUploaded ImportSession[] @relation("ImportSessionUploadedBy")
   importCommits          ImportCommit[]  @relation("ImportCommitCommittedBy")
+  ownerTrialGrant        OwnerTrialGrant?
 }
 
 model Organization {
@@ -42,11 +43,19 @@ model Organization {
   currency              String                    @default("INR")
   weekStartsOn          Int                       @default(1)
   paymentGraceDays      Int                       @default(0)
+  billingModelVersion   BillingModelVersion       @default(LEGACY)
+  billingMutationSequence Int                     @default(0)
+  billingMutationLeaseToken String?
+  billingMutationLeaseUntil DateTime?
   createdAt             DateTime                  @default(now())
   branches              Branch[]
   subscription          OrganizationSubscription?
   subscriptionHistory   OrganizationSubscriptionHistory[]
   razorpayWebhookEvents RazorpayWebhookEvent[]
+  ownerTrialGrant       OwnerTrialGrant?
+  billingChanges        OrganizationBillingChange[]
+  offerGrants           OrganizationOfferGrant[]
+  subscriptionInvoices  OrganizationSubscriptionInvoice[]
   owner                 User                      @relation(fields: [ownerId], references: [id])
 }
 
@@ -68,6 +77,9 @@ model Branch {
   lastDataChange         DateTime         @default(now())
   aiLastCalledAt         DateTime?
   aiStatus               BranchAIStatus   @default(IDLE)
+  billingStatus          BranchBillingStatus @default(ACTIVE)
+  billingActivatedAt     DateTime?
+  billingArchivedAt      DateTime?
   organization           Organization     @relation(fields: [organizationId], references: [id])
   aiReports              BranchAIReport[]
   messageDrafts          MessageDraft[]
@@ -80,6 +92,7 @@ model Branch {
   students               Student[]
   auditLogs              AuditLog[]
   importSessions         ImportSession[]
+  billingChanges         OrganizationBillingChange[]
 }
 
 model Student {
@@ -482,16 +495,150 @@ enum SaasSubscriptionHistorySource {
   SYSTEM
 }
 
+enum BillingModelVersion {
+  LEGACY
+  WORKSPACE_V2
+}
+
+enum OwnerTrialSource {
+  ONBOARDING
+  MIGRATION
+}
+
+enum OwnerTrialStatus {
+  AVAILABLE
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum BranchBillingStatus {
+  ACTIVE
+  PENDING_ACTIVATION
+  REMOVAL_SCHEDULED
+  ARCHIVED
+}
+
+enum ProviderPaymentMethod {
+  CARD
+  UPI
+  EMANDATE
+  UNKNOWN
+}
+
+enum BillingChangeType {
+  TRIAL_SUBSCRIPTION_UPDATE
+  PLAN_UPGRADE
+  PLAN_DOWNGRADE
+  QUANTITY_INCREASE
+  BRANCH_REMOVAL
+  BRANCH_REACTIVATION
+  CANCELLATION
+  LEGACY_TRANSITION
+}
+
+enum BillingChangeStatus {
+  QUEUED
+  PROCESSING
+  AWAITING_PAYMENT
+  SCHEDULED
+  APPLIED
+  UNDONE
+  FAILED
+  SUPERSEDED
+}
+
+enum BillingOfferDiscountType {
+  FLAT
+  PERCENTAGE
+}
+
+enum BillingOfferDurationType {
+  SINGLE_USE
+  LIMITED_CYCLES
+}
+
+enum OrganizationOfferGrantStatus {
+  ELIGIBLE
+  RESERVED
+  REDEEMED
+  EXPIRED
+  REVOKED
+}
+
+model OwnerTrialGrant {
+  id              String           @id @default(cuid())
+  ownerId         String           @unique
+  organizationId  String?          @unique
+  source          OwnerTrialSource
+  status          OwnerTrialStatus @default(AVAILABLE)
+  grantedAt       DateTime         @default(now())
+  claimedAt       DateTime?
+  trialStartedAt  DateTime?
+  trialEndsAt     DateTime?
+  consumedAt      DateTime?
+  owner           User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  organization    Organization?    @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([trialEndsAt])
+}
+
 model SaasRazorpayPlan {
   id             String   @id @default(cuid())
-  plan           SaasPlan @unique
+  plan           SaasPlan
   amount         Int
   amountSubunits Int
   currency       String   @default("INR")
   period         String   @default("monthly")
   interval       Int      @default(1)
   razorpayPlanId String   @unique
+  active         Boolean  @default(true)
   createdAt      DateTime @default(now())
+
+  @@unique([plan, razorpayPlanId])
+  @@index([plan, active])
+}
+
+model BillingOffer {
+  id                 String                   @id @default(cuid())
+  name               String
+  plan               SaasPlan
+  razorpayOfferId    String                   @unique
+  discountType       BillingOfferDiscountType
+  discountValue      Int
+  durationType       BillingOfferDurationType
+  durationCycles     Int                      @default(1)
+  priority           Int                      @default(0)
+  active             Boolean                  @default(true)
+  validFrom          DateTime?
+  validUntil         DateTime?
+  isCompositeStack   Boolean                  @default(false)
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  subscriptions      OrganizationSubscription[]
+  grants             OrganizationOfferGrant[]
+
+  @@index([plan, active])
+}
+
+model OrganizationOfferGrant {
+  id                 String                       @id @default(cuid())
+  organizationId     String
+  billingOfferId     String
+  status             OrganizationOfferGrantStatus @default(ELIGIBLE)
+  eligibleFrom       DateTime?
+  eligibleUntil      DateTime?
+  reservedAt         DateTime?
+  redeemedAt         DateTime?
+  subscriptionId     String?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  organization       Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  billingOffer       BillingOffer                 @relation(fields: [billingOfferId], references: [id])
+
+  @@unique([organizationId, billingOfferId])
+  @@index([organizationId, status])
 }
 
 model OrganizationSubscription {
@@ -504,11 +651,22 @@ model OrganizationSubscription {
   period                 String                 @default("monthly")
   interval               Int                    @default(1)
   totalCount             Int
+  quantity               Int                    @default(1)
   razorpayPlanId         String
   razorpaySubscriptionId String                 @unique
   razorpayCustomerId     String?
   status                 SaasSubscriptionStatus @default(CREATED)
-  authPaymentId          String?
+  authPaymentId          String?                @unique
+  providerStartAt        DateTime?
+  authorizationExpiresAt DateTime?
+  providerPaymentMethod  ProviderPaymentMethod  @default(UNKNOWN)
+  paidThrough            DateTime?
+  lastConfirmedInvoiceId String?
+  lastConfirmedPaymentId String?
+  lastPaymentConfirmedAt DateTime?
+  authorizationLapsedAt  DateTime?
+  billingOfferId         String?
+  lastReconciledAt       DateTime?
   currentStart           DateTime?
   currentEnd             DateTime?
   chargeAt               DateTime?
@@ -521,11 +679,74 @@ model OrganizationSubscription {
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
   organization           Organization           @relation(fields: [organizationId], references: [id])
+  billingOffer           BillingOffer?           @relation(fields: [billingOfferId], references: [id])
   webhookEvents          RazorpayWebhookEvent[]
   history                OrganizationSubscriptionHistory[]
+  billingChanges         OrganizationBillingChange[]
+  invoices               OrganizationSubscriptionInvoice[]
 
   @@index([status])
   @@index([plan])
+}
+
+model OrganizationBillingChange {
+  id                         String                   @id @default(cuid())
+  organizationId             String
+  organizationSubscriptionId String?
+  branchId                   String?
+  sequence                   Int
+  idempotencyKey             String                   @unique
+  type                       BillingChangeType
+  status                     BillingChangeStatus      @default(QUEUED)
+  fromPlan                   SaasPlan?
+  toPlan                     SaasPlan?
+  fromQuantity               Int?
+  toQuantity                 Int?
+  effectiveAt                DateTime?
+  undoCutoffAt               DateTime?
+  providerInvoiceId          String?
+  providerPaymentId          String?
+  attemptCount               Int                      @default(0)
+  processingStartedAt        DateTime?
+  appliedAt                  DateTime?
+  undoneAt                   DateTime?
+  failedAt                   DateTime?
+  lastError                  String?
+  createdByUserId            String?
+  createdAt                  DateTime                 @default(now())
+  updatedAt                  DateTime                 @updatedAt
+  organization               Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationSubscription   OrganizationSubscription? @relation(fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
+  branch                     Branch?                  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, sequence])
+  @@index([organizationId, status, sequence])
+  @@index([undoCutoffAt, status])
+}
+
+model OrganizationSubscriptionInvoice {
+  id                         String                    @id @default(cuid())
+  organizationId             String
+  organizationSubscriptionId String?
+  razorpayInvoiceId          String                    @unique
+  razorpayPaymentId          String?                   @unique
+  status                     String
+  amountSubunits             Int
+  amountPaidSubunits         Int                       @default(0)
+  amountDueSubunits          Int                       @default(0)
+  currency                   String                    @default("INR")
+  paymentMethod              ProviderPaymentMethod     @default(UNKNOWN)
+  periodStart                DateTime?
+  periodEnd                  DateTime?
+  issuedAt                   DateTime?
+  paidAt                     DateTime?
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+  organization               Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationSubscription   OrganizationSubscription? @relation(fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationSubscriptionId, createdAt])
 }
 
 model OrganizationSubscriptionHistory {
@@ -540,6 +761,11 @@ model OrganizationSubscriptionHistory {
   source                     SaasSubscriptionHistorySource
   event                      String?
   amountSubunits             Int
+  quantity                   Int                           @default(1)
+  unitAmountSubunits         Int                           @default(0)
+  totalAmountSubunits        Int                           @default(0)
+  paidThrough                DateTime?
+  dedupeKey                  String?                       @unique
   currency                   String
   createdAt                  DateTime                      @default(now())
   organization               Organization                  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
