@@ -2,7 +2,6 @@ export type BillingPlanId = "BASIC" | "PRO" | "AGENT_CONTROL" | "CUSTOM";
 export type CheckoutBillingPlanId = "BASIC" | "PRO";
 
 export const BILLING_ENTITLEMENTS = [
-  "MULTI_BRANCH",
   "STAFF_MANAGEMENT",
   "ADVANCED_ANALYTICS",
   "AI_ACCESS",
@@ -44,7 +43,7 @@ export const BILLING_PLANS: BillingPlan[] = [
     interval: 1,
     active: true,
     visible: true,
-    description: "Core operations for one study hall or education workspace.",
+    description: "Core operations billed per active branch.",
     features: [
       "Core branch and seat management",
       "Student profiles and due tracking",
@@ -52,7 +51,7 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Owner workspace settings",
     ],
     entitlements: [],
-    limits: { maxBranches: 1 },
+    limits: { maxBranches: null },
   },
   {
     id: "PRO",
@@ -73,8 +72,8 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Advanced analytics and follow-up workflows",
       "AI reports and AI message drafting",
     ],
-    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
-    limits: { maxBranches: 3 },
+    entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
+    limits: { maxBranches: null },
   },
   {
     id: "AGENT_CONTROL",
@@ -94,7 +93,7 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Custom automation policies",
       "Priority rollout access",
     ],
-    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
+    entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
     limits: { maxBranches: null },
   },
   {
@@ -115,7 +114,7 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Security and workflow reviews",
       "Tailored agent and reporting roadmap",
     ],
-    entitlements: ["MULTI_BRANCH", "STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
+    entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
     limits: { maxBranches: null },
   },
 ];

@@ -5,6 +5,7 @@ import {
   type BillingPlanId,
 } from "@/lib/billingPlans";
 import type { OrganizationSubscription } from "@/app/generated/prisma/client";
+import { deriveWorkspaceBillingState, type BillingAccessMode } from "@/lib/billingState";
 
 const PREMIUM_ACCESS_STATUSES = new Set(["AUTHENTICATED", "ACTIVE"]);
 const GRACE_ACCESS_STATUSES = new Set(["PENDING", "HALTED"]);
@@ -15,6 +16,15 @@ export class SubscriptionEntitlementError extends Error {
   constructor(message: string) {
     super(`Unauthorized: ${message}`);
     this.name = "SubscriptionEntitlementError";
+  }
+}
+
+export class BillingReadOnlyError extends Error {
+  readonly code = "BILLING_READ_ONLY";
+
+  constructor(message: string) {
+    super(`Unauthorized: ${message}`);
+    this.name = "BillingReadOnlyError";
   }
 }
 
@@ -33,6 +43,10 @@ export type OrganizationEntitlementProfile = {
   entitlements: BillingEntitlement[];
   limits: { maxBranches: number | null };
   usage: { branches: number };
+  accessMode: BillingAccessMode;
+  canWrite: boolean;
+  accessReason: string;
+  trial: { status: string; endsAt: Date | null } | null;
 };
 
 export class EntitlementService {
@@ -41,11 +55,59 @@ export class EntitlementService {
       where: { id: organizationId },
       select: {
         id: true,
+        billingModelVersion: true,
         subscription: true,
-        _count: { select: { branches: true } },
+        ownerTrialGrant: {
+          select: { status: true, trialEndsAt: true },
+        },
+        _count: {
+          select: {
+            branches: { where: { billingStatus: { not: "ARCHIVED" } } },
+          },
+        },
       },
     });
     if (!organization) throw new Error("Organization not found");
+
+    if (organization.billingModelVersion === "WORKSPACE_V2") {
+      const state = deriveWorkspaceBillingState({
+        now: new Date(),
+        trial: organization.ownerTrialGrant
+          ? {
+              status: organization.ownerTrialGrant.status,
+              endsAt: organization.ownerTrialGrant.trialEndsAt,
+            }
+          : null,
+        subscription: organization.subscription
+          ? {
+              status: organization.subscription.status,
+              plan: organization.subscription.plan as BillingPlanId,
+              paidThrough: organization.subscription.paidThrough,
+            }
+          : null,
+      });
+      const selectedPlan = state.effectivePlan ? getBillingPlan(state.effectivePlan) : null;
+
+      return {
+        organizationId,
+        plan: organization.subscription?.plan as BillingPlanId | undefined ?? null,
+        effectivePlan: state.effectivePlan ?? "BASIC",
+        subscriptionStatus: organization.subscription?.status ?? null,
+        fallbackAccess: state.source === "NONE",
+        entitlements: selectedPlan ? [...selectedPlan.entitlements] : [],
+        limits: { maxBranches: null },
+        usage: { branches: organization._count.branches },
+        accessMode: state.accessMode,
+        canWrite: state.canWrite,
+        accessReason: state.reason,
+        trial: organization.ownerTrialGrant
+          ? {
+              status: organization.ownerTrialGrant.status,
+              endsAt: organization.ownerTrialGrant.trialEndsAt,
+            }
+          : null,
+      };
+    }
 
     if (!organization.subscription) {
       const basicPlan = getBillingPlan("BASIC");
@@ -59,6 +121,10 @@ export class EntitlementService {
         entitlements: [...basicPlan.entitlements],
         limits: { ...basicPlan.limits },
         usage: { branches: organization._count.branches },
+        accessMode: "FULL",
+        canWrite: true,
+        accessReason: "Legacy Basic fallback access",
+        trial: null,
       };
     }
 
@@ -77,6 +143,10 @@ export class EntitlementService {
       entitlements: [...entitledPlan.entitlements],
       limits: { ...entitledPlan.limits },
       usage: { branches: organization._count.branches },
+      accessMode: "FULL",
+      canWrite: true,
+      accessReason: "Legacy subscription access",
+      trial: null,
     };
   }
 
@@ -104,6 +174,9 @@ export class EntitlementService {
 
   static async assertCanCreateBranch(organizationId: string) {
     const profile = await this.getOrganizationProfile(organizationId);
+    if (!profile.canWrite) {
+      throw new BillingReadOnlyError(profile.accessReason);
+    }
     const maxBranches = profile.limits.maxBranches;
     if (maxBranches !== null && profile.usage.branches >= maxBranches) {
       throw new SubscriptionEntitlementError(
@@ -111,5 +184,23 @@ export class EntitlementService {
       );
     }
     return profile;
+  }
+
+  static async assertOrganizationWritable(organizationId: string) {
+    const profile = await this.getOrganizationProfile(organizationId);
+    if (!profile.canWrite) throw new BillingReadOnlyError(profile.accessReason);
+    return profile;
+  }
+
+  static async assertBranchWritable(branchId: string) {
+    const branch = await prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { organizationId: true, billingStatus: true },
+    });
+    if (!branch) throw new Error("Branch not found");
+    if (branch.billingStatus === "ARCHIVED") {
+      throw new BillingReadOnlyError("This branch is archived");
+    }
+    return this.assertOrganizationWritable(branch.organizationId);
   }
 }

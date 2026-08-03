@@ -43,6 +43,7 @@ export async function createOrg(overrides: {
   id?: string;
   businessType?: string | null;
   paymentGraceDays?: number;
+  billingModelVersion?: "LEGACY" | "WORKSPACE_V2";
 } & Record<string, unknown>) {
   return testPrisma.organization.create({
     data: {
@@ -51,6 +52,7 @@ export async function createOrg(overrides: {
       ownerId: overrides.ownerId,
       businessType: overrides.businessType,
       paymentGraceDays: overrides.paymentGraceDays,
+      billingModelVersion: overrides.billingModelVersion,
     },
   });
 }
