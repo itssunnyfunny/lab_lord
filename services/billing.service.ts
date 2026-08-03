@@ -12,6 +12,7 @@ import {
 } from "@/lib/razorpay";
 import { OrganizationService } from "@/services/organization.service";
 import { EntitlementService } from "@/services/entitlement.service";
+import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import type { OrganizationSubscription, OrganizationSubscriptionHistory, Prisma } from "@/app/generated/prisma/client";
 import type { SaasPlan, SaasSubscriptionHistorySource, SaasSubscriptionStatus } from "@/types";
 
@@ -111,11 +112,18 @@ function subscriptionSnapshotData(subscription: RazorpaySubscription) {
   const currentEnd = timestampToDate(subscription.current_end);
   const chargeAt = timestampToDate(subscription.charge_at);
   const endedAt = timestampToDate(subscription.ended_at);
+  const providerStartAt = timestampToDate(subscription.start_at);
+  const authorizationExpiresAt = timestampToDate(subscription.expire_by);
 
   if (currentStart !== undefined) data.currentStart = currentStart;
   if (currentEnd !== undefined) data.currentEnd = currentEnd;
   if (chargeAt !== undefined) data.chargeAt = chargeAt;
   if (endedAt !== undefined) data.endedAt = endedAt;
+  if (providerStartAt !== undefined) data.providerStartAt = providerStartAt;
+  if (authorizationExpiresAt !== undefined) data.authorizationExpiresAt = authorizationExpiresAt;
+  if (typeof subscription.quantity === "number" && subscription.quantity > 0) {
+    data.quantity = subscription.quantity;
+  }
 
   return data;
 }
@@ -135,12 +143,19 @@ function serializeSubscription(subscription: OrganizationSubscription | null | u
     period: subscription.period,
     interval: subscription.interval,
     totalCount: subscription.totalCount,
+    quantity: subscription.quantity,
+    unitAmount: subscription.amount,
+    monthlyTotal: subscription.amount * subscription.quantity,
     status: subscription.status,
     razorpaySubscriptionId: subscription.razorpaySubscriptionId,
     currentStart: subscription.currentStart,
     currentEnd: subscription.currentEnd,
     chargeAt: subscription.chargeAt,
     endedAt: subscription.endedAt,
+    providerStartAt: subscription.providerStartAt,
+    authorizationExpiresAt: subscription.authorizationExpiresAt,
+    providerPaymentMethod: subscription.providerPaymentMethod,
+    paidThrough: subscription.paidThrough,
     cancelAtCycleEnd: subscription.cancelAtCycleEnd,
     cancellationRequestedAt: subscription.cancellationRequestedAt,
     cancellationScheduledAt: subscription.cancellationScheduledAt,
@@ -176,8 +191,10 @@ async function recordSubscriptionHistory(
     razorpayPaymentId?: string | null;
   }
 ) {
-  return tx.organizationSubscriptionHistory.create({
-    data: {
+  const dedupeKey = `${input.source}:${subscription.razorpaySubscriptionId}:${input.event ?? "state"}:${input.razorpayPaymentId ?? subscription.status}`;
+  return tx.organizationSubscriptionHistory.upsert({
+    where: { dedupeKey },
+    create: {
       organizationId: subscription.organizationId,
       organizationSubscriptionId: subscription.id,
       razorpaySubscriptionId: subscription.razorpaySubscriptionId,
@@ -188,8 +205,14 @@ async function recordSubscriptionHistory(
       source: input.source,
       event: input.event ?? null,
       amountSubunits: subscription.amountSubunits,
+      quantity: subscription.quantity,
+      unitAmountSubunits: subscription.amountSubunits,
+      totalAmountSubunits: subscription.amountSubunits * subscription.quantity,
+      paidThrough: subscription.paidThrough,
+      dedupeKey,
       currency: subscription.currency,
     },
+    update: {},
   });
 }
 
@@ -232,6 +255,36 @@ export class BillingService {
   static async createSubscriptionCheckout(userId: string, organizationId: string, input: CheckoutInput) {
     const selectedPlan = getActiveBillingPlan(input.plan);
     const org = await OrganizationService.getOrganizationForOwner(organizationId, userId);
+    const workspaceBilling = org.billingModelVersion === "WORKSPACE_V2";
+    const quantity = workspaceBilling
+      ? await prisma.branch.count({
+          where: { organizationId, billingStatus: { not: "ARCHIVED" } },
+        })
+      : 1;
+    if (quantity < 1) throw new Error("At least one billable branch is required");
+    const now = new Date();
+    const trialEndsAt = workspaceBilling
+      && org.ownerTrialGrant?.status === "ACTIVE"
+      && org.ownerTrialGrant.trialEndsAt
+      && org.ownerTrialGrant.trialEndsAt > now
+        ? org.ownerTrialGrant.trialEndsAt
+        : null;
+    const offerGrant = workspaceBilling
+      ? await prisma.organizationOfferGrant.findFirst({
+          where: {
+            organizationId,
+            status: "ELIGIBLE",
+            billingOffer: {
+              active: true,
+              plan: selectedPlan.id as SaasPlan,
+              OR: [{ validFrom: null }, { validFrom: { lte: now } }],
+              AND: [{ OR: [{ validUntil: null }, { validUntil: { gt: now } }] }],
+            },
+          },
+          include: { billingOffer: true },
+          orderBy: { billingOffer: { priority: "desc" } },
+        })
+      : null;
     const razorpayPlan = await this.ensureRazorpayPlan(selectedPlan);
     const razorpay = getRazorpayClient();
     let createdGatewaySubscriptionId: string | null = null;
@@ -278,8 +331,10 @@ export class BillingService {
         const gatewaySubscription = await razorpay.createSubscription({
           plan_id: razorpayPlan.razorpayPlanId,
           total_count: totalCount,
-          quantity: 1,
+          quantity,
           customer_notify: true,
+          start_at: trialEndsAt ? Math.floor(trialEndsAt.getTime() / 1000) : undefined,
+          offer_id: offerGrant?.billingOffer.razorpayOfferId,
           notes: {
             app: "lab_lords",
             billing_type: "saas_subscription",
@@ -298,10 +353,15 @@ export class BillingService {
           period: selectedPlan.period,
           interval: selectedPlan.interval,
           totalCount,
+          quantity,
           razorpayPlanId: razorpayPlan.razorpayPlanId,
           razorpaySubscriptionId: gatewaySubscription.id,
           razorpayCustomerId: gatewaySubscription.customer_id ?? null,
           status: mapSubscriptionStatus(gatewaySubscription.status),
+          providerStartAt: timestampToDate(gatewaySubscription.start_at) ?? trialEndsAt,
+          authorizationExpiresAt: timestampToDate(gatewaySubscription.expire_by) ?? null,
+          providerPaymentMethod: "UNKNOWN" as const,
+          billingOfferId: offerGrant?.billingOfferId ?? null,
           currentStart: timestampToDate(gatewaySubscription.current_start) ?? null,
           currentEnd: timestampToDate(gatewaySubscription.current_end) ?? null,
           chargeAt: timestampToDate(gatewaySubscription.charge_at) ?? null,
@@ -341,6 +401,16 @@ export class BillingService {
           source: "CHECKOUT",
           fromStatus: existing?.status ?? null,
         });
+        if (offerGrant) {
+          await tx.organizationOfferGrant.update({
+            where: { id: offerGrant.id },
+            data: {
+              status: "RESERVED",
+              reservedAt: new Date(),
+              subscriptionId: gatewaySubscription.id,
+            },
+          });
+        }
         return stored;
       }, { maxWait: 10_000, timeout: 30_000 });
     } catch (error) {
@@ -432,8 +502,23 @@ export class BillingService {
     if (gatewaySubscription.plan_id !== subscription.razorpayPlanId) {
       throw new Error("Razorpay subscription plan mismatch");
     }
+    if (gatewayPayment.subscription_id && gatewayPayment.subscription_id !== subscriptionId) {
+      throw new Error("Razorpay payment subscription mismatch");
+    }
     if (!isSuccessfulPayment(gatewayPayment)) {
       throw new Error("Razorpay payment has not been authorized");
+    }
+    if (gatewayPayment.method !== "card") {
+      await getRazorpayClient().cancelSubscription(subscriptionId, { cancel_at_cycle_end: false });
+      await prisma.organizationSubscription.update({
+        where: { id: subscription.id },
+        data: {
+          providerPaymentMethod: gatewayPayment.method === "upi" ? "UPI" : "EMANDATE",
+          status: "CANCELLED",
+          cancelledAt: new Date(),
+        },
+      });
+      throw new Error("V1 recurring subscriptions require card authorization");
     }
 
     const snapshot = subscriptionSnapshotData(gatewaySubscription);
@@ -447,6 +532,8 @@ export class BillingService {
         data: {
           ...snapshot,
           authPaymentId: paymentId,
+          providerPaymentMethod: "CARD",
+          lastReconciledAt: new Date(),
         },
       });
       await recordSubscriptionHistory(tx, stored, {
@@ -456,6 +543,10 @@ export class BillingService {
       });
       return stored;
     });
+
+    if (gatewayPayment.status === "captured" && gatewayPayment.invoice_id) {
+      await BillingReconciliationService.reconcileProviderSubscription(subscriptionId, { paymentId });
+    }
 
     return {
       verified: true,
@@ -559,7 +650,7 @@ export class BillingService {
     }
 
     try {
-      return await prisma.$transaction(async tx => {
+      const processed = await prisma.$transaction(async tx => {
         await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id"
           FROM "RazorpayWebhookEvent"
@@ -603,6 +694,21 @@ export class BillingService {
           ...result,
         };
       }, { maxWait: 10_000, timeout: 30_000 });
+
+      if (processed.organizationId && processed.razorpaySubscriptionId) {
+        const organization = await prisma.organization.findUnique({
+          where: { id: processed.organizationId },
+          select: { billingModelVersion: true },
+        });
+        if (organization?.billingModelVersion === "WORKSPACE_V2") {
+          await BillingReconciliationService.reconcileProviderSubscription(
+            processed.razorpaySubscriptionId,
+            { paymentId: processed.razorpayPaymentId }
+          );
+        }
+      }
+
+      return processed;
     } catch (error) {
       try {
         await prisma.razorpayWebhookEvent.updateMany({
@@ -692,6 +798,12 @@ export class BillingService {
       currency: subscription.currency,
       name: "Lab Lords",
       description: `${plan.name} - ${plan.amount ? `Rs.${plan.amount}/month` : "custom"}`,
+      method: {
+        card: true,
+        upi: false,
+        netbanking: false,
+        wallet: false,
+      },
       plan: {
         id: plan.id,
         name: plan.name,
@@ -761,7 +873,7 @@ export class BillingService {
       Object.assign(updateData, snapshot);
     }
 
-    if (paymentId && (event === "subscription.charged" || event === "payment.captured" || !subscription.authPaymentId)) {
+    if (paymentId && event === "subscription.authenticated" && !subscription.authPaymentId) {
       updateData.authPaymentId = paymentId;
     }
 

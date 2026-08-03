@@ -30,6 +30,12 @@ describe("razorpay security helpers", () => {
     })).toBe(true);
   });
 
+  it("accepts the public checkout Key ID without exposing the Key Secret", () => {
+    vi.stubEnv("NEXT_PUBLIC_RAZORPAY_KEY_ID", "rzp_test_public_alias");
+
+    expect(getRazorpayKeyId()).toBe("rzp_test_public_alias");
+  });
+
   it("verifies order checkout signatures with orderId|paymentId", () => {
     vi.stubEnv("RAZORPAY_KEY_SECRET", "secret");
     const signature = hmacSha256Hex("order_123|pay_456", "secret");

@@ -69,12 +69,36 @@ export type RazorpaySubscription = {
   start_at?: number | null;
   end_at?: number | null;
   total_count: number;
+  quantity?: number;
   paid_count?: number;
   remaining_count?: number;
   short_url?: string | null;
   has_scheduled_changes?: boolean;
   change_scheduled_at?: number | null;
+  expire_by?: number | null;
+  payment_method?: string | null;
+  offer_id?: string | null;
   notes?: Record<string, string> | null;
+};
+
+export type RazorpayInvoice = {
+  id: string;
+  entity: "invoice";
+  subscription_id?: string | null;
+  payment_id?: string | null;
+  status: string;
+  amount: number;
+  amount_paid: number;
+  amount_due: number;
+  currency: string;
+  issued_at?: number | null;
+  paid_at?: number | null;
+};
+
+export type RazorpayInvoices = {
+  entity: "collection";
+  count: number;
+  items: RazorpayInvoice[];
 };
 
 export type RazorpayOrderPayments = {
@@ -110,8 +134,21 @@ export interface RazorpayApiClient {
     quantity: number;
     customer_notify: boolean;
     notes: Record<string, string>;
+    start_at?: number;
+    offer_id?: string;
   }): Promise<RazorpaySubscription>;
   fetchSubscription(subscriptionId: string): Promise<RazorpaySubscription>;
+  updateSubscription(subscriptionId: string, input: {
+    plan_id?: string;
+    quantity?: number;
+    remaining_count?: number;
+    start_at?: number;
+    offer_id?: string;
+    schedule_change_at: "now" | "cycle_end";
+    customer_notify?: boolean;
+  }): Promise<RazorpaySubscription>;
+  cancelScheduledChanges(subscriptionId: string): Promise<RazorpaySubscription>;
+  fetchSubscriptionInvoices(subscriptionId: string): Promise<RazorpayInvoices>;
   cancelSubscription(
     subscriptionId: string,
     input: { cancel_at_cycle_end: boolean }
@@ -135,6 +172,7 @@ function firstConfiguredEnv(names: string[]) {
 export function getRazorpayKeyId() {
   const keyId = firstConfiguredEnv([
     "RAZORPAY_KEY_ID",
+    "NEXT_PUBLIC_RAZORPAY_KEY_ID",
     "RAZORPAY_TEST_KEY_ID",
     "TEST_API_KEY",
     "Test_API_Key",
@@ -333,6 +371,8 @@ class DefaultRazorpayClient implements RazorpayApiClient {
     quantity: number;
     customer_notify: boolean;
     notes: Record<string, string>;
+    start_at?: number;
+    offer_id?: string;
   }) {
     return razorpayRequest<RazorpaySubscription>("/subscriptions", {
       method: "POST",
@@ -342,6 +382,34 @@ class DefaultRazorpayClient implements RazorpayApiClient {
 
   fetchSubscription(subscriptionId: string) {
     return razorpayRequest<RazorpaySubscription>(`/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  }
+
+  updateSubscription(subscriptionId: string, input: {
+    plan_id?: string;
+    quantity?: number;
+    remaining_count?: number;
+    start_at?: number;
+    offer_id?: string;
+    schedule_change_at: "now" | "cycle_end";
+    customer_notify?: boolean;
+  }) {
+    return razorpayRequest<RazorpaySubscription>(
+      `/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      { method: "PATCH", body: input }
+    );
+  }
+
+  cancelScheduledChanges(subscriptionId: string) {
+    return razorpayRequest<RazorpaySubscription>(
+      `/subscriptions/${encodeURIComponent(subscriptionId)}/cancel_scheduled_changes`,
+      { method: "POST" }
+    );
+  }
+
+  fetchSubscriptionInvoices(subscriptionId: string) {
+    return razorpayRequest<RazorpayInvoices>(
+      `/invoices?subscription_id=${encodeURIComponent(subscriptionId)}`
+    );
   }
 
   cancelSubscription(subscriptionId: string, input: { cancel_at_cycle_end: boolean }) {

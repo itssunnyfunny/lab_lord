@@ -60,6 +60,7 @@ export class OrganizationService {
                     orderBy: { createdAt: "desc" },
                 },
                 subscription: true,
+                ownerTrialGrant: true,
                 _count: { select: { branches: true } },
             },
         });
