@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
@@ -7,6 +7,7 @@ export default defineConfig({
     environment: "node",
     globalSetup: "./tests/setup/global.ts",
     setupFiles: [],
+    exclude: [...configDefaults.exclude, "tests/browser/**"],
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],

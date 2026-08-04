@@ -36,11 +36,12 @@ Razorpay requests must use card authorization in V1. Callback verification and s
 
 1. Deploy existing migration `20260802120000_add_subscription_history`.
 2. Deploy `20260803120000_add_workspace_branch_billing`.
-3. Run a dry audit: `pnpm exec tsx scripts/prepare-workspace-billing-rollout.ts`.
-4. Apply owner grants and branch backfill: `pnpm exec tsx scripts/prepare-workspace-billing-rollout.ts --apply`.
-5. Reconcile a candidate organization against Razorpay Test Mode.
-6. Audit promotion: `pnpm exec tsx scripts/prepare-workspace-billing-rollout.ts --promote=ORG_ID`.
-7. Promote after review: `pnpm exec tsx scripts/prepare-workspace-billing-rollout.ts --apply --promote=ORG_ID`.
+3. Deploy `20260804120000_add_billing_operation_experience`.
+4. Run a dry audit: `pnpm exec tsx scripts/prepare-workspace-billing-rollout.ts`.
+5. Apply owner grants and branch backfill: `pnpm exec tsx scripts/prepare-workspace-billing-rollout.ts --apply`.
+6. Reconcile a candidate organization against Razorpay Test Mode.
+7. Audit promotion: `pnpm exec tsx scripts/prepare-workspace-billing-rollout.ts --promote=ORG_ID`.
+8. Promote after review: `pnpm exec tsx scripts/prepare-workspace-billing-rollout.ts --apply --promote=ORG_ID`.
 
 The rollout script never calls Razorpay or changes an existing provider subscription. If an existing subscription quantity differs from the active branch count, it queues a next-cycle `LEGACY_TRANSITION` for serialized provider processing.
 
