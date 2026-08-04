@@ -360,6 +360,32 @@ describe("BillingService SaaS subscriptions", () => {
     expect(history.map(entry => entry.source)).toEqual(["CHECKOUT", "VERIFICATION"]);
   });
 
+  it("does not advance a checkout operation when its callback signature is invalid", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    await expect(BillingService.verifySubscriptionSuccess(user.id, org.id, {
+      changeId: checkout.changeId,
+      razorpay_subscription_id: "sub_basic",
+      razorpay_payment_id: "pay_auth",
+      razorpay_signature: "invalid-signature",
+    })).rejects.toThrow("Invalid Razorpay signature");
+
+    const operation = await testPrisma.organizationBillingChange.findUnique({
+      where: { id: checkout.changeId },
+    });
+    expect(operation).toMatchObject({
+      status: "AWAITING_PAYMENT",
+      operationStatus: "CHECKOUT_OPEN",
+      verificationStartedAt: null,
+    });
+    expect(fakeRazorpay.fetchSubscription).not.toHaveBeenCalled();
+    expect(fakeRazorpay.fetchPayment).not.toHaveBeenCalled();
+  });
+
   it("lets an owner schedule cancellation at the end of an active cycle", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);

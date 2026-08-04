@@ -636,16 +636,6 @@ export class BillingService {
         subscription: serializeSubscription(current),
       };
     }
-    await prisma.organizationBillingChange.update({
-      where: { id: change.id },
-      data: {
-        operationStatus: "VERIFYING",
-        verificationStartedAt: new Date(),
-        failureCategory: null,
-        failureCode: null,
-        lastError: null,
-      },
-    });
     const subscriptionId = assertRazorpayId(input.razorpay_subscription_id, "sub");
     const paymentId = assertRazorpayId(input.razorpay_payment_id, "pay");
     if (typeof input.razorpay_signature !== "string" || !input.razorpay_signature.trim()) {
@@ -673,6 +663,17 @@ export class BillingService {
     if (change.toQuantity && change.toQuantity !== subscription.quantity) {
       throw new Error("Billing operation quantity mismatch");
     }
+
+    await prisma.organizationBillingChange.update({
+      where: { id: change.id },
+      data: {
+        operationStatus: "VERIFYING",
+        verificationStartedAt: new Date(),
+        failureCategory: null,
+        failureCode: null,
+        lastError: null,
+      },
+    });
 
     const [gatewaySubscription, gatewayPayment] = await Promise.all([
       getRazorpayClient().fetchSubscription(subscriptionId),
