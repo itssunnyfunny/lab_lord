@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import crypto from "node:crypto";
 import { BILLING_PLANS, getActiveBillingPlan, getBillingPlan, publicBillingPlans, type BillingPlan } from "@/lib/billingPlans";
 import {
   getRazorpayClient,
@@ -20,12 +21,20 @@ import type { SaasPlan, SaasSubscriptionHistorySource, SaasSubscriptionStatus } 
 
 type CheckoutInput = {
   plan: string;
+  returnPath?: unknown;
 };
 
 type VerifySubscriptionInput = {
+  changeId?: unknown;
   razorpay_subscription_id?: unknown;
   razorpay_payment_id?: unknown;
   razorpay_signature?: unknown;
+};
+
+type CheckoutEventInput = {
+  event?: unknown;
+  failureCategory?: unknown;
+  failureCode?: unknown;
 };
 
 type WebhookProcessingResult = {
@@ -164,6 +173,47 @@ function serializeSubscription(subscription: OrganizationSubscription | null | u
     cancelledAt: subscription.cancelledAt,
     createdAt: subscription.createdAt,
     updatedAt: subscription.updatedAt,
+  };
+}
+
+function getSafeReturnPath(value: unknown, organizationId: string) {
+  if (typeof value !== "string") return `/org/${encodeURIComponent(organizationId)}/settings#billing`;
+  const path = value.trim();
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
+    return `/org/${encodeURIComponent(organizationId)}/settings#billing`;
+  }
+  return path;
+}
+
+function serializeBillingOperation(change: {
+  id: string;
+  organizationId: string;
+  type: string;
+  status: string;
+  operationStatus: string;
+  returnPath: string | null;
+  confirmationDeadlineAt: Date | null;
+  failureCategory: string | null;
+  failureCode: string | null;
+  lastError: string | null;
+  effectiveAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: change.id,
+    organizationId: change.organizationId,
+    type: change.type,
+    queueStatus: change.status,
+    operationStatus: change.operationStatus,
+    returnPath: change.returnPath,
+    confirmationDeadlineAt: change.confirmationDeadlineAt,
+    failureCategory: change.failureCategory,
+    failureCode: change.failureCode,
+    message: change.lastError,
+    effectiveAt: change.effectiveAt,
+    createdAt: change.createdAt,
+    updatedAt: change.updatedAt,
   };
 }
 
@@ -324,6 +374,23 @@ export class BillingService {
       && org.ownerTrialGrant.trialEndsAt > now
         ? org.ownerTrialGrant.trialEndsAt
         : null;
+    const returnPath = getSafeReturnPath(input.returnPath, organizationId);
+    const openAuthorization = await prisma.organizationBillingChange.findFirst({
+      where: {
+        organizationId,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
+        organizationSubscription: {
+          plan: selectedPlan.id as SaasPlan,
+          status: { in: ["CREATED", "AUTHENTICATED"] },
+        },
+      },
+      include: { organizationSubscription: true },
+      orderBy: { sequence: "desc" },
+    });
+    if (openAuthorization?.organizationSubscription) {
+      return this.toCheckoutPayload(org, openAuthorization.organizationSubscription, selectedPlan, openAuthorization);
+    }
     const offerGrant = workspaceBilling
       ? await prisma.organizationOfferGrant.findFirst({
           where: {
@@ -522,7 +589,24 @@ export class BillingService {
       throw error;
     }
 
-    return this.toCheckoutPayload(org, subscription, selectedPlan);
+    const operation = await BillingMutationService.enqueue({
+      organizationId,
+      subscriptionId: subscription.id,
+      idempotencyKey: `subscription-authorization:${organizationId}:${subscription.razorpaySubscriptionId}:${crypto.randomUUID()}`,
+      type: "SUBSCRIPTION_AUTHORIZATION",
+      status: "AWAITING_PAYMENT",
+      operationStatus: "CHECKOUT_OPEN",
+      fromPlan: org.subscription?.plan ?? null,
+      toPlan: selectedPlan.id as SaasPlan,
+      fromQuantity: org.subscription?.quantity ?? null,
+      toQuantity: quantity,
+      createdByUserId: userId,
+      returnPath,
+      checkoutOpenedAt: now,
+      confirmationDeadlineAt: new Date(now.getTime() + 15 * 60 * 1000),
+    });
+
+    return this.toCheckoutPayload(org, subscription, selectedPlan, operation);
   }
 
   static async verifySubscriptionSuccess(
@@ -531,6 +615,37 @@ export class BillingService {
     input: VerifySubscriptionInput
   ) {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    if (typeof input.changeId !== "string" || !input.changeId.trim()) {
+      throw new Error("Missing billing change id");
+    }
+    const change = await prisma.organizationBillingChange.findFirst({
+      where: {
+        id: input.changeId.trim(),
+        organizationId,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+      },
+    });
+    if (!change) throw new Error("Billing operation not found");
+    if (change.operationStatus === "APPLIED") {
+      const current = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
+      if (!current) throw new Error("Subscription not found");
+      return {
+        verified: true as const,
+        operation: serializeBillingOperation(change),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(current),
+      };
+    }
+    await prisma.organizationBillingChange.update({
+      where: { id: change.id },
+      data: {
+        operationStatus: "VERIFYING",
+        verificationStartedAt: new Date(),
+        failureCategory: null,
+        failureCode: null,
+        lastError: null,
+      },
+    });
     const subscriptionId = assertRazorpayId(input.razorpay_subscription_id, "sub");
     const paymentId = assertRazorpayId(input.razorpay_payment_id, "pay");
     if (typeof input.razorpay_signature !== "string" || !input.razorpay_signature.trim()) {
@@ -548,6 +663,15 @@ export class BillingService {
       where: { organizationId, razorpaySubscriptionId: subscriptionId },
     });
     if (!subscription) throw new Error("Subscription does not belong to this organization");
+    if (change.organizationSubscriptionId !== subscription.id) {
+      throw new Error("Billing operation subscription mismatch");
+    }
+    if (change.toPlan && change.toPlan !== subscription.plan) {
+      throw new Error("Billing operation plan mismatch");
+    }
+    if (change.toQuantity && change.toQuantity !== subscription.quantity) {
+      throw new Error("Billing operation quantity mismatch");
+    }
 
     const [gatewaySubscription, gatewayPayment] = await Promise.all([
       getRazorpayClient().fetchSubscription(subscriptionId),
@@ -571,6 +695,18 @@ export class BillingService {
           providerPaymentMethod: gatewayPayment.method === "upi" ? "UPI" : "EMANDATE",
           status: "CANCELLED",
           cancelledAt: new Date(),
+        },
+      });
+      await prisma.organizationBillingChange.update({
+        where: { id: change.id },
+        data: {
+          status: "FAILED",
+          operationStatus: "DECLINED",
+          failureCategory: "UNSUPPORTED_PAYMENT_METHOD",
+          failureCode: gatewayPayment.method,
+          lastError: "V1 recurring subscriptions require card authorization",
+          declinedAt: new Date(),
+          resolvedAt: new Date(),
         },
       });
       throw new Error("V1 recurring subscriptions require card authorization");
@@ -603,8 +739,22 @@ export class BillingService {
       await BillingReconciliationService.reconcileProviderSubscription(subscriptionId, { paymentId });
     }
 
+    const appliedOperation = await prisma.organizationBillingChange.update({
+      where: { id: change.id },
+      data: {
+        status: "APPLIED",
+        operationStatus: "APPLIED",
+        providerConfirmedAt: new Date(),
+        appliedAt: new Date(),
+        resolvedAt: new Date(),
+        lastError: null,
+      },
+    });
+
     return {
       verified: true,
+      operation: serializeBillingOperation(appliedOperation),
+      processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
       subscription: serializeSubscription(updated),
     };
   }
@@ -681,7 +831,8 @@ export class BillingService {
     userId: string,
     organizationId: string,
     planId: string,
-    idempotencyKey: string
+    idempotencyKey: string,
+    returnPath?: unknown
   ) {
     const selectedPlan = getActiveBillingPlan(planId);
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
@@ -716,9 +867,15 @@ export class BillingService {
       toQuantity: subscription.quantity,
       effectiveAt: type === "PLAN_DOWNGRADE" ? subscription.currentEnd : new Date(),
       createdByUserId: userId,
+      returnPath: getSafeReturnPath(returnPath, organizationId),
     });
     const processed = await BillingMutationService.processNext(organizationId);
-    return { change: processed ?? change };
+    const current = processed ?? change;
+    return {
+      change: current,
+      operation: serializeBillingOperation(current),
+      processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+    };
   }
 
   static async scheduleWorkspaceCancellation(
@@ -800,13 +957,124 @@ export class BillingService {
     };
   }
 
+  static async getBillingOperation(userId: string, organizationId: string, changeId: string) {
+    await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const change = await prisma.organizationBillingChange.findFirst({
+      where: { id: changeId, organizationId },
+    });
+    if (!change) throw new Error("Billing operation not found");
+    return {
+      operation: serializeBillingOperation(change),
+      processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+    };
+  }
+
+  static async recordCheckoutEvent(
+    userId: string,
+    organizationId: string,
+    changeId: string,
+    input: CheckoutEventInput
+  ) {
+    await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const event = input.event === "DECLINED" ? "DECLINED" : input.event === "ABANDONED" ? "ABANDONED" : null;
+    if (!event) throw new Error("Unsupported checkout event");
+    const change = await prisma.organizationBillingChange.findFirst({
+      where: { id: changeId, organizationId, type: "SUBSCRIPTION_AUTHORIZATION" },
+    });
+    if (!change) throw new Error("Billing operation not found");
+    if (change.operationStatus === "APPLIED") return { operation: serializeBillingOperation(change) };
+    const now = new Date();
+    const updated = await prisma.organizationBillingChange.update({
+      where: { id: change.id },
+      data: {
+        status: event === "DECLINED" ? "FAILED" : "UNDONE",
+        operationStatus: event,
+        failureCategory: typeof input.failureCategory === "string" ? input.failureCategory.slice(0, 100) : null,
+        failureCode: typeof input.failureCode === "string" ? input.failureCode.slice(0, 100) : null,
+        lastError: event === "DECLINED" ? "Subscription authorization was not confirmed" : "Checkout was closed before confirmation",
+        declinedAt: event === "DECLINED" ? now : null,
+        abandonedAt: event === "ABANDONED" ? now : null,
+        failedAt: event === "DECLINED" ? now : null,
+        undoneAt: event === "ABANDONED" ? now : null,
+        resolvedAt: now,
+      },
+    });
+    return { operation: serializeBillingOperation(updated) };
+  }
+
+  static async retryBillingOperation(userId: string, organizationId: string, changeId: string) {
+    const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const change = await prisma.organizationBillingChange.findFirst({
+      where: { id: changeId, organizationId },
+      include: { organizationSubscription: true },
+    });
+    if (!change) throw new Error("Billing operation not found");
+
+    if (change.type === "SUBSCRIPTION_AUTHORIZATION") {
+      const subscription = change.organizationSubscription;
+      if (!subscription) throw new Error("Subscription not found");
+      const gateway = await getRazorpayClient().fetchSubscription(subscription.razorpaySubscriptionId);
+      if (["authenticated", "active"].includes(gateway.status.toLowerCase())
+          && subscription.providerPaymentMethod === "CARD") {
+        const now = new Date();
+        const applied = await prisma.organizationBillingChange.update({
+          where: { id: change.id },
+          data: {
+            status: "APPLIED",
+            operationStatus: "APPLIED",
+            providerConfirmedAt: now,
+            appliedAt: now,
+            resolvedAt: now,
+            lastError: null,
+          },
+        });
+        return { operation: serializeBillingOperation(applied), reconciled: true };
+      }
+      const selectedPlan = getActiveBillingPlan(subscription.plan);
+      const reopened = await prisma.organizationBillingChange.update({
+        where: { id: change.id },
+        data: {
+          status: "AWAITING_PAYMENT",
+          operationStatus: "CHECKOUT_OPEN",
+          checkoutOpenedAt: new Date(),
+          confirmationDeadlineAt: new Date(Date.now() + 15 * 60 * 1000),
+          failureCategory: null,
+          failureCode: null,
+          lastError: null,
+          failedAt: null,
+          resolvedAt: null,
+        },
+      });
+      return this.toCheckoutPayload(organization, subscription, selectedPlan, reopened);
+    }
+
+    const retried = await BillingMutationService.retry(change.id);
+    const current = retried ?? await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
+    if (!current) throw new Error("Billing operation not found after retry");
+    return {
+      operation: serializeBillingOperation(current),
+      processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+    };
+  }
+
   static async reconcileMutation(userId: string, organizationId: string, changeId: string, paymentId?: string) {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     const change = await prisma.organizationBillingChange.findFirst({
       where: { id: changeId, organizationId },
     });
     if (!change) throw new Error("Billing change not found");
-    return BillingReconciliationService.reconcileByOrganization(organizationId, { paymentId });
+    if (!["APPLIED", "SCHEDULED", "ABANDONED"].includes(change.operationStatus)) {
+      await prisma.organizationBillingChange.update({
+        where: { id: change.id },
+        data: { operationStatus: "VERIFYING", verificationStartedAt: new Date() },
+      });
+    }
+    const reconciliation = await BillingReconciliationService.reconcileByOrganization(organizationId, { paymentId });
+    const updated = await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
+    return {
+      reconciliation,
+      operation: updated ? serializeBillingOperation(updated) : null,
+    };
   }
 
   static async undoWorkspaceChange(userId: string, organizationId: string, changeId: string) {
@@ -997,7 +1265,22 @@ export class BillingService {
   private static toCheckoutPayload(
     org: Awaited<ReturnType<typeof OrganizationService.getOrganizationForOwner>>,
     subscription: OrganizationSubscription,
-    plan: BillingPlan
+    plan: BillingPlan,
+    change: {
+      id: string;
+      organizationId: string;
+      type: string;
+      status: string;
+      operationStatus: string;
+      returnPath: string | null;
+      confirmationDeadlineAt: Date | null;
+      failureCategory: string | null;
+      failureCode: string | null;
+      lastError: string | null;
+      effectiveAt: Date | null;
+      createdAt: Date;
+      updatedAt: Date;
+    }
   ) {
     return {
       keyId: getRazorpayKeyId(),
@@ -1033,6 +1316,9 @@ export class BillingService {
         plan: plan.id,
       },
       subscription: serializeSubscription(subscription),
+      changeId: change.id,
+      processingUrl: `/org/${encodeURIComponent(org.id)}/billing/processing/${encodeURIComponent(change.id)}`,
+      operation: serializeBillingOperation(change),
     };
   }
 

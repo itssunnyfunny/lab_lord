@@ -45,7 +45,7 @@ export async function PATCH(
     if (!idempotencyKey) return NextResponse.json({ error: "Idempotency-Key is required" }, { status: 400 });
     const body = await req.json();
     return NextResponse.json(
-      await BillingService.changeWorkspacePlan(user.id, orgId, body.plan, idempotencyKey),
+      await BillingService.changeWorkspacePlan(user.id, orgId, body.plan, idempotencyKey, body.returnPath),
       { status: 202 }
     );
   } catch (error) {

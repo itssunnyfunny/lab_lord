@@ -36,6 +36,7 @@ type EnqueueInput = {
   effectiveAt?: Date | null;
   undoCutoffAt?: Date | null;
   createdByUserId?: string | null;
+  status?: "QUEUED" | "PROCESSING" | "AWAITING_PAYMENT" | "SCHEDULED" | "APPLIED" | "UNDONE" | "FAILED" | "SUPERSEDED";
   operationStatus?: "CHECKOUT_OPEN" | "VERIFYING" | "AWAITING_PROVIDER_CONFIRMATION" | "APPLIED" | "DECLINED" | "ABANDONED" | "FAILED" | "SCHEDULED";
   returnPath?: string | null;
   confirmationDeadlineAt?: Date | null;
@@ -109,6 +110,7 @@ export class BillingMutationService {
           sequence: organization.billingMutationSequence,
           idempotencyKey: input.idempotencyKey,
           type: input.type,
+          status: input.status ?? "QUEUED",
           operationStatus: input.operationStatus ?? "AWAITING_PROVIDER_CONFIRMATION",
           fromPlan: input.fromPlan ?? null,
           toPlan: input.toPlan ?? null,

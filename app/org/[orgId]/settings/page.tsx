@@ -273,9 +273,14 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
             setBillingAction(planId);
             setBillingNotice(null);
             try {
-                await billing.changePlan(orgId, planId);
+                const result = await billing.changePlan(
+                    orgId,
+                    planId,
+                    window.location.pathname + window.location.search + window.location.hash
+                ) as { processingUrl?: string };
                 setBillingNotice({ tone: "warning", message: "Your plan change is being reconciled with Razorpay." });
-                await loadBilling();
+                if (result.processingUrl) router.push(result.processingUrl);
+                else await loadBilling();
             } catch (err) {
                 setBillingNotice({ tone: "error", message: err instanceof Error ? err.message : "Unable to change plan." });
             } finally {
@@ -295,7 +300,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
         setBillingNotice(null);
 
         try {
-            const checkout = await billing.createSubscription(orgId, planId);
+            const checkout = await billing.createSubscription(orgId, planId, window.location.pathname + window.location.search + window.location.hash);
             setBillingOverview(prev => prev ? { ...prev, current: checkout.subscription } : prev);
 
             let completed = false;
@@ -313,6 +318,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                     confirm_close: true,
                     ondismiss: async () => {
                         if (completed) return;
+                        await billing.recordCheckoutEvent(orgId, checkout.changeId, "ABANDONED").catch(() => undefined);
                         setBillingNotice({
                             tone: "warning",
                             message: "Checkout closed before payment. You can restart checkout for this plan when you are ready.",
@@ -328,6 +334,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                             razorpay_subscription_id: response.razorpay_subscription_id ?? checkout.subscriptionId,
                             razorpay_payment_id: response.razorpay_payment_id,
                             razorpay_signature: response.razorpay_signature,
+                            changeId: checkout.changeId,
                         });
                         setBillingOverview(prev => prev ? { ...prev, current: result.subscription } : prev);
                         setBillingNotice({
@@ -336,7 +343,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                                 ? "Subscription is active."
                                 : "Subscription authorization is verified. Razorpay may finish activation shortly.",
                         });
-                        await loadBilling();
+                        router.push(result.processingUrl);
                     } catch (err) {
                         setBillingNotice({
                             tone: "error",
@@ -350,6 +357,10 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
 
             razorpay.on("payment.failed", async (response) => {
                 completed = true;
+                await billing.recordCheckoutEvent(orgId, checkout.changeId, "DECLINED", {
+                    failureCategory: response.error?.reason,
+                    failureCode: response.error?.code,
+                }).catch(() => undefined);
                 setBillingNotice({
                     tone: "error",
                     message: response.error?.description || response.error?.reason || "Razorpay payment failed. No subscription was activated.",

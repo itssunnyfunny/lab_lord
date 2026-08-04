@@ -338,15 +338,17 @@ describe("BillingService SaaS subscriptions", () => {
     setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id });
-    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC", returnPath: `/org/${org.id}/analytics` });
 
     const result = await BillingService.verifySubscriptionSuccess(user.id, org.id, {
+      changeId: checkout.changeId,
       razorpay_subscription_id: "sub_basic",
       razorpay_payment_id: "pay_auth",
       razorpay_signature: hmacSha256Hex("pay_auth|sub_basic", "secret"),
     });
 
     expect(result.verified).toBe(true);
+    expect(result.operation).toMatchObject({ operationStatus: "APPLIED", returnPath: `/org/${org.id}/analytics` });
     expect(result.subscription?.status).toBe("ACTIVE");
     const stored = await testPrisma.organizationSubscription.findUnique({ where: { organizationId: org.id } });
     expect(stored?.authPaymentId).toBe("pay_auth");
@@ -363,8 +365,9 @@ describe("BillingService SaaS subscriptions", () => {
     setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id });
-    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
     await BillingService.verifySubscriptionSuccess(user.id, org.id, {
+      changeId: checkout.changeId,
       razorpay_subscription_id: "sub_basic",
       razorpay_payment_id: "pay_auth",
       razorpay_signature: hmacSha256Hex("pay_auth|sub_basic", "secret"),

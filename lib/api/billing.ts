@@ -131,7 +131,25 @@ export type BillingOverview = {
   }>;
 };
 
+export type BillingOperationDto = {
+  id: string;
+  organizationId: string;
+  type: string;
+  queueStatus: string;
+  operationStatus: "CHECKOUT_OPEN" | "VERIFYING" | "AWAITING_PROVIDER_CONFIRMATION" | "APPLIED" | "DECLINED" | "ABANDONED" | "FAILED" | "SCHEDULED";
+  returnPath: string | null;
+  confirmationDeadlineAt: string | null;
+  failureCategory: string | null;
+  failureCode: string | null;
+  message: string | null;
+  effectiveAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type BillingCheckoutPayload = {
+  changeId: string;
+  processingUrl: string;
   keyId: string;
   type: "subscription";
   subscriptionId: string;
@@ -148,10 +166,13 @@ export type BillingCheckoutPayload = {
   };
   notes: Record<string, string>;
   subscription: OrganizationSubscriptionDto;
+  operation: BillingOperationDto;
 };
 
 export type BillingVerificationResult = {
   verified: true;
+  operation: BillingOperationDto;
+  processingUrl: string;
   subscription: OrganizationSubscriptionDto;
 };
 
@@ -166,8 +187,8 @@ export const billing = {
     return apiClient.get(`/organizations/${orgId}/billing`);
   },
 
-  createSubscription(orgId: string, plan: CheckoutBillingPlanId): Promise<BillingCheckoutPayload> {
-    return apiClient.post(`/organizations/${orgId}/billing/subscription`, { plan });
+  createSubscription(orgId: string, plan: CheckoutBillingPlanId, returnPath?: string): Promise<BillingCheckoutPayload> {
+    return apiClient.post(`/organizations/${orgId}/billing/subscription`, { plan, returnPath });
   },
 
   verifySubscription(
@@ -176,6 +197,7 @@ export const billing = {
       razorpay_subscription_id: string;
       razorpay_payment_id: string;
       razorpay_signature: string;
+      changeId: string;
     }
   ): Promise<BillingVerificationResult> {
     return apiClient.post(`/organizations/${orgId}/billing/subscription/verify`, payload);
@@ -195,13 +217,34 @@ export const billing = {
     return apiClient.post(`/organizations/${orgId}/billing/trial/claim`);
   },
 
-  changePlan(orgId: string, plan: CheckoutBillingPlanId) {
-    return apiClient.patch(`/organizations/${orgId}/billing/subscription`, { plan }, {
+  changePlan(orgId: string, plan: CheckoutBillingPlanId, returnPath?: string) {
+    return apiClient.patch(`/organizations/${orgId}/billing/subscription`, { plan, returnPath }, {
       headers: { "Idempotency-Key": crypto.randomUUID() },
     });
   },
 
   undoChange(orgId: string, changeId: string) {
     return apiClient.delete(`/organizations/${orgId}/billing/mutations/${changeId}`);
+  },
+
+  getOperation(orgId: string, changeId: string): Promise<{ operation: BillingOperationDto; processingUrl: string }> {
+    return apiClient.get(`/organizations/${orgId}/billing/mutations/${changeId}`);
+  },
+
+  reconcileOperation(orgId: string, changeId: string, paymentId?: string) {
+    return apiClient.post(`/organizations/${orgId}/billing/mutations/${changeId}`, { paymentId });
+  },
+
+  retryOperation(orgId: string, changeId: string) {
+    return apiClient.post(`/organizations/${orgId}/billing/mutations/${changeId}/retry`);
+  },
+
+  recordCheckoutEvent(
+    orgId: string,
+    changeId: string,
+    event: "ABANDONED" | "DECLINED",
+    details?: { failureCategory?: string; failureCode?: string }
+  ) {
+    return apiClient.post(`/organizations/${orgId}/billing/mutations/${changeId}/checkout-event`, { event, ...details });
   },
 };
