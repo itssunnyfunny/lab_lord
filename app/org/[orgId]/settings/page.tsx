@@ -87,8 +87,9 @@ type RazorpayOptions = {
     name: string;
     description: string;
     subscription_id: string;
-    prefill: BillingCheckoutPayload["prefill"];
-    notes: BillingCheckoutPayload["notes"];
+    prefill?: BillingCheckoutPayload["prefill"];
+    notes?: BillingCheckoutPayload["notes"];
+    subscription_card_change?: boolean;
     theme: { color: string };
     retry: { enabled: boolean };
     method?: BillingCheckoutPayload["method"];
@@ -186,6 +187,10 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     const searchParams = useSearchParams();
     const billingPlanParam = searchParams.get("billingPlan");
     const requestedBillingPlanId = isCheckoutBillingPlanId(billingPlanParam) ? billingPlanParam : null;
+    const returnToParam = searchParams.get("returnTo");
+    const requestedReturnPath = returnToParam?.startsWith("/") && !returnToParam.startsWith("//") && !returnToParam.includes("\\")
+        ? returnToParam
+        : null;
 
     const [org, setOrg] = useState<OrgDetails | null>(null);
     const [form, setForm] = useState<OrgForm | null>(null);
@@ -198,6 +203,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     const [billingOverview, setBillingOverview] = useState<BillingOverview | null>(null);
     const [billingLoading, setBillingLoading] = useState(true);
     const [billingAction, setBillingAction] = useState<CheckoutBillingPlanId | null>(null);
+    const [recoveryLoading, setRecoveryLoading] = useState(false);
     const [autoStartedPlan, setAutoStartedPlan] = useState<CheckoutBillingPlanId | null>(null);
     const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
     const [cancellingSubscription, setCancellingSubscription] = useState(false);
@@ -276,7 +282,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                 const result = await billing.changePlan(
                     orgId,
                     planId,
-                    window.location.pathname + window.location.search + window.location.hash
+                    requestedReturnPath ?? window.location.pathname + window.location.search + window.location.hash
                 ) as { processingUrl?: string };
                 setBillingNotice({ tone: "warning", message: "Your plan change is being reconciled with Razorpay." });
                 if (result.processingUrl) router.push(result.processingUrl);
@@ -300,7 +306,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
         setBillingNotice(null);
 
         try {
-            const checkout = await billing.createSubscription(orgId, planId, window.location.pathname + window.location.search + window.location.hash);
+            const checkout = await billing.createSubscription(orgId, planId, requestedReturnPath ?? window.location.pathname + window.location.search + window.location.hash);
             setBillingOverview(prev => prev ? { ...prev, current: checkout.subscription } : prev);
 
             let completed = false;
@@ -377,7 +383,68 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
             });
             setBillingAction(null);
         }
-    }, [billingOverview, checkoutScriptReady, loadBilling, orgId]);
+    }, [billingOverview, checkoutScriptReady, loadBilling, orgId, requestedReturnPath, router]);
+
+    const startRecovery = useCallback(async () => {
+        if (!checkoutScriptReady || !window.Razorpay) {
+            setBillingNotice({ tone: "warning", message: "Razorpay Checkout is still loading. Please try again in a moment." });
+            return;
+        }
+        setRecoveryLoading(true);
+        setBillingNotice(null);
+        try {
+            const recovery = await billing.createRecovery(orgId, window.location.pathname + window.location.search + window.location.hash);
+            let completed = false;
+            const razorpay = new window.Razorpay({
+                key: recovery.keyId,
+                name: "Lab Lords",
+                description: "Update card and retry subscription payment",
+                subscription_id: recovery.subscriptionId,
+                subscription_card_change: true,
+                theme: { color: "#22c55e" },
+                retry: { enabled: true },
+                method: recovery.method,
+                modal: {
+                    confirm_close: true,
+                    ondismiss: async () => {
+                        if (completed) return;
+                        await billing.recordCheckoutEvent(orgId, recovery.changeId, "ABANDONED").catch(() => undefined);
+                        setBillingNotice({ tone: "warning", message: "Card recovery was closed. The workspace remains in its current access state." });
+                        setRecoveryLoading(false);
+                    },
+                },
+                handler: async response => {
+                    completed = true;
+                    try {
+                        const result = await billing.verifySubscription(orgId, {
+                            changeId: recovery.changeId,
+                            razorpay_subscription_id: response.razorpay_subscription_id ?? recovery.subscriptionId,
+                            razorpay_payment_id: response.razorpay_payment_id,
+                            razorpay_signature: response.razorpay_signature,
+                        });
+                        router.push(result.processingUrl);
+                    } catch (requestError) {
+                        setBillingNotice({ tone: "error", message: requestError instanceof Error ? requestError.message : "Unable to verify card recovery." });
+                    } finally {
+                        setRecoveryLoading(false);
+                    }
+                },
+            });
+            razorpay.on("payment.failed", async response => {
+                completed = true;
+                await billing.recordCheckoutEvent(orgId, recovery.changeId, "DECLINED", {
+                    failureCategory: response.error?.reason,
+                    failureCode: response.error?.code,
+                }).catch(() => undefined);
+                setBillingNotice({ tone: "error", message: response.error?.description || "Card recovery was not confirmed." });
+                setRecoveryLoading(false);
+            });
+            razorpay.open();
+        } catch (requestError) {
+            setBillingNotice({ tone: "error", message: requestError instanceof Error ? requestError.message : "Unable to start card recovery." });
+            setRecoveryLoading(false);
+        }
+    }, [checkoutScriptReady, orgId, router]);
 
     const confirmCancellation = useCallback(async () => {
         if (!cancelDialogOpen) return;
@@ -705,11 +772,21 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                         )}
                     </div>
 
+                    {billingOverview?.experience && (
+                        <div className="mx-5 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)] px-4 py-3 text-sm">
+                            <p className="font-semibold text-[color:var(--text-primary)]">{formatBillingCustomerState(billingOverview.experience.customerState)}</p>
+                            <p className="mt-1 text-[color:var(--text-secondary)]">{billingOverview.experience.customerMessage}</p>
+                            {(billingOverview.experience.paymentAction === "UPDATE_CARD" || billingOverview.experience.paymentAction === "RETRY_PAYMENT") && (
+                                <AppButton className="mt-3" size="sm" onClick={startRecovery} isLoading={recoveryLoading}>Update card and retry payment</AppButton>
+                            )}
+                        </div>
+                    )}
+
                     {billingOverview?.current && (
                         <div className="space-y-3 px-5 py-4">
                             <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-5">
                                 <ReadOnlyBillingMetric label="Current plan" value={billingOverview.current.shortName} />
-                                <ReadOnlyBillingMetric label="Status" value={billingOverview.current.status} />
+                                <ReadOnlyBillingMetric label="Billing state" value={formatBillingCustomerState(billingOverview.experience.customerState)} />
                                 <ReadOnlyBillingMetric label="Payment method" value={billingOverview.paymentMethod ?? "Not authorized"} />
                                 <ReadOnlyBillingMetric
                                     label="Paid through"
@@ -717,7 +794,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                                 />
                                 <ReadOnlyBillingMetric
                                     label="Next charge"
-                                    value={billingOverview.current.chargeAt ? format(new Date(billingOverview.current.chargeAt), "PP") : "Not scheduled"}
+                                    value={billingOverview.experience.nextChargeAt ? format(new Date(billingOverview.experience.nextChargeAt), "PP") : "Not scheduled"}
                                 />
                             </div>
 
@@ -762,24 +839,24 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
 
                     {billingOverview && (
                         <div className="grid gap-3 px-5 pt-4 sm:grid-cols-2 lg:grid-cols-4">
-                            <ReadOnlyBillingMetric label="Price per branch" value={`₹${billingOverview.projection.unitAmount}/month`} />
-                            <ReadOnlyBillingMetric label="Billable branches" value={String(billingOverview.projection.quantity)} />
-                            <ReadOnlyBillingMetric label="Projected total" value={`₹${billingOverview.projection.monthlyTotal}/month`} />
-                            <ReadOnlyBillingMetric label="Access" value={billingOverview.entitlements.accessMode} />
+                            <ReadOnlyBillingMetric label="Price per branch" value={`₹${billingOverview.experience.projectedUnitAmount}/month`} />
+                            <ReadOnlyBillingMetric label="Billable branches" value={String(billingOverview.experience.projectedQuantity)} />
+                            <ReadOnlyBillingMetric label="Projected total" value={`₹${billingOverview.experience.projectedMonthlyTotal}/month`} />
+                            <ReadOnlyBillingMetric label="Access" value={billingOverview.experience.accessMode === "READ_ONLY" ? "Read-only" : billingOverview.experience.accessMode === "WARNING" ? "Full access · payment attention needed" : "Full access"} />
                         </div>
                     )}
 
-                    {(billingOverview?.scheduledChanges.length ?? 0) > 0 && (
+                    {(billingOverview?.experience.scheduledChanges.length ?? 0) > 0 && (
                         <div className="border-t border-[color:var(--ui-form-section-divider)] px-5 py-4">
                             <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Scheduled changes</h3>
                             <div className="mt-3 space-y-2">
-                                {billingOverview?.scheduledChanges.map(change => (
+                                {billingOverview?.experience.scheduledChanges.map(change => (
                                     <div key={change.id} className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] px-3 py-2 text-xs">
                                         <span className="text-[color:var(--text-primary)]">
-                                            {change.type.replaceAll("_", " ")} · {change.status}
+                                            {formatBillingChangeType(change.type)} · {change.status === "SCHEDULED" ? "Scheduled" : "Awaiting confirmation"}
                                             {change.effectiveAt ? ` · ${format(new Date(change.effectiveAt), "PP")}` : ""}
                                         </span>
-                                        {(change.status === "QUEUED" || change.status === "SCHEDULED" || change.status === "FAILED") && (
+                                        {(change.status === "SCHEDULED" || change.status === "FAILED" || change.status === "AWAITING_PROVIDER_CONFIRMATION") && (
                                             <AppButton variant="secondary" size="sm" onClick={async () => { await billing.undoChange(orgId, change.id); await loadBilling(); }}>
                                                 Undo
                                             </AppButton>
@@ -862,6 +939,37 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
 
 const TERMINAL_BILLING_STATUSES = new Set(["CANCELLED", "COMPLETED", "EXPIRED"]);
 
+function formatBillingCustomerState(state: BillingOverview["experience"]["customerState"]) {
+    const labels: Record<BillingOverview["experience"]["customerState"], string> = {
+        TRIAL_ACTIVE: "Standard trial active",
+        BASIC_ACTIVE: "Basic active",
+        STANDARD_ACTIVE: "Standard active",
+        PAYMENT_RETRYING: "Payment retry in progress",
+        PAYMENT_HALTED: "Payment method needs attention",
+        CONFIRMING: "Confirming with Razorpay",
+        PAYMENT_NOT_COMPLETED: "Payment not completed",
+        PAYMENT_DECLINED: "Card authorization declined",
+        PAYMENT_FAILED: "Billing update failed",
+        ACCESS_ENDED: "Paid access ended",
+        AUTHORIZATION_REQUIRED: "Card authorization required",
+    };
+    return labels[state];
+}
+
+function formatBillingChangeType(type: string) {
+    const labels: Record<string, string> = {
+        SUBSCRIPTION_AUTHORIZATION: "Subscription authorization",
+        TRIAL_SUBSCRIPTION_UPDATE: "Post-trial subscription update",
+        PLAN_UPGRADE: "Upgrade to Standard",
+        PLAN_DOWNGRADE: "Downgrade to Basic",
+        QUANTITY_INCREASE: "Branch quantity increase",
+        BRANCH_REMOVAL: "Branch removal",
+        BRANCH_REACTIVATION: "Branch reactivation",
+        CANCELLATION: "Subscription cancellation",
+    };
+    return labels[type] ?? "Billing change";
+}
+
 function formatPlanAmount(plan: BillingPlanDto) {
     if (plan.amount == null || plan.custom) return "Custom";
     return new Intl.NumberFormat("en-IN", {
@@ -931,7 +1039,7 @@ function BillingPlanCard({
             <div className="mt-4 flex flex-wrap gap-2">
                 {isCurrent && current && (
                     <span className="rounded-full border border-[color:var(--ui-badge-success-border)] bg-[color:var(--ui-badge-success-bg)] px-2 py-1 text-[10px] font-semibold uppercase text-[color:var(--ui-badge-success-text)]">
-                        {current.status}
+                        Current plan
                     </span>
                 )}
                 {!plan.active && (

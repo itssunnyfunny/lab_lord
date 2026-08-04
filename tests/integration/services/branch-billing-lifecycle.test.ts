@@ -78,6 +78,31 @@ describe("workspace branch billing lifecycle", () => {
       .rejects.toThrow("Payment retries are exhausted");
   });
 
+  it("blocks operational writes for a branch awaiting paid activation", async () => {
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    const branch = await createBranch({ organizationId: organization.id });
+    await testPrisma.branch.update({ where: { id: branch.id }, data: { billingStatus: "PENDING_ACTIVATION" } });
+    await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        razorpaySubscriptionId: "sub_active",
+        status: "ACTIVE",
+        providerPaymentMethod: "CARD",
+        paidThrough: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    await expect(EntitlementService.assertBranchWritable(branch.id))
+      .rejects.toThrow("awaiting provider-confirmed billing activation");
+  });
+
   it("schedules, undoes, and archives a trial branch without deleting data", async () => {
     const { owner, organization, first, trialEndsAt } = await trialOrganization();
     const second = await createBranch({ organizationId: organization.id, name: "Second" });

@@ -12,6 +12,7 @@ import {
     LucideIcon,
     MessageSquare,
     Settings,
+    Sparkles,
     TriangleAlert,
     UserCircle,
     Users,
@@ -21,7 +22,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { SidebarItem } from "./SidebarItem";
 import { useBranchAccess } from "@/hooks/useBranchAccess";
 import type { StaffAction } from "@/types";
-import type { BillingEntitlement } from "@/lib/billingPlans";
+import type { BillingFeatureKey } from "@/lib/billingPolicy";
+import { hasFeatureEntitlement } from "@/lib/billingPolicy";
 import { LogoMark } from "@/components/brand/AppLogo";
 import {
     chromeSidebarClass,
@@ -35,7 +37,7 @@ type BranchNavItem = {
     label: string;
     href: string;
     permission?: StaffAction;
-    entitlement?: BillingEntitlement;
+    feature?: BillingFeatureKey;
     active: (pathname: string | null) => boolean;
 };
 
@@ -55,14 +57,11 @@ export function BranchSidebar() {
         return access?.permissions[permission] ?? false;
     };
 
-    const hasEntitlement = (entitlement?: BillingEntitlement) => {
-        if (!entitlement) return true;
-        return access?.entitlements.includes(entitlement) ?? false;
-    };
+    const featureAvailable = (feature?: BillingFeatureKey) => !feature || hasFeatureEntitlement(access?.entitlements ?? [], feature);
 
     const overviewItems: BranchNavItem[] = [
         { icon: LayoutDashboard, label: "Dashboard", href: basePath, active: current => current === basePath },
-        { icon: BarChart2, label: "Analytics", href: `${basePath}/analytics`, permission: "analytics", active: current => current === `${basePath}/analytics` },
+        { icon: BarChart2, label: "Analytics", href: `${basePath}/analytics`, permission: "analytics", feature: "BRANCH_ANALYTICS", active: current => current === `${basePath}/analytics` },
     ];
 
     const operationItems: BranchNavItem[] = [
@@ -73,12 +72,13 @@ export function BranchSidebar() {
         { icon: CalendarCheck, label: "Allocations", href: `${basePath}/allocations`, permission: "seat_allocation", active: current => current?.startsWith(`${basePath}/allocations`) ?? false },
         { icon: CreditCard, label: "Payments", href: `${basePath}/payments`, permission: "view_payments", active: current => current === `${basePath}/payments` },
         { icon: TriangleAlert, label: "Overdue", href: `${basePath}/overdue`, permission: "view_payments", active: current => current === `${basePath}/overdue` },
-        { icon: UserCircle, label: "Staff", href: `${basePath}/staff`, permission: "manage_branch", active: current => current === `${basePath}/staff` },
+        { icon: UserCircle, label: "Staff", href: `${basePath}/staff`, permission: "manage_branch", feature: "STAFF_CONTROLS", active: current => current === `${basePath}/staff` },
     ];
 
     const intelligenceItems: BranchNavItem[] = [
-        { icon: FileText, label: "AI Reports", href: `${basePath}/ai/reports`, permission: "analytics", entitlement: "AI_ACCESS", active: current => current === `${basePath}/ai/reports` },
-        { icon: MessageSquare, label: "AI Messages", href: `${basePath}/ai/messages`, permission: "analytics", entitlement: "AI_ACCESS", active: current => current === `${basePath}/ai/messages` },
+        { icon: Sparkles, label: "AI Insights", href: `${basePath}/ai/insights`, permission: "analytics", feature: "AI_INSIGHTS", active: current => current === `${basePath}/ai/insights` },
+        { icon: FileText, label: "AI Reports", href: `${basePath}/ai/reports`, permission: "analytics", feature: "AI_REPORTS", active: current => current === `${basePath}/ai/reports` },
+        { icon: MessageSquare, label: "AI Messages", href: `${basePath}/ai/messages`, permission: "analytics", feature: "AI_MESSAGES", active: current => current === `${basePath}/ai/messages` },
     ];
 
     const renderItems = (items: BranchNavItem[]) => items.map(item => (
@@ -89,11 +89,13 @@ export function BranchSidebar() {
             isActive={item.active(pathname)}
             onClick={() => router.push(item.href)}
             density="compact"
+            locked={!featureAvailable(item.feature)}
+            badge={!featureAvailable(item.feature) ? "Standard" : undefined}
         />
     ));
 
     const renderSection = (label: string, items: BranchNavItem[]) => {
-        const visibleItems = items.filter(item => canSee(item.permission) && hasEntitlement(item.entitlement));
+        const visibleItems = items.filter(item => canSee(item.permission));
         if (visibleItems.length === 0) return null;
 
         return (

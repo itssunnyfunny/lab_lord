@@ -24,6 +24,9 @@ import {
     pageSubtleTextClass,
     pageTitleClass,
 } from "@/components/ui/pageSurface";
+import { useBillingExperience } from "@/components/billing/BillingExperienceProvider";
+import { FeatureUpgradeGate } from "@/components/billing/FeatureUpgradeGate";
+import { hasFeatureEntitlement } from "@/lib/billingPolicy";
 
 type BranchAnalyticsRow = {
     id: string;
@@ -64,11 +67,14 @@ function utilizationTone(value: number): "success" | "warning" | "danger" {
 export default function OrgAnalyticsPage({ params }: { params: Promise<{ orgId: string }> }) {
     const router = useRouter();
     const { orgId } = use(params);
+    const billingExperience = useBillingExperience();
+    const analyticsAvailable = hasFeatureEntitlement(billingExperience?.experience?.entitlements ?? [], "ORG_ANALYTICS");
     const [snapshot, setSnapshot] = useState<OrganizationAnalyticsSnapshot | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
+        if (billingExperience?.loading || !billingExperience?.experience || !analyticsAvailable) return;
         let active = true;
 
         async function loadAnalytics() {
@@ -91,7 +97,7 @@ export default function OrgAnalyticsPage({ params }: { params: Promise<{ orgId: 
         return () => {
             active = false;
         };
-    }, [orgId]);
+    }, [analyticsAvailable, billingExperience?.experience, billingExperience?.loading, orgId]);
 
     const rows = useMemo<BranchAnalyticsRow[]>(() => {
         return snapshot?.branches.map(branch => ({
@@ -106,6 +112,14 @@ export default function OrgAnalyticsPage({ params }: { params: Promise<{ orgId: 
             overdueCount: branch.snapshot.payments.overdueCount,
         })) ?? [];
     }, [snapshot]);
+
+    if (billingExperience?.loading || !billingExperience?.experience) {
+        return <PageLoadingSkeleton label="Checking analytics access" variant="analytics" />;
+    }
+
+    if (!analyticsAvailable) {
+        return <FeatureUpgradeGate feature="ORG_ANALYTICS" experience={billingExperience.experience}><span /></FeatureUpgradeGate>;
+    }
 
     if (loading && !snapshot) {
         return <PageLoadingSkeleton label="Loading organization analytics" variant="analytics" />;

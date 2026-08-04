@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
 import { StaffService } from "@/services/staff.service";
-import { EntitlementService } from "@/services/entitlement.service";
+import { BillingExperienceService } from "@/services/billingExperience.service";
 
 export async function GET(_request: Request, context: { params: Promise<{ branchId: string }> }) {
   try {
@@ -10,17 +9,14 @@ export async function GET(_request: Request, context: { params: Promise<{ branch
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const { branchId } = await context.params;
     const access = await StaffService.getBranchAccess(user.id, branchId);
-    const [branch, profile] = await Promise.all([
-      prisma.branch.findUnique({ where: { id: branchId }, select: { billingStatus: true } }),
-      EntitlementService.getOrganizationProfile(access.organizationId),
-    ]);
-    if (!branch) return NextResponse.json({ error: "Branch not found" }, { status: 404 });
+    const experience = await BillingExperienceService.getForBranch(branchId, user.id);
+    if (!experience.branch) return NextResponse.json({ error: "Branch not found" }, { status: 404 });
     return NextResponse.json({
       organizationId: access.organizationId,
-      branchStatus: branch.billingStatus,
-      inheritedPlan: profile.effectivePlan,
-      subscriptionStatus: profile.subscriptionStatus,
-      accessMode: profile.accessMode,
+      branchStatus: experience.branch.billingStatus,
+      inheritedPlan: experience.effectivePlan === "STANDARD_TRIAL" ? "Standard trial" : experience.effectivePlan === "STANDARD" ? "Standard" : experience.effectivePlan === "BASIC" ? "Basic" : "No active plan",
+      billingState: experience.customerMessage,
+      accessMode: experience.accessMode,
       billingUrl: `/org/${access.organizationId}/settings#billing`,
     });
   } catch (error) {

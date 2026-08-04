@@ -10,6 +10,7 @@ const ACTIVE_OPERATION_STATUSES = [
   "VERIFYING",
   "AWAITING_PROVIDER_CONFIRMATION",
   "DECLINED",
+  "ABANDONED",
   "FAILED",
 ] as const;
 
@@ -36,6 +37,7 @@ function serializeOperation(change: OrganizationBillingChange): BillingExperienc
     status: change.operationStatus,
     returnPath: change.returnPath,
     confirmationDeadlineAt: change.confirmationDeadlineAt?.toISOString() ?? null,
+    effectiveAt: change.effectiveAt?.toISOString() ?? null,
     failureCategory: change.failureCategory,
     failureCode: change.failureCode,
     branchId: change.branchId,

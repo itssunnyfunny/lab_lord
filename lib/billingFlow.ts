@@ -10,8 +10,10 @@ export function getBillingSignUpPath(planId: CheckoutBillingPlanId) {
 
 export function getOrganizationBillingPath(
   organizationId: string,
-  planId: CheckoutBillingPlanId
+  planId: CheckoutBillingPlanId,
+  returnPath?: string
 ) {
-  return `/org/${encodeURIComponent(organizationId)}/settings?billingPlan=${planId}#billing`;
+  const query = new URLSearchParams({ billingPlan: planId });
+  if (returnPath?.startsWith("/") && !returnPath.startsWith("//")) query.set("returnTo", returnPath);
+  return `/org/${encodeURIComponent(organizationId)}/settings?${query.toString()}#billing`;
 }
-

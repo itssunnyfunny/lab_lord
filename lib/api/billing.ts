@@ -182,6 +182,17 @@ export type BillingCancellationResult = {
   subscription: OrganizationSubscriptionDto;
 };
 
+export type BillingRecoveryPayload = {
+  keyId: string;
+  subscriptionId: string;
+  subscription_card_change: true;
+  method: { card: true; upi: false; netbanking: false; wallet: false };
+  changeId: string;
+  processingUrl: string;
+  operation: BillingOperationDto;
+  subscription: OrganizationSubscriptionDto;
+};
+
 export const billing = {
   getOverview(orgId: string): Promise<BillingOverview> {
     return apiClient.get(`/organizations/${orgId}/billing`);
@@ -246,5 +257,9 @@ export const billing = {
     details?: { failureCategory?: string; failureCode?: string }
   ) {
     return apiClient.post(`/organizations/${orgId}/billing/mutations/${changeId}/checkout-event`, { event, ...details });
+  },
+
+  createRecovery(orgId: string, returnPath?: string): Promise<BillingRecoveryPayload> {
+    return apiClient.post(`/organizations/${orgId}/billing/subscription/recovery`, { returnPath });
   },
 };

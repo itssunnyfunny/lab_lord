@@ -246,7 +246,7 @@ export default function AIMessagesPage() {
     const branchId = params.branchId as string;
 
     return (
-        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.aiMessages}>
+        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.aiMessages} feature="AI_MESSAGES">
             <AIMessagesContent branchId={branchId} />
         </BranchAccessGuard>
     );

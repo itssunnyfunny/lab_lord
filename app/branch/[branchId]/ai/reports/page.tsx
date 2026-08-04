@@ -279,7 +279,7 @@ export default function AIReportsPage() {
     const branchId = params.branchId as string;
 
     return (
-        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.aiReports}>
+        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.aiReports} feature="AI_REPORTS">
             <AIReportsContent branchId={branchId} />
         </BranchAccessGuard>
     );

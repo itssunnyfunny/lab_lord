@@ -201,6 +201,9 @@ export class EntitlementService {
     if (branch.billingStatus === "ARCHIVED") {
       throw new BillingReadOnlyError("This branch is archived");
     }
+    if (branch.billingStatus === "PENDING_ACTIVATION") {
+      throw new BillingReadOnlyError("This branch is awaiting provider-confirmed billing activation");
+    }
     return this.assertOrganizationWritable(branch.organizationId);
   }
 }

@@ -12,6 +12,14 @@ export const branches = {
         return apiClient.get(`/branches/${branchId}/access`);
     },
 
+    retryPendingActivation: (branchId: string) => apiClient.post(`/branches/${branchId}/billing/pending`),
+
+    discardPendingActivation: (branchId: string) => apiClient.delete(`/branches/${branchId}/billing/pending`),
+
+    reactivate: (branchId: string) => apiClient.post(`/branches/${branchId}/billing/reactivate`, null, {
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+    }),
+
     getStudents: async (branchId: string, shiftId?: string): Promise<Student[]> => {
         const query = shiftId ? `?shiftId=${shiftId}` : "";
         return apiClient.get(`/branches/${branchId}/students${query}`);

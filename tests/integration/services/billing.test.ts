@@ -433,6 +433,35 @@ describe("BillingService SaaS subscriptions", () => {
     });
   });
 
+  it("persists one reload-safe checkout operation for payment recovery", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        razorpaySubscriptionId: "sub_recovery",
+        status: "HALTED",
+        providerPaymentMethod: "CARD",
+      },
+    });
+
+    const first = await BillingService.getRecoveryCheckout(owner.id, organization.id, `/org/${organization.id}/settings#billing`);
+    const second = await BillingService.getRecoveryCheckout(owner.id, organization.id, "/ignored-on-reload");
+
+    expect(first).toMatchObject({ subscription_card_change: true, changeId: second.changeId });
+    await expect(testPrisma.organizationBillingChange.count({ where: { organizationId: organization.id } })).resolves.toBe(1);
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: first.changeId } }))
+      .resolves.toMatchObject({ status: "AWAITING_PAYMENT", operationStatus: "CHECKOUT_OPEN" });
+  });
+
   it("keeps an early V2 cancellation local and undoable until the cutoff", async () => {
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });

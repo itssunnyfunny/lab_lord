@@ -31,6 +31,7 @@ export type BillingExperienceOperation = {
   status: string;
   returnPath: string | null;
   confirmationDeadlineAt: string | null;
+  effectiveAt: string | null;
   failureCategory: string | null;
   failureCode: string | null;
   branchId: string | null;

@@ -32,7 +32,7 @@ import {
     formSurfaceHoverClass,
 } from "@/components/ui/formSurface";
 import { FieldError, fieldErrorClass, fieldErrorProps, useInlineFieldErrors } from "@/components/ui/InlineFieldError";
-import { ArrowLeft, ArrowRight, Building2, CheckCircle2, Layers, LayoutDashboard, MapPin, Phone, Plus, UploadCloud, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Building2, CheckCircle2, Clock3, CreditCard, Layers, LayoutDashboard, MapPin, Phone, Plus, Sparkles, UploadCloud, X } from "lucide-react";
 import { LogoMark } from "@/components/brand/AppLogo";
 import { apiClient } from "@/lib/api/core";
 import {
@@ -112,19 +112,19 @@ function formatPrice(value: number) {
 const stepItems = [
     { step: 1, label: "Organization", description: "Business identity and owner contact" },
     { step: 2, label: "First branch", description: "Seats, location, shifts, and pricing" },
-    { step: 3, label: "Import assistance", description: "Import existing records or begin with a clean workspace" },
+    { step: 3, label: "Start trial", description: "Choose a starting point and confirm the 30-day Standard trial" },
 ] as const;
 
 const stepHeadings: Record<OnboardingStep, string> = {
     1: "Organization details",
     2: "First branch details",
-    3: "Import assistance",
+    3: "Confirm your Standard trial",
 };
 
 const stepDescriptions: Record<OnboardingStep, string> = {
     1: "Name the business and add the owner contact used for operations.",
     2: "Define a usable branch with seats and shifts before entering the dashboard.",
-    3: "Choose whether this branch should begin with imported records or a clean workspace.",
+    3: "Choose how to begin, then start 30 days of Standard access. No card is required.",
 };
 
 export default function OnboardingPage({
@@ -140,7 +140,12 @@ export default function OnboardingPage({
     const [step, setStep] = useState<OnboardingStep>(1);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [createdBranchId, setCreatedBranchId] = useState<string | null>(null);
+    const [startingPoint, setStartingPoint] = useState<"IMPORT" | "CLEAN" | null>(null);
+    const [trialEndDate] = useState(() => {
+        const date = new Date();
+        date.setDate(date.getDate() + 30);
+        return date;
+    });
     const {
         markTouched,
         markSubmitted,
@@ -363,6 +368,10 @@ export default function OnboardingPage({
         setError(null);
         const result = validateForm();
         if (Object.values(result.errors).some(Boolean) || !result.values) return;
+        if (!startingPoint) {
+            setError("Choose whether to import records or begin with a clean workspace.");
+            return;
+        }
 
         const { orgNameResult, ownerPhoneResult, businessTypeResult, branchNameResult, cityResult, seatCountResult, seatNumberingConfig, shiftsResult, multiShiftsResult } = result.values;
         setLoading(true);
@@ -380,14 +389,12 @@ export default function OnboardingPage({
                 multiShifts: multiShiftsResult.value,
             }) as OnboardingResponse;
 
-            if (requestedBillingPlan) {
-                router.push(getOrganizationBillingPath(res.org.id, requestedBillingPlan));
-                return;
-            }
-
-            setCreatedBranchId(res.branch.id);
-            resetFieldErrors();
-            setStep(3);
+            const destination = startingPoint === "IMPORT"
+                ? `/branch/${res.branch.id}/onboarding/import`
+                : `/branch/${res.branch.id}`;
+            if (requestedBillingPlan) router.push(getOrganizationBillingPath(res.org.id, requestedBillingPlan, destination));
+            else if (startingPoint === "IMPORT") router.push(`/branch/${res.branch.id}/onboarding/import`);
+            else router.push(`/branch/${res.branch.id}`);
         } catch (err: unknown) {
             const message = err instanceof Error ? err.message : "Failed to complete setup. Please try again.";
             console.error("Setup failed", err);
@@ -397,14 +404,13 @@ export default function OnboardingPage({
         }
     };
 
-    const openImportAssistant = () => {
-        if (!createdBranchId) return;
-        router.push(`/branch/${createdBranchId}/onboarding/import`);
-    };
-
-    const openCleanWorkspace = () => {
-        if (!createdBranchId) return;
-        router.push(`/branch/${createdBranchId}`);
+    const continueToTrial = () => {
+        markSubmitted();
+        setError(null);
+        const result = validateForm();
+        if (Object.values(result.errors).some(Boolean)) return;
+        resetFieldErrors();
+        setStep(3);
     };
 
     const canAddMultiShift = formData.shifts.length >= 2;
@@ -818,13 +824,12 @@ export default function OnboardingPage({
                                         Back
                                     </AppButton>
                                     <AppButton
-                                        onClick={handleSubmit}
+                                        onClick={continueToTrial}
                                         disabled={loading}
-                                        isLoading={loading}
-                                        rightIcon={loading ? undefined : ArrowRight}
+                                        rightIcon={ArrowRight}
                                         className="sm:min-w-40"
                                     >
-                                        {loading ? "Setting up..." : "Create branch"}
+                                        Review trial
                                     </AppButton>
                                 </div>
                             </div>
@@ -833,11 +838,11 @@ export default function OnboardingPage({
                         {step === 3 && (
                             <div className="space-y-5">
                                 <div className={cn("flex items-start gap-3 p-4", formSuccessBannerClass)}>
-                                    <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" />
+                                    <Sparkles className="mt-0.5 h-5 w-5 shrink-0" />
                                     <div>
-                                        <p className="text-sm font-semibold">Organization and branch created</p>
+                                        <p className="text-sm font-semibold">30 days of Standard access</p>
                                         <p className="mt-1 text-sm leading-6">
-                                            Your branch structure is ready. Select the preferred starting point for operational records.
+                                            Your trial starts only when you confirm this setup. It ends on {trialEndDate.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}. No card is required.
                                         </p>
                                     </div>
                                 </div>
@@ -845,12 +850,13 @@ export default function OnboardingPage({
                                 <div className="grid gap-4 md:grid-cols-2">
                                     <button
                                         type="button"
-                                        onClick={openImportAssistant}
-                                        disabled={!createdBranchId}
+                                        onClick={() => { setStartingPoint("IMPORT"); setError(null); }}
+                                        aria-pressed={startingPoint === "IMPORT"}
                                         className={cn(
                                             "group flex h-full flex-col items-start gap-4 p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--ui-control-disabled-opacity)]",
                                             formSurfaceClass,
-                                            formSurfaceHoverClass
+                                            formSurfaceHoverClass,
+                                            startingPoint === "IMPORT" && "border-[color:var(--ui-form-input-focus-border)]"
                                         )}
                                     >
                                         <span className={cn(entryIconFrameClass, "h-11 w-11")}>
@@ -863,19 +869,20 @@ export default function OnboardingPage({
                                             </span>
                                         </span>
                                         <span className="mt-auto inline-flex items-center gap-2 text-sm font-semibold text-[color:var(--ui-form-accent)]">
-                                            Open Import Assistant
-                                            <ArrowRight size={14} className="transition-transform group-hover:translate-x-0.5" />
+                                            {startingPoint === "IMPORT" ? "Selected" : "Select import"}
+                                            {startingPoint === "IMPORT" && <CheckCircle2 size={14} />}
                                         </span>
                                     </button>
 
                                     <button
                                         type="button"
-                                        onClick={openCleanWorkspace}
-                                        disabled={!createdBranchId}
+                                        onClick={() => { setStartingPoint("CLEAN"); setError(null); }}
+                                        aria-pressed={startingPoint === "CLEAN"}
                                         className={cn(
                                             "group flex h-full flex-col items-start gap-4 p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--ui-control-disabled-opacity)]",
                                             formSurfaceClass,
-                                            formSurfaceHoverClass
+                                            formSurfaceHoverClass,
+                                            startingPoint === "CLEAN" && "border-[color:var(--ui-form-input-focus-border)]"
                                         )}
                                     >
                                         <span className={cn(entryIconFrameClass, "h-11 w-11")}>
@@ -888,10 +895,39 @@ export default function OnboardingPage({
                                             </span>
                                         </span>
                                         <span className="mt-auto inline-flex items-center gap-2 text-sm font-semibold text-[color:var(--ui-form-accent)]">
-                                            Go to branch dashboard
-                                            <ArrowRight size={14} className="transition-transform group-hover:translate-x-0.5" />
+                                            {startingPoint === "CLEAN" ? "Selected" : "Select clean workspace"}
+                                            {startingPoint === "CLEAN" && <CheckCircle2 size={14} />}
                                         </span>
                                     </button>
+                                </div>
+
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                    <div className={cn("p-3", formSurfaceClass)}>
+                                        <Clock3 className="h-4 w-4 text-[color:var(--ui-form-accent)]" />
+                                        <p className="mt-2 text-sm font-semibold">Trial end</p>
+                                        <p className={cn("mt-1 text-xs", formHelpTextClass)}>{trialEndDate.toLocaleDateString("en-IN", { dateStyle: "medium" })}</p>
+                                    </div>
+                                    <div className={cn("p-3", formSurfaceClass)}>
+                                        <CreditCard className="h-4 w-4 text-[color:var(--ui-form-accent)]" />
+                                        <p className="mt-2 text-sm font-semibold">Basic after trial</p>
+                                        <p className={cn("mt-1 text-xs", formHelpTextClass)}>₹299 per billable branch/month</p>
+                                    </div>
+                                    <div className={cn("p-3", formSurfaceClass)}>
+                                        <Sparkles className="h-4 w-4 text-[color:var(--ui-form-accent)]" />
+                                        <p className="mt-2 text-sm font-semibold">Standard after trial</p>
+                                        <p className={cn("mt-1 text-xs", formHelpTextClass)}>₹499 per billable branch/month</p>
+                                    </div>
+                                </div>
+
+                                <p className={cn("text-xs leading-5", formHelpTextClass)}>
+                                    Staff controls, advanced analytics, and AI are available throughout the trial. The trial does not renew automatically unless you authorize a card and choose a post-trial plan.
+                                </p>
+
+                                <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <AppButton variant="quiet" icon={ArrowLeft} onClick={() => setStep(2)} disabled={loading}>Back</AppButton>
+                                    <AppButton onClick={handleSubmit} disabled={loading || !startingPoint} isLoading={loading} rightIcon={loading ? undefined : ArrowRight} className="sm:min-w-48">
+                                        {loading ? "Starting trial..." : "Start Standard trial"}
+                                    </AppButton>
                                 </div>
                             </div>
                         )}

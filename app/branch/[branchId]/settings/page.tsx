@@ -155,7 +155,7 @@ interface BranchBillingSummary {
     organizationId: string;
     branchStatus: string;
     inheritedPlan: string;
-    subscriptionStatus: string | null;
+    billingState: string;
     accessMode: "FULL" | "WARNING" | "READ_ONLY";
     billingUrl: string;
 }
@@ -468,7 +468,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                 <SettingsPanel id="billing" title="Billing" description="This branch inherits its organization's billing plan." icon={CreditCard}>
                     <ReadOnlyRow label="Inherited plan" value={billingSummary?.inheritedPlan ?? "Loading"} />
                     <ReadOnlyRow label="Branch billing status" value={billingSummary?.branchStatus ?? "Loading"} />
-                    <ReadOnlyRow label="Subscription status" value={billingSummary?.subscriptionStatus ?? "Trial or not authorized"} />
+                    <ReadOnlyRow label="Billing state" value={billingSummary?.billingState ?? "Loading"} />
                     <ReadOnlyRow label="Access mode" value={billingSummary?.accessMode ?? "Loading"} />
                     <div className="px-5 py-4">
                         <AppButton

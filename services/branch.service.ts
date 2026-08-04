@@ -28,6 +28,7 @@ import {
 import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 import { EntitlementService } from "@/services/entitlement.service";
 import { BillingMutationService } from "@/services/billingMutation.service";
+import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import crypto from "node:crypto";
 
 interface CreateBranchForOrgParams {
@@ -170,8 +171,9 @@ export class BranchService {
             return branch;
         });
 
+        let billingChangeId: string | null = null;
         if (org.billingModelVersion === "WORKSPACE_V2" && org.subscription) {
-            await BillingMutationService.enqueue({
+            const change = await BillingMutationService.enqueue({
                 organizationId,
                 subscriptionId: org.subscription.id,
                 branchId: createdBranch.id,
@@ -181,10 +183,21 @@ export class BranchService {
                 effectiveAt: trialActive ? org.ownerTrialGrant?.trialEndsAt : new Date(),
                 createdByUserId: userId,
             });
-            await BillingMutationService.processNext(organizationId);
+            billingChangeId = change.id;
+            try {
+                await BillingMutationService.processNext(organizationId);
+            } catch {
+                // The pending branch and failed durable operation are intentional; the owner can retry or discard.
+            }
         }
 
-        return createdBranch;
+        return {
+            ...createdBranch,
+            billingChangeId,
+            processingUrl: billingChangeId
+                ? `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(billingChangeId)}`
+                : null,
+        };
     }
 
     static async createBranch(data: CreateBranchDto) {
@@ -354,6 +367,110 @@ export class BranchService {
                 },
             },
         });
+    }
+
+    static async retryPendingActivation(userId: string, branchId: string) {
+        const branch = await prisma.branch.findUnique({
+            where: { id: branchId },
+            include: { organization: true },
+        });
+        if (!branch) throw new Error("Branch not found");
+        if (branch.organization.ownerId !== userId) throw new Error("Unauthorized");
+        if (branch.billingStatus !== "PENDING_ACTIVATION") throw new Error("Branch is not pending activation");
+        const change = await prisma.organizationBillingChange.findFirst({
+            where: {
+                branchId,
+                type: { in: ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"] },
+                status: "FAILED",
+            },
+            orderBy: { sequence: "desc" },
+        });
+        if (!change) throw new Error("Failed branch activation operation not found");
+        const retried = await BillingMutationService.retry(change.id);
+        return {
+            change: retried ?? change,
+            processingUrl: `/org/${encodeURIComponent(branch.organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        };
+    }
+
+    static async discardPendingActivation(userId: string, branchId: string) {
+        const branch = await prisma.branch.findUnique({
+            where: { id: branchId },
+            include: { organization: { include: { subscription: true } } },
+        });
+        if (!branch) throw new Error("Branch not found");
+        if (branch.organization.ownerId !== userId) throw new Error("Unauthorized");
+        if (branch.billingStatus !== "PENDING_ACTIVATION") throw new Error("Branch is not pending activation");
+
+        await BillingReconciliationService.reconcileByOrganization(branch.organizationId);
+        const refreshed = await prisma.branch.findUnique({ where: { id: branchId } });
+        if (refreshed?.billingStatus === "ACTIVE") {
+            throw new Error("Razorpay already confirmed this branch activation");
+        }
+        const change = await prisma.organizationBillingChange.findFirst({
+            where: {
+                branchId,
+                type: { in: ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"] },
+                status: { in: ["QUEUED", "FAILED"] },
+            },
+            orderBy: { sequence: "desc" },
+        });
+        if (!change) throw new Error("Branch activation is still awaiting provider confirmation");
+        const now = new Date();
+        await prisma.$transaction([
+            prisma.organizationBillingChange.update({
+                where: { id: change.id },
+                data: {
+                    status: "SUPERSEDED",
+                    operationStatus: "ABANDONED",
+                    abandonedAt: now,
+                    resolvedAt: now,
+                    lastError: "Pending branch discarded by owner",
+                },
+            }),
+            prisma.branch.update({
+                where: { id: branchId },
+                data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
+            }),
+        ]);
+        return { archived: true };
+    }
+
+    static async reactivateArchivedBranch(userId: string, branchId: string, idempotencyKey: string) {
+        const branch = await prisma.branch.findUnique({
+            where: { id: branchId },
+            include: { organization: { include: { subscription: true } } },
+        });
+        if (!branch) throw new Error("Branch not found");
+        if (branch.organization.ownerId !== userId) throw new Error("Unauthorized");
+        if (branch.billingStatus !== "ARCHIVED") throw new Error("Only an archived branch can be reactivated");
+        await EntitlementService.assertOrganizationWritable(branch.organizationId);
+        const subscription = branch.organization.subscription;
+        if (!subscription) throw new Error("A card-authorized subscription is required to reactivate this branch");
+
+        await prisma.branch.update({
+            where: { id: branchId },
+            data: { billingStatus: "PENDING_ACTIVATION", billingArchivedAt: null },
+        });
+        const change = await BillingMutationService.enqueue({
+            organizationId: branch.organizationId,
+            subscriptionId: subscription.id,
+            branchId,
+            idempotencyKey,
+            type: "BRANCH_REACTIVATION",
+            fromQuantity: subscription.quantity,
+            effectiveAt: new Date(),
+            createdByUserId: userId,
+        });
+        try {
+            await BillingMutationService.processNext(branch.organizationId);
+        } catch {
+            // The durable failed operation is surfaced to the pending-activation gate.
+        }
+        return {
+            change,
+            processingUrl: `/org/${encodeURIComponent(branch.organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        };
     }
 
     static async scheduleBillingRemoval(

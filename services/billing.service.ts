@@ -663,6 +663,7 @@ export class BillingService {
       where: { organizationId, razorpaySubscriptionId: subscriptionId },
     });
     if (!subscription) throw new Error("Subscription does not belong to this organization");
+    const recoveryConfirmation = ["PENDING", "HALTED"].includes(subscription.status);
     if (change.organizationSubscriptionId !== subscription.id) {
       throw new Error("Billing operation subscription mismatch");
     }
@@ -739,6 +740,30 @@ export class BillingService {
       await BillingReconciliationService.reconcileProviderSubscription(subscriptionId, { paymentId });
     }
 
+    const reconciledSubscription = await prisma.organizationSubscription.findUnique({ where: { id: subscription.id } });
+    const recoveryPaid = !recoveryConfirmation || Boolean(
+      reconciledSubscription?.paidThrough
+      && (!subscription.paidThrough || reconciledSubscription.paidThrough > subscription.paidThrough)
+    );
+
+    if (!recoveryPaid) {
+      const awaitingOperation = await prisma.organizationBillingChange.update({
+        where: { id: change.id },
+        data: {
+          status: "AWAITING_PAYMENT",
+          operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+          providerPaymentId: paymentId,
+          lastError: "Card update confirmed; awaiting captured renewal payment and paid-period confirmation",
+        },
+      });
+      return {
+        verified: true as const,
+        operation: serializeBillingOperation(awaitingOperation),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(reconciledSubscription ?? updated),
+      };
+    }
+
     const appliedOperation = await prisma.organizationBillingChange.update({
       where: { id: change.id },
       data: {
@@ -747,6 +772,7 @@ export class BillingService {
         providerConfirmedAt: new Date(),
         appliedAt: new Date(),
         resolvedAt: new Date(),
+        providerPaymentId: paymentId,
         lastError: null,
       },
     });
@@ -755,7 +781,7 @@ export class BillingService {
       verified: true,
       operation: serializeBillingOperation(appliedOperation),
       processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
-      subscription: serializeSubscription(updated),
+      subscription: serializeSubscription(reconciledSubscription ?? updated),
     };
   }
 
@@ -943,17 +969,47 @@ export class BillingService {
     return { undone: true };
   }
 
-  static async getRecoveryCheckout(userId: string, organizationId: string) {
+  static async getRecoveryCheckout(userId: string, organizationId: string, returnPath?: unknown) {
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     const subscription = organization.subscription;
     if (!subscription || !["PENDING", "HALTED"].includes(subscription.status)) {
       throw new Error("Payment recovery is only available for pending or halted subscriptions");
     }
+    const now = new Date();
+    const existingOperation = await prisma.organizationBillingChange.findFirst({
+      where: {
+        organizationId,
+        organizationSubscriptionId: subscription.id,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
+      },
+      orderBy: { sequence: "desc" },
+    });
+    const operation = existingOperation ?? await BillingMutationService.enqueue({
+      organizationId,
+      subscriptionId: subscription.id,
+      idempotencyKey: `payment-recovery:${organizationId}:${crypto.randomUUID()}`,
+      type: "SUBSCRIPTION_AUTHORIZATION",
+      status: "AWAITING_PAYMENT",
+      operationStatus: "CHECKOUT_OPEN",
+      fromPlan: subscription.plan,
+      toPlan: subscription.plan,
+      fromQuantity: subscription.quantity,
+      toQuantity: subscription.quantity,
+      returnPath: getSafeReturnPath(returnPath, organizationId),
+      checkoutOpenedAt: now,
+      confirmationDeadlineAt: new Date(now.getTime() + 15 * 60 * 1000),
+      createdByUserId: userId,
+    });
     return {
       keyId: getRazorpayKeyId(),
       subscriptionId: subscription.razorpaySubscriptionId,
       subscription_card_change: true,
       method: { card: true, upi: false, netbanking: false, wallet: false },
+      changeId: operation.id,
+      processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(operation.id)}`,
+      operation: serializeBillingOperation(operation),
+      subscription: serializeSubscription(subscription),
     };
   }
 
