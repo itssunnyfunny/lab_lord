@@ -527,6 +527,7 @@ enum ProviderPaymentMethod {
 }
 
 enum BillingChangeType {
+  SUBSCRIPTION_AUTHORIZATION
   TRIAL_SUBSCRIPTION_UPDATE
   PLAN_UPGRADE
   PLAN_DOWNGRADE
@@ -546,6 +547,17 @@ enum BillingChangeStatus {
   UNDONE
   FAILED
   SUPERSEDED
+}
+
+enum BillingOperationStatus {
+  CHECKOUT_OPEN
+  VERIFYING
+  AWAITING_PROVIDER_CONFIRMATION
+  APPLIED
+  DECLINED
+  ABANDONED
+  FAILED
+  SCHEDULED
 }
 
 enum BillingOfferDiscountType {
@@ -698,6 +710,7 @@ model OrganizationBillingChange {
   idempotencyKey             String                   @unique
   type                       BillingChangeType
   status                     BillingChangeStatus      @default(QUEUED)
+  operationStatus            BillingOperationStatus   @default(AWAITING_PROVIDER_CONFIRMATION)
   fromPlan                   SaasPlan?
   toPlan                     SaasPlan?
   fromQuantity               Int?
@@ -712,6 +725,16 @@ model OrganizationBillingChange {
   undoneAt                   DateTime?
   failedAt                   DateTime?
   lastError                  String?
+  returnPath                 String?
+  confirmationDeadlineAt     DateTime?
+  failureCategory            String?
+  failureCode                String?
+  checkoutOpenedAt           DateTime?
+  verificationStartedAt      DateTime?
+  providerConfirmedAt        DateTime?
+  abandonedAt                DateTime?
+  declinedAt                 DateTime?
+  resolvedAt                 DateTime?
   createdByUserId            String?
   createdAt                  DateTime                 @default(now())
   updatedAt                  DateTime                 @updatedAt
@@ -721,6 +744,7 @@ model OrganizationBillingChange {
 
   @@unique([organizationId, sequence])
   @@index([organizationId, status, sequence])
+  @@index([organizationId, operationStatus, sequence])
   @@index([undoCutoffAt, status])
 }
 

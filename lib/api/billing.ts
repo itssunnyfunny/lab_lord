@@ -4,6 +4,7 @@ import type {
   BillingPlanId,
   CheckoutBillingPlanId,
 } from "@/lib/billingPlans";
+import type { BillingExperience } from "@/types/billingExperience";
 
 export type BillingPlanDto = {
   id: CheckoutBillingPlanId;
@@ -86,6 +87,7 @@ export type OrganizationEntitlementProfileDto = {
 };
 
 export type BillingOverview = {
+  experience: BillingExperience;
   plans: BillingPlanDto[];
   current: OrganizationSubscriptionDto | null;
   history: OrganizationSubscriptionHistoryDto[];

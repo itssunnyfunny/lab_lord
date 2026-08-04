@@ -14,6 +14,7 @@ import { OrganizationService } from "@/services/organization.service";
 import { EntitlementService } from "@/services/entitlement.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BillingMutationService } from "@/services/billingMutation.service";
+import { BillingExperienceService } from "@/services/billingExperience.service";
 import type { OrganizationSubscription, OrganizationSubscriptionHistory, Prisma } from "@/app/generated/prisma/client";
 import type { SaasPlan, SaasSubscriptionHistorySource, SaasSubscriptionStatus } from "@/types";
 
@@ -235,7 +236,7 @@ export class BillingService {
 
   static async listPlansForOrganization(userId: string, organizationId: string) {
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
-    const [subscription, history, entitlements, invoices, scheduledChanges, availableTrial, offerGrant] = await Promise.all([
+    const [subscription, history, entitlements, invoices, scheduledChanges, availableTrial, offerGrant, experience] = await Promise.all([
       prisma.organizationSubscription.findUnique({ where: { organizationId } }),
       prisma.organizationSubscriptionHistory.findMany({
         where: { organizationId },
@@ -258,6 +259,7 @@ export class BillingService {
         include: { billingOffer: true },
         orderBy: { billingOffer: { priority: "desc" } },
       }),
+      BillingExperienceService.getBillingExperience(organizationId, userId),
     ]);
 
     const quantity = entitlements.usage.branches;
@@ -301,6 +303,7 @@ export class BillingService {
       invoices,
       scheduledChanges,
       offer: offerGrant?.billingOffer ?? null,
+      experience,
     };
   }
 
@@ -743,6 +746,7 @@ export class BillingService {
       subscriptionId: subscription.id,
       idempotencyKey,
       type: "CANCELLATION",
+      operationStatus: "SCHEDULED",
       effectiveAt: boundary,
       undoCutoffAt,
       createdByUserId: userId,
@@ -772,7 +776,12 @@ export class BillingService {
     }
     await prisma.organizationBillingChange.update({
       where: { id: change.id },
-      data: { status: "UNDONE", undoneAt: now },
+      data: {
+        status: "UNDONE",
+        operationStatus: "ABANDONED",
+        undoneAt: now,
+        resolvedAt: now,
+      },
     });
     return { undone: true };
   }
@@ -812,7 +821,12 @@ export class BillingService {
     }
     await prisma.organizationBillingChange.update({
       where: { id: change.id },
-      data: { status: "UNDONE", undoneAt: new Date() },
+      data: {
+        status: "UNDONE",
+        operationStatus: "ABANDONED",
+        undoneAt: new Date(),
+        resolvedAt: new Date(),
+      },
     });
     return { undone: true };
   }

@@ -405,7 +405,7 @@ export class BranchService {
         } else {
             await prisma.organizationBillingChange.update({
                 where: { id: change.id },
-                data: { status: "SCHEDULED" },
+                data: { status: "SCHEDULED", operationStatus: "SCHEDULED" },
             });
         }
         return { branch: updated, change };
@@ -439,7 +439,12 @@ export class BranchService {
         await prisma.$transaction([
             prisma.organizationBillingChange.update({
                 where: { id: change.id },
-                data: { status: "UNDONE", undoneAt: new Date() },
+                data: {
+                    status: "UNDONE",
+                    operationStatus: "ABANDONED",
+                    undoneAt: new Date(),
+                    resolvedAt: new Date(),
+                },
             }),
             prisma.branch.update({
                 where: { id: branchId },
@@ -469,7 +474,13 @@ export class BranchService {
                 }),
                 prisma.organizationBillingChange.update({
                     where: { id: change.id },
-                    data: { status: "APPLIED", appliedAt: now },
+                    data: {
+                        status: "APPLIED",
+                        operationStatus: "APPLIED",
+                        appliedAt: now,
+                        providerConfirmedAt: now,
+                        resolvedAt: now,
+                    },
                 }),
             ]);
             archived += 1;

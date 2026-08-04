@@ -228,8 +228,11 @@ export class BillingReconciliationService {
             where: { id: pendingChange.id },
             data: {
               status: "APPLIED",
+              operationStatus: "APPLIED",
               providerInvoiceId: paidInvoice?.id ?? null,
               providerPaymentId: confirmedPayment?.id ?? null,
+              providerConfirmedAt: now,
+              resolvedAt: now,
               appliedAt: now,
             },
           });

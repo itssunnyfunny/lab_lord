@@ -99,12 +99,6 @@ async function applySubscriptionPermissions(
     permissions: Record<StaffAction, boolean>
 ) {
     const profile = await EntitlementService.getOrganizationProfile(organizationId);
-    if (!profile.entitlements.includes("STAFF_MANAGEMENT")) {
-        permissions.staff_management = false;
-    }
-    if (!profile.entitlements.includes("ADVANCED_ANALYTICS")) {
-        permissions.analytics = false;
-    }
     return {
         permissions,
         effectivePlan: profile.effectivePlan,
@@ -138,7 +132,7 @@ export class StaffService {
      * 3. Match role against PERMISSION_MATRIX.
      * 4. Return true or throw Error.
      */
-    static async authorize(userId: string, branchId: string, action: StaffAction): Promise<boolean> {
+    static async authorizeRole(userId: string, branchId: string, action: StaffAction): Promise<boolean> {
         // 1. Check if User is the Org Owner of this branch
         const branch = await db.branch.findUnique({
             where: { id: branchId },
@@ -150,7 +144,6 @@ export class StaffService {
         }
 
         if (branch.organization.ownerId === userId) {
-            await this.assertActionEntitlement(branch.organizationId, action);
             return true; // ✅ Owner is always allowed
         }
 
@@ -181,7 +174,6 @@ export class StaffService {
             const override = staffMember.permissionOverrides.find(item => item.action === permissionAction);
             if (override) {
                 if (override.allowed) {
-                    await this.assertActionEntitlement(branch.organizationId, action);
                     return true;
                 }
                 throw new Error(`Unauthorized: Permission '${action}' is disabled for this staff member`);
@@ -191,12 +183,22 @@ export class StaffService {
         // 3. Match Role against Matrix
         const allowedRoles = PERMISSION_MATRIX[action];
         if (allowedRoles.includes(staffMember.role)) {
-            await this.assertActionEntitlement(branch.organizationId, action);
             return true; // ✅ Role is allowed
         }
 
         // 4. Reject
         throw new Error(`Unauthorized: Role '${staffMember.role}' cannot perform '${action}'`);
+    }
+
+    static async authorize(userId: string, branchId: string, action: StaffAction): Promise<boolean> {
+        await this.authorizeRole(userId, branchId, action);
+        const branch = await db.branch.findUnique({
+            where: { id: branchId },
+            select: { organizationId: true },
+        });
+        if (!branch) throw new Error("Branch not found");
+        await this.assertActionEntitlement(branch.organizationId, action);
+        return true;
     }
 
     static async getBranchAccess(userId: string, branchId: string): Promise<BranchAccess> {

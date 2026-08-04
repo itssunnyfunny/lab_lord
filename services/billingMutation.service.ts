@@ -36,6 +36,10 @@ type EnqueueInput = {
   effectiveAt?: Date | null;
   undoCutoffAt?: Date | null;
   createdByUserId?: string | null;
+  operationStatus?: "CHECKOUT_OPEN" | "VERIFYING" | "AWAITING_PROVIDER_CONFIRMATION" | "APPLIED" | "DECLINED" | "ABANDONED" | "FAILED" | "SCHEDULED";
+  returnPath?: string | null;
+  confirmationDeadlineAt?: Date | null;
+  checkoutOpenedAt?: Date | null;
 };
 
 function timestamp(value: Date | null | undefined) {
@@ -105,6 +109,7 @@ export class BillingMutationService {
           sequence: organization.billingMutationSequence,
           idempotencyKey: input.idempotencyKey,
           type: input.type,
+          operationStatus: input.operationStatus ?? "AWAITING_PROVIDER_CONFIRMATION",
           fromPlan: input.fromPlan ?? null,
           toPlan: input.toPlan ?? null,
           fromQuantity: input.fromQuantity ?? null,
@@ -112,6 +117,9 @@ export class BillingMutationService {
           effectiveAt: input.effectiveAt ?? null,
           undoCutoffAt: input.undoCutoffAt ?? null,
           createdByUserId: input.createdByUserId ?? null,
+          returnPath: input.returnPath ?? null,
+          confirmationDeadlineAt: input.confirmationDeadlineAt ?? null,
+          checkoutOpenedAt: input.checkoutOpenedAt ?? null,
         },
       });
     });
@@ -180,7 +188,14 @@ export class BillingMutationService {
           where: { id: claimed.id },
           data: {
             status,
+            operationStatus: status === "SCHEDULED"
+              ? "SCHEDULED"
+              : status === "APPLIED"
+                ? "APPLIED"
+                : "AWAITING_PROVIDER_CONFIRMATION",
             appliedAt: status === "APPLIED" ? new Date() : null,
+            providerConfirmedAt: status === "APPLIED" ? new Date() : null,
+            resolvedAt: status === "APPLIED" ? new Date() : null,
           },
         });
         const providerPlan = claimed.type === "TRIAL_SUBSCRIPTION_UPDATE"
@@ -219,7 +234,9 @@ export class BillingMutationService {
           where: { id: claimed.id, status: "PROCESSING" },
           data: {
             status: "FAILED",
+            operationStatus: "FAILED",
             failedAt: new Date(),
+            resolvedAt: new Date(),
             lastError: error instanceof Error ? error.message : "Provider mutation failed",
           },
         });
@@ -234,7 +251,13 @@ export class BillingMutationService {
     if (!change || change.status !== "FAILED") throw new Error("Failed billing change not found");
     await prisma.organizationBillingChange.update({
       where: { id: changeId },
-      data: { status: "QUEUED", failedAt: null, lastError: null },
+      data: {
+        status: "QUEUED",
+        operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+        failedAt: null,
+        resolvedAt: null,
+        lastError: null,
+      },
     });
     return this.processNext(change.organizationId);
   }
