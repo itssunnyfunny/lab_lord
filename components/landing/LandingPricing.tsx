@@ -1,4 +1,4 @@
-import { ArrowRight, Check, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Sparkles, X } from "lucide-react";
 import {
   landingContainerClass,
   landingDescriptionClass,
@@ -54,7 +54,7 @@ export function LandingPricing({
               </div>
               <div>
                 <p className="text-sm font-semibold text-[color:var(--text-primary)]">Two clear monthly plans</p>
-                <p className={`${landingSubtleTextClass} mt-1 text-xs`}>Start at Rs.299/month and cancel future renewal from billing settings.</p>
+                <p className={`${landingSubtleTextClass} mt-1 text-xs`}>Both choices receive Standard features during the 30-day no-card trial.</p>
               </div>
             </div>
           </LandingReveal>
@@ -86,7 +86,7 @@ export function LandingPricing({
 
               <div className="mt-6">
                 <span className="text-3xl font-semibold tracking-tight text-[color:var(--text-primary)]">{formatPrice(plan)}</span>
-                {!plan.custom && <span className={`${landingSubtleTextClass} ml-2 text-sm`}>/ month</span>}
+                {!plan.custom && <span className={`${landingSubtleTextClass} ml-2 text-sm`}>/ billable branch / month</span>}
               </div>
 
               <button
@@ -100,12 +100,18 @@ export function LandingPricing({
               </button>
 
               <div className="mt-6 flex-1 space-y-3 border-t border-[color:var(--ui-form-section-divider)] pt-5">
-                {plan.features.map(feature => (
-                  <div key={feature} className="flex items-center gap-3">
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[color:var(--ui-badge-success-border)] bg-[color:var(--ui-badge-success-bg)] text-[color:var(--ui-badge-success-text)]">
-                      <Check size={12} />
+                {plan.capabilities.map(capability => (
+                  <div key={capability.id} className="flex items-start gap-3">
+                    <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+                      capability.included
+                        ? "border-[color:var(--ui-badge-success-border)] bg-[color:var(--ui-badge-success-bg)] text-[color:var(--ui-badge-success-text)]"
+                        : "border-[color:var(--ui-form-surface-border)] text-[color:var(--text-muted)]"
+                    }`}>
+                      {capability.included ? <Check size={12} /> : <X size={12} />}
                     </span>
-                    <span className="text-sm text-[color:var(--text-secondary)]">{feature}</span>
+                    <span className={`text-sm ${capability.included ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-muted)]"}`}>
+                      {capability.label}{capability.included ? "" : " — Standard only"}
+                    </span>
                   </div>
                 ))}
               </div>

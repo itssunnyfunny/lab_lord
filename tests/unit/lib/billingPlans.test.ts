@@ -29,4 +29,24 @@ describe("billing plan catalog", () => {
     expect(getActiveBillingPlan("BASIC").entitlements).not.toContain("AI_ACCESS");
     expect(getActiveBillingPlan("PRO").entitlements).toContain("AI_ACCESS");
   });
+
+  it("publishes the exact shared capability matrix in a stable order", () => {
+    const [basic, standard] = publicBillingPlans();
+    const labels = [
+      "Student records and spreadsheet import",
+      "Seats, shifts and allocations",
+      "Payments, dues and audit history",
+      "Multiple branches, each billed separately",
+      "Staff invitations, roles and permission controls",
+      "Branch and cross-branch advanced analytics",
+      "AI insights, reports and message drafting",
+    ];
+
+    expect(basic.capabilities.map(capability => capability.label)).toEqual(labels);
+    expect(standard.capabilities.map(capability => capability.label)).toEqual(labels);
+    expect(basic.capabilities.map(capability => capability.included)).toEqual([
+      true, true, true, true, false, false, false,
+    ]);
+    expect(standard.capabilities.every(capability => capability.included)).toBe(true);
+  });
 });

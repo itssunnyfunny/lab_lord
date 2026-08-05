@@ -1,6 +1,7 @@
 import { apiClient } from "./core";
 import type {
   BillingEntitlement,
+  PublicBillingCapability,
   BillingPlanId,
   CheckoutBillingPlanId,
 } from "@/lib/billingPlans";
@@ -19,7 +20,7 @@ export type BillingPlanDto = {
   comingSoon: boolean;
   custom: boolean;
   description: string;
-  features: string[];
+  capabilities: PublicBillingCapability[];
   entitlements: BillingEntitlement[];
   limits: { maxBranches: number | null };
 };

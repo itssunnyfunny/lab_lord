@@ -16,9 +16,11 @@ import {
 import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 import { isWorkspaceBillingEnabled } from "@/lib/billingFeature";
 import { OwnerTrialService } from "@/services/ownerTrial.service";
+import { isCheckoutBillingPlanId, type CheckoutBillingPlanId } from "@/lib/billingPlans";
 
 interface CreateNetworkParams {
     userId: string;
+    selectedPostTrialPlan: CheckoutBillingPlanId;
     ownerPhone: string;
     orgData: {
         name: string;
@@ -48,6 +50,9 @@ interface CreateNetworkParams {
 export class OnboardingService {
     static async createNetwork(params: CreateNetworkParams) {
         const { userId, orgData, branchData } = params;
+        if (!isCheckoutBillingPlanId(params.selectedPostTrialPlan)) {
+            throw new Error("Choose Basic or Standard as the post-trial plan.");
+        }
         const ownerPhoneResult = validateRequiredPhone(params.ownerPhone, "Owner phone");
         if (!ownerPhoneResult.ok) throw new Error(ownerPhoneResult.error);
         const orgNameResult = validateRequiredText(orgData.name, "Organization name", 120);
@@ -94,6 +99,7 @@ export class OnboardingService {
                     businessType: businessTypeResult.value,
                     contactPhone: ownerPhoneResult.value,
                     ownerId: userId,
+                    selectedPostTrialPlan: params.selectedPostTrialPlan,
                     billingModelVersion: isWorkspaceBillingEnabled() ? "WORKSPACE_V2" : "LEGACY",
                 },
             });

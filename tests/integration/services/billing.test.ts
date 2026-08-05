@@ -164,6 +164,10 @@ describe("BillingService SaaS subscriptions", () => {
     await expect(testPrisma.organizationSubscriptionHistory.findMany({
       where: { organizationId: org.id },
     })).resolves.toMatchObject([{ source: "CHECKOUT", fromStatus: null, toStatus: "CREATED" }]);
+    await expect(testPrisma.organization.findUnique({
+      where: { id: org.id },
+      select: { selectedPostTrialPlan: true },
+    })).resolves.toEqual({ selectedPostTrialPlan: "BASIC" });
   });
 
   it("blocks coming-soon and custom plans from checkout", async () => {
@@ -196,6 +200,56 @@ describe("BillingService SaaS subscriptions", () => {
       effectivePlan: "BASIC",
       fallbackAccess: true,
     });
+  });
+
+  it("uses the local post-trial choice when no provider subscription exists", async () => {
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "PRO",
+    });
+
+    const overview = await BillingService.listPlansForOrganization(user.id, org.id);
+
+    expect(overview.experience).toMatchObject({
+      effectivePlan: "NONE",
+      selectedPostTrialPlan: "STANDARD",
+      paymentAction: "AUTHORIZE_CARD",
+      projectedUnitAmount: 499,
+    });
+    expect(overview.entitlements.effectivePlan).toBe("BASIC");
+  });
+
+  it("asks the owner to authorize the selected plan while Standard trial access continues", async () => {
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    const now = new Date();
+    await testPrisma.ownerTrialGrant.create({
+      data: {
+        ownerId: user.id,
+        organizationId: org.id,
+        source: "ONBOARDING",
+        status: "ACTIVE",
+        claimedAt: now,
+        trialStartedAt: now,
+        trialEndsAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+        consumedAt: now,
+      },
+    });
+
+    const overview = await BillingService.listPlansForOrganization(user.id, org.id);
+
+    expect(overview.experience).toMatchObject({
+      effectivePlan: "STANDARD_TRIAL",
+      selectedPostTrialPlan: "BASIC",
+      paymentAction: "AUTHORIZE_CARD",
+    });
+    expect(overview.entitlements.effectivePlan).toBe("PRO");
   });
 
   it("replaces a stale Razorpay price mapping without changing existing subscriptions", async () => {

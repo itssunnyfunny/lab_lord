@@ -21,6 +21,7 @@ describe("OnboardingService Integration", () => {
 
   const baseParams = (userId: string) => ({
     userId,
+    selectedPostTrialPlan: "BASIC" as const,
     ownerPhone: "9876543210",
     orgData: { name: "Bright Academy" },
     branchData: { name: "Main Hall", city: "Delhi", defaultFee: 1200 },
@@ -36,6 +37,7 @@ describe("OnboardingService Integration", () => {
       expect(org.ownerId).toBe(user.id);
       expect(branch.organizationId).toBe(org.id);
       expect(org.name).toBe("Bright Academy");
+      expect(org.selectedPostTrialPlan).toBe("BASIC");
       expect(branch.name).toBe("Main Hall");
       expect(org.contactPhone).toBe("+91 98765 43210");
       expect(branch.contactPhone).toBe("+91 98765 43210");
@@ -52,6 +54,16 @@ describe("OnboardingService Integration", () => {
           ownerPhone: "",
         })
       ).rejects.toThrow(/owner phone is required/i);
+    });
+
+    it("rejects a manipulated or legacy post-trial plan", async () => {
+      const user = await createUser();
+      await expect(OnboardingService.createNetwork({
+        ...baseParams(user.id),
+        selectedPostTrialPlan: "AGENT_CONTROL" as "BASIC",
+      })).rejects.toThrow("Choose Basic or Standard");
+
+      expect(await testPrisma.organization.count({ where: { ownerId: user.id } })).toBe(0);
     });
 
     it("creates default shifts on the new branch", async () => {

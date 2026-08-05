@@ -46,6 +46,7 @@ describe("POST /api/onboarding", () => {
       branchName: "Main Hall",
       seatCount: 3,
       seatNumbering,
+      selectedPostTrialPlan: "PRO",
     }));
 
     expect(response.status).toBe(201);
@@ -54,6 +55,7 @@ describe("POST /api/onboarding", () => {
       ownerPhone: "+91 98765 43210",
       seatCount: 3,
       seatNumbering,
+      selectedPostTrialPlan: "PRO",
     }));
   });
 
@@ -65,6 +67,7 @@ describe("POST /api/onboarding", () => {
       orgName: "Bright Academy",
       ownerPhone: "9876543210",
       branchName: "Main Hall",
+      selectedPostTrialPlan: "BASIC",
       seatCount: 4,
       seatNumbering: {
         mode: "RANGE",
@@ -78,4 +81,27 @@ describe("POST /api/onboarding", () => {
     });
     expect(mocks.createNetwork).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, "AGENT_CONTROL", "CUSTOM", "STANDARD", "PRO<script>"])(
+    "rejects an invalid post-trial plan identifier: %s",
+    async selectedPostTrialPlan => {
+      mocks.getSessionUser.mockResolvedValue({ id: "user_1", email: "owner@test.com" });
+      const { POST } = await import("@/app/api/onboarding/route");
+
+      const response = await POST(request({
+        orgName: "Bright Academy",
+        ownerPhone: "9876543210",
+        branchName: "Main Hall",
+        seatCount: 1,
+        seatNumbering: { mode: "SIMPLE" },
+        selectedPostTrialPlan,
+      }));
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "Choose Basic or Standard as the post-trial plan.",
+      });
+      expect(mocks.createNetwork).not.toHaveBeenCalled();
+    }
+  );
 });

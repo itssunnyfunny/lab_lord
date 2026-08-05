@@ -46,8 +46,11 @@ import {
 } from "@/lib/formValidation";
 import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 import { cn } from "@/lib/utils";
-import { isCheckoutBillingPlanId } from "@/lib/billingPlans";
-import { getOrganizationBillingPath } from "@/lib/billingFlow";
+import {
+    isCheckoutBillingPlanId,
+    publicBillingPlans,
+    type CheckoutBillingPlanId,
+} from "@/lib/billingPlans";
 
 interface OnboardingShiftDraft {
     clientId: string;
@@ -74,7 +77,9 @@ interface OnboardingResponse {
 }
 
 type FieldKey = "orgName" | "ownerPhone" | "businessType" | "branchName" | "city" | "seatCount" | "seatNumbering" | "shifts" | "multiShifts";
-type OnboardingStep = 1 | 2 | 3;
+type OnboardingStep = 1 | 2 | 3 | 4;
+
+const onboardingPlans = publicBillingPlans();
 
 const DEFAULT_SHIFT_IDS = {
     morning: "default-morning",
@@ -112,19 +117,22 @@ function formatPrice(value: number) {
 const stepItems = [
     { step: 1, label: "Organization", description: "Business identity and owner contact" },
     { step: 2, label: "First branch", description: "Seats, location, shifts, and pricing" },
-    { step: 3, label: "Start trial", description: "Choose a starting point and confirm the 30-day Standard trial" },
+    { step: 3, label: "Plan", description: "Choose what continues after the Standard trial" },
+    { step: 4, label: "Import assistance", description: "Choose a starting point and confirm the trial" },
 ] as const;
 
 const stepHeadings: Record<OnboardingStep, string> = {
     1: "Organization details",
     2: "First branch details",
-    3: "Confirm your Standard trial",
+    3: "Choose your post-trial plan",
+    4: "Import assistance and trial confirmation",
 };
 
 const stepDescriptions: Record<OnboardingStep, string> = {
     1: "Name the business and add the owner contact used for operations.",
     2: "Define a usable branch with seats and shifts before entering the dashboard.",
-    3: "Choose how to begin, then start 30 days of Standard access. No card is required.",
+    3: "Choose Basic or Standard for after the trial. Both choices receive 30 days of Standard access.",
+    4: "Choose how to begin, then start 30 days of Standard access. No card is required.",
 };
 
 export default function OnboardingPage({
@@ -140,6 +148,7 @@ export default function OnboardingPage({
     const [step, setStep] = useState<OnboardingStep>(1);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [selectedPostTrialPlan, setSelectedPostTrialPlan] = useState<CheckoutBillingPlanId | null>(requestedBillingPlan);
     const [startingPoint, setStartingPoint] = useState<"IMPORT" | "CLEAN" | null>(null);
     const [trialEndDate] = useState(() => {
         const date = new Date();
@@ -372,6 +381,11 @@ export default function OnboardingPage({
             setError("Choose whether to import records or begin with a clean workspace.");
             return;
         }
+        if (!selectedPostTrialPlan) {
+            setError("Choose Basic or Standard as your post-trial plan.");
+            setStep(3);
+            return;
+        }
 
         const { orgNameResult, ownerPhoneResult, businessTypeResult, branchNameResult, cityResult, seatCountResult, seatNumberingConfig, shiftsResult, multiShiftsResult } = result.values;
         setLoading(true);
@@ -387,14 +401,13 @@ export default function OnboardingPage({
                 seatNumbering: seatNumberingConfig,
                 shifts: shiftsResult.value,
                 multiShifts: multiShiftsResult.value,
+                selectedPostTrialPlan,
             }) as OnboardingResponse;
 
             const destination = startingPoint === "IMPORT"
                 ? `/branch/${res.branch.id}/onboarding/import`
                 : `/branch/${res.branch.id}`;
-            if (requestedBillingPlan) router.push(getOrganizationBillingPath(res.org.id, requestedBillingPlan, destination));
-            else if (startingPoint === "IMPORT") router.push(`/branch/${res.branch.id}/onboarding/import`);
-            else router.push(`/branch/${res.branch.id}`);
+            router.push(destination);
         } catch (err: unknown) {
             const message = err instanceof Error ? err.message : "Failed to complete setup. Please try again.";
             console.error("Setup failed", err);
@@ -404,7 +417,7 @@ export default function OnboardingPage({
         }
     };
 
-    const continueToTrial = () => {
+    const continueToPlan = () => {
         markSubmitted();
         setError(null);
         const result = validateForm();
@@ -412,6 +425,17 @@ export default function OnboardingPage({
         resetFieldErrors();
         setStep(3);
     };
+
+    const continueToTrial = () => {
+        setError(null);
+        if (!selectedPostTrialPlan) {
+            setError("Choose Basic or Standard as your post-trial plan.");
+            return;
+        }
+        setStep(4);
+    };
+
+    const selectedPlan = onboardingPlans.find(plan => plan.id === selectedPostTrialPlan) ?? null;
 
     const canAddMultiShift = formData.shifts.length >= 2;
 
@@ -457,7 +481,7 @@ export default function OnboardingPage({
                     <main className="p-5 sm:p-6 lg:p-8">
                         <div className="mb-6">
                             <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--ui-form-accent)]">
-                                Step {step} of 3
+                                Step {step} of 4
                             </p>
                             <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[color:var(--text-primary)]">
                                 {stepHeadings[step]}
@@ -824,18 +848,94 @@ export default function OnboardingPage({
                                         Back
                                     </AppButton>
                                     <AppButton
-                                        onClick={continueToTrial}
+                                        onClick={continueToPlan}
                                         disabled={loading}
                                         rightIcon={ArrowRight}
                                         className="sm:min-w-40"
                                     >
-                                        Review trial
+                                        Choose plan
                                     </AppButton>
                                 </div>
                             </div>
                         )}
 
                         {step === 3 && (
+                            <div className="space-y-5">
+                                <div className={cn("flex items-start gap-3 p-4", formSuccessBannerClass)}>
+                                    <Sparkles className="mt-0.5 h-5 w-5 shrink-0" />
+                                    <div>
+                                        <p className="text-sm font-semibold">Standard features throughout the trial</p>
+                                        <p className="mt-1 text-sm leading-6">
+                                            This choice applies only after the 30-day trial. Selecting a plan does not open Checkout, charge a card, or activate paid access.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="grid gap-4 lg:grid-cols-2">
+                                    {onboardingPlans.map(plan => {
+                                        const selected = selectedPostTrialPlan === plan.id;
+                                        return (
+                                            <button
+                                                key={plan.id}
+                                                type="button"
+                                                onClick={() => {
+                                                    setSelectedPostTrialPlan(plan.id);
+                                                    setError(null);
+                                                }}
+                                                aria-pressed={selected}
+                                                className={cn(
+                                                    "flex h-full flex-col p-5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]",
+                                                    formSurfaceClass,
+                                                    formSurfaceHoverClass,
+                                                    selected && "border-[color:var(--ui-form-input-focus-border)]"
+                                                )}
+                                            >
+                                                <span className="flex w-full items-start justify-between gap-3">
+                                                    <span>
+                                                        <span className="block text-lg font-semibold text-[color:var(--text-primary)]">{plan.shortName}</span>
+                                                        <span className="mt-1 block text-2xl font-semibold text-[color:var(--text-primary)]">
+                                                            ₹{plan.amount}<span className={cn("ml-1 text-xs font-normal", formHelpTextClass)}>per billable branch/month</span>
+                                                        </span>
+                                                    </span>
+                                                    <span className={cn(
+                                                        "rounded-full border px-2.5 py-1 text-xs font-semibold",
+                                                        selected
+                                                            ? "border-[color:var(--ui-badge-success-border)] bg-[color:var(--ui-badge-success-bg)] text-[color:var(--ui-badge-success-text)]"
+                                                            : "border-[color:var(--ui-form-surface-border)] text-[color:var(--text-secondary)]"
+                                                    )}>
+                                                        {selected ? "Selected" : "Choose"}
+                                                    </span>
+                                                </span>
+
+                                                <span className="mt-5 w-full space-y-2.5 border-t border-[color:var(--ui-form-section-divider)] pt-4">
+                                                    {plan.capabilities.map(capability => (
+                                                        <span key={capability.id} className="flex items-start gap-2 text-sm">
+                                                            {capability.included ? (
+                                                                <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-[color:var(--ui-badge-success-text)]" />
+                                                            ) : (
+                                                                <X size={15} className="mt-0.5 shrink-0 text-[color:var(--text-muted)]" />
+                                                            )}
+                                                            <span className={capability.included ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-muted)]"}>
+                                                                {capability.label}{capability.included ? "" : " — Standard only"}
+                                                            </span>
+                                                        </span>
+                                                    ))}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+
+                                <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <AppButton variant="quiet" icon={ArrowLeft} onClick={() => setStep(2)} disabled={loading}>Back</AppButton>
+                                    <AppButton onClick={continueToTrial} disabled={!selectedPostTrialPlan || loading} rightIcon={ArrowRight} className="sm:min-w-40">
+                                        Continue
+                                    </AppButton>
+                                </div>
+                            </div>
+                        )}
+
+                        {step === 4 && (
                             <div className="space-y-5">
                                 <div className={cn("flex items-start gap-3 p-4", formSuccessBannerClass)}>
                                     <Sparkles className="mt-0.5 h-5 w-5 shrink-0" />
@@ -853,19 +953,17 @@ export default function OnboardingPage({
                                         onClick={() => { setStartingPoint("IMPORT"); setError(null); }}
                                         aria-pressed={startingPoint === "IMPORT"}
                                         className={cn(
-                                            "group flex h-full flex-col items-start gap-4 p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--ui-control-disabled-opacity)]",
+                                            "group flex h-full flex-col items-start gap-4 p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]",
                                             formSurfaceClass,
                                             formSurfaceHoverClass,
                                             startingPoint === "IMPORT" && "border-[color:var(--ui-form-input-focus-border)]"
                                         )}
                                     >
-                                        <span className={cn(entryIconFrameClass, "h-11 w-11")}>
-                                            <UploadCloud size={20} />
-                                        </span>
+                                        <span className={cn(entryIconFrameClass, "h-11 w-11")}><UploadCloud size={20} /></span>
                                         <span>
                                             <span className="block text-base font-semibold text-[color:var(--text-primary)]">Import existing records</span>
                                             <span className={cn("mt-2 block text-sm leading-6", entryMutedTextClass)}>
-                                                Bring students, seats, shifts, allocations, and payment records from a spreadsheet or pasted table.
+                                                Continue to the guided import wizard for spreadsheet or pasted records.
                                             </span>
                                         </span>
                                         <span className="mt-auto inline-flex items-center gap-2 text-sm font-semibold text-[color:var(--ui-form-accent)]">
@@ -879,19 +977,17 @@ export default function OnboardingPage({
                                         onClick={() => { setStartingPoint("CLEAN"); setError(null); }}
                                         aria-pressed={startingPoint === "CLEAN"}
                                         className={cn(
-                                            "group flex h-full flex-col items-start gap-4 p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--ui-control-disabled-opacity)]",
+                                            "group flex h-full flex-col items-start gap-4 p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]",
                                             formSurfaceClass,
                                             formSurfaceHoverClass,
                                             startingPoint === "CLEAN" && "border-[color:var(--ui-form-input-focus-border)]"
                                         )}
                                     >
-                                        <span className={cn(entryIconFrameClass, "h-11 w-11")}>
-                                            <LayoutDashboard size={20} />
-                                        </span>
+                                        <span className={cn(entryIconFrameClass, "h-11 w-11")}><LayoutDashboard size={20} /></span>
                                         <span>
                                             <span className="block text-base font-semibold text-[color:var(--text-primary)]">Begin with a clean workspace</span>
                                             <span className={cn("mt-2 block text-sm leading-6", entryMutedTextClass)}>
-                                                Open the branch with configured seats and shifts, then add records manually as operations begin.
+                                                Go directly to the configured branch and add records as operations begin.
                                             </span>
                                         </span>
                                         <span className="mt-auto inline-flex items-center gap-2 text-sm font-semibold text-[color:var(--ui-form-accent)]">
@@ -901,7 +997,7 @@ export default function OnboardingPage({
                                     </button>
                                 </div>
 
-                                <div className="grid gap-3 sm:grid-cols-3">
+                                <div className="grid gap-3 sm:grid-cols-2">
                                     <div className={cn("p-3", formSurfaceClass)}>
                                         <Clock3 className="h-4 w-4 text-[color:var(--ui-form-accent)]" />
                                         <p className="mt-2 text-sm font-semibold">Trial end</p>
@@ -909,23 +1005,20 @@ export default function OnboardingPage({
                                     </div>
                                     <div className={cn("p-3", formSurfaceClass)}>
                                         <CreditCard className="h-4 w-4 text-[color:var(--ui-form-accent)]" />
-                                        <p className="mt-2 text-sm font-semibold">Basic after trial</p>
-                                        <p className={cn("mt-1 text-xs", formHelpTextClass)}>₹299 per billable branch/month</p>
-                                    </div>
-                                    <div className={cn("p-3", formSurfaceClass)}>
-                                        <Sparkles className="h-4 w-4 text-[color:var(--ui-form-accent)]" />
-                                        <p className="mt-2 text-sm font-semibold">Standard after trial</p>
-                                        <p className={cn("mt-1 text-xs", formHelpTextClass)}>₹499 per billable branch/month</p>
+                                        <p className="mt-2 text-sm font-semibold">Selected after trial</p>
+                                        <p className={cn("mt-1 text-xs", formHelpTextClass)}>
+                                            {selectedPlan?.shortName} · ₹{selectedPlan?.amount} per billable branch/month
+                                        </p>
                                     </div>
                                 </div>
 
                                 <p className={cn("text-xs leading-5", formHelpTextClass)}>
-                                    Staff controls, advanced analytics, and AI are available throughout the trial. The trial does not renew automatically unless you authorize a card and choose a post-trial plan.
+                                    Staff controls, advanced analytics, and AI are available throughout the trial. Billing begins only after the owner separately authorizes {selectedPlan?.shortName} from organization billing settings.
                                 </p>
 
                                 <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                    <AppButton variant="quiet" icon={ArrowLeft} onClick={() => setStep(2)} disabled={loading}>Back</AppButton>
-                                    <AppButton onClick={handleSubmit} disabled={loading || !startingPoint} isLoading={loading} rightIcon={loading ? undefined : ArrowRight} className="sm:min-w-48">
+                                    <AppButton variant="quiet" icon={ArrowLeft} onClick={() => setStep(3)} disabled={loading}>Back</AppButton>
+                                    <AppButton onClick={handleSubmit} disabled={loading || !startingPoint || !selectedPostTrialPlan} isLoading={loading} rightIcon={loading ? undefined : ArrowRight} className="sm:min-w-48">
                                         {loading ? "Starting trial..." : "Start Standard trial"}
                                     </AppButton>
                                 </div>

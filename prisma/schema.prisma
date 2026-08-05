@@ -43,6 +43,7 @@ model Organization {
   currency              String                    @default("INR")
   weekStartsOn          Int                       @default(1)
   paymentGraceDays      Int                       @default(0)
+  selectedPostTrialPlan SaasPlan?
   billingModelVersion   BillingModelVersion       @default(LEGACY)
   billingMutationSequence Int                     @default(0)
   billingMutationLeaseToken String?

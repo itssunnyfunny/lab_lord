@@ -9,6 +9,24 @@ export const BILLING_ENTITLEMENTS = [
 
 export type BillingEntitlement = typeof BILLING_ENTITLEMENTS[number];
 
+export const BILLING_CAPABILITIES = [
+  { id: "STUDENT_RECORDS_IMPORT", label: "Student records and spreadsheet import", standardOnly: false },
+  { id: "SEATS_SHIFTS_ALLOCATIONS", label: "Seats, shifts and allocations", standardOnly: false },
+  { id: "PAYMENTS_DUES_AUDIT", label: "Payments, dues and audit history", standardOnly: false },
+  { id: "MULTIPLE_BRANCHES", label: "Multiple branches, each billed separately", standardOnly: false },
+  { id: "STAFF_CONTROLS", label: "Staff invitations, roles and permission controls", standardOnly: true },
+  { id: "ADVANCED_ANALYTICS", label: "Branch and cross-branch advanced analytics", standardOnly: true },
+  { id: "AI_ASSISTANCE", label: "AI insights, reports and message drafting", standardOnly: true },
+] as const;
+
+export type BillingCapabilityId = typeof BILLING_CAPABILITIES[number]["id"];
+
+export type PublicBillingCapability = {
+  id: BillingCapabilityId;
+  label: string;
+  included: boolean;
+};
+
 export type BillingPlanLimits = {
   maxBranches: number | null;
 };
@@ -45,10 +63,10 @@ export const BILLING_PLANS: BillingPlan[] = [
     visible: true,
     description: "Core operations billed per active branch.",
     features: [
-      "Core branch and seat management",
-      "Student profiles and due tracking",
-      "Payment ledger and audit history",
-      "Owner workspace settings",
+      "Student records and spreadsheet import",
+      "Seats, shifts and allocations",
+      "Payments, dues and audit history",
+      "Multiple branches, each billed separately",
     ],
     entitlements: [],
     limits: { maxBranches: null },
@@ -66,11 +84,13 @@ export const BILLING_PLANS: BillingPlan[] = [
     featured: true,
     description: "For growing teams that need staff controls, analytics, and AI assistance.",
     features: [
-      "Everything in Basic",
-      "Multi-branch operating view",
-      "Staff roles and permission controls",
-      "Advanced analytics and follow-up workflows",
-      "AI reports and AI message drafting",
+      "Student records and spreadsheet import",
+      "Seats, shifts and allocations",
+      "Payments, dues and audit history",
+      "Multiple branches, each billed separately",
+      "Staff invitations, roles and permission controls",
+      "Branch and cross-branch advanced analytics",
+      "AI insights, reports and message drafting",
     ],
     entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
     limits: { maxBranches: null },
@@ -159,7 +179,11 @@ export function publicBillingPlans() {
     comingSoon: Boolean(plan.comingSoon),
     custom: Boolean(plan.custom),
     description: plan.description,
-    features: plan.features,
+    capabilities: BILLING_CAPABILITIES.map(capability => ({
+      id: capability.id,
+      label: capability.label,
+      included: !capability.standardOnly || plan.id === "PRO",
+    } satisfies PublicBillingCapability)),
     entitlements: plan.entitlements,
     limits: plan.limits,
   }));
