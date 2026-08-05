@@ -11,6 +11,7 @@ import {
     Calendar,
     CalendarClock,
     Clock,
+    CreditCard,
     GitBranch,
     Hash,
     IndianRupee,
@@ -42,6 +43,7 @@ import { useInlineFieldErrors } from "@/components/ui/InlineFieldError";
 import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
 import { cn } from "@/lib/utils";
 import { formWarningBannerClass } from "@/components/ui/formSurface";
+import type { BranchAccess } from "@/types";
 import {
     pageErrorIconClass,
     pageErrorStateClass,
@@ -119,6 +121,7 @@ const SECTIONS = [
     { id: "communication", label: "Communication", icon: MessageSquare },
     { id: "ai", label: "AI", icon: Bot },
     { id: "access", label: "Access", icon: Shield },
+    { id: "billing", label: "Billing", icon: CreditCard },
     { id: "system", label: "System Info", icon: Hash },
 ];
 
@@ -143,15 +146,26 @@ export default function BranchSettingsPage({ params }: { params: Promise<{ branc
 
     return (
         <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.settings}>
-            <BranchSettingsContent branchId={branchId} />
+            {access => <BranchSettingsContent branchId={branchId} access={access} />}
         </BranchAccessGuard>
     );
 }
 
-function BranchSettingsContent({ branchId }: { branchId: string }) {
+interface BranchBillingSummary {
+    organizationId: string;
+    branchStatus: string;
+    inheritedPlan: string;
+    billingState: string;
+    accessMode: "FULL" | "WARNING" | "READ_ONLY";
+    billingUrl: string;
+}
+
+function BranchSettingsContent({ branchId, access }: { branchId: string; access: BranchAccess }) {
     const router = useRouter();
+    const hasAiAccess = access.entitlements.includes("AI_ACCESS");
 
     const [branch, setBranch] = useState<BranchData | null>(null);
+    const [billingSummary, setBillingSummary] = useState<BranchBillingSummary | null>(null);
     const [form, setForm] = useState<BranchForm | null>(null);
     const [loading, setLoading] = useState(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
@@ -166,7 +180,10 @@ function BranchSettingsContent({ branchId }: { branchId: string }) {
     useEffect(() => {
         async function load() {
             try {
-                const res = await fetch(`/api/branches/${branchId}`);
+                const [res, billingRes] = await Promise.all([
+                    fetch(`/api/branches/${branchId}`),
+                    fetch(`/api/branches/${branchId}/billing`),
+                ]);
                 if (!res.ok) {
                     const data = await res.json().catch(() => ({}));
                     throw new Error(data.error || "Failed to load branch settings");
@@ -174,6 +191,7 @@ function BranchSettingsContent({ branchId }: { branchId: string }) {
                 const data = await res.json();
                 setBranch(data);
                 setForm(toForm(data));
+                if (billingRes.ok) setBillingSummary(await billingRes.json());
                 resetFieldErrors();
             } catch (err) {
                 setFetchError(err instanceof Error ? err.message : "Something went wrong.");
@@ -410,11 +428,12 @@ function BranchSettingsContent({ branchId }: { branchId: string }) {
                         <SettingsToggle
                             checked={form.aiEnabled}
                             onChange={value => updateForm("aiEnabled", value)}
-                            label={form.aiEnabled ? "AI generation enabled" : "AI generation disabled"}
-                            description={form.aiEnabled ? "Branch AI reports can run using the current branch data." : "AI report generation will return a disabled state for this branch."}
+                            disabled={!hasAiAccess}
+                            label={!hasAiAccess ? "AI requires the Standard plan" : form.aiEnabled ? "AI generation enabled" : "AI generation disabled"}
+                            description={!hasAiAccess ? "Upgrade the organization to Standard to enable AI reports and message drafting." : form.aiEnabled ? "Branch AI reports can run using the current branch data." : "AI report generation will return a disabled state for this branch."}
                         />
                     </SettingsField>
-                    {!form.aiEnabled && (
+                    {hasAiAccess && !form.aiEnabled && (
                         <div className="px-5 py-4">
                             <div className={cn("px-4 py-3 text-sm", formWarningBannerClass)}>
                                 AI is off for this branch. Existing reports remain visible, but new generation is blocked.
@@ -442,6 +461,23 @@ function BranchSettingsContent({ branchId }: { branchId: string }) {
                     <div className="px-5 pb-4">
                         <AppButton variant="secondary" size="sm" onClick={() => router.push(`/branch/${branchId}/staff`)}>
                             Manage staff
+                        </AppButton>
+                    </div>
+                </SettingsPanel>
+
+                <SettingsPanel id="billing" title="Billing" description="This branch inherits its organization's billing plan." icon={CreditCard}>
+                    <ReadOnlyRow label="Inherited plan" value={billingSummary?.inheritedPlan ?? "Loading"} />
+                    <ReadOnlyRow label="Branch billing status" value={billingSummary?.branchStatus ?? "Loading"} />
+                    <ReadOnlyRow label="Billing state" value={billingSummary?.billingState ?? "Loading"} />
+                    <ReadOnlyRow label="Access mode" value={billingSummary?.accessMode ?? "Loading"} />
+                    <div className="px-5 py-4">
+                        <AppButton
+                            variant="secondary"
+                            size="sm"
+                            disabled={!billingSummary}
+                            onClick={() => billingSummary && router.push(billingSummary.billingUrl)}
+                        >
+                            Open organization billing
                         </AppButton>
                     </div>
                 </SettingsPanel>

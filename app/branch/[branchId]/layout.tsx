@@ -8,6 +8,8 @@ import {
 } from "@/lib/workspaceRouting";
 import { usePathname } from "next/navigation";
 import { useEffect } from "react";
+import { BillingExperienceProvider } from "@/components/billing/BillingExperienceProvider";
+import { BranchActivationGate } from "@/components/billing/BranchActivationGate";
 
 export default function BranchLayout({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
@@ -21,8 +23,10 @@ export default function BranchLayout({ children }: { children: React.ReactNode }
     }, [branchId]);
 
     return (
-        <AppShell sidebar={<BranchSidebar />}>
-            {children}
-        </AppShell>
+        <BillingExperienceProvider branchId={branchId}>
+            <AppShell sidebar={<BranchSidebar />}>
+                <BranchActivationGate>{children}</BranchActivationGate>
+            </AppShell>
+        </BillingExperienceProvider>
     );
 }

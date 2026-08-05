@@ -10,6 +10,7 @@ import {
     StaffPermissionUpdate,
     StaffRole,
 } from "@/types";
+import { EntitlementService } from "@/services/entitlement.service";
 
 // ==========================================
 // 1. TYPES & PERMISSION MATRIX
@@ -93,9 +94,30 @@ function buildStaffPermissions(
     }, {} as Record<StaffAction, boolean>);
 }
 
+async function applySubscriptionPermissions(
+    organizationId: string,
+    permissions: Record<StaffAction, boolean>
+) {
+    const profile = await EntitlementService.getOrganizationProfile(organizationId);
+    return {
+        permissions,
+        effectivePlan: profile.effectivePlan,
+        entitlements: profile.entitlements,
+    };
+}
+
 export class StaffService {
     private static normalizeEmail(email: string) {
         return email.trim().toLowerCase();
+    }
+
+    private static async assertActionEntitlement(organizationId: string, action: StaffAction) {
+        if (action === "staff_management") {
+            await EntitlementService.assertOrganizationEntitlement(organizationId, "STAFF_MANAGEMENT");
+        }
+        if (action === "analytics") {
+            await EntitlementService.assertOrganizationEntitlement(organizationId, "ADVANCED_ANALYTICS");
+        }
     }
 
     // ==========================================
@@ -110,7 +132,7 @@ export class StaffService {
      * 3. Match role against PERMISSION_MATRIX.
      * 4. Return true or throw Error.
      */
-    static async authorize(userId: string, branchId: string, action: StaffAction): Promise<boolean> {
+    static async authorizeRole(userId: string, branchId: string, action: StaffAction): Promise<boolean> {
         // 1. Check if User is the Org Owner of this branch
         const branch = await db.branch.findUnique({
             where: { id: branchId },
@@ -151,7 +173,9 @@ export class StaffService {
             const permissionAction = ACTION_TO_PERMISSION_ACTION[action];
             const override = staffMember.permissionOverrides.find(item => item.action === permissionAction);
             if (override) {
-                if (override.allowed) return true;
+                if (override.allowed) {
+                    return true;
+                }
                 throw new Error(`Unauthorized: Permission '${action}' is disabled for this staff member`);
             }
         }
@@ -166,6 +190,17 @@ export class StaffService {
         throw new Error(`Unauthorized: Role '${staffMember.role}' cannot perform '${action}'`);
     }
 
+    static async authorize(userId: string, branchId: string, action: StaffAction): Promise<boolean> {
+        await this.authorizeRole(userId, branchId, action);
+        const branch = await db.branch.findUnique({
+            where: { id: branchId },
+            select: { organizationId: true },
+        });
+        if (!branch) throw new Error("Branch not found");
+        await this.assertActionEntitlement(branch.organizationId, action);
+        return true;
+    }
+
     static async getBranchAccess(userId: string, branchId: string): Promise<BranchAccess> {
         const branch = await db.branch.findUnique({
             where: { id: branchId },
@@ -177,13 +212,17 @@ export class StaffService {
         }
 
         if (branch.organization.ownerId === userId) {
+            const subscriptionAccess = await applySubscriptionPermissions(
+                branch.organizationId,
+                buildOwnerPermissions()
+            );
             return {
                 branchId,
                 branchName: branch.name,
                 organizationId: branch.organizationId,
                 isOwner: true,
                 role: "OWNER",
-                permissions: buildOwnerPermissions(),
+                ...subscriptionAccess,
             };
         }
 
@@ -208,6 +247,10 @@ export class StaffService {
             throw new Error("Unauthorized: Not a staff member of this branch");
         }
 
+        const subscriptionAccess = await applySubscriptionPermissions(
+            branch.organizationId,
+            buildStaffPermissions(staffMember.role, staffMember.permissionOverrides)
+        );
         return {
             branchId,
             branchName: branch.name,
@@ -215,7 +258,7 @@ export class StaffService {
             isOwner: false,
             role: staffMember.role,
             staffId: staffMember.id,
-            permissions: buildStaffPermissions(staffMember.role, staffMember.permissionOverrides),
+            ...subscriptionAccess,
         };
     }
 
@@ -234,6 +277,7 @@ export class StaffService {
         role: StaffRole
     ) {
         await this.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
         return this.createStaffMembership(branchId, targetUserId, role);
     }
 
@@ -244,6 +288,7 @@ export class StaffService {
         role: StaffRole
     ) {
         await this.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
 
         const email = this.normalizeEmail(targetEmail);
         if (!email) {
@@ -308,6 +353,7 @@ export class StaffService {
      */
     static async removeStaff(actorId: string, branchId: string, staffId: string) {
         await this.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
 
         return db.staff.delete({
             where: { id: staffId },
@@ -346,6 +392,7 @@ export class StaffService {
         }
     ) {
         await this.authorize(actorId, branchId, "staff_management");
+        await EntitlementService.assertBranchWritable(branchId);
 
         const permissionUpdates = normalizePermissionUpdate(data.permissions);
         if (!data.role && permissionUpdates.length === 0) {
@@ -420,6 +467,7 @@ export class StaffService {
      */
     static async listStaff(actorId: string, branchId: string) {
         await this.authorize(actorId, branchId, "manage_branch");
+        await EntitlementService.assertBranchEntitlement(branchId, "STAFF_MANAGEMENT");
 
         return db.staff.findMany({
             where: { branchId },

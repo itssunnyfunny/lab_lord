@@ -61,10 +61,12 @@ export function LandingFooter() {
           <LandingReveal delay={260} variant="up" className="md:min-w-44">
             <h4 className="mb-4 font-semibold text-[color:var(--text-primary)]">Trust</h4>
             <ul className="space-y-3">
-              <li><Link href="/privacy" className={landingNavLinkClass}>Privacy</Link></li>
-              <li><Link href="/terms" className={landingNavLinkClass}>Terms</Link></li>
+              <li><Link href="/privacy" className={landingNavLinkClass}>Privacy Policy</Link></li>
+              <li><Link href="/terms" className={landingNavLinkClass}>Terms of Service</Link></li>
+              <li><Link href="/refund-policy" className={landingNavLinkClass}>Cancellation and Refund Policy</Link></li>
+              <li><Link href="/shipping-delivery-policy" className={landingNavLinkClass}>Shipping and Delivery Policy</Link></li>
+              <li><Link href="/contact" className={landingNavLinkClass}>Contact Us</Link></li>
               <li><Link href="/cookies" className={landingNavLinkClass}>Cookies</Link></li>
-              <li><Link href="/support" className={landingNavLinkClass}>Support</Link></li>
             </ul>
           </LandingReveal>
         </div>

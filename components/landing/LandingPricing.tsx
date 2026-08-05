@@ -12,38 +12,27 @@ import {
   landingTitleClass,
 } from "@/components/ui/landingSurface";
 import { LandingReveal } from "@/components/landing/LandingReveal";
+import {
+  publicBillingPlans,
+  type BillingPlan,
+  type CheckoutBillingPlanId,
+} from "@/lib/billingPlans";
 
-const plans = [
-  {
-    name: "Starter",
-    price: "Free",
-    suffix: "/ forever",
-    description: "For one branch proving the workflow.",
-    featured: false,
-    features: ["1 branch", "50 active students", "Seat allocation", "Student records", "Core dashboard"],
-  },
-  {
-    name: "Operator",
-    price: "Rs.999",
-    suffix: "/ month",
-    description: "For busy branches that need payments, roles, and cleaner daily control.",
-    featured: true,
-    features: ["Up to 3 branches", "Unlimited students", "Payment and due tracking", "Manager access", "AI draft review", "Priority support"],
-  },
-  {
-    name: "Scale",
-    price: "Custom",
-    suffix: "",
-    description: "For multi-location education operators with custom rollout needs.",
-    featured: false,
-    features: ["Unlimited branches", "Custom roles", "Advanced analytics", "Audit history", "Migration support", "Dedicated success"],
-  },
-];
+const plans = publicBillingPlans();
+
+function formatPrice(plan: Pick<BillingPlan, "amount" | "currency" | "custom">) {
+  if (plan.amount == null || plan.custom) return "Custom";
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: plan.currency,
+    maximumFractionDigits: 0,
+  }).format(plan.amount);
+}
 
 export function LandingPricing({
-  onDashboardClick,
+  onPlanSelect,
 }: {
-  onDashboardClick: (source: string) => void;
+  onPlanSelect: (planId: CheckoutBillingPlanId) => void;
 }) {
   return (
     <section id="pricing" className={`${landingSectionClass} overflow-hidden bg-[color:var(--ui-form-muted-surface-bg)]`}>
@@ -52,9 +41,9 @@ export function LandingPricing({
         <div className="mb-10 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,0.85fr)_minmax(280px,0.5fr)] lg:items-end">
           <LandingReveal variant="left">
             <p className={landingEyebrowClass}>Pricing</p>
-            <h2 className={`${landingTitleClass} mt-3`}>Start with the branch you have. Scale when the system earns it.</h2>
+            <h2 className={`${landingTitleClass} mt-3`}>Choose your Lab Lords plan.</h2>
             <p className={`${landingDescriptionClass} mt-4 max-w-2xl`}>
-              Keep the entry point simple, then move into deeper operations once your branch depends on the workflow.
+              Start with core operations, then add staff controls, advanced analytics, and AI when your team is ready.
             </p>
           </LandingReveal>
 
@@ -64,17 +53,17 @@ export function LandingPricing({
                 <Sparkles size={17} />
               </div>
               <div>
-                <p className="text-sm font-semibold text-[color:var(--text-primary)]">No lock-in theatre</p>
-                <p className={`${landingSubtleTextClass} mt-1 text-xs`}>The free tier is useful enough to validate a real branch.</p>
+                <p className="text-sm font-semibold text-[color:var(--text-primary)]">Two clear monthly plans</p>
+                <p className={`${landingSubtleTextClass} mt-1 text-xs`}>Start at Rs.299/month and cancel future renewal from billing settings.</p>
               </div>
             </div>
           </LandingReveal>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {plans.map((plan, index) => (
             <LandingReveal
-              key={plan.name}
+              key={plan.id}
               delay={100 + index * 90}
               variant={plan.featured ? "scale" : "up"}
               className={`${landingPanelClass} flex flex-col p-5 ${
@@ -85,7 +74,7 @@ export function LandingPricing({
             >
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <h3 className="text-xl font-semibold text-[color:var(--text-primary)]">{plan.name}</h3>
+                  <h3 className="text-xl font-semibold text-[color:var(--text-primary)]">{plan.shortName}</h3>
                   <p className={`${landingMutedTextClass} mt-2 text-sm leading-6`}>{plan.description}</p>
                 </div>
                 {plan.featured && (
@@ -96,17 +85,18 @@ export function LandingPricing({
               </div>
 
               <div className="mt-6">
-                <span className="text-3xl font-semibold tracking-tight text-[color:var(--text-primary)]">{plan.price}</span>
-                <span className={`${landingSubtleTextClass} ml-2 text-sm`}>{plan.suffix}</span>
+                <span className="text-3xl font-semibold tracking-tight text-[color:var(--text-primary)]">{formatPrice(plan)}</span>
+                {!plan.custom && <span className={`${landingSubtleTextClass} ml-2 text-sm`}>/ month</span>}
               </div>
 
               <button
                 type="button"
-                onClick={() => onDashboardClick(`landing_pricing_${plan.name.toLowerCase()}`)}
-                className={`${plan.featured ? `${landingPrimaryButtonClass} landing-cta-shine` : landingSecondaryButtonClass} mt-6 w-full`}
+                onClick={plan.active ? () => onPlanSelect(plan.id) : undefined}
+                disabled={!plan.active}
+                className={`${plan.featured ? `${landingPrimaryButtonClass} landing-cta-shine` : landingSecondaryButtonClass} mt-6 w-full disabled:cursor-not-allowed disabled:opacity-60`}
               >
-                Start this plan
-                <ArrowRight size={15} />
+                {plan.active ? `Start ${plan.shortName}` : plan.custom ? "Custom" : "Coming Soon"}
+                {plan.active && <ArrowRight size={15} />}
               </button>
 
               <div className="mt-6 flex-1 space-y-3 border-t border-[color:var(--ui-form-section-divider)] pt-5">

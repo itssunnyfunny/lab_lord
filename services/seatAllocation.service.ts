@@ -3,6 +3,7 @@ import { StaffService } from "@/services/staff.service";
 import { StudentStatus, SeatAllocationFilters } from "@/types";
 import type { SeatAllocation } from "@/app/generated/prisma/client";
 import { parseNullableTime, timesOverlap } from "@/utils/shiftTime";
+import { EntitlementService } from "@/services/entitlement.service";
 
 export class SeatAllocationService {
     private static async getSeatBranchId(seatId: string) {
@@ -54,6 +55,7 @@ export class SeatAllocationService {
         const uniqueShiftIds = [...new Set(shiftIds)];
         const authorizedBranchId = await this.getSeatBranchId(seatId);
         await StaffService.authorize(userId, authorizedBranchId, "seat_allocation");
+        await EntitlementService.assertBranchWritable(authorizedBranchId);
 
         return prisma.$transaction(async (tx) => {
             // 1. Fetch seat and resolve branch scope
@@ -220,6 +222,7 @@ export class SeatAllocationService {
     static async unassignSeat(userId: string, allocationId: string) {
         const allocation = await this.getAllocationWithBranch(allocationId);
         await StaffService.authorize(userId, allocation.seat.branchId, "seat_allocation");
+        await EntitlementService.assertBranchWritable(allocation.seat.branchId);
 
         return prisma.$transaction(async (tx) => {
             const scopedAllocation = await tx.seatAllocation.findUnique({
@@ -277,6 +280,7 @@ export class SeatAllocationService {
         const allocationBranch = await this.getAllocationWithBranch(existing.id);
         const branchId = allocationBranch.seat.branchId;
         await StaffService.authorize(userId, branchId, "seat_allocation");
+        await EntitlementService.assertBranchWritable(branchId);
 
         const uniqueAllocationIds = [...new Set(allocationIds)];
         const scopedAllocations = await prisma.seatAllocation.findMany({

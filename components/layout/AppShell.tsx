@@ -23,6 +23,9 @@ import {
     accountMenuClerkAppearance,
     accountProfileClerkAppearance,
 } from "@/components/ui/entrySurface";
+import { useBillingExperience } from "@/components/billing/BillingExperienceProvider";
+import { BillingBanner } from "@/components/billing/BillingBanner";
+import { ReadOnlyBanner } from "@/components/billing/ReadOnlyBanner";
 
 interface User {
     name: string;
@@ -55,6 +58,7 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const previousPathname = useRef(pathname);
     const showBranchChrome = /^\/branch\/[^/]+/.test(pathname ?? "");
+    const billing = useBillingExperience();
 
     useEffect(() => {
         if (previousPathname.current === pathname) return;
@@ -153,6 +157,8 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
 
                 {/* Page Content */}
                 <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto p-3 sm:p-4 md:p-6 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                    {billing?.experience && <ReadOnlyBanner experience={billing.experience} />}
+                    {billing?.experience && <BillingBanner experience={billing.experience} />}
                     {children}
                 </main>
             </div>

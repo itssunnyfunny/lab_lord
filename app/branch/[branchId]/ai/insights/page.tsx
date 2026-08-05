@@ -33,7 +33,7 @@ export default function AIInsightsPage() {
     const branchId = params.branchId as string;
 
     return (
-        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.aiInsights}>
+        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.aiInsights} feature="AI_INSIGHTS">
             <AIInsightsContent branchId={branchId} />
         </BranchAccessGuard>
     );

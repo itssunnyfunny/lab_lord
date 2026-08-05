@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { FORM_LIMITS, parseIntegerField, validateRequiredText } from "@/lib/formValidation";
 import { StaffService } from "@/services/staff.service";
 import type { StaffAction } from "@/types";
+import { EntitlementService } from "@/services/entitlement.service";
 
 export interface CreateMultiShiftDto {
     name: string;
@@ -120,6 +121,7 @@ export class MultiShiftService {
         data: CreateMultiShiftDto
     ): Promise<MultiShiftItem> {
         await this.assertBranchAccess(userId, branchId, "manage_branch");
+        await EntitlementService.assertBranchWritable(branchId);
         const nameResult = validateRequiredText(data.name, "Multi-shift name", 50);
         if (!nameResult.ok) throw new Error(nameResult.error);
         const priceResult = parseIntegerField(data.price, "Bundle monthly price", {
@@ -157,6 +159,7 @@ export class MultiShiftService {
         const ms = await prisma.multiShift.findUnique({ where: { id: multiShiftId } });
         if (!ms) throw new Error("Multi-shift not found");
         await this.assertBranchAccess(userId, ms.branchId, "manage_branch");
+        await EntitlementService.assertBranchWritable(ms.branchId);
         const nameResult = data.name !== undefined
             ? validateRequiredText(data.name, "Multi-shift name", 50)
             : null;
@@ -224,6 +227,7 @@ export class MultiShiftService {
         const ms = await prisma.multiShift.findUnique({ where: { id: multiShiftId } });
         if (!ms) throw new Error("Multi-shift not found");
         await this.assertBranchAccess(userId, ms.branchId, "manage_branch");
+        await EntitlementService.assertBranchWritable(ms.branchId);
 
         await prisma.$transaction(async (tx) => {
             // Null out the multiShiftId on existing allocations (keep history intact)

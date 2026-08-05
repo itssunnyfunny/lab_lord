@@ -43,6 +43,9 @@ describe("proxy matcher", () => {
     "https://lablords.in/",
     "https://lablords.in/privacy",
     "https://lablords.in/terms",
+    "https://lablords.in/refund-policy",
+    "https://lablords.in/shipping-delivery-policy",
+    "https://lablords.in/contact",
     "https://lablords.in/cookies",
     "https://lablords.in/support",
     "https://lablords.in/software/study-hall-management",
@@ -63,5 +66,12 @@ describe("proxy matcher", () => {
     "https://lablords.in/trpc/example",
   ])("continues running Clerk for API route %s", url => {
     expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true);
+  });
+
+  it("keeps the signed Razorpay webhook outside Clerk authentication", () => {
+    const request = new NextRequest("https://lablords.in/api/razorpay/webhook");
+
+    expect(unstable_doesMiddlewareMatch({ config, url: request.url })).toBe(true);
+    expect(isProtectedRoute(request)).toBe(false);
   });
 });

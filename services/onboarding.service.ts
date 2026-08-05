@@ -14,6 +14,8 @@ import {
     includesDefaultPrimaryShiftNames,
 } from "@/services/defaultShifts";
 import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
+import { isWorkspaceBillingEnabled } from "@/lib/billingFeature";
+import { OwnerTrialService } from "@/services/ownerTrial.service";
 
 interface CreateNetworkParams {
     userId: string;
@@ -92,6 +94,7 @@ export class OnboardingService {
                     businessType: businessTypeResult.value,
                     contactPhone: ownerPhoneResult.value,
                     ownerId: userId,
+                    billingModelVersion: isWorkspaceBillingEnabled() ? "WORKSPACE_V2" : "LEGACY",
                 },
             });
 
@@ -189,6 +192,10 @@ export class OnboardingService {
                     role: "MANAGER",
                 },
             });
+
+            if (isWorkspaceBillingEnabled()) {
+                await OwnerTrialService.startOnboardingTrial(tx, userId, org.id, new Date());
+            }
 
             return { org, branch };
         });

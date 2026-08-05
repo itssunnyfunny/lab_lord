@@ -42,7 +42,7 @@ export function LegalPage({
             <AppLogo subtitleClassName="hidden sm:block" />
           </Link>
           <nav className="flex items-center gap-5">
-            <Link href="/support" className={landingNavLinkClass}>Support</Link>
+            <Link href="/contact" className={landingNavLinkClass}>Contact Us</Link>
             <Link href="/sign-in" className={landingNavLinkClass}>Sign in</Link>
           </nav>
         </div>

@@ -31,7 +31,7 @@ const sections: LegalSection[] = [
   },
   {
     title: "Payments and subscriptions",
-    body: "Paid plans, billing cycles, taxes, refunds, and subscription changes are governed by the plan or order details shown at purchase or agreed with Lab Lords. Payment records inside the product are operational records and are not legal, tax, or accounting advice.",
+    body: "Paid plans, billing cycles, and taxes are shown at purchase. Future renewals can be cancelled from organization billing settings and remain active through the current paid period. Refund eligibility is governed by the Cancellation and Refund Policy at /refund-policy, and digital service activation is described at /shipping-delivery-policy. Payment records inside the product are operational records and are not legal, tax, or accounting advice.",
   },
   {
     title: "Acceptable use",

@@ -698,7 +698,7 @@ export default function StaffPage({ params }: { params: Promise<{ branchId: stri
     const { branchId } = use(params);
 
     return (
-        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.staff}>
+        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.staff} feature="STAFF_CONTROLS">
             {access => (
                 <StaffContent
                     branchId={branchId}

@@ -76,7 +76,7 @@ export default function AnalyticsPage({ params }: { params: Promise<{ branchId: 
     const { branchId } = use(params);
 
     return (
-        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.analytics}>
+        <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.analytics} feature="BRANCH_ANALYTICS">
             <AnalyticsContent branchId={branchId} />
         </BranchAccessGuard>
     );

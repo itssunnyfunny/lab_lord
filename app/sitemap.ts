@@ -10,6 +10,9 @@ const staticRoutes = [
   })),
   { path: "/privacy", priority: 0.4 },
   { path: "/terms", priority: 0.4 },
+  { path: "/refund-policy", priority: 0.5 },
+  { path: "/shipping-delivery-policy", priority: 0.5 },
+  { path: "/contact", priority: 0.6 },
   { path: "/cookies", priority: 0.4 },
   { path: "/support", priority: 0.5 },
 ];

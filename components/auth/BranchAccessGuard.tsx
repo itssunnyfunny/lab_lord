@@ -13,6 +13,8 @@ import {
     pageMutedTextClass,
 } from "@/components/ui/pageSurface";
 import { entryIconFrameClass, entrySubtitleClass, entryTitleClass } from "@/components/ui/entrySurface";
+import { FeatureUpgradeGate } from "@/components/billing/FeatureUpgradeGate";
+import type { BillingFeatureKey } from "@/lib/billingPolicy";
 
 type BranchAccessGuardProps = {
     branchId: string | undefined;
@@ -20,6 +22,7 @@ type BranchAccessGuardProps = {
     children: ReactNode | ((access: BranchAccess) => ReactNode);
     title?: string;
     description?: string;
+    feature?: BillingFeatureKey;
 };
 
 export function BranchAccessLoading({ label = "Checking access..." }: { label?: string }) {
@@ -65,6 +68,7 @@ export function BranchAccessGuard({
     children,
     title,
     description,
+    feature,
 }: BranchAccessGuardProps) {
     const { access, loading, error, can } = useBranchAccess(branchId);
 
@@ -86,5 +90,8 @@ export function BranchAccessGuard({
         );
     }
 
-    return <>{typeof children === "function" ? children(access) : children}</>;
+    const content = typeof children === "function" ? children(access) : children;
+    return feature
+        ? <FeatureUpgradeGate feature={feature} experience={access.billingExperience}>{content}</FeatureUpgradeGate>
+        : <>{content}</>;
 }

@@ -13,6 +13,7 @@ import {
     validateRequiredText,
 } from "@/lib/formValidation";
 import { DEFAULT_PRIMARY_SHIFTS, ensureDefaultShiftsAndFullTime } from "@/services/defaultShifts";
+import { EntitlementService } from "@/services/entitlement.service";
 
 export const DEFAULT_SHIFTS = DEFAULT_PRIMARY_SHIFTS;
 
@@ -78,6 +79,7 @@ export class ShiftService {
 
     static async createShift(userId: string, branchId: string, data: CreateShiftDto) {
         await this.assertBranchAccess(userId, branchId, "manage_branch");
+        await EntitlementService.assertBranchWritable(branchId);
         const nameResult = validateRequiredText(data.name, "Shift name", 50);
         if (!nameResult.ok) throw new Error(nameResult.error);
         const startResult = validateOptionalTime(data.startTime, "Start time");
@@ -121,6 +123,7 @@ export class ShiftService {
         const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
         if (!shift) throw new Error("Shift not found");
         await this.assertBranchAccess(userId, shift.branchId, "manage_branch");
+        await EntitlementService.assertBranchWritable(shift.branchId);
 
         const nameResult = data.name !== undefined ? validateRequiredText(data.name, "Shift name", 50) : null;
         if (nameResult && !nameResult.ok) throw new Error(nameResult.error);
@@ -192,6 +195,7 @@ export class ShiftService {
         const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
         if (!shift) throw new Error("Shift not found");
         await this.assertBranchAccess(userId, shift.branchId, "manage_branch");
+        await EntitlementService.assertBranchWritable(shift.branchId);
 
         const branchId = shift.branchId;
 
@@ -261,6 +265,7 @@ export class ShiftService {
         const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
         if (!shift) throw new Error("Shift not found");
         await this.assertBranchAccess(userId, shift.branchId, "manage_branch");
+        await EntitlementService.assertBranchWritable(shift.branchId);
 
         const branchId = shift.branchId;
 

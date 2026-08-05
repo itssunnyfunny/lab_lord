@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { StaffService } from "@/services/staff.service";
+import { BillingExperienceService } from "@/services/billingExperience.service";
 
 function statusForError(message: string) {
     if (message.includes("not found")) return 404;
@@ -20,7 +21,8 @@ export async function GET(
         }
 
         const access = await StaffService.getBranchAccess(user.id, branchId);
-        return NextResponse.json(access);
+        const billingExperience = await BillingExperienceService.getForBranch(branchId, user.id);
+        return NextResponse.json({ ...access, billingExperience });
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "Internal Server Error";
         return NextResponse.json({ error: message }, { status: statusForError(message) });

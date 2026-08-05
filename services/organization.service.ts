@@ -10,6 +10,7 @@ import {
     requiredPhone,
 } from "@/lib/settingsValidation";
 import { CreateOrganizationDto, UpdateOrganizationSettingsDto, WEEK_STARTS_ON } from "@/types";
+import { EntitlementService } from "@/services/entitlement.service";
 
 const ORG_SETTINGS_FIELDS = [
     "name",
@@ -59,12 +60,20 @@ export class OrganizationService {
                     select: { id: true, name: true, city: true, createdAt: true },
                     orderBy: { createdAt: "desc" },
                 },
+                subscription: true,
+                ownerTrialGrant: true,
                 _count: { select: { branches: true } },
             },
         });
     }
 
     static async getOrganizationForOwner(id: string, userId: string) {
+        const org = await this.getOrganizationForOwnerAccess(id, userId);
+        await EntitlementService.assertOrganizationWritable(id);
+        return org;
+    }
+
+    static async getOrganizationForOwnerAccess(id: string, userId: string) {
         const org = await this.getOrganizationById(id);
         if (!org) throw new Error("Organization not found");
         if (org.ownerId !== userId) throw new Error("Unauthorized");

@@ -2,7 +2,18 @@ import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { StaffInviteService } from "@/services/staffInvite.service";
 import { StaffRole } from "@/types";
 import { resetDatabase, disconnectDatabase, testPrisma } from "@/tests/setup/db";
-import { createStaff, createTestWorld, createUser } from "@/tests/factories";
+import {
+  createSaasSubscription,
+  createStaff,
+  createTestWorld as createBaseTestWorld,
+  createUser,
+} from "@/tests/factories";
+
+async function createTestWorld() {
+  const world = await createBaseTestWorld();
+  await createSaasSubscription({ organizationId: world.org.id, plan: "PRO" });
+  return world;
+}
 
 describe("StaffInviteService Integration", () => {
   afterAll(async () => { await disconnectDatabase(); });

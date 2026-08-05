@@ -1,8 +1,15 @@
 "use client";
 
 import { useUser } from "@clerk/nextjs";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
+import { organizations } from "@/lib/api/organizations";
+import type { CheckoutBillingPlanId } from "@/lib/billingPlans";
+import {
+  getBillingOnboardingPath,
+  getBillingSignUpPath,
+  getOrganizationBillingPath,
+} from "@/lib/billingFlow";
 import { trackEvent } from "@/lib/tracking";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { LandingHero } from "@/components/landing/LandingHero";
@@ -50,6 +57,35 @@ function LandingContent({ isLoaded, isSignedIn }: LandingContentProps) {
     router.push("/app");
   };
 
+  const handlePlanPurchase = useCallback(async (planId: CheckoutBillingPlanId, trackClick = true) => {
+    if (!isLoaded) return;
+    if (trackClick) {
+      trackEvent("landing_cta_clicked", {
+        source: `landing_pricing_${planId.toLowerCase()}`,
+        signed_in: isSignedIn,
+      });
+    }
+
+    if (!isSignedIn) {
+      router.push(getBillingSignUpPath(planId));
+      return;
+    }
+
+    setIsRedirecting(true);
+
+    try {
+      const data = await organizations.getAll();
+
+      if (data.length === 0) {
+        router.push(getBillingOnboardingPath(planId));
+      } else {
+        router.push(getOrganizationBillingPath(data[0].id, planId));
+      }
+    } catch {
+      router.push(getBillingOnboardingPath(planId));
+    }
+  }, [isLoaded, isSignedIn, router]);
+
   if (isRedirecting) {
     return <PageLoadingSkeleton label="Loading workspace" variant="workspace" />;
   }
@@ -71,7 +107,7 @@ function LandingContent({ isLoaded, isSignedIn }: LandingContentProps) {
       <LandingFeatures />
       <LandingSoftware />
       <LandingHowItWorks />
-      <LandingPricing onDashboardClick={handleWorkspaceClick} />
+      <LandingPricing onPlanSelect={handlePlanPurchase} />
       <LandingFooter />
     </main>
   );

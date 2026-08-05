@@ -3,10 +3,17 @@ import { StaffService } from "@/services/staff.service";
 import { StaffPermissionAction, StaffRole } from "@/types";
 import { resetDatabase, disconnectDatabase, testPrisma } from "@/tests/setup/db";
 import {
-  createTestWorld,
+  createTestWorld as createBaseTestWorld,
+  createSaasSubscription,
   createUser,
   createStaff,
 } from "@/tests/factories";
+
+async function createTestWorld() {
+  const world = await createBaseTestWorld();
+  await createSaasSubscription({ organizationId: world.org.id, plan: "PRO" });
+  return world;
+}
 
 /**
  * INTEGRATION TESTS: StaffService

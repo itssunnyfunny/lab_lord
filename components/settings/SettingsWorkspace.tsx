@@ -240,17 +240,24 @@ export function SettingsToggle({
     onChange,
     label,
     description,
+    disabled = false,
 }: {
     checked: boolean;
     onChange: (value: boolean) => void;
     label: string;
     description?: string;
+    disabled?: boolean;
 }) {
     return (
         <button
             type="button"
+            disabled={disabled}
             onClick={() => onChange(!checked)}
-            className={cn("flex w-full items-center justify-between gap-4 px-4 py-3 text-left", formSurfaceClass, formSurfaceHoverClass)}
+            className={cn(
+                "flex w-full items-center justify-between gap-4 px-4 py-3 text-left",
+                formSurfaceClass,
+                disabled ? "cursor-not-allowed opacity-60" : formSurfaceHoverClass
+            )}
         >
             <span>
                 <span className="block text-sm font-medium text-[color:var(--ui-form-label-strong)]">{label}</span>
