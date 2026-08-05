@@ -145,8 +145,14 @@ export class BillingExperienceService {
         : experiencePlan(state.effectivePlan);
     const entitlementPlan = effectivePlan === "STANDARD" || effectivePlan === "STANDARD_TRIAL" ? "PRO" : "BASIC";
     const entitlements = getBillingPlan(entitlementPlan)?.entitlements ?? [];
-    const postTrialPlan = selectedPlan(organization.subscription);
-    const projectedPlanId = postTrialPlan === "BASIC" ? "BASIC" : "PRO";
+    const providerPostTrialPlan = selectedPlan(organization.subscription);
+    const postTrialPlan = providerPostTrialPlan
+      ?? (organization.selectedPostTrialPlan === "PRO"
+        ? "STANDARD" as const
+        : organization.selectedPostTrialPlan === "BASIC"
+          ? "BASIC" as const
+          : null);
+    const projectedPlanId = postTrialPlan === "STANDARD" ? "PRO" : "BASIC";
     const projectedUnitAmount = getBillingPlan(projectedPlanId)?.amount ?? 0;
     const currentUnitAmount = organization.subscription?.amount ?? 0;
     const confirmedQuantity = organization.subscription?.quantity ?? 0;
@@ -166,8 +172,10 @@ export class BillingExperienceService {
           ? "RETRY_PAYMENT" as const
           : ["PENDING", "HALTED"].includes(organization.subscription?.status ?? "")
             ? "UPDATE_CARD" as const
-            : trialActive && !postTrialPlan
-              ? "CHOOSE_PLAN" as const
+            : trialActive && !providerPostTrialPlan
+              ? postTrialPlan
+                ? "AUTHORIZE_CARD" as const
+                : "CHOOSE_PLAN" as const
               : state.accessMode === "READ_ONLY"
                 ? "AUTHORIZE_CARD" as const
                 : "NONE" as const;

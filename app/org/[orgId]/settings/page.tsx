@@ -757,7 +757,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                                 Loading billing plans...
                             </div>
                         ) : (
-                            <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
+                            <div className="grid gap-3 lg:grid-cols-2">
                                 {(billingOverview?.plans ?? []).map(plan => (
                                     <BillingPlanCard
                                         key={plan.id}
@@ -1050,14 +1050,14 @@ function BillingPlanCard({
             </div>
 
             <div className="mt-5 flex-1 space-y-2.5">
-                {plan.features.map(feature => (
-                    <div key={feature} className="flex gap-2 text-sm text-[color:var(--text-secondary)]">
-                        {plan.active ? (
+                {plan.capabilities.map(capability => (
+                    <div key={capability.id} className={cn("flex gap-2 text-sm", capability.included ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-muted)]")}>
+                        {capability.included ? (
                             <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-[color:var(--ui-badge-success-text)]" />
                         ) : (
                             <XCircle size={15} className="mt-0.5 shrink-0 text-[color:var(--text-secondary)]" />
                         )}
-                        <span>{feature}</span>
+                        <span>{capability.label}{capability.included ? "" : " — Standard only"}</span>
                     </div>
                 ))}
             </div>

@@ -10,6 +10,11 @@ export function BillingBanner({ experience }: { experience: BillingExperience })
   if (!show) return null;
   const Icon = experience.accessMode === "WARNING" ? AlertTriangle : experience.activeOperation ? CreditCard : Clock3;
   const billingHref = `/org/${encodeURIComponent(experience.organizationId)}/settings#billing`;
+  const actionLabel = experience.paymentAction === "AUTHORIZE_CARD" && experience.selectedPostTrialPlan
+    ? `Authorize ${experience.selectedPostTrialPlan === "STANDARD" ? "Standard" : "Basic"}`
+    : experience.paymentAction === "CHOOSE_PLAN"
+      ? "Choose plan"
+      : "Manage billing";
   return (
     <div className="mb-4 flex flex-col gap-3 rounded-[var(--ui-radius-control)] border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="status">
       <div className="flex min-w-0 items-start gap-3">
@@ -20,7 +25,7 @@ export function BillingBanner({ experience }: { experience: BillingExperience })
         </div>
       </div>
       {experience.viewer.canManageBilling && experience.paymentAction !== "NONE" && (
-        <Link className="shrink-0 font-semibold text-amber-600 hover:underline" href={billingHref}>Manage billing</Link>
+        <Link className="shrink-0 font-semibold text-amber-600 hover:underline" href={billingHref}>{actionLabel}</Link>
       )}
     </div>
   );

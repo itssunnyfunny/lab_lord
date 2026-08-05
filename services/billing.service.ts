@@ -360,6 +360,10 @@ export class BillingService {
   static async createSubscriptionCheckout(userId: string, organizationId: string, input: CheckoutInput) {
     const selectedPlan = getActiveBillingPlan(input.plan);
     const org = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    await prisma.organization.update({
+      where: { id: organizationId },
+      data: { selectedPostTrialPlan: selectedPlan.id as SaasPlan },
+    });
     const workspaceBilling = org.billingModelVersion === "WORKSPACE_V2";
     const quantity = workspaceBilling
       ? await prisma.branch.count({
@@ -868,7 +872,13 @@ export class BillingService {
     }
     const subscription = organization.subscription;
     if (!subscription) throw new Error("Subscription not found");
-    if (subscription.plan === selectedPlan.id) return { unchanged: true, subscription: serializeSubscription(subscription) };
+    if (subscription.plan === selectedPlan.id) {
+      await prisma.organization.update({
+        where: { id: organizationId },
+        data: { selectedPostTrialPlan: selectedPlan.id as SaasPlan },
+      });
+      return { unchanged: true, subscription: serializeSubscription(subscription) };
+    }
     if (subscription.status === "CREATED") {
       return this.createSubscriptionCheckout(userId, organizationId, { plan: selectedPlan.id });
     }
@@ -895,6 +905,10 @@ export class BillingService {
       effectiveAt: type === "PLAN_DOWNGRADE" ? subscription.currentEnd : new Date(),
       createdByUserId: userId,
       returnPath: getSafeReturnPath(returnPath, organizationId),
+    });
+    await prisma.organization.update({
+      where: { id: organizationId },
+      data: { selectedPostTrialPlan: selectedPlan.id as SaasPlan },
     });
     const processed = await BillingMutationService.processNext(organizationId);
     const current = processed ?? change;

@@ -10,6 +10,7 @@ import {
     validateShiftDrafts,
 } from "@/lib/formValidation";
 import { generateSeatLabelsForSeatCount, validateSeatNumberingConfig } from "@/lib/seatNumbering";
+import { isCheckoutBillingPlanId } from "@/lib/billingPlans";
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Failed to complete setup";
@@ -23,7 +24,11 @@ export async function POST(req: Request) {
         }
 
         const body = await req.json();
-        const { orgName, ownerPhone, businessType, branchName, city, defaultFee, seatCount, seatNumbering, shifts, multiShifts, includeFullTimeMultiShift } = body;
+        const { orgName, ownerPhone, businessType, branchName, city, defaultFee, seatCount, seatNumbering, shifts, multiShifts, includeFullTimeMultiShift, selectedPostTrialPlan } = body;
+
+        if (!isCheckoutBillingPlanId(selectedPostTrialPlan)) {
+            return NextResponse.json({ error: "Choose Basic or Standard as the post-trial plan." }, { status: 400 });
+        }
 
         const orgNameResult = validateRequiredText(orgName, "Organization name", 120);
         if (!orgNameResult.ok) return NextResponse.json({ error: orgNameResult.error }, { status: 400 });
@@ -54,6 +59,7 @@ export async function POST(req: Request) {
 
         const result = await OnboardingService.createNetwork({
             userId: user.id,
+            selectedPostTrialPlan,
             ownerPhone: ownerPhoneResult.value,
             orgData: {
                 name: orgNameResult.value,

@@ -14,6 +14,7 @@ describe("owner-level trials", () => {
 
   const onboarding = (userId: string, suffix: string) => OnboardingService.createNetwork({
     userId,
+    selectedPostTrialPlan: "PRO",
     ownerPhone: "9876543210",
     orgData: { name: `Owner Org ${suffix}` },
     branchData: { name: `Main ${suffix}` },
