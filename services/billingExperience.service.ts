@@ -9,10 +9,23 @@ const ACTIVE_OPERATION_STATUSES = [
   "CHECKOUT_OPEN",
   "VERIFYING",
   "AWAITING_PROVIDER_CONFIRMATION",
-  "DECLINED",
-  "ABANDONED",
-  "FAILED",
 ] as const;
+const TERMINAL_OPERATION_FAILURES = ["DECLINED", "ABANDONED", "FAILED"] as const;
+
+function isCustomerVisibleOperationFailure(change: OrganizationBillingChange | null) {
+  if (!change || !TERMINAL_OPERATION_FAILURES.includes(
+    change.operationStatus as typeof TERMINAL_OPERATION_FAILURES[number]
+  )) {
+    return false;
+  }
+  if (change.operationStatus !== "ABANDONED") return true;
+
+  // ABANDONED is also the persisted operation state for an intentional undo,
+  // superseded change, or discarded pending branch. Only an actual Checkout
+  // dismissal is a customer-facing payment outcome.
+  return change.type === "SUBSCRIPTION_AUTHORIZATION"
+    && change.failureCategory === "CHECKOUT_ABANDONED";
+}
 
 function experiencePlan(plan: string | null | undefined) {
   if (plan === "PRO") return "STANDARD" as const;
@@ -27,7 +40,8 @@ function selectedPlan(subscription: {
 } | null) {
   if (!subscription || subscription.providerPaymentMethod !== "CARD") return null;
   if (["CREATED", "EXPIRED", "CANCELLED", "COMPLETED"].includes(subscription.status)) return null;
-  return experiencePlan(subscription.plan) === "STANDARD" ? "STANDARD" as const : "BASIC" as const;
+  const plan = experiencePlan(subscription.plan);
+  return plan === "STANDARD" || plan === "BASIC" ? plan : null;
 }
 
 function serializeOperation(change: OrganizationBillingChange): BillingExperienceOperation {
@@ -40,6 +54,7 @@ function serializeOperation(change: OrganizationBillingChange): BillingExperienc
     effectiveAt: change.effectiveAt?.toISOString() ?? null,
     failureCategory: change.failureCategory,
     failureCode: change.failureCode,
+    providerPaymentId: change.providerPaymentId,
     branchId: change.branchId,
     toPlan: change.toPlan === "PRO" ? "STANDARD" : change.toPlan === "BASIC" ? "BASIC" : null,
     toQuantity: change.toQuantity,
@@ -52,11 +67,13 @@ function customerPresentation(input: {
   effectivePlan: "BASIC" | "STANDARD" | "STANDARD_TRIAL" | "NONE";
   providerStatus: string | null;
   operationStatus: string | null;
+  operationFailureVisible: boolean;
+  postTrialPlanSelected: boolean;
 }) {
   if (input.operationStatus === "VERIFYING" || input.operationStatus === "AWAITING_PROVIDER_CONFIRMATION") {
     return { state: "CONFIRMING" as const, message: "Your payment is being confirmed. Existing access remains unchanged." };
   }
-  if (input.operationStatus === "ABANDONED") {
+  if (input.operationStatus === "ABANDONED" && input.operationFailureVisible) {
     return { state: "PAYMENT_NOT_COMPLETED" as const, message: input.trialActive ? "Payment was not completed. Your Standard trial continues." : "Payment was not completed. Your current plan remains unchanged." };
   }
   if (input.operationStatus === "DECLINED") {
@@ -71,7 +88,12 @@ function customerPresentation(input: {
   if (input.effectivePlan === "STANDARD") return { state: "STANDARD_ACTIVE" as const, message: "Standard is active for this workspace." };
   if (input.effectivePlan === "BASIC") return { state: "BASIC_ACTIVE" as const, message: "Basic is active for this workspace." };
   if (["CANCELLED", "COMPLETED", "EXPIRED"].includes(input.providerStatus ?? "")) return { state: "ACCESS_ENDED" as const, message: "The paid access period has ended. Your data is preserved." };
-  return { state: "AUTHORIZATION_REQUIRED" as const, message: "Choose a plan and authorize a card to continue after the trial." };
+  return {
+    state: "AUTHORIZATION_REQUIRED" as const,
+    message: input.postTrialPlanSelected
+      ? "Authorize the selected plan to activate billing for this workspace."
+      : "Choose a plan and authorize a card to activate billing for this workspace.",
+  };
 }
 
 export class BillingExperienceService {
@@ -108,7 +130,7 @@ export class BillingExperienceService {
 
     const [latestOperation, scheduledChanges] = await Promise.all([
       prisma.organizationBillingChange.findFirst({
-        where: { organizationId, operationStatus: { in: [...ACTIVE_OPERATION_STATUSES] } },
+        where: { organizationId },
         orderBy: { sequence: "desc" },
       }),
       prisma.organizationBillingChange.findMany({
@@ -152,32 +174,52 @@ export class BillingExperienceService {
         : organization.selectedPostTrialPlan === "BASIC"
           ? "BASIC" as const
           : null);
-    const projectedPlanId = postTrialPlan === "STANDARD" ? "PRO" : "BASIC";
-    const projectedUnitAmount = getBillingPlan(projectedPlanId)?.amount ?? 0;
+    const projectedPlanId = postTrialPlan === "STANDARD"
+      ? "PRO"
+      : postTrialPlan === "BASIC"
+        ? "BASIC"
+        : null;
+    const projectedUnitAmount = projectedPlanId ? getBillingPlan(projectedPlanId)?.amount ?? 0 : 0;
     const currentUnitAmount = organization.subscription?.amount ?? 0;
     const confirmedQuantity = organization.subscription?.quantity ?? 0;
     const projectedQuantity = organization.branches.length;
+    const activeOperation = latestOperation
+      && ACTIVE_OPERATION_STATUSES.includes(latestOperation.operationStatus as typeof ACTIVE_OPERATION_STATUSES[number])
+      ? latestOperation
+      : null;
+    const authorizationStatus = ["VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"].includes(activeOperation?.operationStatus ?? "")
+      ? "VERIFYING" as const
+      : providerPostTrialPlan
+        ? "AUTHORIZED" as const
+        : "NOT_AUTHORIZED" as const;
     const presentation = customerPresentation({
       trialActive,
       effectivePlan,
       providerStatus: organization.subscription?.status ?? null,
       operationStatus: latestOperation?.operationStatus ?? null,
+      operationFailureVisible: isCustomerVisibleOperationFailure(latestOperation),
+      postTrialPlanSelected: postTrialPlan != null,
     });
 
-    const paymentAction = latestOperation?.operationStatus === "CHECKOUT_OPEN"
+    const latestFailed = isCustomerVisibleOperationFailure(latestOperation);
+    const paymentAction = activeOperation?.operationStatus === "CHECKOUT_OPEN"
       ? "CONTINUE_CHECKOUT" as const
-      : ["VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"].includes(latestOperation?.operationStatus ?? "")
+      : ["VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"].includes(activeOperation?.operationStatus ?? "")
         ? "WAIT_FOR_CONFIRMATION" as const
-        : ["DECLINED", "FAILED"].includes(latestOperation?.operationStatus ?? "")
-          ? "RETRY_PAYMENT" as const
-          : ["PENDING", "HALTED"].includes(organization.subscription?.status ?? "")
-            ? "UPDATE_CARD" as const
+        : ["PENDING", "HALTED"].includes(organization.subscription?.status ?? "")
+          ? "UPDATE_CARD" as const
+          : latestFailed && latestOperation?.type === "SUBSCRIPTION_AUTHORIZATION"
+            ? "RETRY_AUTHORIZATION" as const
+            : latestFailed
+              ? "RETRY_BILLING_CHANGE" as const
             : trialActive && !providerPostTrialPlan
               ? postTrialPlan
                 ? "AUTHORIZE_CARD" as const
                 : "CHOOSE_PLAN" as const
               : state.accessMode === "READ_ONLY"
-                ? "AUTHORIZE_CARD" as const
+                ? postTrialPlan
+                  ? "AUTHORIZE_CARD" as const
+                  : "CHOOSE_PLAN" as const
                 : "NONE" as const;
 
     const result: BillingExperience = {
@@ -199,11 +241,17 @@ export class BillingExperienceService {
       currentMonthlyTotal: currentUnitAmount * confirmedQuantity,
       projectedUnitAmount,
       projectedMonthlyTotal: projectedUnitAmount * projectedQuantity,
-      nextChargeAt: organization.subscription?.chargeAt?.toISOString()
-        ?? (trialActive ? organization.ownerTrialGrant?.trialEndsAt?.toISOString() ?? null : null),
+      authorizationStatus,
+      planFeeDueToday: trialActive || (organization.subscription?.paidThrough?.getTime() ?? 0) > now.getTime()
+        ? 0
+        : projectedUnitAmount * projectedQuantity,
+      nextChargeAt: authorizationStatus === "AUTHORIZED"
+        ? organization.subscription?.chargeAt?.toISOString() ?? null
+        : null,
       paymentAction,
       entitlements: [...entitlements],
-      activeOperation: latestOperation ? serializeOperation(latestOperation) : null,
+      latestOperation: latestOperation ? serializeOperation(latestOperation) : null,
+      activeOperation: activeOperation ? serializeOperation(activeOperation) : null,
       scheduledChanges: scheduledChanges.map(serializeOperation),
       branch: branch ? { ...branch } : null,
       viewer: { isOwner, canManageBilling: isOwner },

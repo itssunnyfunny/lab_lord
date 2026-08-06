@@ -1,8 +1,7 @@
 "use client";
 
-import { Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import Script from "next/script";
 import { format } from "date-fns";
 import {
     AlertCircle,
@@ -39,6 +38,18 @@ import {
 } from "@/components/settings/SettingsWorkspace";
 import { useInlineFieldErrors } from "@/components/ui/InlineFieldError";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { BillingPriceSummary } from "@/components/billing/BillingPriceSummary";
+import { CheckoutConfirmationDialog } from "@/components/billing/CheckoutConfirmationDialog";
+import { PaymentOutcomeDialog, type PaymentOutcome } from "@/components/billing/PaymentOutcomeDialog";
+import {
+    isRazorpayCheckoutPayload,
+    isRazorpayCheckoutReady,
+    openRazorpayCheckout,
+    RazorpayCheckoutScript,
+    type RazorpayCheckoutEventResult,
+    type RazorpayCheckoutMode,
+    type RazorpayCheckoutPayloadLike,
+} from "@/components/billing/RazorpayCheckoutLauncher";
 import {
     pageErrorIconClass,
     pageErrorStateClass,
@@ -55,56 +66,12 @@ import {
     validateRequiredPhone,
     validateRequiredText,
 } from "@/lib/formValidation";
-import { billing, type BillingCheckoutPayload, type BillingOverview, type BillingPlanDto, type OrganizationSubscriptionDto } from "@/lib/api/billing";
+import { billing, type BillingOverview, type BillingPlanDto, type OrganizationSubscriptionDto } from "@/lib/api/billing";
 import {
     isCheckoutBillingPlanId,
     type CheckoutBillingPlanId,
 } from "@/lib/billingPlans";
 import { cn } from "@/lib/utils";
-
-type RazorpayHandlerResponse = {
-    razorpay_payment_id: string;
-    razorpay_subscription_id?: string;
-    razorpay_signature: string;
-};
-
-type RazorpayFailureResponse = {
-    error?: {
-        code?: string;
-        description?: string;
-        reason?: string;
-        metadata?: Record<string, string | undefined>;
-    };
-};
-
-type RazorpayInstance = {
-    open: () => void;
-    on: (event: "payment.failed", handler: (response: RazorpayFailureResponse) => void) => void;
-};
-
-type RazorpayOptions = {
-    key: string;
-    name: string;
-    description: string;
-    subscription_id: string;
-    prefill?: BillingCheckoutPayload["prefill"];
-    notes?: BillingCheckoutPayload["notes"];
-    subscription_card_change?: boolean;
-    theme: { color: string };
-    retry: { enabled: boolean };
-    method?: BillingCheckoutPayload["method"];
-    modal: {
-        confirm_close: boolean;
-        ondismiss: () => void | Promise<void>;
-    };
-    handler: (response: RazorpayHandlerResponse) => void | Promise<void>;
-};
-
-declare global {
-    interface Window {
-        Razorpay?: new (options: RazorpayOptions) => RazorpayInstance;
-    }
-}
 
 interface BranchSummary {
     id: string;
@@ -203,17 +170,31 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     const [billingOverview, setBillingOverview] = useState<BillingOverview | null>(null);
     const [billingLoading, setBillingLoading] = useState(true);
     const [billingAction, setBillingAction] = useState<CheckoutBillingPlanId | null>(null);
+    const [billingOperationLoading, setBillingOperationLoading] = useState(false);
+    const billingOperationInFlightRef = useRef(false);
     const [recoveryLoading, setRecoveryLoading] = useState(false);
-    const [autoStartedPlan, setAutoStartedPlan] = useState<CheckoutBillingPlanId | null>(null);
+    const [recoveryConfirmationOpen, setRecoveryConfirmationOpen] = useState(false);
+    const [confirmationPlan, setConfirmationPlan] = useState<CheckoutBillingPlanId | null>(null);
+    const [handledQueryPlan, setHandledQueryPlan] = useState<CheckoutBillingPlanId | null>(null);
+    const [paymentOutcome, setPaymentOutcome] = useState<PaymentOutcome | null>(null);
+    const [paymentOutcomeMode, setPaymentOutcomeMode] = useState<RazorpayCheckoutMode>("AUTHORIZATION");
+    const [outcomeChangeId, setOutcomeChangeId] = useState<string | null>(null);
+    const [outcomePlanId, setOutcomePlanId] = useState<CheckoutBillingPlanId | null>(null);
+    const [retryingOutcome, setRetryingOutcome] = useState(false);
     const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
     const [cancellingSubscription, setCancellingSubscription] = useState(false);
     const [checkoutScriptReady, setCheckoutScriptReady] = useState(
-        () => typeof window !== "undefined" && Boolean(window.Razorpay)
+        () => isRazorpayCheckoutReady()
     );
     const [billingNotice, setBillingNotice] = useState<{ tone: "success" | "warning" | "error"; message: string } | null>(null);
     const { markTouched, markSubmitted, resetFieldErrors, visibleError } = useInlineFieldErrors<
         "name" | "businessType" | "legalName" | "contactEmail" | "contactPhone" | "address" | "paymentGraceDays"
     >();
+
+    const setBillingOperationBusy = useCallback((busy: boolean) => {
+        billingOperationInFlightRef.current = busy;
+        setBillingOperationLoading(busy);
+    }, []);
 
     const loadBilling = useCallback(async () => {
         setBillingLoading(true);
@@ -272,179 +253,211 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
         resetFieldErrors();
     };
 
-    const startSubscription = useCallback(async (planId: CheckoutBillingPlanId) => {
-        if (billingOverview?.current
-            && !TERMINAL_BILLING_STATUSES.has(billingOverview.current.status)
-            && billingOverview.current.status !== "CREATED") {
-            setBillingAction(planId);
-            setBillingNotice(null);
-            try {
+    const launchCheckout = useCallback((
+        payload: RazorpayCheckoutPayloadLike,
+        mode: RazorpayCheckoutMode,
+        planId: CheckoutBillingPlanId | null = null
+    ) => {
+        openRazorpayCheckout({
+            payload,
+            mode,
+            verify: async response => {
+                const result = await billing.verifySubscription(orgId, {
+                    changeId: payload.changeId,
+                    razorpay_subscription_id: response.razorpay_subscription_id ?? payload.subscriptionId,
+                    razorpay_payment_id: response.razorpay_payment_id,
+                    razorpay_signature: response.razorpay_signature,
+                });
+                setBillingOverview(previous => previous ? { ...previous, current: result.subscription } : previous);
+                return result;
+            },
+            recordEvent: async (checkoutResult: RazorpayCheckoutEventResult) => {
+                await billing.recordCheckoutEvent(
+                    orgId,
+                    payload.changeId,
+                    checkoutResult.event,
+                    checkoutResult.failure
+                );
+            },
+            navigate: processingUrl => router.push(processingUrl),
+            onStateChange: state => {
+                if (state === "OPEN") {
+                    setBillingOperationBusy(true);
+                    if (planId) setBillingAction(planId);
+                    return;
+                }
+                if (state === "VERIFYING") {
+                    setBillingOperationBusy(true);
+                    setBillingNotice({ tone: "warning", message: "Razorpay authorization received. Verifying it securely..." });
+                    return;
+                }
+                if (state === "AWAITING_PROVIDER_CONFIRMATION") {
+                    setBillingOperationBusy(true);
+                    setBillingNotice({ tone: "warning", message: "Confirmation is taking longer than usual. We are checking Razorpay before changing access." });
+                    return;
+                }
+                if (state === "ABANDONED" || state === "DECLINED" || state === "FAILED") {
+                    setOutcomeChangeId(payload.changeId);
+                    setOutcomePlanId(planId);
+                    setPaymentOutcomeMode(mode);
+                    setPaymentOutcome({ status: state });
+                    setBillingAction(null);
+                    setBillingOperationBusy(false);
+                    setRecoveryLoading(false);
+                    void loadBilling();
+                }
+            },
+            onVerificationError: () => {
+                setBillingNotice({ tone: "warning", message: "Browser verification was interrupted. Provider reconciliation is continuing safely." });
+            },
+        });
+    }, [loadBilling, orgId, router, setBillingOperationBusy]);
+
+    const requestSubscription = useCallback((planId: CheckoutBillingPlanId) => {
+        setBillingNotice(null);
+        setPaymentOutcome(null);
+        setConfirmationPlan(planId);
+    }, []);
+
+    const confirmSubscription = useCallback(async () => {
+        const planId = confirmationPlan;
+        if (!planId) return;
+        const current = billingOverview?.current;
+        const providerUpdate = canUpdateProviderPlan(current ?? null);
+
+        if (current && RECOVERY_BILLING_STATUSES.has(current.status)) {
+            setConfirmationPlan(null);
+            setBillingNotice({
+                tone: "warning",
+                message: "Restore the subscription with Update card and retry before changing the plan.",
+            });
+            return;
+        }
+        if (current?.cancelAtCycleEnd) {
+            setConfirmationPlan(null);
+            setBillingNotice({
+                tone: "warning",
+                message: "Undo the scheduled cancellation before changing the plan.",
+            });
+            return;
+        }
+        if (current && !TERMINAL_BILLING_STATUSES.has(current.status) && current.status !== "CREATED" && !providerUpdate) {
+            setConfirmationPlan(null);
+            setBillingNotice({
+                tone: "warning",
+                message: "This subscription needs a confirmed card authorization before its plan can be changed.",
+            });
+            return;
+        }
+        if (billingOperationInFlightRef.current) return;
+
+        setBillingOperationBusy(true);
+        setBillingAction(planId);
+        setBillingNotice(null);
+        try {
+            if (providerUpdate) {
+                setConfirmationPlan(null);
                 const result = await billing.changePlan(
                     orgId,
                     planId,
-                    requestedReturnPath ?? window.location.pathname + window.location.search + window.location.hash
+                    requestedReturnPath ?? window.location.pathname + window.location.hash
                 ) as { processingUrl?: string };
                 setBillingNotice({ tone: "warning", message: "Your plan change is being reconciled with Razorpay." });
                 if (result.processingUrl) router.push(result.processingUrl);
-                else await loadBilling();
-            } catch (err) {
-                setBillingNotice({ tone: "error", message: err instanceof Error ? err.message : "Unable to change plan." });
-            } finally {
-                setBillingAction(null);
+                else {
+                    await loadBilling();
+                    setBillingAction(null);
+                    setBillingOperationBusy(false);
+                }
+                return;
             }
-            return;
-        }
-        if (!checkoutScriptReady || !window.Razorpay) {
-            setBillingNotice({
-                tone: "warning",
-                message: "Razorpay Checkout is still loading. Please try again in a moment.",
-            });
-            return;
-        }
 
-        setBillingAction(planId);
-        setBillingNotice(null);
-
-        try {
-            const checkout = await billing.createSubscription(orgId, planId, requestedReturnPath ?? window.location.pathname + window.location.search + window.location.hash);
-            setBillingOverview(prev => prev ? { ...prev, current: checkout.subscription } : prev);
-
-            let completed = false;
-            const razorpay = new window.Razorpay({
-                key: checkout.keyId,
-                name: checkout.name,
-                description: checkout.description,
-                subscription_id: checkout.subscriptionId,
-                prefill: checkout.prefill,
-                notes: checkout.notes,
-                theme: { color: "#22c55e" },
-                retry: { enabled: true },
-                method: checkout.method,
-                modal: {
-                    confirm_close: true,
-                    ondismiss: async () => {
-                        if (completed) return;
-                        await billing.recordCheckoutEvent(orgId, checkout.changeId, "ABANDONED").catch(() => undefined);
-                        setBillingNotice({
-                            tone: "warning",
-                            message: "Checkout closed before payment. You can restart checkout for this plan when you are ready.",
-                        });
-                        setBillingAction(null);
-                        await loadBilling();
-                    },
-                },
-                handler: async (response) => {
-                    completed = true;
-                    try {
-                        const result = await billing.verifySubscription(orgId, {
-                            razorpay_subscription_id: response.razorpay_subscription_id ?? checkout.subscriptionId,
-                            razorpay_payment_id: response.razorpay_payment_id,
-                            razorpay_signature: response.razorpay_signature,
-                            changeId: checkout.changeId,
-                        });
-                        setBillingOverview(prev => prev ? { ...prev, current: result.subscription } : prev);
-                        setBillingNotice({
-                            tone: result.subscription.status === "ACTIVE" ? "success" : "warning",
-                            message: result.subscription.status === "ACTIVE"
-                                ? "Subscription is active."
-                                : "Subscription authorization is verified. Razorpay may finish activation shortly.",
-                        });
-                        router.push(result.processingUrl);
-                    } catch (err) {
-                        setBillingNotice({
-                            tone: "error",
-                            message: err instanceof Error ? err.message : "Razorpay verification failed.",
-                        });
-                    } finally {
-                        setBillingAction(null);
-                    }
-                },
-            });
-
-            razorpay.on("payment.failed", async (response) => {
-                completed = true;
-                await billing.recordCheckoutEvent(orgId, checkout.changeId, "DECLINED", {
-                    failureCategory: response.error?.reason,
-                    failureCode: response.error?.code,
-                }).catch(() => undefined);
-                setBillingNotice({
-                    tone: "error",
-                    message: response.error?.description || response.error?.reason || "Razorpay payment failed. No subscription was activated.",
-                });
+            if (!checkoutScriptReady || !isRazorpayCheckoutReady()) {
+                setBillingNotice({ tone: "warning", message: "Razorpay Checkout is still loading. Please try again in a moment." });
                 setBillingAction(null);
-                await loadBilling();
-            });
+                setBillingOperationBusy(false);
+                return;
+            }
 
-            razorpay.open();
-        } catch (err) {
-            setBillingNotice({
-                tone: "error",
-                message: err instanceof Error ? err.message : "Unable to start Razorpay Checkout.",
-            });
+            const checkout = await billing.createSubscription(
+                orgId,
+                planId,
+                requestedReturnPath ?? window.location.pathname + window.location.hash
+            );
+            setBillingOverview(previous => previous ? { ...previous, current: checkout.subscription } : previous);
+            launchCheckout(checkout, "AUTHORIZATION", planId);
+            setConfirmationPlan(null);
+        } catch (error) {
+            setBillingNotice({ tone: "error", message: error instanceof Error ? error.message : "Unable to start Razorpay authorization." });
             setBillingAction(null);
+            setBillingOperationBusy(false);
         }
-    }, [billingOverview, checkoutScriptReady, loadBilling, orgId, requestedReturnPath, router]);
+    }, [billingOverview, checkoutScriptReady, confirmationPlan, launchCheckout, loadBilling, orgId, requestedReturnPath, router, setBillingOperationBusy]);
 
     const startRecovery = useCallback(async () => {
-        if (!checkoutScriptReady || !window.Razorpay) {
+        if (billingOperationInFlightRef.current) return;
+        if (!checkoutScriptReady || !isRazorpayCheckoutReady()) {
             setBillingNotice({ tone: "warning", message: "Razorpay Checkout is still loading. Please try again in a moment." });
             return;
         }
         setRecoveryLoading(true);
+        setBillingOperationBusy(true);
         setBillingNotice(null);
         try {
-            const recovery = await billing.createRecovery(orgId, window.location.pathname + window.location.search + window.location.hash);
-            let completed = false;
-            const razorpay = new window.Razorpay({
-                key: recovery.keyId,
-                name: "Lab Lords",
-                description: "Update card and retry subscription payment",
-                subscription_id: recovery.subscriptionId,
-                subscription_card_change: true,
-                theme: { color: "#22c55e" },
-                retry: { enabled: true },
-                method: recovery.method,
-                modal: {
-                    confirm_close: true,
-                    ondismiss: async () => {
-                        if (completed) return;
-                        await billing.recordCheckoutEvent(orgId, recovery.changeId, "ABANDONED").catch(() => undefined);
-                        setBillingNotice({ tone: "warning", message: "Card recovery was closed. The workspace remains in its current access state." });
-                        setRecoveryLoading(false);
-                    },
-                },
-                handler: async response => {
-                    completed = true;
-                    try {
-                        const result = await billing.verifySubscription(orgId, {
-                            changeId: recovery.changeId,
-                            razorpay_subscription_id: response.razorpay_subscription_id ?? recovery.subscriptionId,
-                            razorpay_payment_id: response.razorpay_payment_id,
-                            razorpay_signature: response.razorpay_signature,
-                        });
-                        router.push(result.processingUrl);
-                    } catch (requestError) {
-                        setBillingNotice({ tone: "error", message: requestError instanceof Error ? requestError.message : "Unable to verify card recovery." });
-                    } finally {
-                        setRecoveryLoading(false);
-                    }
-                },
-            });
-            razorpay.on("payment.failed", async response => {
-                completed = true;
-                await billing.recordCheckoutEvent(orgId, recovery.changeId, "DECLINED", {
-                    failureCategory: response.error?.reason,
-                    failureCode: response.error?.code,
-                }).catch(() => undefined);
-                setBillingNotice({ tone: "error", message: response.error?.description || "Card recovery was not confirmed." });
-                setRecoveryLoading(false);
-            });
-            razorpay.open();
-        } catch (requestError) {
-            setBillingNotice({ tone: "error", message: requestError instanceof Error ? requestError.message : "Unable to start card recovery." });
+            const recovery = await billing.createRecovery(orgId, window.location.pathname + window.location.hash);
+            setRecoveryConfirmationOpen(false);
+            launchCheckout(recovery, "RECOVERY");
+        } catch (error) {
+            setBillingNotice({ tone: "error", message: error instanceof Error ? error.message : "Unable to start card recovery." });
             setRecoveryLoading(false);
+            setBillingOperationBusy(false);
         }
-    }, [checkoutScriptReady, orgId, router]);
+    }, [checkoutScriptReady, launchCheckout, orgId, setBillingOperationBusy]);
+
+    const retryBillingOperation = useCallback(async (changeId: string, planId: CheckoutBillingPlanId | null = null) => {
+        const result = await billing.retryOperation(orgId, changeId) as unknown;
+        if (isRazorpayCheckoutPayload(result)) {
+            if (!checkoutScriptReady || !isRazorpayCheckoutReady()) {
+                setBillingNotice({ tone: "warning", message: "Razorpay Checkout is still loading. Please try again in a moment." });
+                return "REFRESHED" as const;
+            }
+            launchCheckout(result, result.subscription_card_change ? "RECOVERY" : "AUTHORIZATION", planId);
+            return "CHECKOUT" as const;
+        }
+        const processingResult = result as { processingUrl?: string };
+        if (processingResult.processingUrl) {
+            router.push(processingResult.processingUrl);
+            return "PROCESSING" as const;
+        }
+        await loadBilling();
+        return "REFRESHED" as const;
+    }, [checkoutScriptReady, launchCheckout, loadBilling, orgId, router]);
+
+    const retryPaymentOutcome = useCallback(async () => {
+        if (billingOperationInFlightRef.current) return;
+        if (!checkoutScriptReady || !isRazorpayCheckoutReady()) {
+            setBillingNotice({ tone: "warning", message: "Razorpay Checkout is still loading. Please try again in a moment." });
+            return;
+        }
+        if (!outcomeChangeId) {
+            setPaymentOutcome(null);
+            if (outcomePlanId) setConfirmationPlan(outcomePlanId);
+            return;
+        }
+        setBillingOperationBusy(true);
+        setRetryingOutcome(true);
+        setBillingNotice(null);
+        try {
+            const result = await retryBillingOperation(outcomeChangeId, outcomePlanId);
+            setPaymentOutcome(null);
+            if (result === "REFRESHED") setBillingOperationBusy(false);
+        } catch (error) {
+            setBillingNotice({ tone: "error", message: error instanceof Error ? error.message : "Unable to retry authorization." });
+            setBillingOperationBusy(false);
+        } finally {
+            setRetryingOutcome(false);
+        }
+    }, [checkoutScriptReady, outcomeChangeId, outcomePlanId, retryBillingOperation, setBillingOperationBusy]);
 
     const confirmCancellation = useCallback(async () => {
         if (!cancelDialogOpen) return;
@@ -475,43 +488,127 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
         if (!requestedBillingPlanId) return;
         setActiveSection("billing");
 
-        const selectedPlan = billingOverview?.plans.find(plan => plan.id === requestedBillingPlanId);
-        if (!selectedPlan || billingLoading) return;
+        if (!billingOverview || billingLoading || handledQueryPlan === requestedBillingPlanId) return;
+        const selectedPlan = billingOverview.plans.find(plan => plan.id === requestedBillingPlanId);
+        if (!selectedPlan) return;
+        setHandledQueryPlan(requestedBillingPlanId);
+        const current = billingOverview.current;
+        const experience = billingOverview.experience;
 
-        if (isCurrentBillingPlan(selectedPlan, billingOverview?.current ?? null)) {
-            if (autoStartedPlan !== requestedBillingPlanId) {
-                setAutoStartedPlan(requestedBillingPlanId);
-                setBillingNotice({
-                    tone: "success",
-                    message: `${selectedPlan.shortName} is already your current plan.`,
-                });
-            }
+        if (experience.activeOperation) {
+            setBillingNotice({
+                tone: "warning",
+                message: "A billing confirmation is already in progress. Finish or reconcile it before starting another change.",
+            });
+            return;
+        }
+        if (current && RECOVERY_BILLING_STATUSES.has(current.status)) {
+            setBillingNotice({
+                tone: "warning",
+                message: "Update the card and restore the current subscription before changing plans.",
+            });
+            return;
+        }
+        if (current?.cancelAtCycleEnd) {
+            setBillingNotice({
+                tone: "warning",
+                message: "Undo the scheduled cancellation before changing plans.",
+            });
+            return;
+        }
+
+        if (isAuthorizedPostTrialPlan(selectedPlan, current, experience)) {
+            setBillingNotice({
+                tone: "success",
+                message: `${selectedPlan.shortName} is already authorized for after the trial.`,
+            });
+            return;
+        }
+
+        if (isCurrentBillingPlan(selectedPlan, current, experience)) {
+            setBillingNotice({
+                tone: "success",
+                message: `${selectedPlan.shortName} is already your current paid plan.`,
+            });
             return;
         }
 
         if (!selectedPlan.active) {
-            if (autoStartedPlan !== requestedBillingPlanId) {
-                setAutoStartedPlan(requestedBillingPlanId);
-                setBillingNotice({
-                    tone: "warning",
-                    message: `${selectedPlan.shortName} is not available for checkout yet.`,
-                });
-            }
+            setBillingNotice({
+                tone: "warning",
+                message: `${selectedPlan.shortName} is not available for checkout yet.`,
+            });
             return;
         }
 
-        if (!checkoutScriptReady || billingAction || autoStartedPlan === requestedBillingPlanId) return;
-        setAutoStartedPlan(requestedBillingPlanId);
-        void startSubscription(requestedBillingPlanId);
+        setConfirmationPlan(requestedBillingPlanId);
     }, [
-        autoStartedPlan,
-        billingAction,
         billingLoading,
         billingOverview,
-        checkoutScriptReady,
+        handledQueryPlan,
         requestedBillingPlanId,
-        startSubscription,
     ]);
+
+    const handleBillingAction = useCallback(async () => {
+        const experience = billingOverview?.experience;
+        if (!experience || billingOperationInFlightRef.current) return;
+        const operationId = experience.activeOperation?.id ?? experience.latestOperation?.id;
+        setBillingOperationBusy(true);
+        try {
+            if (experience.paymentAction === "UPDATE_CARD") {
+                setRecoveryConfirmationOpen(true);
+                setBillingOperationBusy(false);
+                return;
+            }
+            if (experience.paymentAction === "WAIT_FOR_CONFIRMATION" && operationId) {
+                router.push(`/org/${encodeURIComponent(orgId)}/billing/processing/${encodeURIComponent(operationId)}`);
+                return;
+            }
+            if ((experience.paymentAction === "CONTINUE_CHECKOUT"
+                || experience.paymentAction === "RETRY_AUTHORIZATION"
+                || experience.paymentAction === "RETRY_BILLING_CHANGE") && operationId) {
+                const checkoutRequired = experience.paymentAction !== "RETRY_BILLING_CHANGE";
+                if (checkoutRequired && (!checkoutScriptReady || !isRazorpayCheckoutReady())) {
+                    setBillingNotice({ tone: "warning", message: "Razorpay Checkout is still loading. Please try again in a moment." });
+                    setBillingOperationBusy(false);
+                    return;
+                }
+                const result = await retryBillingOperation(
+                    operationId,
+                    experience.selectedPostTrialPlan === "STANDARD" ? "PRO" : experience.selectedPostTrialPlan
+                );
+                if (result === "REFRESHED") setBillingOperationBusy(false);
+                return;
+            }
+            if (experience.selectedPostTrialPlan) {
+                requestSubscription(experience.selectedPostTrialPlan === "STANDARD" ? "PRO" : "BASIC");
+                setBillingOperationBusy(false);
+                return;
+            }
+            setActiveSection("billing");
+            setBillingOperationBusy(false);
+        } catch (error) {
+            setBillingNotice({
+                tone: "error",
+                message: error instanceof Error ? error.message : "Unable to continue the billing operation.",
+            });
+            setBillingOperationBusy(false);
+        }
+    }, [billingOverview, checkoutScriptReady, orgId, requestSubscription, retryBillingOperation, router, setBillingOperationBusy]);
+
+    const confirmationPlanDetails = confirmationPlan
+        ? billingOverview?.plans.find(plan => plan.id === confirmationPlan) ?? null
+        : null;
+    const confirmationUsesProviderUpdate = Boolean(
+        canUpdateProviderPlan(billingOverview?.current ?? null)
+    );
+    const confirmationChangeTiming = !confirmationUsesProviderUpdate
+        ? "AUTHORIZATION" as const
+        : billingOverview?.experience.effectivePlan === "STANDARD_TRIAL"
+            ? "FUTURE_TRIAL" as const
+            : billingOverview?.experience.effectivePlan === "STANDARD" && confirmationPlan === "BASIC"
+                ? "NEXT_CYCLE" as const
+                : "IMMEDIATE_PRORATION" as const;
 
     const validateForm = () => {
         const errors: Partial<Record<"name" | "businessType" | "legalName" | "contactEmail" | "contactPhone" | "address" | "paymentGraceDays", string>> = {};
@@ -638,10 +735,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
 
     return (
         <>
-            <Script
-                id="razorpay-checkout"
-                src="https://checkout.razorpay.com/v1/checkout.js"
-                strategy="afterInteractive"
+            <RazorpayCheckoutScript
                 onReady={() => setCheckoutScriptReady(true)}
                 onError={() => {
                     setCheckoutScriptReady(false);
@@ -750,6 +844,30 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                         </div>
                     )}
 
+                    {billingOverview?.experience && (
+                        <div className="mx-5 mt-4 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)] px-4 py-3 text-sm">
+                            <p className="font-semibold text-[color:var(--text-primary)]">{formatBillingCustomerState(billingOverview.experience.customerState)}</p>
+                            <p className="mt-1 text-[color:var(--text-secondary)]">{billingOverview.experience.customerMessage}</p>
+                            {billingOverview.experience.paymentAction !== "NONE"
+                                && billingOverview.experience.paymentAction !== "CHOOSE_PLAN"
+                                && billingOverview.experience.paymentAction !== "AUTHORIZE_CARD" ? (
+                                <AppButton
+                                    className="mt-3"
+                                    size="sm"
+                                    onClick={() => void handleBillingAction()}
+                                    isLoading={recoveryLoading || billingOperationLoading}
+                                    disabled={recoveryLoading || billingOperationLoading}
+                                >
+                                    {formatBillingAction(billingOverview.experience.paymentAction)}
+                                </AppButton>
+                            ) : null}
+                        </div>
+                    )}
+
+                    {billingOverview ? (
+                        <BillingPriceSummary experience={billingOverview.experience} current={billingOverview.current} />
+                    ) : null}
+
                     <div className="px-5 py-4">
                         {billingLoading ? (
                             <div className="flex min-h-28 items-center justify-center text-sm text-[color:var(--text-primary)]">
@@ -763,41 +881,18 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                                         key={plan.id}
                                         plan={plan}
                                         current={billingOverview?.current ?? null}
+                                        experience={billingOverview?.experience ?? null}
                                         busyPlan={billingAction}
                                         checkoutReady={checkoutScriptReady}
-                                        onStart={startSubscription}
+                                        onStart={requestSubscription}
                                     />
                                 ))}
                             </div>
                         )}
                     </div>
 
-                    {billingOverview?.experience && (
-                        <div className="mx-5 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)] px-4 py-3 text-sm">
-                            <p className="font-semibold text-[color:var(--text-primary)]">{formatBillingCustomerState(billingOverview.experience.customerState)}</p>
-                            <p className="mt-1 text-[color:var(--text-secondary)]">{billingOverview.experience.customerMessage}</p>
-                            {(billingOverview.experience.paymentAction === "UPDATE_CARD" || billingOverview.experience.paymentAction === "RETRY_PAYMENT") && (
-                                <AppButton className="mt-3" size="sm" onClick={startRecovery} isLoading={recoveryLoading}>Update card and retry payment</AppButton>
-                            )}
-                        </div>
-                    )}
-
                     {billingOverview?.current && (
                         <div className="space-y-3 px-5 py-4">
-                            <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-5">
-                                <ReadOnlyBillingMetric label="Current plan" value={billingOverview.current.shortName} />
-                                <ReadOnlyBillingMetric label="Billing state" value={formatBillingCustomerState(billingOverview.experience.customerState)} />
-                                <ReadOnlyBillingMetric label="Payment method" value={billingOverview.paymentMethod ?? "Not authorized"} />
-                                <ReadOnlyBillingMetric
-                                    label="Paid through"
-                                    value={billingOverview.current.paidThrough ? format(new Date(billingOverview.current.paidThrough), "PP") : "Awaiting paid invoice"}
-                                />
-                                <ReadOnlyBillingMetric
-                                    label="Next charge"
-                                    value={billingOverview.experience.nextChargeAt ? format(new Date(billingOverview.experience.nextChargeAt), "PP") : "Not scheduled"}
-                                />
-                            </div>
-
                             {billingOverview.current.cancelAtCycleEnd ? (
                                 <div className={cn(formWarningBannerClass, "px-4 py-3 text-sm")}>
                                     Cancellation is scheduled
@@ -819,30 +914,14 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                         </div>
                     )}
 
-                    {billingOverview?.trial && (
+                    {billingOverview?.ownerTrialEligibility?.claimable && !billingOverview.trial && (
                         <div className="mx-5 mt-4 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] px-4 py-3 text-sm text-[color:var(--text-primary)]">
-                            {billingOverview.trial.claimable ? (
-                                <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <span>Your owner account has one available 30-day Standard trial.</span>
-                                    <AppButton size="sm" onClick={async () => { await billing.claimTrial(orgId); await loadBilling(); }}>
-                                        Start trial here
-                                    </AppButton>
-                                </div>
-                            ) : (
-                                <span>
-                                    Standard trial: {billingOverview.trial.status.toLowerCase()}
-                                    {billingOverview.trial.endsAt ? ` until ${format(new Date(billingOverview.trial.endsAt), "PP")}` : ""}.
-                                </span>
-                            )}
-                        </div>
-                    )}
-
-                    {billingOverview && (
-                        <div className="grid gap-3 px-5 pt-4 sm:grid-cols-2 lg:grid-cols-4">
-                            <ReadOnlyBillingMetric label="Price per branch" value={`₹${billingOverview.experience.projectedUnitAmount}/month`} />
-                            <ReadOnlyBillingMetric label="Billable branches" value={String(billingOverview.experience.projectedQuantity)} />
-                            <ReadOnlyBillingMetric label="Projected total" value={`₹${billingOverview.experience.projectedMonthlyTotal}/month`} />
-                            <ReadOnlyBillingMetric label="Access" value={billingOverview.experience.accessMode === "READ_ONLY" ? "Read-only" : billingOverview.experience.accessMode === "WARNING" ? "Full access · payment attention needed" : "Full access"} />
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <span>Your owner account has one available 30-day Standard trial.</span>
+                                <AppButton size="sm" onClick={async () => { await billing.claimTrial(orgId); await loadBilling(); }}>
+                                    Start trial here
+                                </AppButton>
+                            </div>
                         </div>
                     )}
 
@@ -923,6 +1002,60 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                 onSave={save}
                 onReset={reset}
             />
+            {confirmationPlanDetails && billingOverview ? (
+                <CheckoutConfirmationDialog
+                    isOpen={confirmationPlan != null}
+                    loading={billingAction === confirmationPlanDetails.id}
+                    planName={confirmationPlanDetails.id === "PRO" ? "Standard" : "Basic"}
+                    unitAmount={confirmationPlanDetails.amount ?? 0}
+                    quantity={billingOverview.experience.projectedQuantity}
+                    monthlyTotal={(confirmationPlanDetails.amount ?? 0) * billingOverview.experience.projectedQuantity}
+                    trialActive={billingOverview.experience.effectivePlan === "STANDARD_TRIAL"}
+                    changeTiming={confirmationChangeTiming}
+                    trialEndsAt={billingOverview.experience.trialEndsAt}
+                    providerChargeAt={billingOverview.experience.nextChargeAt}
+                    effectiveAt={confirmationChangeTiming === "NEXT_CYCLE"
+                        ? billingOverview.current?.currentEnd ?? billingOverview.experience.paidThrough
+                        : null}
+                    planFeeDueToday={billingOverview.experience.effectivePlan === "STANDARD_TRIAL"
+                        ? 0
+                        : (confirmationPlanDetails.amount ?? 0) * billingOverview.experience.projectedQuantity}
+                    contactEmail={org.contactEmail || org.owner?.email}
+                    contactPhone={org.contactPhone}
+                    testMode={billingOverview.razorpayTestMode}
+                    onClose={() => setConfirmationPlan(null)}
+                    onConfirm={confirmSubscription}
+                />
+            ) : null}
+            <PaymentOutcomeDialog
+                outcome={paymentOutcome}
+                mode={paymentOutcomeMode}
+                retrying={retryingOutcome}
+                onRetry={retryPaymentOutcome}
+                onClose={() => setPaymentOutcome(null)}
+            />
+            {billingOverview?.current ? (
+                <CheckoutConfirmationDialog
+                    isOpen={recoveryConfirmationOpen}
+                    loading={recoveryLoading}
+                    purpose="RECOVERY"
+                    planName={billingOverview.current.plan === "PRO" ? "Standard" : "Basic"}
+                    unitAmount={billingOverview.current.unitAmount}
+                    quantity={billingOverview.current.quantity}
+                    monthlyTotal={billingOverview.current.monthlyTotal}
+                    trialActive={false}
+                    changeTiming="AUTHORIZATION"
+                    trialEndsAt={null}
+                    providerChargeAt={billingOverview.experience.nextChargeAt}
+                    effectiveAt={null}
+                    planFeeDueToday={billingOverview.current.monthlyTotal}
+                    contactEmail={org.contactEmail || org.owner?.email}
+                    contactPhone={org.contactPhone}
+                    testMode={billingOverview.razorpayTestMode}
+                    onClose={() => setRecoveryConfirmationOpen(false)}
+                    onConfirm={startRecovery}
+                />
+            ) : null}
             <ConfirmDialog
                 isOpen={cancelDialogOpen}
                 onClose={() => setCancelDialogOpen(false)}
@@ -938,6 +1071,17 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
 }
 
 const TERMINAL_BILLING_STATUSES = new Set(["CANCELLED", "COMPLETED", "EXPIRED"]);
+const PROVIDER_PLAN_UPDATE_STATUSES = new Set(["AUTHENTICATED", "ACTIVE"]);
+const RECOVERY_BILLING_STATUSES = new Set(["PENDING", "HALTED"]);
+
+function canUpdateProviderPlan(subscription: OrganizationSubscriptionDto | null) {
+    return Boolean(
+        subscription
+        && PROVIDER_PLAN_UPDATE_STATUSES.has(subscription.status)
+        && subscription.providerPaymentMethod === "CARD"
+        && !subscription.cancelAtCycleEnd
+    );
+}
 
 function formatBillingCustomerState(state: BillingOverview["experience"]["customerState"]) {
     const labels: Record<BillingOverview["experience"]["customerState"], string> = {
@@ -954,6 +1098,19 @@ function formatBillingCustomerState(state: BillingOverview["experience"]["custom
         AUTHORIZATION_REQUIRED: "Card authorization required",
     };
     return labels[state];
+}
+function formatBillingAction(action: BillingOverview["experience"]["paymentAction"]) {
+    const labels: Record<BillingOverview["experience"]["paymentAction"], string> = {
+        NONE: "Manage billing",
+        CHOOSE_PLAN: "Choose plan",
+        CONTINUE_CHECKOUT: "Continue authorization",
+        WAIT_FOR_CONFIRMATION: "View confirmation",
+        RETRY_AUTHORIZATION: "Retry authorization",
+        RETRY_BILLING_CHANGE: "Retry billing change",
+        UPDATE_CARD: "Update card and retry",
+        AUTHORIZE_CARD: "Authorize card",
+    };
+    return labels[action];
 }
 
 function formatBillingChangeType(type: string) {
@@ -979,37 +1136,99 @@ function formatPlanAmount(plan: BillingPlanDto) {
     }).format(plan.amount);
 }
 
-function isCurrentBillingPlan(plan: BillingPlanDto, current: OrganizationSubscriptionDto | null) {
+function isCurrentBillingPlan(
+    plan: BillingPlanDto,
+    current: OrganizationSubscriptionDto | null,
+    experience: BillingOverview["experience"] | null | undefined
+) {
+    const effectivePlanId = experience?.effectivePlan === "STANDARD"
+        ? "PRO"
+        : experience?.effectivePlan === "BASIC"
+            ? "BASIC"
+            : null;
     return current?.plan === plan.id
-        && current.status !== "CREATED"
-        && !TERMINAL_BILLING_STATUSES.has(current.status);
+        && current.paidThrough != null
+        && effectivePlanId === plan.id;
+}
+
+function isAuthorizedPostTrialPlan(
+    plan: BillingPlanDto,
+    current: OrganizationSubscriptionDto | null,
+    experience: BillingOverview["experience"] | null | undefined
+) {
+    const selectedPlanId = experience?.selectedPostTrialPlan === "STANDARD"
+        ? "PRO"
+        : experience?.selectedPostTrialPlan === "BASIC"
+            ? "BASIC"
+            : null;
+    return experience?.effectivePlan === "STANDARD_TRIAL"
+        && experience.authorizationStatus === "AUTHORIZED"
+        && selectedPlanId === plan.id
+        && current?.plan === plan.id;
 }
 
 function BillingPlanCard({
     plan,
     current,
+    experience,
     busyPlan,
     checkoutReady,
     onStart,
 }: {
     plan: BillingPlanDto;
     current: OrganizationSubscriptionDto | null;
+    experience: BillingOverview["experience"] | null;
     busyPlan: CheckoutBillingPlanId | null;
     checkoutReady: boolean;
     onStart: (plan: CheckoutBillingPlanId) => void;
 }) {
-    const isCurrent = isCurrentBillingPlan(plan, current);
+    const isCurrent = isCurrentBillingPlan(plan, current, experience);
+    const selectedPlanId = experience?.selectedPostTrialPlan === "STANDARD"
+        ? "PRO"
+        : experience?.selectedPostTrialPlan === "BASIC"
+            ? "BASIC"
+            : null;
+    const isSelectedAfterTrial = experience?.effectivePlan === "STANDARD_TRIAL" && selectedPlanId === plan.id;
+    const isAuthorizedAfterTrial = isAuthorizedPostTrialPlan(plan, current, experience);
+    const providerUpdate = canUpdateProviderPlan(current);
+    const recoveryRequired = Boolean(current && RECOVERY_BILLING_STATUSES.has(current.status));
+    const cancellationScheduled = Boolean(current?.cancelAtCycleEnd);
+    const unsupportedProviderUpdate = Boolean(
+        current
+        && !TERMINAL_BILLING_STATUSES.has(current.status)
+        && current.status !== "CREATED"
+        && !providerUpdate
+        && !recoveryRequired
+        && !cancellationScheduled
+    );
     const isBusy = busyPlan === plan.id;
-    const disabled = !checkoutReady || Boolean(busyPlan) || isCurrent || !plan.active;
-    const buttonLabel = plan.comingSoon
-        ? "Coming soon"
-        : plan.custom
-            ? "Custom"
-            : isCurrent
-                ? "Current plan"
-                : !checkoutReady
-                    ? "Loading checkout..."
-                    : `Start ${plan.shortName}`;
+    const operationInProgress = Boolean(experience?.activeOperation);
+    const disabled = (!checkoutReady && !providerUpdate)
+        || Boolean(busyPlan)
+        || operationInProgress
+        || isCurrent
+        || isAuthorizedAfterTrial
+        || recoveryRequired
+        || cancellationScheduled
+        || unsupportedProviderUpdate
+        || !plan.active;
+    let buttonLabel = `Authorize ${plan.shortName}`;
+    if (plan.comingSoon) buttonLabel = "Coming soon";
+    else if (plan.custom) buttonLabel = "Custom";
+    else if (isCurrent) buttonLabel = "Current plan";
+    else if (isAuthorizedAfterTrial) buttonLabel = "Authorized for after trial";
+    else if (recoveryRequired) buttonLabel = "Resolve payment first";
+    else if (cancellationScheduled) buttonLabel = "Undo cancellation first";
+    else if (unsupportedProviderUpdate) buttonLabel = "Card authorization required";
+    else if (operationInProgress) buttonLabel = "Authorization in progress";
+    else if (providerUpdate && experience?.effectivePlan === "STANDARD_TRIAL") {
+        buttonLabel = `Change to ${plan.shortName} after trial`;
+    } else if (providerUpdate && experience?.effectivePlan === "BASIC" && plan.id === "PRO") {
+        buttonLabel = "Upgrade to Standard";
+    } else if (providerUpdate && experience?.effectivePlan === "STANDARD" && plan.id === "BASIC") {
+        buttonLabel = "Change to Basic at renewal";
+    } else if (providerUpdate) buttonLabel = `Change to ${plan.shortName}`;
+    else if (!checkoutReady) buttonLabel = "Loading checkout...";
 
     return (
         <div className={cn(
@@ -1042,6 +1261,15 @@ function BillingPlanCard({
                         Current plan
                     </span>
                 )}
+                {isAuthorizedAfterTrial ? (
+                    <span className="rounded-full border border-[color:var(--ui-badge-success-border)] bg-[color:var(--ui-badge-success-bg)] px-2 py-1 text-[10px] font-semibold uppercase text-[color:var(--ui-badge-success-text)]">
+                        Authorized after trial
+                    </span>
+                ) : isSelectedAfterTrial ? (
+                    <span className="rounded-full border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] px-2 py-1 text-[10px] font-semibold uppercase text-[color:var(--ui-badge-cyan-text)]">
+                        Selected after trial
+                    </span>
+                ) : null}
                 {!plan.active && (
                     <span className="rounded-full border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)] px-2 py-1 text-[10px] font-semibold uppercase text-[color:var(--text-secondary)]">
                         {plan.custom ? "Custom" : "Soon"}
@@ -1072,15 +1300,6 @@ function BillingPlanCard({
             >
                 {buttonLabel}
             </AppButton>
-        </div>
-    );
-}
-
-function ReadOnlyBillingMetric({ label, value }: { label: string; value: string }) {
-    return (
-        <div className="rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-surface-bg)] px-4 py-3">
-            <div className="text-xs text-[color:var(--text-secondary)]">{label}</div>
-            <div className="mt-1 truncate text-sm font-semibold text-[color:var(--text-primary)]">{value}</div>
         </div>
     );
 }

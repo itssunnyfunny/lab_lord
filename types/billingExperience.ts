@@ -8,9 +8,15 @@ export type BillingPaymentAction =
   | "CHOOSE_PLAN"
   | "CONTINUE_CHECKOUT"
   | "WAIT_FOR_CONFIRMATION"
-  | "RETRY_PAYMENT"
+  | "RETRY_AUTHORIZATION"
+  | "RETRY_BILLING_CHANGE"
   | "UPDATE_CARD"
   | "AUTHORIZE_CARD";
+
+export type BillingAuthorizationStatus =
+  | "NOT_AUTHORIZED"
+  | "VERIFYING"
+  | "AUTHORIZED";
 
 export type BillingCustomerState =
   | "TRIAL_ACTIVE"
@@ -34,6 +40,7 @@ export type BillingExperienceOperation = {
   effectiveAt: string | null;
   failureCategory: string | null;
   failureCode: string | null;
+  providerPaymentId: string | null;
   branchId: string | null;
   toPlan: "BASIC" | "STANDARD" | null;
   toQuantity: number | null;
@@ -57,9 +64,12 @@ export type BillingExperience = {
   currentMonthlyTotal: number;
   projectedUnitAmount: number;
   projectedMonthlyTotal: number;
+  authorizationStatus: BillingAuthorizationStatus;
+  planFeeDueToday: number;
   nextChargeAt: string | null;
   paymentAction: BillingPaymentAction;
   entitlements: BillingEntitlement[];
+  latestOperation: BillingExperienceOperation | null;
   activeOperation: BillingExperienceOperation | null;
   scheduledChanges: BillingExperienceOperation[];
   branch: {
