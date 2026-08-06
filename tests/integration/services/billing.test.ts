@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BillingService } from "@/services/billing.service";
 import { hmacSha256Hex, setRazorpayClientForTests, sha256Hex, type RazorpayApiClient } from "@/lib/razorpay";
-import { createOrg, createUser } from "@/tests/factories";
+import { createBranch, createOrg, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
 
 function createFakeRazorpayClient() {
@@ -136,12 +136,36 @@ describe("BillingService SaaS subscriptions", () => {
     setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id, name: "Owner Lab" });
+    await testPrisma.organization.update({
+      where: { id: org.id },
+      data: { contactPhone: "09876 543210" },
+    });
 
     const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
 
     expect(checkout.keyId).toBe("rzp_test_key");
     expect(checkout.subscriptionId).toBe("sub_basic");
     expect(checkout.amount).toBe(29900);
+    expect(checkout).toMatchObject({
+      testMode: true,
+      description: "Basic: 1 branch x Rs.299 = Rs.299/month",
+      prefill: { contact: "+919876543210" },
+      config: {
+        display: {
+          sequence: ["block.cards"],
+          preferences: { show_default_blocks: false },
+        },
+      },
+      summary: {
+        plan: "BASIC",
+        unitAmount: 299,
+        quantity: 1,
+        estimatedMonthlyTotal: 299,
+        planFeeDueToday: 299,
+        trialEndsAt: null,
+        firstChargeAt: null,
+      },
+    });
     expect(fakeRazorpay.createPlan).toHaveBeenCalledWith(expect.objectContaining({
       item: expect.objectContaining({ amount: 29900, currency: "INR" }),
       notes: expect.objectContaining({ plan: "BASIC", billing_type: "saas_plan" }),
@@ -217,11 +241,39 @@ describe("BillingService SaaS subscriptions", () => {
       selectedPostTrialPlan: "STANDARD",
       paymentAction: "AUTHORIZE_CARD",
       projectedUnitAmount: 499,
+      customerMessage: "Authorize the selected plan to activate billing for this workspace.",
     });
     expect(overview.entitlements.effectivePlan).toBe("BASIC");
   });
 
+  it("does not invent a post-trial plan or charge date for an unconfigured workspace", async () => {
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: null,
+    });
+
+    const overview = await BillingService.listPlansForOrganization(user.id, org.id);
+
+    expect(overview.experience).toMatchObject({
+      selectedPostTrialPlan: null,
+      projectedUnitAmount: 0,
+      projectedMonthlyTotal: 0,
+      planFeeDueToday: 0,
+      nextChargeAt: null,
+      paymentAction: "CHOOSE_PLAN",
+      authorizationStatus: "NOT_AUTHORIZED",
+      customerMessage: "Choose a plan and authorize a card to activate billing for this workspace.",
+    });
+    expect(overview.experience.customerMessage).not.toContain("trial");
+    expect(overview).not.toHaveProperty("projection");
+    expect(overview.razorpayTestMode).toBe(true);
+  });
+
   it("asks the owner to authorize the selected plan while Standard trial access continues", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
     const org = await createOrg({
       ownerId: user.id,
@@ -241,6 +293,7 @@ describe("BillingService SaaS subscriptions", () => {
         consumedAt: now,
       },
     });
+    await createBranch({ organizationId: org.id });
 
     const overview = await BillingService.listPlansForOrganization(user.id, org.id);
 
@@ -248,8 +301,60 @@ describe("BillingService SaaS subscriptions", () => {
       effectivePlan: "STANDARD_TRIAL",
       selectedPostTrialPlan: "BASIC",
       paymentAction: "AUTHORIZE_CARD",
+      planFeeDueToday: 0,
+      authorizationStatus: "NOT_AUTHORIZED",
+      nextChargeAt: null,
     });
     expect(overview.entitlements.effectivePlan).toBe("PRO");
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    expect(checkout.summary).toMatchObject({
+      planFeeDueToday: 0,
+      trialEndsAt: expect.any(String),
+      firstChargeAt: null,
+    });
+    expect(checkout.description).toMatch(/^Basic: 1 branch x Rs\.299 = Rs\.299\/month; starts /);
+    expect(fakeRazorpay.createSubscription).toHaveBeenCalledWith(expect.objectContaining({
+      start_at: expect.any(Number),
+    }));
+  });
+
+  it("scopes an active owner trial to its bound organization", async () => {
+    const owner = await createUser();
+    const trialOrganization = await createOrg({
+      ownerId: owner.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "PRO",
+    });
+    const otherOrganization = await createOrg({
+      ownerId: owner.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    const now = new Date();
+    await testPrisma.ownerTrialGrant.create({
+      data: {
+        ownerId: owner.id,
+        organizationId: trialOrganization.id,
+        source: "ONBOARDING",
+        status: "ACTIVE",
+        claimedAt: now,
+        trialStartedAt: now,
+        trialEndsAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+        consumedAt: now,
+      },
+    });
+    const bound = await BillingService.listPlansForOrganization(owner.id, trialOrganization.id);
+    const unbound = await BillingService.listPlansForOrganization(owner.id, otherOrganization.id);
+
+    expect(bound.experience.effectivePlan).toBe("STANDARD_TRIAL");
+    expect(bound.trial).toMatchObject({ organizationId: trialOrganization.id, status: "ACTIVE" });
+    expect(unbound.experience).toMatchObject({ effectivePlan: "NONE", trialEndsAt: null });
+    expect(unbound.trial).toBeNull();
+    expect(unbound.ownerTrialEligibility).toEqual({
+      status: "ACTIVE",
+      claimable: false,
+      boundOrganizationId: trialOrganization.id,
+    });
   });
 
   it("replaces a stale Razorpay price mapping without changing existing subscriptions", async () => {
@@ -321,10 +426,174 @@ describe("BillingService SaaS subscriptions", () => {
 
     expect(first.subscriptionId).toBe("sub_basic");
     expect(second.subscriptionId).toBe("sub_basic");
+    expect(second.changeId).toBe(first.changeId);
     expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(1);
     await expect(testPrisma.organizationSubscription.count({
       where: { organizationId: org.id },
     })).resolves.toBe(1);
+    await expect(testPrisma.organizationBillingChange.count({
+      where: {
+        organizationId: org.id,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
+      },
+    })).resolves.toBe(1);
+  });
+
+  it("replaces a CREATED checkout when the projected branch quantity changes", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    const createSubscription = vi.mocked(fakeRazorpay.createSubscription);
+    const originalCreate = createSubscription.getMockImplementation();
+    if (!originalCreate) throw new Error("Missing fake Razorpay subscription implementation");
+    let providerSequence = 0;
+    createSubscription.mockImplementation(async input => ({
+      ...await originalCreate(input),
+      id: `sub_basic_quantity_${++providerSequence}`,
+      quantity: input.quantity,
+    }));
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    const offer = await testPrisma.billingOffer.create({
+      data: {
+        name: "Basic launch offer",
+        plan: "BASIC",
+        razorpayOfferId: "offer_basic_quantity",
+        discountType: "PERCENTAGE",
+        discountValue: 10,
+        durationType: "LIMITED_CYCLES",
+        durationCycles: 2,
+      },
+    });
+    const grant = await testPrisma.organizationOfferGrant.create({
+      data: {
+        organizationId: org.id,
+        billingOfferId: offer.id,
+        status: "ELIGIBLE",
+      },
+    });
+    await createBranch({ organizationId: org.id, name: "First branch" });
+
+    const first = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await createBranch({ organizationId: org.id, name: "Second branch" });
+    const replacement = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    expect(first).toMatchObject({ subscriptionId: "sub_basic_quantity_1", summary: { quantity: 1 } });
+    expect(replacement).toMatchObject({ subscriptionId: "sub_basic_quantity_2", summary: { quantity: 2 } });
+    expect(fakeRazorpay.cancelSubscription).toHaveBeenCalledWith("sub_basic_quantity_1", {
+      cancel_at_cycle_end: false,
+    });
+    expect(createSubscription).toHaveBeenCalledTimes(2);
+    expect(createSubscription).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      offer_id: "offer_basic_quantity",
+      quantity: 1,
+    }));
+    expect(createSubscription).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      offer_id: "offer_basic_quantity",
+      quantity: 2,
+    }));
+    await expect(testPrisma.organizationBillingChange.count({
+      where: {
+        organizationId: org.id,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
+      },
+    })).resolves.toBe(1);
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject({
+      razorpaySubscriptionId: "sub_basic_quantity_2",
+      quantity: 2,
+      status: "CREATED",
+      billingOfferId: offer.id,
+    });
+    await expect(testPrisma.organizationOfferGrant.findUniqueOrThrow({
+      where: { id: grant.id },
+    })).resolves.toMatchObject({
+      status: "RESERVED",
+      subscriptionId: "sub_basic_quantity_2",
+    });
+  });
+
+  it("releases a reserved offer when checkout replacement fails and reapplies it on retry", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    const createSubscription = vi.mocked(fakeRazorpay.createSubscription);
+    const originalCreate = createSubscription.getMockImplementation();
+    if (!originalCreate) throw new Error("Missing fake Razorpay subscription implementation");
+    let providerAttempt = 0;
+    createSubscription.mockImplementation(async input => {
+      providerAttempt += 1;
+      if (providerAttempt === 2) throw new Error("Razorpay replacement unavailable");
+      return {
+        ...await originalCreate(input),
+        id: `sub_basic_offer_retry_${providerAttempt}`,
+        quantity: input.quantity,
+      };
+    });
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    const offer = await testPrisma.billingOffer.create({
+      data: {
+        name: "Retry-safe Basic offer",
+        plan: "BASIC",
+        razorpayOfferId: "offer_basic_retry",
+        discountType: "PERCENTAGE",
+        discountValue: 10,
+        durationType: "LIMITED_CYCLES",
+        durationCycles: 2,
+      },
+    });
+    const grant = await testPrisma.organizationOfferGrant.create({
+      data: {
+        organizationId: org.id,
+        billingOfferId: offer.id,
+        status: "ELIGIBLE",
+      },
+    });
+    await createBranch({ organizationId: org.id, name: "First branch" });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await createBranch({ organizationId: org.id, name: "Second branch" });
+
+    await expect(BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" }))
+      .rejects.toThrow("Razorpay replacement unavailable");
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject({
+      razorpaySubscriptionId: "sub_basic_offer_retry_1",
+      status: "CANCELLED",
+    });
+    await expect(testPrisma.organizationOfferGrant.findUniqueOrThrow({
+      where: { id: grant.id },
+    })).resolves.toMatchObject({
+      status: "ELIGIBLE",
+      subscriptionId: null,
+      reservedAt: null,
+    });
+
+    const retry = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    expect(retry).toMatchObject({
+      subscriptionId: "sub_basic_offer_retry_3",
+      summary: { quantity: 2 },
+    });
+    expect(createSubscription).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      offer_id: "offer_basic_retry",
+      quantity: 2,
+    }));
+    await expect(testPrisma.organizationOfferGrant.findUniqueOrThrow({
+      where: { id: grant.id },
+    })).resolves.toMatchObject({
+      status: "RESERVED",
+      subscriptionId: "sub_basic_offer_retry_3",
+    });
   });
 
   it("reuses a dismissed checkout and lets the owner switch plans before payment", async () => {
@@ -359,6 +628,55 @@ describe("BillingService SaaS subscriptions", () => {
       orderBy: { createdAt: "asc" },
     });
     expect(history.map(entry => entry.event)).toEqual([null, "checkout_replaced", null]);
+    const authorizationOperations = await testPrisma.organizationBillingChange.findMany({
+      where: { organizationId: org.id, type: "SUBSCRIPTION_AUTHORIZATION" },
+      orderBy: { sequence: "asc" },
+    });
+    expect(authorizationOperations).toHaveLength(2);
+    expect(authorizationOperations[0]).toMatchObject({
+      toPlan: "BASIC",
+      status: "SUPERSEDED",
+      operationStatus: "ABANDONED",
+    });
+    expect(authorizationOperations[1]).toMatchObject({
+      toPlan: "PRO",
+      status: "AWAITING_PAYMENT",
+      operationStatus: "CHECKOUT_OPEN",
+    });
+  });
+
+  it("leaves only the winning authorization active when different plans race", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+
+    await Promise.allSettled([
+      BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" }),
+      BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "PRO" }),
+    ]);
+
+    const subscription = await testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: org.id },
+    });
+    const operations = await testPrisma.organizationBillingChange.findMany({
+      where: { organizationId: org.id, type: "SUBSCRIPTION_AUTHORIZATION" },
+      orderBy: { sequence: "asc" },
+    });
+    const active = operations.filter(operation =>
+      ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"].includes(operation.operationStatus)
+    );
+    expect(active).toHaveLength(1);
+    expect(active[0]).toMatchObject({
+      organizationSubscriptionId: subscription.id,
+      toPlan: subscription.plan,
+      toQuantity: subscription.quantity,
+    });
+    expect(operations.length).toBeGreaterThanOrEqual(1);
+    expect(operations
+      .filter(operation => operation.id !== active[0].id)
+      .every(operation => operation.status === "SUPERSEDED" && operation.operationStatus === "ABANDONED"))
+      .toBe(true);
   });
 
   it("cancels a gateway subscription when local persistence fails", async () => {
@@ -440,6 +758,309 @@ describe("BillingService SaaS subscriptions", () => {
     expect(fakeRazorpay.fetchPayment).not.toHaveBeenCalled();
   });
 
+  it("persists sanitized checkout outcomes idempotently and lets provider success win", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    const declined = await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "DECLINED",
+      failureCode: "BAD CODE<>",
+      reason: "card_declined",
+      source: "bank",
+      step: "authentication",
+      paymentId: "pay_declined",
+    });
+    expect(declined.operation).toMatchObject({
+      operationStatus: "DECLINED",
+      queueStatus: "FAILED",
+      failureCategory: "CUSTOMER_OR_ISSUER_DECLINED",
+      providerPaymentId: "pay_declined",
+    });
+    expect(declined.operation.failureCode).not.toContain("<");
+
+    const duplicate = await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "ABANDONED",
+    });
+    expect(duplicate).toMatchObject({ ignored: true, operation: { operationStatus: "DECLINED" } });
+
+    const verified = await BillingService.verifySubscriptionSuccess(user.id, org.id, {
+      changeId: checkout.changeId,
+      razorpay_subscription_id: "sub_basic",
+      razorpay_payment_id: "pay_auth",
+      razorpay_signature: hmacSha256Hex("pay_auth|sub_basic", "secret"),
+    });
+    expect(verified.operation.operationStatus).toBe("APPLIED");
+
+    const lateDismissal = await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "ABANDONED",
+    });
+    expect(lateDismissal).toMatchObject({ ignored: true, operation: { operationStatus: "APPLIED" } });
+    const overview = await BillingService.listPlansForOrganization(user.id, org.id);
+    expect(overview.experience.activeOperation).toBeNull();
+    expect(overview.experience.latestOperation?.status).toBe("APPLIED");
+    expect(overview.experience.customerState).not.toBe("PAYMENT_DECLINED");
+  });
+
+  it("keeps an ambiguous Checkout result pending instead of claiming a failure", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    const pending = await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "AWAITING_PROVIDER_CONFIRMATION",
+      reason: "result_unknown",
+      source: "network",
+    });
+
+    expect(pending.operation).toMatchObject({
+      queueStatus: "AWAITING_PAYMENT",
+      operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+      failureCategory: "PROVIDER_CONFIRMATION_PENDING",
+    });
+    const overview = await BillingService.listPlansForOrganization(user.id, org.id);
+    expect(overview.experience).toMatchObject({
+      authorizationStatus: "VERIFYING",
+      paymentAction: "WAIT_FOR_CONFIRMATION",
+      activeOperation: { id: checkout.changeId },
+    });
+  });
+
+  it("surfaces a real Checkout dismissal while ignoring deliberate billing-change undos", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "ABANDONED",
+    });
+
+    const overview = await BillingService.listPlansForOrganization(user.id, org.id);
+    expect(overview.experience).toMatchObject({
+      customerState: "PAYMENT_NOT_COMPLETED",
+      paymentAction: "RETRY_AUTHORIZATION",
+      latestOperation: {
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        status: "ABANDONED",
+        failureCategory: "CHECKOUT_ABANDONED",
+      },
+    });
+  });
+
+  it("returns a reload-safe pending result when callback provider fetch is delayed", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    vi.mocked(fakeRazorpay.fetchSubscription).mockRejectedValueOnce(new Error("temporary provider outage"));
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    const result = await BillingService.verifySubscriptionSuccess(user.id, org.id, {
+      changeId: checkout.changeId,
+      razorpay_subscription_id: "sub_basic",
+      razorpay_payment_id: "pay_auth",
+      razorpay_signature: hmacSha256Hex("pay_auth|sub_basic", "secret"),
+    });
+
+    expect(result).toMatchObject({
+      verified: false,
+      pending: true,
+      operation: { operationStatus: "AWAITING_PROVIDER_CONFIRMATION" },
+      processingUrl: `/org/${org.id}/billing/processing/${checkout.changeId}`,
+    });
+  });
+
+  it("does not let a transient callback error regress webhook-confirmed success", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    let rejectSubscriptionFetch!: (reason?: unknown) => void;
+    vi.mocked(fakeRazorpay.fetchSubscription).mockImplementationOnce(() => new Promise((_, reject) => {
+      rejectSubscriptionFetch = reject;
+    }));
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    const verification = BillingService.verifySubscriptionSuccess(user.id, org.id, {
+      changeId: checkout.changeId,
+      razorpay_subscription_id: "sub_basic",
+      razorpay_payment_id: "pay_auth",
+      razorpay_signature: hmacSha256Hex("pay_auth|sub_basic", "secret"),
+    });
+    await vi.waitFor(() => expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(1));
+    const providerConfirmedAt = new Date("2026-08-06T12:00:00.000Z");
+    await testPrisma.organizationBillingChange.update({
+      where: { id: checkout.changeId },
+      data: {
+        status: "APPLIED",
+        operationStatus: "APPLIED",
+        providerConfirmedAt,
+        appliedAt: providerConfirmedAt,
+        resolvedAt: providerConfirmedAt,
+      },
+    });
+    rejectSubscriptionFetch(new Error("temporary Razorpay outage"));
+
+    const result = await verification;
+    expect(result).toMatchObject({ verified: true, operation: { operationStatus: "APPLIED" } });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: checkout.changeId },
+    })).resolves.toMatchObject({
+      status: "APPLIED",
+      operationStatus: "APPLIED",
+      providerConfirmedAt,
+      appliedAt: providerConfirmedAt,
+      resolvedAt: providerConfirmedAt,
+      failureCategory: null,
+    });
+  });
+
+  it("lets only one concurrent callback claim provider verification", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    let resolveSubscriptionFetch!: (subscription: Awaited<ReturnType<RazorpayApiClient["fetchSubscription"]>>) => void;
+    vi.mocked(fakeRazorpay.fetchSubscription).mockImplementationOnce(() => new Promise(resolve => {
+      resolveSubscriptionFetch = resolve;
+    }));
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const input = {
+      changeId: checkout.changeId,
+      razorpay_subscription_id: "sub_basic",
+      razorpay_payment_id: "pay_auth",
+      razorpay_signature: hmacSha256Hex("pay_auth|sub_basic", "secret"),
+    };
+
+    const first = BillingService.verifySubscriptionSuccess(user.id, org.id, input);
+    await vi.waitFor(() => expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(1));
+    const second = await BillingService.verifySubscriptionSuccess(user.id, org.id, input);
+    expect(second).toMatchObject({
+      verified: false,
+      pending: true,
+      operation: { operationStatus: "VERIFYING" },
+    });
+    resolveSubscriptionFetch({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      customer_id: "cust_test",
+      status: "active",
+      total_count: 120,
+      paid_count: 1,
+      remaining_count: 119,
+      current_start: 1767225600,
+      current_end: 1769904000,
+      charge_at: 1769904000,
+      ended_at: null,
+    });
+
+    await expect(first).resolves.toMatchObject({
+      verified: true,
+      operation: { operationStatus: "APPLIED" },
+    });
+    expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(1);
+    expect(fakeRazorpay.fetchPayment).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reopen Checkout when provider success wins a retry race", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "FAILED",
+      reason: "network_error",
+      source: "network",
+    });
+    let resolveSubscriptionFetch!: (subscription: Awaited<ReturnType<RazorpayApiClient["fetchSubscription"]>>) => void;
+    vi.mocked(fakeRazorpay.fetchSubscription).mockImplementationOnce(() => new Promise(resolve => {
+      resolveSubscriptionFetch = resolve;
+    }));
+
+    const retry = BillingService.retryBillingOperation(user.id, org.id, checkout.changeId);
+    await vi.waitFor(() => expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(1));
+    const providerConfirmedAt = new Date("2026-08-06T13:00:00.000Z");
+    await testPrisma.organizationBillingChange.update({
+      where: { id: checkout.changeId },
+      data: {
+        status: "APPLIED",
+        operationStatus: "APPLIED",
+        providerConfirmedAt,
+        appliedAt: providerConfirmedAt,
+        resolvedAt: providerConfirmedAt,
+      },
+    });
+    resolveSubscriptionFetch({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "created",
+      total_count: 120,
+      paid_count: 0,
+      remaining_count: 120,
+    });
+
+    const result = await retry;
+    expect(result).toMatchObject({
+      reconciled: true,
+      operation: { operationStatus: "APPLIED" },
+    });
+    expect(result).not.toHaveProperty("keyId");
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: checkout.changeId },
+    })).resolves.toMatchObject({
+      status: "APPLIED",
+      operationStatus: "APPLIED",
+      providerConfirmedAt,
+    });
+  });
+
+  it("only exposes a provider-confirmed charge date after card authorization", async () => {
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    const chargeAt = new Date("2026-09-01T00:00:00.000Z");
+    const subscription = await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: org.id,
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        razorpaySubscriptionId: "sub_charge_date",
+        status: "CREATED",
+        providerPaymentMethod: "UNKNOWN",
+        chargeAt,
+      },
+    });
+
+    const before = await BillingService.listPlansForOrganization(user.id, org.id);
+    expect(before.experience).toMatchObject({ authorizationStatus: "NOT_AUTHORIZED", nextChargeAt: null });
+
+    await testPrisma.organizationSubscription.update({
+      where: { id: subscription.id },
+      data: { status: "AUTHENTICATED", providerPaymentMethod: "CARD" },
+    });
+    const after = await BillingService.listPlansForOrganization(user.id, org.id);
+    expect(after.experience).toMatchObject({
+      authorizationStatus: "AUTHORIZED",
+      nextChargeAt: chargeAt.toISOString(),
+    });
+  });
+
   it("lets an owner schedule cancellation at the end of an active cycle", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);
@@ -491,6 +1112,10 @@ describe("BillingService SaaS subscriptions", () => {
   it("keeps billing recovery available while a V2 organization is read-only", async () => {
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    await testPrisma.organization.update({
+      where: { id: org.id },
+      data: { contactEmail: "billing-recovery@example.test", contactPhone: "98765 43210" },
+    });
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
@@ -509,7 +1134,10 @@ describe("BillingService SaaS subscriptions", () => {
     await expect(BillingService.getRecoveryCheckout(user.id, org.id)).resolves.toMatchObject({
       subscriptionId: "sub_recovery",
       subscription_card_change: true,
-      method: { card: true, upi: false },
+      testMode: true,
+      prefill: { email: "billing-recovery@example.test", contact: "+919876543210" },
+      description: "Update card for Basic: 1 branch x Rs.299 = Rs.299/month",
+      config: { display: { sequence: ["block.cards"] } },
     });
   });
 
@@ -542,6 +1170,42 @@ describe("BillingService SaaS subscriptions", () => {
       .resolves.toMatchObject({ status: "AWAITING_PAYMENT", operationStatus: "CHECKOUT_OPEN" });
   });
 
+  it("reopens a failed recovery retry in Razorpay card-change mode", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        razorpaySubscriptionId: "sub_recovery",
+        status: "HALTED",
+        providerPaymentMethod: "CARD",
+      },
+    });
+    const checkout = await BillingService.getRecoveryCheckout(owner.id, organization.id);
+    await BillingService.recordCheckoutEvent(owner.id, organization.id, checkout.changeId, {
+      event: "FAILED",
+      reason: "network_error",
+      source: "network",
+    });
+
+    const retried = await BillingService.retryBillingOperation(owner.id, organization.id, checkout.changeId);
+
+    expect(retried).toMatchObject({
+      changeId: checkout.changeId,
+      subscriptionId: "sub_recovery",
+      subscription_card_change: true,
+      config: { display: { sequence: ["block.cards"] } },
+    });
+  });
+
   it("keeps an early V2 cancellation local and undoable until the cutoff", async () => {
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
@@ -566,6 +1230,17 @@ describe("BillingService SaaS subscriptions", () => {
     expect(scheduled).toMatchObject({ scheduled: true, undoable: true });
     await expect(BillingService.undoWorkspaceCancellation(user.id, org.id, now))
       .resolves.toEqual({ undone: true });
+
+    const overview = await BillingService.listPlansForOrganization(user.id, org.id);
+    expect(overview.experience).toMatchObject({
+      customerState: "STANDARD_ACTIVE",
+      paymentAction: "NONE",
+      latestOperation: {
+        type: "CANCELLATION",
+        status: "ABANDONED",
+      },
+    });
+    expect(overview.experience.customerMessage).not.toContain("Payment was not completed");
   });
 
   it("processes Razorpay subscription webhooks idempotently", async () => {
@@ -623,6 +1298,66 @@ describe("BillingService SaaS subscriptions", () => {
       status: "ACTIVE",
       authPaymentId: null,
       razorpayCustomerId: "cust_webhook",
+    });
+  });
+
+  it("completes lost-callback card authorization from a signed webhook without inventing paid access", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    await createBranch({ organizationId: org.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const rawBody = JSON.stringify({
+      event: "subscription.authenticated",
+      payload: {
+        subscription: {
+          entity: {
+            id: "sub_basic",
+            entity: "subscription",
+            plan_id: "plan_basic",
+            status: "authenticated",
+            total_count: 120,
+            quantity: 1,
+          },
+        },
+        payment: {
+          entity: {
+            id: "pay_webhook_auth",
+            entity: "payment",
+            amount: 500,
+            currency: "INR",
+            status: "authorized",
+            order_id: null,
+            subscription_id: "sub_basic",
+            method: "card",
+          },
+        },
+      },
+    });
+
+    await BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_lost_callback_authorized"
+    );
+
+    const [subscription, operation] = await Promise.all([
+      testPrisma.organizationSubscription.findUniqueOrThrow({ where: { organizationId: org.id } }),
+      testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: checkout.changeId } }),
+    ]);
+    expect(subscription).toMatchObject({
+      providerPaymentMethod: "CARD",
+      paidThrough: null,
+    });
+    expect(operation).toMatchObject({
+      status: "APPLIED",
+      operationStatus: "APPLIED",
+      providerPaymentId: "pay_webhook_auth",
     });
   });
 
