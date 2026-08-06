@@ -214,7 +214,11 @@ export class BillingMutationService {
             interval: providerPlan?.interval,
             razorpayPlanId: providerPlan?.razorpayPlanId,
             status: providerStatus(result.status) as never,
-            quantity: result.quantity ?? undefined,
+            // Paid immediate changes and scheduled reductions can both echo the
+            // provider's target quantity before it becomes the confirmed billed
+            // quantity. Only genuinely applied non-payment changes (including a
+            // future trial configuration) may update it here.
+            quantity: status === "APPLIED" ? result.quantity ?? undefined : undefined,
             currentStart: result.current_start ? new Date(result.current_start * 1000) : undefined,
             currentEnd: result.current_end ? new Date(result.current_end * 1000) : undefined,
             chargeAt: result.charge_at ? new Date(result.charge_at * 1000) : undefined,
