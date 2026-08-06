@@ -35,6 +35,10 @@ type CheckoutEventInput = {
   event?: unknown;
   failureCategory?: unknown;
   failureCode?: unknown;
+  reason?: unknown;
+  source?: unknown;
+  step?: unknown;
+  paymentId?: unknown;
 };
 
 type WebhookProcessingResult = {
@@ -48,6 +52,12 @@ type WebhookProcessingResult = {
 
 const TERMINAL_STATUSES = new Set<SaasSubscriptionStatus>(["CANCELLED", "COMPLETED", "EXPIRED"]);
 const CHECKOUT_REUSABLE_STATUSES = new Set<SaasSubscriptionStatus>(["CREATED"]);
+const ACTIVE_AUTHORIZATION_OPERATION_STATUSES = [
+  "CHECKOUT_OPEN",
+  "VERIFYING",
+  "AWAITING_PROVIDER_CONFIRMATION",
+] as const;
+const PROVIDER_CONFIRMED_OPERATION_STATUSES = ["APPLIED", "SCHEDULED"] as const;
 const VALID_STATUSES = new Set<SaasSubscriptionStatus>([
   "CREATED",
   "AUTHENTICATED",
@@ -58,6 +68,212 @@ const VALID_STATUSES = new Set<SaasSubscriptionStatus>([
   "COMPLETED",
   "EXPIRED",
 ]);
+function razorpayTestMode() {
+  return getRazorpayKeyId().startsWith("rzp_test_");
+}
+
+function cardOnlyCheckoutConfig() {
+  return {
+    display: {
+      blocks: {
+        cards: {
+          name: "Pay with card",
+          instruments: [{ method: "card" as const }],
+        },
+      },
+      sequence: ["block.cards"],
+      preferences: { show_default_blocks: false },
+    },
+  };
+}
+
+function normalizeRazorpayContact(value: string | null | undefined) {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+  const digits = raw.replace(/\D/g, "");
+  if (raw.startsWith("+") && digits.length >= 8 && digits.length <= 15) return `+${digits}`;
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 11 && digits.startsWith("0")) return `+91${digits.slice(1)}`;
+  if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
+  return undefined;
+}
+
+function formatCheckoutDate(value: Date) {
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  }).format(value);
+}
+
+function offerGrantIsEligibleAt(grant: {
+  eligibleFrom: Date | null;
+  eligibleUntil: Date | null;
+  billingOffer: {
+    active: boolean;
+    validFrom: Date | null;
+    validUntil: Date | null;
+  };
+}, now: Date) {
+  return grant.billingOffer.active
+    && (!grant.billingOffer.validFrom || grant.billingOffer.validFrom <= now)
+    && (!grant.billingOffer.validUntil || grant.billingOffer.validUntil > now)
+    && (!grant.eligibleFrom || grant.eligibleFrom <= now)
+    && (!grant.eligibleUntil || grant.eligibleUntil > now);
+}
+
+function sanitizedCheckoutToken(value: unknown, maxLength = 100) {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .trim()
+    .replace(/[^A-Za-z0-9._ -]/g, "_")
+    .replace(/\s+/g, " ")
+    .slice(0, maxLength);
+  return normalized || null;
+}
+
+function normalizedFailureCategory(input: CheckoutEventInput, event: string) {
+  if (event === "DECLINED") return "CUSTOMER_OR_ISSUER_DECLINED";
+  if (event === "ABANDONED") return "CHECKOUT_ABANDONED";
+  if (event === "AWAITING_PROVIDER_CONFIRMATION") return "PROVIDER_CONFIRMATION_PENDING";
+
+  const explicit = sanitizedCheckoutToken(input.failureCategory);
+  const source = sanitizedCheckoutToken(input.source)?.toLowerCase() ?? "";
+  const reason = (sanitizedCheckoutToken(input.reason) ?? explicit)?.toLowerCase() ?? "";
+  if (source.includes("bank") || source.includes("issuer")) return "BANK_OR_ISSUER_ERROR";
+  if (source.includes("network") || reason.includes("network")) return "NETWORK_ERROR";
+  if (source.includes("gateway") || source.includes("razorpay")) return "PAYMENT_PROVIDER_ERROR";
+  if (explicit) return explicit.toUpperCase().replace(/[ .-]+/g, "_");
+  return "CHECKOUT_ERROR";
+}
+
+function normalizedFailureCode(input: CheckoutEventInput) {
+  const details = [
+    sanitizedCheckoutToken(input.failureCode, 40),
+    sanitizedCheckoutToken(input.source, 24),
+    sanitizedCheckoutToken(input.step, 24),
+    sanitizedCheckoutToken(input.reason, 40),
+  ].filter((value): value is string => Boolean(value));
+  return details.length > 0 ? details.join("|").slice(0, 100) : null;
+}
+
+function checkoutPaymentId(value: unknown) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return /^pay_[A-Za-z0-9]+$/.test(trimmed) ? trimmed : null;
+}
+
+function isProviderConfirmedOperationStatus(status: string) {
+  return PROVIDER_CONFIRMED_OPERATION_STATUSES.includes(
+    status as (typeof PROVIDER_CONFIRMED_OPERATION_STATUSES)[number]
+  );
+}
+
+async function enqueueAuthorizationOperation(input: {
+  organizationId: string;
+  subscriptionId: string;
+  expectedProviderSubscriptionId: string;
+  idempotencyPrefix: "subscription-authorization" | "payment-recovery";
+  fromPlan: SaasPlan | null;
+  toPlan: SaasPlan;
+  fromQuantity: number | null;
+  toQuantity: number;
+  createdByUserId: string;
+  returnPath: string;
+  now: Date;
+}) {
+  return prisma.$transaction(async tx => {
+    const lockedOrganizations = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Organization"
+      WHERE "id" = ${input.organizationId}
+      FOR UPDATE
+    `;
+    if (lockedOrganizations.length === 0) throw new Error("Organization not found");
+
+    const currentSubscription = await tx.organizationSubscription.findUnique({
+      where: { id: input.subscriptionId },
+    });
+    if (
+      !currentSubscription
+      || currentSubscription.organizationId !== input.organizationId
+      || currentSubscription.razorpaySubscriptionId !== input.expectedProviderSubscriptionId
+    ) {
+      throw new Error("This checkout was superseded by a newer billing request; reload billing and try again");
+    }
+
+    const active = await tx.organizationBillingChange.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+        organizationSubscriptionId: input.subscriptionId,
+        toPlan: input.toPlan,
+        toQuantity: input.toQuantity,
+      },
+      orderBy: { sequence: "desc" },
+    });
+    if (active) {
+      // Clean up any historical duplicate active rows while preserving the
+      // single operation that this request can safely reuse.
+      await tx.organizationBillingChange.updateMany({
+        where: {
+          organizationId: input.organizationId,
+          type: "SUBSCRIPTION_AUTHORIZATION",
+          id: { not: active.id },
+          operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+        },
+        data: {
+          status: "SUPERSEDED",
+          operationStatus: "ABANDONED",
+          lastError: "Superseded by the current subscription authorization request",
+          resolvedAt: input.now,
+        },
+      });
+      return active;
+    }
+
+    await tx.organizationBillingChange.updateMany({
+      where: {
+        organizationId: input.organizationId,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+      },
+      data: {
+        status: "SUPERSEDED",
+        operationStatus: "ABANDONED",
+        lastError: "Superseded by a newer subscription authorization request",
+        resolvedAt: input.now,
+      },
+    });
+
+    const organization = await tx.organization.update({
+      where: { id: input.organizationId },
+      data: { billingMutationSequence: { increment: 1 } },
+      select: { billingMutationSequence: true },
+    });
+    return tx.organizationBillingChange.create({
+      data: {
+        organizationId: input.organizationId,
+        organizationSubscriptionId: input.subscriptionId,
+        sequence: organization.billingMutationSequence,
+        idempotencyKey: `${input.idempotencyPrefix}:${input.organizationId}:${input.expectedProviderSubscriptionId}:${crypto.randomUUID()}`,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        status: "AWAITING_PAYMENT",
+        operationStatus: "CHECKOUT_OPEN",
+        fromPlan: input.fromPlan,
+        toPlan: input.toPlan,
+        fromQuantity: input.fromQuantity,
+        toQuantity: input.toQuantity,
+        createdByUserId: input.createdByUserId,
+        returnPath: input.returnPath,
+        checkoutOpenedAt: input.now,
+        confirmationDeadlineAt: new Date(input.now.getTime() + 15 * 60 * 1000),
+      },
+    });
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -195,6 +411,7 @@ function serializeBillingOperation(change: {
   confirmationDeadlineAt: Date | null;
   failureCategory: string | null;
   failureCode: string | null;
+  providerPaymentId: string | null;
   lastError: string | null;
   effectiveAt: Date | null;
   createdAt: Date;
@@ -210,6 +427,7 @@ function serializeBillingOperation(change: {
     confirmationDeadlineAt: change.confirmationDeadlineAt,
     failureCategory: change.failureCategory,
     failureCode: change.failureCode,
+    providerPaymentId: change.providerPaymentId,
     message: change.lastError,
     effectiveAt: change.effectiveAt,
     createdAt: change.createdAt,
@@ -286,7 +504,7 @@ export class BillingService {
 
   static async listPlansForOrganization(userId: string, organizationId: string) {
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
-    const [subscription, history, entitlements, invoices, scheduledChanges, availableTrial, offerGrant, experience] = await Promise.all([
+    const [subscription, history, entitlements, invoices, scheduledChanges, ownerTrialGrant, offerGrant, experience] = await Promise.all([
       prisma.organizationSubscription.findUnique({ where: { organizationId } }),
       prisma.organizationSubscriptionHistory.findMany({
         where: { organizationId },
@@ -312,43 +530,34 @@ export class BillingService {
       BillingExperienceService.getBillingExperience(organizationId, userId),
     ]);
 
-    const quantity = entitlements.usage.branches;
-    const selectedPlan = getBillingPlan(subscription?.plan ?? "PRO");
-    const unitAmount = selectedPlan?.amount ?? 0;
-    const discountCycles = offerGrant?.billingOffer.durationCycles ?? 0;
-    const rawTotal = unitAmount * quantity;
-    const discountedTotal = offerGrant
-      ? offerGrant.billingOffer.discountType === "PERCENTAGE"
-        ? Math.max(0, Math.round(rawTotal * (100 - offerGrant.billingOffer.discountValue) / 100))
-        : Math.max(0, rawTotal - offerGrant.billingOffer.discountValue)
-      : rawTotal;
+    const organizationTrial = organization.ownerTrialGrant;
+    const ownerTrialClaimable = ownerTrialGrant?.status === "AVAILABLE"
+      && !subscription
+      && history.length === 0;
 
     return {
       billingModelVersion: organization.billingModelVersion,
+      razorpayTestMode: razorpayTestMode(),
       plans: publicBillingPlans(),
       current: serializeSubscription(subscription),
       history: history.map(serializeHistoryEntry),
       entitlements,
-      trial: availableTrial
+      trial: organizationTrial
         ? {
-            status: availableTrial.status,
-            source: availableTrial.source,
-            organizationId: availableTrial.organizationId,
-            startedAt: availableTrial.trialStartedAt,
-            endsAt: availableTrial.trialEndsAt,
-            claimable: availableTrial.status === "AVAILABLE",
+            status: organizationTrial.status,
+            source: organizationTrial.source,
+            organizationId: organizationTrial.organizationId,
+            startedAt: organizationTrial.trialStartedAt,
+            endsAt: organizationTrial.trialEndsAt,
           }
         : null,
-      projection: {
-        plan: subscription?.plan ?? "PRO",
-        quantity,
-        unitAmount,
-        monthlyTotal: rawTotal,
-        nextChargeAt: subscription?.chargeAt ?? availableTrial?.trialEndsAt ?? null,
-        discountedTotal,
-        discountedCycles: discountCycles,
-        normalRenewalTotal: rawTotal,
-      },
+      ownerTrialEligibility: ownerTrialGrant
+        ? {
+            status: ownerTrialGrant.status,
+            claimable: ownerTrialClaimable,
+            boundOrganizationId: ownerTrialGrant.organizationId,
+          }
+        : null,
       paymentMethod: subscription?.providerPaymentMethod ?? null,
       invoices,
       scheduledChanges,
@@ -384,8 +593,10 @@ export class BillingService {
         organizationId,
         type: "SUBSCRIPTION_AUTHORIZATION",
         operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
+        toQuantity: quantity,
         organizationSubscription: {
           plan: selectedPlan.id as SaasPlan,
+          quantity,
           status: { in: ["CREATED", "AUTHENTICATED"] },
         },
       },
@@ -395,11 +606,14 @@ export class BillingService {
     if (openAuthorization?.organizationSubscription) {
       return this.toCheckoutPayload(org, openAuthorization.organizationSubscription, selectedPlan, openAuthorization);
     }
-    const offerGrant = workspaceBilling
+    const reservedOfferGrant = workspaceBilling && org.subscription?.status === "CREATED"
       ? await prisma.organizationOfferGrant.findFirst({
           where: {
             organizationId,
-            status: "ELIGIBLE",
+            status: "RESERVED",
+            subscriptionId: org.subscription.razorpaySubscriptionId,
+            OR: [{ eligibleFrom: null }, { eligibleFrom: { lte: now } }],
+            AND: [{ OR: [{ eligibleUntil: null }, { eligibleUntil: { gt: now } }] }],
             billingOffer: {
               active: true,
               plan: selectedPlan.id as SaasPlan,
@@ -411,6 +625,24 @@ export class BillingService {
           orderBy: { billingOffer: { priority: "desc" } },
         })
       : null;
+    const offerGrant = reservedOfferGrant ?? (workspaceBilling
+      ? await prisma.organizationOfferGrant.findFirst({
+          where: {
+            organizationId,
+            status: "ELIGIBLE",
+            OR: [{ eligibleFrom: null }, { eligibleFrom: { lte: now } }],
+            AND: [{ OR: [{ eligibleUntil: null }, { eligibleUntil: { gt: now } }] }],
+            billingOffer: {
+              active: true,
+              plan: selectedPlan.id as SaasPlan,
+              OR: [{ validFrom: null }, { validFrom: { lte: now } }],
+              AND: [{ OR: [{ validUntil: null }, { validUntil: { gt: now } }] }],
+            },
+          },
+          include: { billingOffer: true },
+          orderBy: { billingOffer: { priority: "desc" } },
+        })
+      : null);
     const razorpayPlan = await this.ensureRazorpayPlan(selectedPlan);
     const razorpay = getRazorpayClient();
     let createdGatewaySubscriptionId: string | null = null;
@@ -432,7 +664,11 @@ export class BillingService {
         });
 
         if (existing) {
-          if (existing.plan === selectedPlan.id && CHECKOUT_REUSABLE_STATUSES.has(existing.status)) {
+          if (
+            existing.plan === selectedPlan.id
+            && existing.quantity === quantity
+            && CHECKOUT_REUSABLE_STATUSES.has(existing.status)
+          ) {
             return existing;
           }
 
@@ -443,6 +679,39 @@ export class BillingService {
             );
             if (cancelledGatewaySubscription.id !== existing.razorpaySubscriptionId) {
               throw new Error("Razorpay subscription mismatch while replacing checkout");
+            }
+            const supersededAt = new Date();
+            await tx.organizationBillingChange.updateMany({
+              where: {
+                organizationId,
+                organizationSubscriptionId: existing.id,
+                type: "SUBSCRIPTION_AUTHORIZATION",
+                operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+              },
+              data: {
+                status: "SUPERSEDED",
+                operationStatus: "ABANDONED",
+                lastError: "Superseded by a newer plan authorization request",
+                resolvedAt: supersededAt,
+              },
+            });
+            const previousReservedGrant = await tx.organizationOfferGrant.findFirst({
+              where: {
+                organizationId,
+                status: "RESERVED",
+                subscriptionId: existing.razorpaySubscriptionId,
+              },
+              include: { billingOffer: true },
+            });
+            if (previousReservedGrant && previousReservedGrant.id !== offerGrant?.id) {
+              await tx.organizationOfferGrant.update({
+                where: { id: previousReservedGrant.id },
+                data: {
+                  status: offerGrantIsEligibleAt(previousReservedGrant, now) ? "ELIGIBLE" : "EXPIRED",
+                  reservedAt: null,
+                  subscriptionId: null,
+                },
+              });
             }
             supersededSubscription.current = existing;
           } else if (!TERMINAL_STATUSES.has(existing.status)) {
@@ -557,16 +826,41 @@ export class BillingService {
       if (replacedSubscription) {
         try {
           await prisma.$transaction(async tx => {
+            await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT "id"
+              FROM "Organization"
+              WHERE "id" = ${organizationId}
+              FOR UPDATE
+            `;
             const current = await tx.organizationSubscription.findUnique({
               where: { id: replacedSubscription.id },
             });
+            const reservedGrant = await tx.organizationOfferGrant.findFirst({
+              where: {
+                organizationId,
+                status: "RESERVED",
+                subscriptionId: replacedSubscription.razorpaySubscriptionId,
+              },
+              include: { billingOffer: true },
+            });
+            const compensationAt = new Date();
+            if (reservedGrant) {
+              await tx.organizationOfferGrant.update({
+                where: { id: reservedGrant.id },
+                data: {
+                  status: offerGrantIsEligibleAt(reservedGrant, compensationAt) ? "ELIGIBLE" : "EXPIRED",
+                  reservedAt: null,
+                  subscriptionId: null,
+                },
+              });
+            }
             if (
               !current
               || current.status !== "CREATED"
               || current.razorpaySubscriptionId !== replacedSubscription.razorpaySubscriptionId
             ) return;
 
-            const cancelledAt = new Date();
+            const cancelledAt = compensationAt;
             const stored = await tx.organizationSubscription.update({
               where: { id: current.id },
               data: {
@@ -593,21 +887,18 @@ export class BillingService {
       throw error;
     }
 
-    const operation = await BillingMutationService.enqueue({
+    const operation = await enqueueAuthorizationOperation({
       organizationId,
       subscriptionId: subscription.id,
-      idempotencyKey: `subscription-authorization:${organizationId}:${subscription.razorpaySubscriptionId}:${crypto.randomUUID()}`,
-      type: "SUBSCRIPTION_AUTHORIZATION",
-      status: "AWAITING_PAYMENT",
-      operationStatus: "CHECKOUT_OPEN",
+      expectedProviderSubscriptionId: subscription.razorpaySubscriptionId,
+      idempotencyPrefix: "subscription-authorization",
       fromPlan: org.subscription?.plan ?? null,
       toPlan: selectedPlan.id as SaasPlan,
       fromQuantity: org.subscription?.quantity ?? null,
       toQuantity: quantity,
       createdByUserId: userId,
       returnPath,
-      checkoutOpenedAt: now,
-      confirmationDeadlineAt: new Date(now.getTime() + 15 * 60 * 1000),
+      now,
     });
 
     return this.toCheckoutPayload(org, subscription, selectedPlan, operation);
@@ -630,7 +921,7 @@ export class BillingService {
       },
     });
     if (!change) throw new Error("Billing operation not found");
-    if (change.operationStatus === "APPLIED") {
+    if (isProviderConfirmedOperationStatus(change.operationStatus)) {
       const current = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
       if (!current) throw new Error("Subscription not found");
       return {
@@ -668,8 +959,13 @@ export class BillingService {
       throw new Error("Billing operation quantity mismatch");
     }
 
-    await prisma.organizationBillingChange.update({
-      where: { id: change.id },
+    const verificationClaim = await prisma.organizationBillingChange.updateMany({
+      where: {
+        id: change.id,
+        operationStatus: {
+          notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES, "VERIFYING"],
+        },
+      },
       data: {
         operationStatus: "VERIFYING",
         verificationStartedAt: new Date(),
@@ -678,11 +974,54 @@ export class BillingService {
         lastError: null,
       },
     });
+    if (verificationClaim.count === 0) {
+      const [currentOperation, currentSubscription] = await Promise.all([
+        prisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
+        prisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      ]);
+      const providerConfirmed = isProviderConfirmedOperationStatus(currentOperation.operationStatus);
+      return {
+        verified: providerConfirmed,
+        ...(providerConfirmed ? {} : { pending: true as const }),
+        operation: serializeBillingOperation(currentOperation),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(currentSubscription),
+      };
+    }
 
-    const [gatewaySubscription, gatewayPayment] = await Promise.all([
-      getRazorpayClient().fetchSubscription(subscriptionId),
-      getRazorpayClient().fetchPayment(paymentId),
-    ]);
+    let gatewaySubscription: RazorpaySubscription;
+    let gatewayPayment: RazorpayPayment;
+    try {
+      [gatewaySubscription, gatewayPayment] = await Promise.all([
+        getRazorpayClient().fetchSubscription(subscriptionId),
+        getRazorpayClient().fetchPayment(paymentId),
+      ]);
+    } catch {
+      await prisma.organizationBillingChange.updateMany({
+        where: { id: change.id, operationStatus: "VERIFYING" },
+        data: {
+          status: "AWAITING_PAYMENT",
+          operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+          providerPaymentId: paymentId,
+          failureCategory: "PROVIDER_CONFIRMATION_PENDING",
+          failureCode: null,
+          lastError: "Razorpay confirmation is delayed; the confirmed billing state is unchanged",
+          resolvedAt: null,
+        },
+      });
+      const [pendingOperation, currentSubscription] = await Promise.all([
+        prisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
+        prisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      ]);
+      const providerConfirmed = isProviderConfirmedOperationStatus(pendingOperation.operationStatus);
+      return {
+        verified: providerConfirmed,
+        ...(providerConfirmed ? {} : { pending: true as const }),
+        operation: serializeBillingOperation(pendingOperation),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(currentSubscription),
+      };
+    }
 
     if (gatewaySubscription.plan_id !== subscription.razorpayPlanId) {
       throw new Error("Razorpay subscription plan mismatch");
@@ -703,8 +1042,11 @@ export class BillingService {
           cancelledAt: new Date(),
         },
       });
-      await prisma.organizationBillingChange.update({
-        where: { id: change.id },
+      await prisma.organizationBillingChange.updateMany({
+        where: {
+          id: change.id,
+          operationStatus: { notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES] },
+        },
         data: {
           status: "FAILED",
           operationStatus: "DECLINED",
@@ -752,8 +1094,8 @@ export class BillingService {
     );
 
     if (!recoveryPaid) {
-      const awaitingOperation = await prisma.organizationBillingChange.update({
-        where: { id: change.id },
+      await prisma.organizationBillingChange.updateMany({
+        where: { id: change.id, operationStatus: "VERIFYING" },
         data: {
           status: "AWAITING_PAYMENT",
           operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
@@ -761,16 +1103,24 @@ export class BillingService {
           lastError: "Card update confirmed; awaiting captured renewal payment and paid-period confirmation",
         },
       });
+      const awaitingOperation = await prisma.organizationBillingChange.findUniqueOrThrow({
+        where: { id: change.id },
+      });
+      const providerConfirmed = isProviderConfirmedOperationStatus(awaitingOperation.operationStatus);
       return {
         verified: true as const,
+        ...(providerConfirmed ? {} : { pending: true as const }),
         operation: serializeBillingOperation(awaitingOperation),
         processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
         subscription: serializeSubscription(reconciledSubscription ?? updated),
       };
     }
 
-    const appliedOperation = await prisma.organizationBillingChange.update({
-      where: { id: change.id },
+    await prisma.organizationBillingChange.updateMany({
+      where: {
+        id: change.id,
+        operationStatus: { notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES] },
+      },
       data: {
         status: "APPLIED",
         operationStatus: "APPLIED",
@@ -780,6 +1130,9 @@ export class BillingService {
         providerPaymentId: paymentId,
         lastError: null,
       },
+    });
+    const appliedOperation = await prisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: change.id },
     });
 
     return {
@@ -991,41 +1344,28 @@ export class BillingService {
       throw new Error("Payment recovery is only available for pending or halted subscriptions");
     }
     const now = new Date();
-    const existingOperation = await prisma.organizationBillingChange.findFirst({
-      where: {
-        organizationId,
-        organizationSubscriptionId: subscription.id,
-        type: "SUBSCRIPTION_AUTHORIZATION",
-        operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
-      },
-      orderBy: { sequence: "desc" },
-    });
-    const operation = existingOperation ?? await BillingMutationService.enqueue({
+    const operation = await enqueueAuthorizationOperation({
       organizationId,
       subscriptionId: subscription.id,
-      idempotencyKey: `payment-recovery:${organizationId}:${crypto.randomUUID()}`,
-      type: "SUBSCRIPTION_AUTHORIZATION",
-      status: "AWAITING_PAYMENT",
-      operationStatus: "CHECKOUT_OPEN",
+      expectedProviderSubscriptionId: subscription.razorpaySubscriptionId,
+      idempotencyPrefix: "payment-recovery",
       fromPlan: subscription.plan,
       toPlan: subscription.plan,
       fromQuantity: subscription.quantity,
       toQuantity: subscription.quantity,
       returnPath: getSafeReturnPath(returnPath, organizationId),
-      checkoutOpenedAt: now,
-      confirmationDeadlineAt: new Date(now.getTime() + 15 * 60 * 1000),
       createdByUserId: userId,
+      now,
     });
-    return {
-      keyId: getRazorpayKeyId(),
-      subscriptionId: subscription.razorpaySubscriptionId,
-      subscription_card_change: true,
-      method: { card: true, upi: false, netbanking: false, wallet: false },
-      changeId: operation.id,
-      processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(operation.id)}`,
-      operation: serializeBillingOperation(operation),
-      subscription: serializeSubscription(subscription),
-    };
+    const catalogPlan = getBillingPlan(subscription.plan);
+    if (!catalogPlan) throw new Error("Subscription plan is no longer recognized");
+    return this.toCheckoutPayload(
+      organization,
+      subscription,
+      { ...catalogPlan, amount: subscription.amount },
+      operation,
+      { recovery: true }
+    );
   }
 
   static async getBillingOperation(userId: string, organizationId: string, changeId: string) {
@@ -1047,30 +1387,63 @@ export class BillingService {
     input: CheckoutEventInput
   ) {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
-    const event = input.event === "DECLINED" ? "DECLINED" : input.event === "ABANDONED" ? "ABANDONED" : null;
+    const event = ["ABANDONED", "DECLINED", "FAILED", "AWAITING_PROVIDER_CONFIRMATION"]
+      .includes(typeof input.event === "string" ? input.event : "")
+      ? input.event as "ABANDONED" | "DECLINED" | "FAILED" | "AWAITING_PROVIDER_CONFIRMATION"
+      : null;
     if (!event) throw new Error("Unsupported checkout event");
     const change = await prisma.organizationBillingChange.findFirst({
       where: { id: changeId, organizationId, type: "SUBSCRIPTION_AUTHORIZATION" },
     });
     if (!change) throw new Error("Billing operation not found");
-    if (change.operationStatus === "APPLIED") return { operation: serializeBillingOperation(change) };
+    if (["APPLIED", "SCHEDULED"].includes(change.operationStatus)) {
+      return { operation: serializeBillingOperation(change), ignored: true };
+    }
+
+    const allowedCurrentStatuses = event === "AWAITING_PROVIDER_CONFIRMATION"
+      ? ["CHECKOUT_OPEN", "VERIFYING"]
+      : ["CHECKOUT_OPEN"];
+    if (!allowedCurrentStatuses.includes(change.operationStatus)) {
+      return { operation: serializeBillingOperation(change), ignored: true };
+    }
+
     const now = new Date();
-    const updated = await prisma.organizationBillingChange.update({
-      where: { id: change.id },
+    const terminal = event !== "AWAITING_PROVIDER_CONFIRMATION";
+    const checkoutEventUpdate = await prisma.organizationBillingChange.updateMany({
+      where: {
+        id: change.id,
+        operationStatus: { in: allowedCurrentStatuses as ("CHECKOUT_OPEN" | "VERIFYING")[] },
+      },
       data: {
-        status: event === "DECLINED" ? "FAILED" : "UNDONE",
+        status: event === "ABANDONED"
+          ? "UNDONE"
+          : event === "AWAITING_PROVIDER_CONFIRMATION"
+            ? "AWAITING_PAYMENT"
+            : "FAILED",
         operationStatus: event,
-        failureCategory: typeof input.failureCategory === "string" ? input.failureCategory.slice(0, 100) : null,
-        failureCode: typeof input.failureCode === "string" ? input.failureCode.slice(0, 100) : null,
-        lastError: event === "DECLINED" ? "Subscription authorization was not confirmed" : "Checkout was closed before confirmation",
+        failureCategory: normalizedFailureCategory(input, event),
+        failureCode: normalizedFailureCode(input),
+        providerPaymentId: checkoutPaymentId(input.paymentId),
+        lastError: event === "DECLINED"
+          ? "Card authorization was declined; the confirmed billing state is unchanged"
+          : event === "FAILED"
+            ? "Checkout could not confirm card authorization; the confirmed billing state is unchanged"
+            : event === "ABANDONED"
+              ? "Checkout was closed before confirmation"
+              : "Checkout outcome is awaiting provider confirmation",
         declinedAt: event === "DECLINED" ? now : null,
         abandonedAt: event === "ABANDONED" ? now : null,
-        failedAt: event === "DECLINED" ? now : null,
+        failedAt: event === "DECLINED" || event === "FAILED" ? now : null,
         undoneAt: event === "ABANDONED" ? now : null,
-        resolvedAt: now,
+        resolvedAt: terminal ? now : null,
       },
     });
-    return { operation: serializeBillingOperation(updated) };
+    const updated = await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
+    if (!updated) throw new Error("Billing operation not found after checkout event");
+    return {
+      operation: serializeBillingOperation(updated),
+      ...(checkoutEventUpdate.count === 0 ? { ignored: true as const } : {}),
+    };
   }
 
   static async retryBillingOperation(userId: string, organizationId: string, changeId: string) {
@@ -1084,26 +1457,103 @@ export class BillingService {
     if (change.type === "SUBSCRIPTION_AUTHORIZATION") {
       const subscription = change.organizationSubscription;
       if (!subscription) throw new Error("Subscription not found");
-      const gateway = await getRazorpayClient().fetchSubscription(subscription.razorpaySubscriptionId);
-      if (["authenticated", "active"].includes(gateway.status.toLowerCase())
-          && subscription.providerPaymentMethod === "CARD") {
-        const now = new Date();
-        const applied = await prisma.organizationBillingChange.update({
-          where: { id: change.id },
-          data: {
-            status: "APPLIED",
-            operationStatus: "APPLIED",
-            providerConfirmedAt: now,
-            appliedAt: now,
-            resolvedAt: now,
-            lastError: null,
+      if (isProviderConfirmedOperationStatus(change.operationStatus)) {
+        return { operation: serializeBillingOperation(change), reconciled: true };
+      }
+      const retryClaim = await prisma.organizationBillingChange.updateMany({
+        where: {
+          id: change.id,
+          operationStatus: {
+            notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES, "VERIFYING"],
           },
+        },
+        data: {
+          operationStatus: "VERIFYING",
+          verificationStartedAt: new Date(),
+        },
+      });
+      if (retryClaim.count === 0) {
+        const current = await prisma.organizationBillingChange.findUniqueOrThrow({
+          where: { id: change.id },
+        });
+        return {
+          operation: serializeBillingOperation(current),
+          processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+          reconciled: isProviderConfirmedOperationStatus(current.operationStatus),
+        };
+      }
+      let gateway: RazorpaySubscription;
+      try {
+        gateway = await getRazorpayClient().fetchSubscription(subscription.razorpaySubscriptionId);
+      } catch {
+        await prisma.organizationBillingChange.updateMany({
+          where: { id: change.id, operationStatus: "VERIFYING" },
+          data: {
+            status: "AWAITING_PAYMENT",
+            operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+            failureCategory: "PROVIDER_CONFIRMATION_PENDING",
+            failureCode: null,
+            lastError: "Razorpay confirmation is delayed; retry reconciliation shortly",
+            resolvedAt: null,
+          },
+        });
+        const pending = await prisma.organizationBillingChange.findUniqueOrThrow({
+          where: { id: change.id },
+        });
+        return {
+          operation: serializeBillingOperation(pending),
+          processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+          reconciled: isProviderConfirmedOperationStatus(pending.operationStatus),
+        };
+      }
+      const recoveryConfirmation = ["PENDING", "HALTED"].includes(subscription.status);
+      const gatewayCardAuthorized = ["authenticated", "active"].includes(gateway.status.toLowerCase())
+        && (subscription.providerPaymentMethod === "CARD" || gateway.payment_method?.toLowerCase() === "card");
+      let confirmed = gatewayCardAuthorized;
+      if (recoveryConfirmation && gateway.status.toLowerCase() === "active") {
+        const reconciliation = await BillingReconciliationService.reconcileByOrganization(organizationId);
+        confirmed = reconciliation.confirmedPaidPeriod
+          && Boolean(reconciliation.subscription.paidThrough)
+          && (!subscription.paidThrough || reconciliation.subscription.paidThrough! > subscription.paidThrough);
+      }
+      if (confirmed) {
+        const now = new Date();
+        await prisma.$transaction([
+          prisma.organizationSubscription.update({
+            where: { id: subscription.id },
+            data: {
+              providerPaymentMethod: "CARD",
+              ...subscriptionSnapshotData(gateway),
+              lastReconciledAt: now,
+            },
+          }),
+          prisma.organizationBillingChange.updateMany({
+            where: {
+              id: change.id,
+              operationStatus: { notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES] },
+            },
+            data: {
+              status: "APPLIED",
+              operationStatus: "APPLIED",
+              providerConfirmedAt: now,
+              appliedAt: now,
+              resolvedAt: now,
+              failureCategory: null,
+              failureCode: null,
+              lastError: null,
+            },
+          }),
+        ]);
+        const applied = await prisma.organizationBillingChange.findUniqueOrThrow({
+          where: { id: change.id },
         });
         return { operation: serializeBillingOperation(applied), reconciled: true };
       }
-      const selectedPlan = getActiveBillingPlan(subscription.plan);
-      const reopened = await prisma.organizationBillingChange.update({
-        where: { id: change.id },
+      const catalogPlan = getBillingPlan(subscription.plan);
+      if (!catalogPlan) throw new Error("Subscription plan is no longer recognized");
+      const selectedPlan = { ...catalogPlan, amount: subscription.amount };
+      await prisma.organizationBillingChange.updateMany({
+        where: { id: change.id, operationStatus: "VERIFYING" },
         data: {
           status: "AWAITING_PAYMENT",
           operationStatus: "CHECKOUT_OPEN",
@@ -1116,7 +1566,19 @@ export class BillingService {
           resolvedAt: null,
         },
       });
-      return this.toCheckoutPayload(organization, subscription, selectedPlan, reopened);
+      const reopened = await prisma.organizationBillingChange.findUniqueOrThrow({
+        where: { id: change.id },
+      });
+      if (reopened.operationStatus !== "CHECKOUT_OPEN") {
+        return {
+          operation: serializeBillingOperation(reopened),
+          processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+          reconciled: isProviderConfirmedOperationStatus(reopened.operationStatus),
+        };
+      }
+      return this.toCheckoutPayload(organization, subscription, selectedPlan, reopened, {
+        recovery: recoveryConfirmation,
+      });
     }
 
     const retried = await BillingMutationService.retry(change.id);
@@ -1135,12 +1597,53 @@ export class BillingService {
     });
     if (!change) throw new Error("Billing change not found");
     if (!["APPLIED", "SCHEDULED", "ABANDONED"].includes(change.operationStatus)) {
-      await prisma.organizationBillingChange.update({
-        where: { id: change.id },
+      const reconciliationClaim = await prisma.organizationBillingChange.updateMany({
+        where: {
+          id: change.id,
+          operationStatus: {
+            notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES, "ABANDONED", "VERIFYING"],
+          },
+        },
         data: { operationStatus: "VERIFYING", verificationStartedAt: new Date() },
       });
+      if (reconciliationClaim.count === 0) {
+        const current = await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
+        return {
+          reconciliation: null,
+          pending: current ? !isProviderConfirmedOperationStatus(current.operationStatus) : true,
+          operation: current ? serializeBillingOperation(current) : null,
+        };
+      }
     }
-    const reconciliation = await BillingReconciliationService.reconcileByOrganization(organizationId, { paymentId });
+    let reconciliation: Awaited<ReturnType<typeof BillingReconciliationService.reconcileByOrganization>>;
+    try {
+      reconciliation = await BillingReconciliationService.reconcileByOrganization(organizationId, { paymentId });
+      if (change.type === "SUBSCRIPTION_AUTHORIZATION") {
+        await this.applyProviderConfirmedAuthorization(
+          organizationId,
+          reconciliation.subscription,
+          reconciliation.payment,
+          reconciliation.confirmedPaidPeriod
+        );
+      }
+    } catch {
+      await prisma.organizationBillingChange.updateMany({
+        where: { id: change.id, operationStatus: "VERIFYING" },
+        data: {
+          status: "AWAITING_PAYMENT",
+          operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+          failureCategory: "PROVIDER_CONFIRMATION_PENDING",
+          lastError: "Razorpay confirmation is delayed; the confirmed billing state is unchanged",
+          resolvedAt: null,
+        },
+      });
+      const pendingOperation = await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
+      return {
+        reconciliation: null,
+        pending: pendingOperation ? !isProviderConfirmedOperationStatus(pendingOperation.operationStatus) : true,
+        operation: pendingOperation ? serializeBillingOperation(pendingOperation) : null,
+      };
+    }
     const updated = await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
     return {
       reconciliation,
@@ -1168,6 +1671,54 @@ export class BillingService {
       },
     });
     return { undone: true };
+  }
+
+  private static async applyProviderConfirmedAuthorization(
+    organizationId: string,
+    subscription: OrganizationSubscription,
+    payment: RazorpayPayment | null,
+    confirmedPaidPeriod: boolean
+  ) {
+    if (subscription.providerPaymentMethod !== "CARD") return;
+    const providerAuthorizationConfirmed = ["AUTHENTICATED", "ACTIVE"].includes(subscription.status)
+      && (!payment || ["authorized", "captured"].includes(payment.status));
+    if (!providerAuthorizationConfirmed && !confirmedPaidPeriod) return;
+
+    const change = await prisma.organizationBillingChange.findFirst({
+      where: {
+        organizationId,
+        organizationSubscriptionId: subscription.id,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        operationStatus: { notIn: ["APPLIED", "SCHEDULED"] },
+      },
+      orderBy: { sequence: "desc" },
+    });
+    if (!change) return;
+
+    const now = new Date();
+    await prisma.$transaction([
+      prisma.organizationSubscription.update({
+        where: { id: subscription.id },
+        data: payment?.id && !subscription.authPaymentId ? { authPaymentId: payment.id } : {},
+      }),
+      prisma.organizationBillingChange.updateMany({
+        where: {
+          id: change.id,
+          operationStatus: { notIn: ["APPLIED", "SCHEDULED"] },
+        },
+        data: {
+          status: "APPLIED",
+          operationStatus: "APPLIED",
+          providerPaymentId: payment?.id ?? change.providerPaymentId,
+          providerConfirmedAt: now,
+          appliedAt: now,
+          resolvedAt: now,
+          failureCategory: null,
+          failureCode: null,
+          lastError: null,
+        },
+      }),
+    ]);
   }
 
   static async handleRazorpayWebhook(rawBody: string, signature: string | null, eventId: string | null) {
@@ -1249,9 +1800,15 @@ export class BillingService {
           select: { billingModelVersion: true },
         });
         if (organization?.billingModelVersion === "WORKSPACE_V2") {
-          await BillingReconciliationService.reconcileProviderSubscription(
+          const reconciliation = await BillingReconciliationService.reconcileProviderSubscription(
             processed.razorpaySubscriptionId,
             { paymentId: processed.razorpayPaymentId }
+          );
+          await this.applyProviderConfirmedAuthorization(
+            processed.organizationId,
+            reconciliation.subscription,
+            reconciliation.payment,
+            reconciliation.confirmedPaidPeriod
           );
         }
       }
@@ -1347,26 +1904,40 @@ export class BillingService {
       confirmationDeadlineAt: Date | null;
       failureCategory: string | null;
       failureCode: string | null;
+      providerPaymentId: string | null;
       lastError: string | null;
       effectiveAt: Date | null;
       createdAt: Date;
       updatedAt: Date;
-    }
+    },
+    options: { recovery?: boolean } = {}
   ) {
+    const now = new Date();
+    const activeTrialEndsAt = org.ownerTrialGrant?.status === "ACTIVE"
+      && org.ownerTrialGrant.organizationId === org.id
+      && org.ownerTrialGrant.trialEndsAt
+      && org.ownerTrialGrant.trialEndsAt > now
+        ? org.ownerTrialGrant.trialEndsAt
+        : null;
+    const authorized = subscription.providerPaymentMethod === "CARD"
+      && !["CREATED", "CANCELLED", "COMPLETED", "EXPIRED"].includes(subscription.status);
+    const unitAmount = plan.amount ?? 0;
+    const estimatedMonthlyTotal = unitAmount * subscription.quantity;
+    const keyId = getRazorpayKeyId();
+    const checkoutDescription = `${options.recovery ? "Update card for " : ""}${plan.shortName}: ${subscription.quantity} ${subscription.quantity === 1 ? "branch" : "branches"}`
+      + ` x Rs.${unitAmount} = Rs.${estimatedMonthlyTotal}/month`
+      + (activeTrialEndsAt ? `; starts ${formatCheckoutDate(activeTrialEndsAt)}` : "");
     return {
-      keyId: getRazorpayKeyId(),
+      keyId,
+      testMode: keyId.startsWith("rzp_test_"),
       type: "subscription" as const,
       subscriptionId: subscription.razorpaySubscriptionId,
+      ...(options.recovery ? { subscription_card_change: true as const } : {}),
       amount: subscription.amountSubunits,
       currency: subscription.currency,
       name: "Lab Lords",
-      description: `${plan.name} - ${plan.amount ? `Rs.${plan.amount}/month` : "custom"}`,
-      method: {
-        card: true,
-        upi: false,
-        netbanking: false,
-        wallet: false,
-      },
+      description: checkoutDescription,
+      config: cardOnlyCheckoutConfig(),
       plan: {
         id: plan.id,
         name: plan.name,
@@ -1377,8 +1948,17 @@ export class BillingService {
       },
       prefill: {
         name: org.legalName || org.name,
-        email: org.contactEmail || org.owner?.email || undefined,
-        contact: org.contactPhone || undefined,
+        email: (org.contactEmail || org.owner?.email || "").trim() || undefined,
+        contact: normalizeRazorpayContact(org.contactPhone),
+      },
+      summary: {
+        plan: plan.id,
+        unitAmount,
+        quantity: subscription.quantity,
+        estimatedMonthlyTotal,
+        planFeeDueToday: activeTrialEndsAt ? 0 : estimatedMonthlyTotal,
+        trialEndsAt: activeTrialEndsAt?.toISOString() ?? null,
+        firstChargeAt: authorized ? subscription.chargeAt?.toISOString() ?? null : null,
       },
       notes: {
         app: "lab_lords",

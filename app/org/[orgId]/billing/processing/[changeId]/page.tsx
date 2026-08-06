@@ -2,8 +2,16 @@
 
 import Link from "next/link";
 import { use, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AlertCircle, CheckCircle2, Clock3, Loader2, RotateCcw } from "lucide-react";
 import { billing, type BillingOperationDto } from "@/lib/api/billing";
+import {
+  isRazorpayCheckoutPayload,
+  isRazorpayCheckoutReady,
+  openRazorpayCheckout,
+  RazorpayCheckoutScript,
+  type RazorpayCheckoutEventResult,
+} from "@/components/billing/RazorpayCheckoutLauncher";
 import { AppButton, PageShell } from "@/components/ui";
 import { Card } from "@/components/ui/Card";
 
@@ -22,14 +30,18 @@ function copyFor(operation: BillingOperationDto | null, timedOut: boolean) {
 
 export default function BillingProcessingPage({ params }: { params: Promise<{ orgId: string; changeId: string }> }) {
   const { orgId, changeId } = use(params);
+  const router = useRouter();
   const [operation, setOperation] = useState<BillingOperationDto | null>(null);
   const [timedOut, setTimedOut] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState("");
+  const [pollGeneration, setPollGeneration] = useState(0);
+  const [checkoutReady, setCheckoutReady] = useState(() => isRazorpayCheckoutReady());
 
   useEffect(() => {
     let stopped = false;
     let attempts = 0;
+    let timer: number | undefined;
 
     const check = async () => {
       try {
@@ -44,15 +56,24 @@ export default function BillingProcessingPage({ params }: { params: Promise<{ or
           setTimedOut(true);
           return;
         }
-        window.setTimeout(check, 2_000);
+        timer = window.setTimeout(check, 2_000);
       } catch (requestError) {
         if (stopped) return;
         setError(requestError instanceof Error ? requestError.message : "Unable to check billing status");
+        attempts += 1;
+        if (attempts >= 30) {
+          setTimedOut(true);
+          return;
+        }
+        timer = window.setTimeout(check, 2_000);
       }
     };
     void check();
-    return () => { stopped = true; };
-  }, [changeId, orgId]);
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [changeId, orgId, pollGeneration]);
 
   const content = useMemo(() => copyFor(operation, timedOut), [operation, timedOut]);
   const successful = operation?.operationStatus === "APPLIED" || operation?.operationStatus === "SCHEDULED";
@@ -60,12 +81,57 @@ export default function BillingProcessingPage({ params }: { params: Promise<{ or
   const returnPath = operation?.returnPath || `/org/${encodeURIComponent(orgId)}/settings#billing`;
 
   const retry = async () => {
+    if (operation?.type === "SUBSCRIPTION_AUTHORIZATION" && !checkoutReady) {
+      setError("Razorpay Checkout is still loading. Please wait a moment and try again.");
+      return;
+    }
     setRetrying(true);
     setError("");
     try {
-      const result = await billing.retryOperation(orgId, changeId) as { operation?: BillingOperationDto; processingUrl?: string; changeId?: string };
+      const result = await billing.retryOperation(orgId, changeId) as {
+        operation?: BillingOperationDto;
+        processingUrl?: string;
+        changeId?: string;
+      };
       if (result.operation) setOperation(result.operation);
-      if (result.changeId && result.processingUrl) window.location.assign(result.processingUrl);
+      if (isRazorpayCheckoutPayload(result)) {
+        openRazorpayCheckout({
+          payload: result,
+          mode: result.subscription_card_change ? "RECOVERY" : "AUTHORIZATION",
+          verify: (response) => billing.verifySubscription(orgId, {
+            changeId: result.changeId,
+            razorpay_subscription_id: response.razorpay_subscription_id ?? result.subscriptionId,
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_signature: response.razorpay_signature,
+          }),
+          recordEvent: async (checkoutResult: RazorpayCheckoutEventResult) => {
+            await billing.recordCheckoutEvent(
+              orgId,
+              result.changeId,
+              checkoutResult.event,
+              checkoutResult.failure
+            );
+          },
+          navigate: (processingUrl) => {
+            router.replace(processingUrl);
+            setTimedOut(false);
+            setPollGeneration((current) => current + 1);
+          },
+          onStateChange: (state) => {
+            if (["ABANDONED", "DECLINED", "FAILED"].includes(state)) {
+              setTimedOut(false);
+              setPollGeneration((current) => current + 1);
+            }
+          },
+          onVerificationError: () => setError(""),
+        });
+        return;
+      }
+
+      // Provider-native updates do not use Checkout. Poll this operation again
+      // instead of navigating back to the page that is already open.
+      setTimedOut(false);
+      setPollGeneration((current) => current + 1);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to retry billing update");
     } finally {
@@ -75,6 +141,10 @@ export default function BillingProcessingPage({ params }: { params: Promise<{ or
 
   return (
     <PageShell aria-label="Billing confirmation">
+      <RazorpayCheckoutScript
+        onReady={() => setCheckoutReady(true)}
+        onError={() => setError("Razorpay Checkout could not be loaded. Check your connection and try again.")}
+      />
       <div>
         <h1 className="text-2xl font-bold text-[color:var(--ui-text)]">Billing confirmation</h1>
         <p className="text-sm text-[color:var(--ui-text-muted)]">Provider-confirmed subscription processing</p>
@@ -88,7 +158,16 @@ export default function BillingProcessingPage({ params }: { params: Promise<{ or
           </div>
           {error && <p className="text-sm text-red-500" role="alert">{error}</p>}
           <div className="flex flex-wrap justify-center gap-3">
-            {failed && <AppButton icon={RotateCcw} isLoading={retrying} onClick={retry}>Retry safely</AppButton>}
+            {failed && (
+              <AppButton
+                icon={RotateCcw}
+                isLoading={retrying}
+                disabled={operation.type === "SUBSCRIPTION_AUTHORIZATION" && !checkoutReady}
+                onClick={retry}
+              >
+                {operation.type === "SUBSCRIPTION_AUTHORIZATION" && !checkoutReady ? "Loading secure checkout..." : "Retry safely"}
+              </AppButton>
+            )}
             {(successful || failed || timedOut) && (
               <Link className="inline-flex h-10 items-center rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] px-3 text-sm font-semibold text-[color:var(--ui-text)]" href={returnPath}>
                 Continue

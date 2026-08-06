@@ -63,7 +63,13 @@ export class BillingReconciliationService {
       razorpay.fetchSubscriptionInvoices(razorpaySubscriptionId),
       options.paymentId ? razorpay.fetchPayment(options.paymentId) : Promise.resolve(null),
     ]);
-    const paidInvoice = [...invoices.items]
+    if (explicitPayment && explicitPayment.subscription_id !== razorpaySubscriptionId) {
+      throw new Error("Razorpay payment does not belong to this subscription");
+    }
+    const explicitPaidInvoice = explicitPayment?.invoice_id
+      ? invoices.items.find(invoice => invoice.id === explicitPayment.invoice_id && invoice.status === "paid") ?? null
+      : null;
+    const paidInvoice = explicitPaidInvoice ?? [...invoices.items]
       .filter(invoice => invoice.status === "paid" && invoice.payment_id)
       .sort((a, b) => (b.paid_at ?? 0) - (a.paid_at ?? 0))[0] ?? null;
     const confirmedPayment = explicitPayment
@@ -97,8 +103,24 @@ export class BillingReconciliationService {
             orderBy: { sequence: "asc" },
           })
         : null;
+      const paidInvoiceAt = date(paidInvoice?.paid_at);
+      const changeSubmittedAt = pendingChange?.processingStartedAt ?? pendingChange?.createdAt ?? null;
+      const requiresFreshMutationPayment = Boolean(
+        pendingChange
+        && ["PLAN_UPGRADE", "PLAN_DOWNGRADE", "QUANTITY_INCREASE", "BRANCH_REMOVAL", "BRANCH_REACTIVATION"]
+          .includes(pendingChange.type)
+      );
+      const freshMutationPaymentConfirmed = !requiresFreshMutationPayment || Boolean(
+        paidInvoice
+        && paidInvoiceAt
+        && changeSubmittedAt
+        && confirmedPayment?.status === "captured"
+        && confirmedPayment.invoice_id === paidInvoice.id
+        && Math.floor(paidInvoiceAt.getTime() / 1000) >= Math.floor(changeSubmittedAt.getTime() / 1000)
+      );
       const providerMatchesChange = Boolean(
         pendingChange
+        && freshMutationPaymentConfirmed
         && (!pendingChange.toPlan || pendingChange.toPlan === providerPlan?.plan)
         && (!pendingChange.toQuantity || pendingChange.toQuantity === providerSubscription.quantity)
         && (!pendingChange.effectiveAt || pendingChange.effectiveAt <= now)
@@ -142,6 +164,15 @@ export class BillingReconciliationService {
       }
 
       const paidThrough = confirmedPaidPeriod ? date(providerSubscription.current_end) : local.paidThrough;
+      const providerSubscriptionStatus = status(providerSubscription.status);
+      const providerQuantity = providerSubscription.quantity ?? local.quantity;
+      const futureAuthorizationQuantitySynchronized = local.paidThrough == null
+        && providerSubscriptionStatus === "AUTHENTICATED";
+      const confirmedQuantity = providerQuantity === local.quantity
+        || futureAuthorizationQuantitySynchronized
+        || (confirmedPaidPeriod && (!pendingChange || providerMatchesChange))
+        ? providerQuantity
+        : local.quantity;
       const stored = await tx.organizationSubscription.update({
         where: { id: local.id },
         data: {
@@ -152,8 +183,8 @@ export class BillingReconciliationService {
           period: confirmedPlanChange?.period,
           interval: confirmedPlanChange?.interval,
           razorpayPlanId: confirmedPlanChange?.razorpayPlanId,
-          status: status(providerSubscription.status),
-          quantity: providerSubscription.quantity ?? local.quantity,
+          status: providerSubscriptionStatus,
+          quantity: confirmedQuantity,
           providerStartAt: date(providerSubscription.start_at),
           authorizationExpiresAt: date(providerSubscription.expire_by),
           providerPaymentMethod: confirmedPayment

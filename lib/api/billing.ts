@@ -89,6 +89,7 @@ export type OrganizationEntitlementProfileDto = {
 
 export type BillingOverview = {
   experience: BillingExperience;
+  razorpayTestMode: boolean;
   plans: BillingPlanDto[];
   current: OrganizationSubscriptionDto | null;
   history: OrganizationSubscriptionHistoryDto[];
@@ -100,18 +101,12 @@ export type BillingOverview = {
     organizationId: string | null;
     startedAt: string | null;
     endsAt: string | null;
-    claimable: boolean;
   } | null;
-  projection: {
-    plan: BillingPlanId;
-    quantity: number;
-    unitAmount: number;
-    monthlyTotal: number;
-    nextChargeAt: string | null;
-    discountedTotal: number;
-    discountedCycles: number;
-    normalRenewalTotal: number;
-  };
+  ownerTrialEligibility: {
+    status: string;
+    claimable: boolean;
+    boundOrganizationId: string | null;
+  } | null;
   paymentMethod: string | null;
   invoices: Array<{
     id: string;
@@ -142,23 +137,39 @@ export type BillingOperationDto = {
   confirmationDeadlineAt: string | null;
   failureCategory: string | null;
   failureCode: string | null;
+  providerPaymentId: string | null;
   message: string | null;
   effectiveAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
+export type RazorpayCardOnlyConfig = {
+  display: {
+    blocks: {
+      cards: {
+        name: string;
+        instruments: Array<{ method: "card" }>;
+      };
+    };
+    sequence: ["block.cards"];
+    preferences: { show_default_blocks: false };
+  };
+};
+
 export type BillingCheckoutPayload = {
   changeId: string;
   processingUrl: string;
   keyId: string;
+  testMode: boolean;
   type: "subscription";
   subscriptionId: string;
+  subscription_card_change?: true;
   amount: number;
   currency: string;
   name: string;
   description: string;
-  method: { card: true; upi: false; netbanking: false; wallet: false };
+  config: RazorpayCardOnlyConfig;
   plan: Pick<BillingPlanDto, "id" | "name" | "shortName" | "amount" | "currency" | "period">;
   prefill: {
     name?: string;
@@ -166,12 +177,22 @@ export type BillingCheckoutPayload = {
     contact?: string;
   };
   notes: Record<string, string>;
+  summary: {
+    plan: CheckoutBillingPlanId;
+    unitAmount: number;
+    quantity: number;
+    estimatedMonthlyTotal: number;
+    planFeeDueToday: number;
+    trialEndsAt: string | null;
+    firstChargeAt: string | null;
+  };
   subscription: OrganizationSubscriptionDto;
   operation: BillingOperationDto;
 };
 
 export type BillingVerificationResult = {
-  verified: true;
+  verified: boolean;
+  pending?: true;
   operation: BillingOperationDto;
   processingUrl: string;
   subscription: OrganizationSubscriptionDto;
@@ -185,13 +206,19 @@ export type BillingCancellationResult = {
 
 export type BillingRecoveryPayload = {
   keyId: string;
+  testMode: boolean;
   subscriptionId: string;
   subscription_card_change: true;
-  method: { card: true; upi: false; netbanking: false; wallet: false };
+  config: RazorpayCardOnlyConfig;
   changeId: string;
   processingUrl: string;
   operation: BillingOperationDto;
   subscription: OrganizationSubscriptionDto;
+  name: string;
+  description: string;
+  prefill: BillingCheckoutPayload["prefill"];
+  notes: Record<string, string>;
+  summary: BillingCheckoutPayload["summary"];
 };
 
 export const billing = {
@@ -254,8 +281,15 @@ export const billing = {
   recordCheckoutEvent(
     orgId: string,
     changeId: string,
-    event: "ABANDONED" | "DECLINED",
-    details?: { failureCategory?: string; failureCode?: string }
+    event: "ABANDONED" | "DECLINED" | "FAILED" | "AWAITING_PROVIDER_CONFIRMATION",
+    details?: {
+      failureCategory?: string;
+      failureCode?: string;
+      reason?: string;
+      source?: string;
+      step?: string;
+      paymentId?: string;
+    }
   ) {
     return apiClient.post(`/organizations/${orgId}/billing/mutations/${changeId}/checkout-event`, { event, ...details });
   },
