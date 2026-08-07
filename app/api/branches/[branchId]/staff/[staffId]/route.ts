@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { StaffService } from "@/services/staff.service";
 import { getSessionUser } from "@/lib/auth";
 import { StaffPermissionUpdate, StaffRole } from "@/types";
-import { SubscriptionEntitlementError } from "@/services/entitlement.service";
+import { BillingReadOnlyError, SubscriptionEntitlementError } from "@/services/entitlement.service";
 
 // DELETE: Remove staff from a branch
 export async function DELETE(
@@ -18,9 +18,15 @@ export async function DELETE(
         return NextResponse.json({ success: true });
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "Failed to remove staff";
+        const status = message.includes("not found") ? 404
+            : error instanceof SubscriptionEntitlementError
+                || error instanceof BillingReadOnlyError
+                || message.includes("Unauthorized")
+                ? 403
+                : 400;
         return NextResponse.json(
             { error: message },
-            { status: error instanceof SubscriptionEntitlementError ? 403 : 400 }
+            { status }
         );
     }
 }
