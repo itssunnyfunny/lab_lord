@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   getBranchAccess: vi.fn(),
   ensureDuePaymentsForBranch: vi.fn(),
+  generateDuePaymentsForBranch: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -19,6 +20,7 @@ vi.mock("@/services/staff.service", () => ({
 vi.mock("@/services/payment.service", () => ({
   PaymentService: {
     ensureDuePaymentsForBranch: mocks.ensureDuePaymentsForBranch,
+    generateDuePaymentsForBranch: mocks.generateDuePaymentsForBranch,
   },
 }));
 
@@ -42,9 +44,38 @@ describe("POST /api/branches/[branchId]/payments/ensure", () => {
     expect(await response.json()).toEqual({ error: "Unauthorized" });
     expect(mocks.getBranchAccess).not.toHaveBeenCalled();
     expect(mocks.ensureDuePaymentsForBranch).not.toHaveBeenCalled();
+    expect(mocks.generateDuePaymentsForBranch).not.toHaveBeenCalled();
   });
 
-  it("allows regular branch staff to ensure payments", async () => {
+  it("returns 403 when ordinary staff lacks generate_payments", async () => {
+    mocks.getSessionUser.mockResolvedValue({ id: "staff_1", email: "staff@test.com" });
+    mocks.generateDuePaymentsForBranch.mockRejectedValue(
+      new Error("Unauthorized: Role 'STAFF' cannot perform 'generate_payments'")
+    );
+    const { POST } = await import("@/app/api/branches/[branchId]/payments/ensure/route");
+
+    const response = await POST(request, context);
+
+    expect(response.status).toBe(403);
+    expect(mocks.generateDuePaymentsForBranch).toHaveBeenCalledWith("staff_1", "branch_1");
+    expect(mocks.ensureDuePaymentsForBranch).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the branch is read-only", async () => {
+    mocks.getSessionUser.mockResolvedValue({ id: "manager_1", email: "manager@test.com" });
+    mocks.generateDuePaymentsForBranch.mockRejectedValue(
+      new Error("Unauthorized: paid subscription is required")
+    );
+    const { POST } = await import("@/app/api/branches/[branchId]/payments/ensure/route");
+
+    const response = await POST(request, context);
+
+    expect(response.status).toBe(403);
+    expect(mocks.generateDuePaymentsForBranch).toHaveBeenCalledWith("manager_1", "branch_1");
+    expect(mocks.ensureDuePaymentsForBranch).not.toHaveBeenCalled();
+  });
+
+  it("allows an authorized manager on a writable branch", async () => {
     const summary = {
       generatedCount: 1,
       skippedCount: 0,
@@ -52,23 +83,15 @@ describe("POST /api/branches/[branchId]/payments/ensure", () => {
       updatedBranchIds: ["branch_1"],
     };
 
-    mocks.getSessionUser.mockResolvedValue({ id: "staff_1", email: "staff@test.com" });
-    mocks.getBranchAccess.mockResolvedValue({
-      branchId: "branch_1",
-      branchName: "Main",
-      organizationId: "org_1",
-      isOwner: false,
-      role: "STAFF",
-      permissions: {},
-    });
-    mocks.ensureDuePaymentsForBranch.mockResolvedValue(summary);
+    mocks.getSessionUser.mockResolvedValue({ id: "manager_1", email: "manager@test.com" });
+    mocks.generateDuePaymentsForBranch.mockResolvedValue(summary);
     const { POST } = await import("@/app/api/branches/[branchId]/payments/ensure/route");
 
     const response = await POST(request, context);
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(summary);
-    expect(mocks.getBranchAccess).toHaveBeenCalledWith("staff_1", "branch_1");
-    expect(mocks.ensureDuePaymentsForBranch).toHaveBeenCalledWith("branch_1");
+    expect(mocks.generateDuePaymentsForBranch).toHaveBeenCalledWith("manager_1", "branch_1");
+    expect(mocks.ensureDuePaymentsForBranch).not.toHaveBeenCalled();
   });
 });
