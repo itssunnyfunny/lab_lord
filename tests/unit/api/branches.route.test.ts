@@ -27,11 +27,13 @@ describe("POST /api/branches", () => {
     vi.clearAllMocks();
   });
 
-  function request(body: Record<string, unknown>) {
+  function request(body: Record<string, unknown>, idempotencyKey: string | null = "branch-create-1") {
+    const headers = new Headers({ "content-type": "application/json" });
+    if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
     return new Request("http://test.local/api/branches", {
       method: "POST",
       body: JSON.stringify(body),
-      headers: { "content-type": "application/json" },
+      headers,
     });
   }
 
@@ -91,7 +93,25 @@ describe("POST /api/branches", () => {
       seatCount: 10,
       seatNumbering: { mode: "SIMPLE", count: 10 },
       shifts: undefined,
+      idempotencyKey: "branch-create-1",
     });
+  });
+
+  it("requires an idempotency key before creating a branch", async () => {
+    mocks.getSessionUser.mockResolvedValue({ id: "owner_1", email: "owner@test.com" });
+    mocks.isOwner.mockResolvedValue(true);
+    const { POST } = await import("@/app/api/branches/route");
+
+    const response = await POST(request({
+      organizationId: "org_1",
+      name: "Second Branch",
+      contactPhone: "9876543210",
+      seatCount: 10,
+    }, null));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Idempotency-Key is required" });
+    expect(mocks.createBranchForOrg).not.toHaveBeenCalled();
   });
 
   it("passes custom seat numbering to the service", async () => {

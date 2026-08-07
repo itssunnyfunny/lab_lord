@@ -12,6 +12,7 @@ import {
 } from "@/lib/formValidation";
 import { generateSeatLabelsForSeatCount, validateSeatNumberingConfig } from "@/lib/seatNumbering";
 import { BillingReadOnlyError, SubscriptionEntitlementError } from "@/services/entitlement.service";
+import { BillingWritesDisabledError } from "@/lib/billingFeature";
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Internal Server Error";
@@ -38,6 +39,10 @@ export async function POST(req: Request) {
         const isOwner = await OrganizationService.isOwner(organizationId, user.id);
         if (!isOwner) {
             return NextResponse.json({ error: "Forbidden: You do not own this organization" }, { status: 403 });
+        }
+        const idempotencyKey = req.headers.get("idempotency-key")?.trim();
+        if (!idempotencyKey) {
+            return NextResponse.json({ error: "Idempotency-Key is required" }, { status: 400 });
         }
         const nameResult = validateRequiredText(name, "Branch name", 120);
         if (!nameResult.ok) return NextResponse.json({ error: nameResult.error }, { status: 400 });
@@ -66,7 +71,7 @@ export async function POST(req: Request) {
             seatCount: seatCountResult.value,
             seatNumbering: seatNumberingResult.value,
             shifts: shiftsResult.value,
-            idempotencyKey: req.headers.get("idempotency-key") ?? undefined,
+            idempotencyKey,
         });
 
         return NextResponse.json(branch, { status: branch.billingStatus === "PENDING_ACTIVATION" ? 202 : 201 });
@@ -75,6 +80,9 @@ export async function POST(req: Request) {
         console.error("Error creating branch:", error);
         if (error instanceof SubscriptionEntitlementError || error instanceof BillingReadOnlyError) {
             return NextResponse.json({ error: message, code: error.code }, { status: 403 });
+        }
+        if (error instanceof BillingWritesDisabledError) {
+            return NextResponse.json({ error: message, code: error.code }, { status: 503 });
         }
         return NextResponse.json(
             { error: message },

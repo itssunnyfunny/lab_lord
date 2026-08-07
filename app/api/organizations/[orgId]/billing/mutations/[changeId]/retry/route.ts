@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { BillingService } from "@/services/billing.service";
+import { billingHttpStatus } from "@/lib/billingHttp";
 
 type Context = { params: Promise<{ orgId: string; changeId: string }> };
 
@@ -12,6 +13,6 @@ export async function POST(_request: Request, context: Context) {
     return NextResponse.json(await BillingService.retryBillingOperation(user.id, orgId, changeId));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to retry billing operation";
-    return NextResponse.json({ error: message }, { status: /Unauthorized/.test(message) ? 403 : /not found/.test(message) ? 404 : 400 });
+    return NextResponse.json({ error: message }, { status: billingHttpStatus(error) });
   }
 }
