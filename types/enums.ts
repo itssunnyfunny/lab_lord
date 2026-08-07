@@ -15,4 +15,11 @@ export {
   StudentStatus,
 } from "@/app/generated/prisma/enums";
 
-export type DueResolution = "PAID" | "WAIVED" | "KEEP";
+export const DUE_RESOLUTIONS = ["KEEP", "PAID", "WAIVED"] as const;
+
+export type DueResolution = typeof DUE_RESOLUTIONS[number];
+
+export function isDueResolution(value: unknown): value is DueResolution {
+  return typeof value === "string"
+    && (DUE_RESOLUTIONS as readonly string[]).includes(value);
+}

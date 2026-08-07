@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
-import { StudentStatus, PaymentType, PaymentStatus } from "@/types";
-import { CreateImportedStudentDto, CreateStudentDto, DueResolution, UpdateStudentProfileDto } from "@/types";
+import { StudentStatus, PaymentType, PaymentStatus, isDueResolution } from "@/types";
+import type { CreateImportedStudentDto, CreateStudentDto, DueResolution, UpdateStudentProfileDto } from "@/types";
 import { SeatAllocationService } from "@/services/seatAllocation.service";
 import { StaffService } from "@/services/staff.service";
 import { startOfDay } from "date-fns";
@@ -15,6 +15,10 @@ import {
     validateRequiredPhone,
     validateRequiredText,
 } from "@/lib/formValidation";
+
+function assertNever(value: never): never {
+    throw new Error(`Unexpected due resolution: ${String(value)}`);
+}
 
 export class StudentService {
     /**
@@ -506,15 +510,50 @@ export class StudentService {
         status: StudentStatus,
         dueResolution: DueResolution = "KEEP"
     ) {
+        if (!isDueResolution(dueResolution)) {
+            throw new Error("Invalid due resolution");
+        }
+
         const verifiedStudent = await this.verifyStudentAccess(userId, studentId);
         await EntitlementService.assertBranchWritable(verifiedStudent.branchId);
         const now = new Date();
 
+        let paymentResolution: {
+            status: PaymentStatus;
+            action: "PAYMENT_MARKED_PAID" | "PAYMENT_WAIVED";
+            data: {
+                status: PaymentStatus;
+                paidAt?: Date;
+            };
+        } | null = null;
+
         if (status === StudentStatus.INACTIVE) {
-            if (dueResolution === "PAID") {
-                await StaffService.authorize(userId, verifiedStudent.branchId, "mark_payment_paid");
-            } else if (dueResolution === "WAIVED") {
-                await StaffService.authorize(userId, verifiedStudent.branchId, "waive_payments");
+            switch (dueResolution) {
+                case "KEEP":
+                    break;
+                case "PAID":
+                    await StaffService.authorize(userId, verifiedStudent.branchId, "mark_payment_paid");
+                    paymentResolution = {
+                        status: PaymentStatus.PAID,
+                        action: "PAYMENT_MARKED_PAID",
+                        data: {
+                            status: PaymentStatus.PAID,
+                            paidAt: now,
+                        },
+                    };
+                    break;
+                case "WAIVED":
+                    await StaffService.authorize(userId, verifiedStudent.branchId, "waive_payments");
+                    paymentResolution = {
+                        status: PaymentStatus.WAIVED,
+                        action: "PAYMENT_WAIVED",
+                        data: {
+                            status: PaymentStatus.WAIVED,
+                        },
+                    };
+                    break;
+                default:
+                    assertNever(dueResolution);
             }
         }
 
@@ -542,7 +581,7 @@ export class StudentService {
                     branchId: string;
                     amount: number;
                     status: PaymentStatus;
-                }[] = dueResolution === "KEEP"
+                }[] = paymentResolution === null
                     ? []
                     : await tx.payment.findMany({
                         where: {
@@ -557,50 +596,30 @@ export class StudentService {
                         },
                     });
 
-                // 3. Resolve DUE payments based on owner's choice
-                if (dueResolution === "PAID") {
+                // 3. Resolve DUE payments based on the validated choice
+                if (paymentResolution) {
                     await tx.payment.updateMany({
                         where: {
                             studentId,
                             status: PaymentStatus.DUE,
                         },
-                        data: {
-                            status: PaymentStatus.PAID,
-                            paidAt: now,
-                        },
-                    });
-                } else if (dueResolution === "WAIVED") {
-                    await tx.payment.updateMany({
-                        where: {
-                            studentId,
-                            status: PaymentStatus.DUE,
-                        },
-                        data: {
-                            status: PaymentStatus.WAIVED,
-                        },
+                        data: paymentResolution.data,
                     });
                 }
                 // KEEP: do nothing, DUE payments stay as-is
 
-                if (paymentsToResolve.length > 0 && dueResolution !== "KEEP") {
-                    const resolvedStatus = dueResolution === "PAID"
-                        ? PaymentStatus.PAID
-                        : PaymentStatus.WAIVED;
-                    const action = dueResolution === "PAID"
-                        ? "PAYMENT_MARKED_PAID"
-                        : "PAYMENT_WAIVED";
-
+                if (paymentsToResolve.length > 0 && paymentResolution) {
                     await tx.auditLog.createMany({
                         data: paymentsToResolve.map(payment => ({
                             branchId: payment.branchId,
                             userId,
-                            action,
+                            action: paymentResolution.action,
                             paymentId: payment.id,
                             details: {
                                 from: payment.status,
-                                to: resolvedStatus,
+                                to: paymentResolution.status,
                                 amount: payment.amount,
-                                ...(dueResolution === "PAID"
+                                ...(paymentResolution.status === PaymentStatus.PAID
                                     ? { method: null, referenceId: null }
                                     : {}),
                             },

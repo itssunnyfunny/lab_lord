@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { StudentService } from "@/services/student.service";
 import { resetDatabase, disconnectDatabase, testPrisma } from "@/tests/setup/db";
 import { createTestWorld, createStudent, createAllocation, createShift, createSeat, createStaff, createUser, createPayment } from "@/tests/factories";
+import type { DueResolution } from "@/types";
 
 describe("StudentService Integration", () => {
   afterAll(async () => { await disconnectDatabase(); });
@@ -358,6 +359,37 @@ describe("StudentService Integration", () => {
       });
     });
 
+    it("rejects an invalid dueResolution without payment or audit mutations", async () => {
+      const { user, branch } = await createTestWorld();
+      const student = await createStudent({ branchId: branch.id });
+      const payment = await createPayment({
+        branchId: branch.id,
+        studentId: student.id,
+        dueDate: new Date(),
+        periodStart: new Date(),
+        periodEnd: new Date(),
+      });
+
+      await expect(
+        StudentService.updateStudentStatus(
+          user.id,
+          student.id,
+          "INACTIVE",
+          "FORGED" as DueResolution
+        )
+      ).rejects.toThrow("Invalid due resolution");
+
+      await expect(
+        testPrisma.student.findUnique({ where: { id: student.id } })
+      ).resolves.toMatchObject({ status: "ACTIVE" });
+      await expect(
+        testPrisma.payment.findUnique({ where: { id: payment.id } })
+      ).resolves.toMatchObject({ status: "DUE" });
+      await expect(
+        testPrisma.auditLog.count({ where: { paymentId: payment.id } })
+      ).resolves.toBe(0);
+    });
+
     it("re-activation: INACTIVE → ACTIVE flips status back to ACTIVE", async () => {
       const { user, branch } = await createTestWorld();
       const student = await createStudent({ branchId: branch.id });
@@ -394,8 +426,10 @@ describe("StudentService Integration", () => {
 
       const unchangedPayment = await testPrisma.payment.findUnique({ where: { id: payment.id } });
       const unchangedStudent = await testPrisma.student.findUnique({ where: { id: student.id } });
+      const auditCount = await testPrisma.auditLog.count({ where: { paymentId: payment.id } });
       expect(unchangedPayment?.status).toBe("DUE");
       expect(unchangedStudent?.status).toBe("ACTIVE");
+      expect(auditCount).toBe(0);
     });
 
   describe("getStudentsByBranch", () => {

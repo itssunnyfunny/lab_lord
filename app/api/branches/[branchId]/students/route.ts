@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { StudentService } from "@/services/student.service";
 import { getSessionUser } from "@/lib/auth";
 import { StudentStatus } from "@/app/generated/prisma/enums";
-import { DueResolution } from "@/types";
+import { isDueResolution } from "@/types";
 import {
     FORM_LIMITS,
     parseIntegerField,
@@ -155,11 +155,16 @@ export async function PATCH(
             return NextResponse.json({ error: "Invalid status" }, { status: 400 });
         }
 
+        const dueResolution = body.dueResolution === undefined ? "KEEP" : body.dueResolution;
+        if (!isDueResolution(dueResolution)) {
+            return NextResponse.json({ error: "Invalid due resolution" }, { status: 400 });
+        }
+
         const student = await StudentService.updateStudentStatus(
             user.id,
             body.id,
             body.status as StudentStatus,
-            (body.dueResolution ?? "KEEP") as DueResolution
+            dueResolution
         );
         return NextResponse.json(student);
     } catch (error: unknown) {
