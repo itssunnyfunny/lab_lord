@@ -1,10 +1,16 @@
 import { prisma } from "@/lib/prisma";
 import {
   getRazorpayClient,
+  resolveRazorpayMode,
+  type RazorpayInvoice,
   type RazorpayPayment,
   type RazorpaySubscription,
 } from "@/lib/razorpay";
-import type { ProviderPaymentMethod, SaasSubscriptionStatus } from "@/app/generated/prisma/client";
+import {
+  BillingPaymentMethodService,
+  normalizeProviderPaymentMethod,
+} from "@/services/billingPaymentMethod.service";
+import type { SaasSubscriptionStatus } from "@/app/generated/prisma/client";
 
 const SUBSCRIPTION_STATUSES = new Set([
   "CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "CANCELLED", "COMPLETED", "EXPIRED",
@@ -15,22 +21,24 @@ function status(value: string): SaasSubscriptionStatus {
   return (SUBSCRIPTION_STATUSES.has(normalized) ? normalized : "PENDING") as SaasSubscriptionStatus;
 }
 
-function paymentMethod(value: string | null | undefined): ProviderPaymentMethod {
-  const normalized = value?.toLowerCase();
-  if (normalized === "card") return "CARD";
-  if (normalized === "upi") return "UPI";
-  if (normalized === "emandate" || normalized === "netbanking") return "EMANDATE";
-  return "UNKNOWN";
-}
-
 function date(value: number | null | undefined) {
   return value && value > 0 ? new Date(value * 1000) : null;
+}
+
+function invoiceBelongsToCurrentPeriod(
+  subscription: RazorpaySubscription,
+  invoice: RazorpayInvoice
+) {
+  const periodStart = subscription.current_start;
+  if (!periodStart || invoice.subscription_id !== subscription.id) return false;
+  const invoiceTimestamp = invoice.issued_at ?? invoice.paid_at;
+  return Boolean(invoiceTimestamp && invoiceTimestamp >= periodStart);
 }
 
 function hasConfirmedPaidPeriod(
   subscription: RazorpaySubscription,
   payment: RazorpayPayment | null,
-  invoicePaid: boolean,
+  invoice: RazorpayInvoice | null,
   now: Date
 ) {
   const periodStart = date(subscription.current_start);
@@ -38,7 +46,13 @@ function hasConfirmedPaidPeriod(
   const captured = payment?.status === "captured" && payment.captured !== false;
   return Boolean(
     periodStart && periodEnd && periodStart <= now && periodEnd > periodStart
-    && (invoicePaid || (captured && payment?.invoice_id))
+    && invoice
+    && invoice.status === "paid"
+    && invoiceBelongsToCurrentPeriod(subscription, invoice)
+    && captured
+    && payment?.subscription_id === subscription.id
+    && payment.invoice_id === invoice.id
+    && invoice.payment_id === payment.id
   );
 }
 
@@ -57,6 +71,16 @@ export class BillingReconciliationService {
     options: { paymentId?: string | null; now?: Date } = {}
   ) {
     const now = options.now ?? new Date();
+    const localBeforeFetch = await prisma.organizationSubscription.findUnique({
+      where: { razorpaySubscriptionId },
+    });
+    if (!localBeforeFetch) throw new Error("Subscription not found");
+    const providerMode = resolveRazorpayMode();
+    if (localBeforeFetch.providerMode !== providerMode) {
+      throw new Error(
+        `Subscription provider mode ${localBeforeFetch.providerMode} cannot be reconciled in ${providerMode} mode`
+      );
+    }
     const razorpay = getRazorpayClient();
     const [providerSubscription, invoices, explicitPayment] = await Promise.all([
       razorpay.fetchSubscription(razorpaySubscriptionId),
@@ -67,22 +91,30 @@ export class BillingReconciliationService {
       throw new Error("Razorpay payment does not belong to this subscription");
     }
     const explicitPaidInvoice = explicitPayment?.invoice_id
-      ? invoices.items.find(invoice => invoice.id === explicitPayment.invoice_id && invoice.status === "paid") ?? null
+      ? invoices.items.find(invoice =>
+          invoice.id === explicitPayment.invoice_id
+          && invoice.status === "paid"
+          && invoiceBelongsToCurrentPeriod(providerSubscription, invoice)
+        ) ?? null
       : null;
     const paidInvoice = explicitPaidInvoice ?? [...invoices.items]
-      .filter(invoice => invoice.status === "paid" && invoice.payment_id)
+      .filter(invoice =>
+        invoice.status === "paid"
+        && invoice.payment_id
+        && invoiceBelongsToCurrentPeriod(providerSubscription, invoice)
+      )
       .sort((a, b) => (b.paid_at ?? 0) - (a.paid_at ?? 0))[0] ?? null;
     const confirmedPayment = explicitPayment
       ?? (paidInvoice?.payment_id ? await razorpay.fetchPayment(paidInvoice.payment_id) : null);
-    const confirmedPaidPeriod = hasConfirmedPaidPeriod(
+    const confirmedMethod = normalizeProviderPaymentMethod(confirmedPayment?.method);
+    const confirmedPaidPeriod = confirmedMethod === "CARD" && hasConfirmedPaidPeriod(
       providerSubscription,
       confirmedPayment,
-      Boolean(paidInvoice),
+      paidInvoice,
       now
     );
-    const confirmedMethod = paymentMethod(confirmedPayment?.method);
 
-    return prisma.$transaction(async tx => {
+    const reconciliation = await prisma.$transaction(async tx => {
       const local = await tx.organizationSubscription.findUnique({
         where: { razorpaySubscriptionId },
       });
@@ -91,9 +123,32 @@ export class BillingReconciliationService {
         SELECT "id" FROM "Organization" WHERE "id" = ${local.organizationId} FOR UPDATE
       `;
 
-      const providerPlan = await tx.saasRazorpayPlan.findUnique({
-        where: { razorpayPlanId: providerSubscription.plan_id },
+      const providerPlan = await tx.saasRazorpayPlan.findFirst({
+        where: {
+          razorpayPlanId: providerSubscription.plan_id,
+          providerMode,
+        },
       });
+      if (providerSubscription.plan_id !== local.razorpayPlanId && !providerPlan) {
+        throw new Error("Razorpay subscription references an unrecognized plan in this provider mode");
+      }
+      const pendingAuthorization = await tx.organizationBillingChange.findFirst({
+        where: {
+          organizationId: local.organizationId,
+          organizationSubscriptionId: local.id,
+          type: "SUBSCRIPTION_AUTHORIZATION",
+          operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
+        },
+        orderBy: { sequence: "desc" },
+      });
+      if (pendingAuthorization && (
+        providerSubscription.plan_id !== local.razorpayPlanId
+        || (pendingAuthorization.toPlan != null && pendingAuthorization.toPlan !== local.plan)
+        || (pendingAuthorization.toQuantity != null
+          && (providerSubscription.quantity ?? 1) !== pendingAuthorization.toQuantity)
+      )) {
+        throw new Error("Razorpay authorization does not match the expected plan and branch quantity");
+      }
       const pendingChange = confirmedPaidPeriod
         ? await tx.organizationBillingChange.findFirst({
             where: {
@@ -163,7 +218,11 @@ export class BillingReconciliationService {
         });
       }
 
-      const paidThrough = confirmedPaidPeriod ? date(providerSubscription.current_end) : local.paidThrough;
+      const providerPaidThrough = confirmedPaidPeriod ? date(providerSubscription.current_end) : null;
+      const paidThrough = providerPaidThrough
+        && (!local.paidThrough || providerPaidThrough > local.paidThrough)
+        ? providerPaidThrough
+        : local.paidThrough;
       const providerSubscriptionStatus = status(providerSubscription.status);
       const providerQuantity = providerSubscription.quantity ?? local.quantity;
       const futureAuthorizationQuantitySynchronized = local.paidThrough == null
@@ -188,10 +247,10 @@ export class BillingReconciliationService {
           providerStartAt: date(providerSubscription.start_at),
           authorizationExpiresAt: date(providerSubscription.expire_by),
           providerPaymentMethod: confirmedPayment
-            ? paymentMethod(confirmedPayment.method)
-            : paymentMethod(providerSubscription.payment_method) === "UNKNOWN"
+            ? normalizeProviderPaymentMethod(confirmedPayment.method)
+            : normalizeProviderPaymentMethod(providerSubscription.payment_method) === "UNKNOWN"
               ? local.providerPaymentMethod
-              : paymentMethod(providerSubscription.payment_method),
+              : normalizeProviderPaymentMethod(providerSubscription.payment_method),
           currentStart: date(providerSubscription.current_start),
           currentEnd: date(providerSubscription.current_end),
           chargeAt: date(providerSubscription.charge_at),
@@ -238,6 +297,7 @@ export class BillingReconciliationService {
               organizationId: local.organizationId,
               billingOfferId: local.billingOfferId,
               status: "RESERVED",
+              billingOffer: { providerMode },
             },
             data: { status: "REDEEMED", redeemedAt: now },
           });
@@ -272,5 +332,20 @@ export class BillingReconciliationService {
 
       return { subscription: stored, confirmedPaidPeriod, payment: confirmedPayment, invoices };
     });
+
+    const cardOnly = await BillingPaymentMethodService.enforceCardOnly({
+      organizationId: reconciliation.subscription.organizationId,
+      organizationSubscriptionId: reconciliation.subscription.id,
+      razorpaySubscriptionId: reconciliation.subscription.razorpaySubscriptionId,
+      paymentMethod: reconciliation.subscription.providerPaymentMethod,
+      paymentId: reconciliation.payment?.id,
+      now,
+    });
+    if (!cardOnly.enforced) return reconciliation;
+
+    const subscription = await prisma.organizationSubscription.findUniqueOrThrow({
+      where: { id: reconciliation.subscription.id },
+    });
+    return { ...reconciliation, subscription };
   }
 }

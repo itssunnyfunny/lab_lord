@@ -4,11 +4,13 @@ import { BILLING_PLANS, getActiveBillingPlan, getBillingPlan, publicBillingPlans
 import {
   getRazorpayClient,
   getRazorpayKeyId,
+  resolveRazorpayMode,
   sha256Hex,
   toRazorpaySubunits,
   verifyRazorpaySubscriptionSignature,
   verifyRazorpayWebhookSignature,
   type RazorpayPayment,
+  type RazorpayInvoice,
   type RazorpaySubscription,
 } from "@/lib/razorpay";
 import { OrganizationService } from "@/services/organization.service";
@@ -16,6 +18,12 @@ import { EntitlementService } from "@/services/entitlement.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BillingMutationService } from "@/services/billingMutation.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
+import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
+import {
+  BillingPaymentMethodService,
+  normalizeProviderPaymentMethod,
+} from "@/services/billingPaymentMethod.service";
+import { assertRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
 import type { OrganizationSubscription, OrganizationSubscriptionHistory, Prisma } from "@/app/generated/prisma/client";
 import type { SaasPlan, SaasSubscriptionHistorySource, SaasSubscriptionStatus } from "@/types";
 
@@ -58,6 +66,9 @@ const ACTIVE_AUTHORIZATION_OPERATION_STATUSES = [
   "AWAITING_PROVIDER_CONFIRMATION",
 ] as const;
 const PROVIDER_CONFIRMED_OPERATION_STATUSES = ["APPLIED", "SCHEDULED"] as const;
+const CHECKOUT_MUTATION_LEASE_MS = 2 * 60 * 1000;
+const CHECKOUT_MUTATION_WAIT_MS = 15 * 1000;
+const CHECKOUT_MUTATION_POLL_MS = 100;
 const VALID_STATUSES = new Set<SaasSubscriptionStatus>([
   "CREATED",
   "AUTHENTICATED",
@@ -69,7 +80,110 @@ const VALID_STATUSES = new Set<SaasSubscriptionStatus>([
   "EXPIRED",
 ]);
 function razorpayTestMode() {
-  return getRazorpayKeyId().startsWith("rzp_test_");
+  return resolveRazorpayMode() === "TEST";
+}
+
+async function claimCheckoutMutationLease(organizationId: string) {
+  const deadline = Date.now() + CHECKOUT_MUTATION_WAIT_MS;
+  while (Date.now() < deadline) {
+    const leaseToken = crypto.randomUUID();
+    const now = new Date();
+    const claimed = await prisma.$transaction(async tx => {
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Organization" WHERE "id" = ${organizationId} FOR UPDATE
+      `;
+      if (locked.length === 0) throw new Error("Organization not found");
+      const organization = await tx.organization.findUniqueOrThrow({
+        where: { id: organizationId },
+        select: { billingMutationLeaseToken: true, billingMutationLeaseUntil: true },
+      });
+      if (
+        organization.billingMutationLeaseToken
+        || (organization.billingMutationLeaseUntil && organization.billingMutationLeaseUntil > now)
+      ) {
+        return false;
+      }
+      await tx.organization.update({
+        where: { id: organizationId },
+        data: {
+          billingMutationLeaseToken: leaseToken,
+          billingMutationLeaseUntil: new Date(now.getTime() + CHECKOUT_MUTATION_LEASE_MS),
+        },
+      });
+      return true;
+    });
+    if (claimed) return leaseToken;
+    await new Promise(resolve => setTimeout(resolve, CHECKOUT_MUTATION_POLL_MS));
+  }
+  throw new Error("Another billing operation is still processing; retry shortly");
+}
+
+async function releaseCheckoutMutationLease(organizationId: string, leaseToken: string) {
+  await prisma.organization.updateMany({
+    where: { id: organizationId, billingMutationLeaseToken: leaseToken },
+    data: { billingMutationLeaseToken: null, billingMutationLeaseUntil: null },
+  });
+}
+
+function assertSubscriptionProviderMode(
+  subscription: Pick<OrganizationSubscription, "providerMode"> | null | undefined,
+  providerMode: ReturnType<typeof resolveRazorpayMode>
+) {
+  if (subscription && subscription.providerMode !== providerMode) {
+    throw new Error(
+      `This subscription belongs to Razorpay ${subscription.providerMode} mode and cannot be used in ${providerMode} mode`
+    );
+  }
+}
+
+async function reconcileLocallyCancelledCheckout(
+  organizationId: string,
+  razorpaySubscriptionId: string,
+  event: "checkout_replacement_failed" | "checkout_persistence_failed"
+) {
+  await prisma.$transaction(async tx => {
+    await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Organization" WHERE "id" = ${organizationId} FOR UPDATE
+    `;
+    const now = new Date();
+    const reservedGrant = await tx.organizationOfferGrant.findFirst({
+      where: {
+        organizationId,
+        status: "RESERVED",
+        subscriptionId: razorpaySubscriptionId,
+      },
+      include: { billingOffer: true },
+    });
+    if (reservedGrant) {
+      await tx.organizationOfferGrant.update({
+        where: { id: reservedGrant.id },
+        data: {
+          status: offerGrantIsEligibleAt(reservedGrant, now) ? "ELIGIBLE" : "EXPIRED",
+          reservedAt: null,
+          subscriptionId: null,
+        },
+      });
+    }
+
+    const current = await tx.organizationSubscription.findFirst({
+      where: { organizationId, razorpaySubscriptionId },
+    });
+    if (!current || TERMINAL_STATUSES.has(current.status)) return;
+    const stored = await tx.organizationSubscription.update({
+      where: { id: current.id },
+      data: {
+        status: "CANCELLED",
+        cancelAtCycleEnd: false,
+        cancelledAt: now,
+        endedAt: now,
+      },
+    });
+    await recordSubscriptionHistory(tx, stored, {
+      source: "SYSTEM",
+      fromStatus: current.status,
+      event,
+    });
+  });
 }
 
 function cardOnlyCheckoutConfig() {
@@ -504,6 +618,7 @@ export class BillingService {
 
   static async listPlansForOrganization(userId: string, organizationId: string) {
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const providerMode = resolveRazorpayMode();
     const [subscription, history, entitlements, invoices, scheduledChanges, ownerTrialGrant, offerGrant, experience] = await Promise.all([
       prisma.organizationSubscription.findUnique({ where: { organizationId } }),
       prisma.organizationSubscriptionHistory.findMany({
@@ -523,12 +638,17 @@ export class BillingService {
       }),
       prisma.ownerTrialGrant.findUnique({ where: { ownerId: userId } }),
       prisma.organizationOfferGrant.findFirst({
-        where: { organizationId, status: { in: ["ELIGIBLE", "RESERVED"] } },
+        where: {
+          organizationId,
+          status: { in: ["ELIGIBLE", "RESERVED"] },
+          billingOffer: { providerMode },
+        },
         include: { billingOffer: true },
         orderBy: { billingOffer: { priority: "desc" } },
       }),
       BillingExperienceService.getBillingExperience(organizationId, userId),
     ]);
+    assertSubscriptionProviderMode(subscription, providerMode);
 
     const organizationTrial = organization.ownerTrialGrant;
     const ownerTrialClaimable = ownerTrialGrant?.status === "AVAILABLE"
@@ -567,12 +687,11 @@ export class BillingService {
   }
 
   static async createSubscriptionCheckout(userId: string, organizationId: string, input: CheckoutInput) {
+    assertRazorpayBillingWritesEnabled(organizationId);
     const selectedPlan = getActiveBillingPlan(input.plan);
     const org = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
-    await prisma.organization.update({
-      where: { id: organizationId },
-      data: { selectedPostTrialPlan: selectedPlan.id as SaasPlan },
-    });
+    const providerMode = resolveRazorpayMode();
+    assertSubscriptionProviderMode(org.subscription, providerMode);
     const workspaceBilling = org.billingModelVersion === "WORKSPACE_V2";
     const quantity = workspaceBilling
       ? await prisma.branch.count({
@@ -580,6 +699,18 @@ export class BillingService {
         })
       : 1;
     if (quantity < 1) throw new Error("At least one billable branch is required");
+    const razorpayPlan = await ensureRazorpayPlanCatalogEntry({
+      plan: selectedPlan.id as SaasPlan,
+      name: selectedPlan.name,
+      description: selectedPlan.description,
+      amount: selectedPlan.amount ?? 0,
+      currency: selectedPlan.currency,
+      period: selectedPlan.period,
+      interval: selectedPlan.interval,
+    });
+    if (razorpayPlan.providerMode !== providerMode) {
+      throw new Error("Razorpay plan catalog mode mismatch");
+    }
     const now = new Date();
     const trialEndsAt = workspaceBilling
       && org.ownerTrialGrant?.status === "ACTIVE"
@@ -595,7 +726,9 @@ export class BillingService {
         operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
         toQuantity: quantity,
         organizationSubscription: {
+          providerMode,
           plan: selectedPlan.id as SaasPlan,
+          razorpayPlanId: razorpayPlan.razorpayPlanId,
           quantity,
           status: { in: ["CREATED", "AUTHENTICATED"] },
         },
@@ -604,143 +737,208 @@ export class BillingService {
       orderBy: { sequence: "desc" },
     });
     if (openAuthorization?.organizationSubscription) {
+      await prisma.organization.update({
+        where: { id: organizationId },
+        data: { selectedPostTrialPlan: selectedPlan.id as SaasPlan },
+      });
       return this.toCheckoutPayload(org, openAuthorization.organizationSubscription, selectedPlan, openAuthorization);
     }
-    const reservedOfferGrant = workspaceBilling && org.subscription?.status === "CREATED"
-      ? await prisma.organizationOfferGrant.findFirst({
-          where: {
-            organizationId,
-            status: "RESERVED",
-            subscriptionId: org.subscription.razorpaySubscriptionId,
-            OR: [{ eligibleFrom: null }, { eligibleFrom: { lte: now } }],
-            AND: [{ OR: [{ eligibleUntil: null }, { eligibleUntil: { gt: now } }] }],
-            billingOffer: {
-              active: true,
-              plan: selectedPlan.id as SaasPlan,
-              OR: [{ validFrom: null }, { validFrom: { lte: now } }],
-              AND: [{ OR: [{ validUntil: null }, { validUntil: { gt: now } }] }],
-            },
-          },
-          include: { billingOffer: true },
-          orderBy: { billingOffer: { priority: "desc" } },
-        })
-      : null;
-    const offerGrant = reservedOfferGrant ?? (workspaceBilling
-      ? await prisma.organizationOfferGrant.findFirst({
-          where: {
-            organizationId,
-            status: "ELIGIBLE",
-            OR: [{ eligibleFrom: null }, { eligibleFrom: { lte: now } }],
-            AND: [{ OR: [{ eligibleUntil: null }, { eligibleUntil: { gt: now } }] }],
-            billingOffer: {
-              active: true,
-              plan: selectedPlan.id as SaasPlan,
-              OR: [{ validFrom: null }, { validFrom: { lte: now } }],
-              AND: [{ OR: [{ validUntil: null }, { validUntil: { gt: now } }] }],
-            },
-          },
-          include: { billingOffer: true },
-          orderBy: { billingOffer: { priority: "desc" } },
-        })
-      : null);
-    const razorpayPlan = await this.ensureRazorpayPlan(selectedPlan);
+    const leaseToken = await claimCheckoutMutationLease(organizationId);
     const razorpay = getRazorpayClient();
+    let replacedProviderSubscriptionId: string | null = null;
     let createdGatewaySubscriptionId: string | null = null;
-    const supersededSubscription = { current: null as OrganizationSubscription | null };
-    let subscription: OrganizationSubscription;
+    let persistedGatewaySubscription = false;
 
     try {
-      subscription = await prisma.$transaction(async tx => {
-        const lockedOrganizations = await tx.$queryRaw<Array<{ id: string }>>`
-          SELECT "id"
-          FROM "Organization"
-          WHERE "id" = ${organizationId}
-          FOR UPDATE
-        `;
-        if (lockedOrganizations.length === 0) throw new Error("Organization not found");
+      const existing = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
+      assertSubscriptionProviderMode(existing, providerMode);
 
-        const existing = await tx.organizationSubscription.findUnique({
-          where: { organizationId },
+      const authorization = await prisma.organizationBillingChange.findFirst({
+        where: {
+          organizationId,
+          type: "SUBSCRIPTION_AUTHORIZATION",
+          operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+          toQuantity: quantity,
+          organizationSubscription: {
+            providerMode,
+            plan: selectedPlan.id as SaasPlan,
+            razorpayPlanId: razorpayPlan.razorpayPlanId,
+            quantity,
+            status: { in: ["CREATED", "AUTHENTICATED"] },
+          },
+        },
+        include: { organizationSubscription: true },
+        orderBy: { sequence: "desc" },
+      });
+      if (authorization?.organizationSubscription) {
+        await prisma.organization.update({
+          where: { id: organizationId },
+          data: { selectedPostTrialPlan: selectedPlan.id as SaasPlan },
         });
+        return this.toCheckoutPayload(org, authorization.organizationSubscription, selectedPlan, authorization);
+      }
 
-        if (existing) {
-          if (
-            existing.plan === selectedPlan.id
-            && existing.quantity === quantity
-            && CHECKOUT_REUSABLE_STATUSES.has(existing.status)
-          ) {
-            return existing;
+      if (existing) {
+        if (
+          existing.plan === selectedPlan.id
+          && existing.razorpayPlanId === razorpayPlan.razorpayPlanId
+          && existing.quantity === quantity
+          && CHECKOUT_REUSABLE_STATUSES.has(existing.status)
+        ) {
+          await prisma.organization.update({
+            where: { id: organizationId },
+            data: { selectedPostTrialPlan: selectedPlan.id as SaasPlan },
+          });
+          const operation = await enqueueAuthorizationOperation({
+            organizationId,
+            subscriptionId: existing.id,
+            expectedProviderSubscriptionId: existing.razorpaySubscriptionId,
+            idempotencyPrefix: "subscription-authorization",
+            fromPlan: existing.plan,
+            toPlan: selectedPlan.id as SaasPlan,
+            fromQuantity: existing.quantity,
+            toQuantity: quantity,
+            createdByUserId: userId,
+            returnPath,
+            now: new Date(),
+          });
+          return this.toCheckoutPayload(org, existing, selectedPlan, operation);
+        }
+        if (existing.status !== "CREATED" && !TERMINAL_STATUSES.has(existing.status)) {
+          if (existing.plan === selectedPlan.id) {
+            throw new Error(`This organization already has a ${existing.status.toLowerCase()} ${selectedPlan.shortName} subscription`);
           }
+          throw new Error("Cancel or complete the current subscription before changing plans");
+        }
+      }
 
-          if (existing.status === "CREATED") {
-            const cancelledGatewaySubscription = await razorpay.cancelSubscription(
-              existing.razorpaySubscriptionId,
-              { cancel_at_cycle_end: false }
-            );
-            if (cancelledGatewaySubscription.id !== existing.razorpaySubscriptionId) {
-              throw new Error("Razorpay subscription mismatch while replacing checkout");
-            }
-            const supersededAt = new Date();
-            await tx.organizationBillingChange.updateMany({
-              where: {
-                organizationId,
-                organizationSubscriptionId: existing.id,
-                type: "SUBSCRIPTION_AUTHORIZATION",
-                operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+      const checkoutNow = new Date();
+      const reservedOfferGrant = workspaceBilling && existing?.status === "CREATED"
+        ? await prisma.organizationOfferGrant.findFirst({
+            where: {
+              organizationId,
+              status: "RESERVED",
+              subscriptionId: existing.razorpaySubscriptionId,
+              OR: [{ eligibleFrom: null }, { eligibleFrom: { lte: checkoutNow } }],
+              AND: [{ OR: [{ eligibleUntil: null }, { eligibleUntil: { gt: checkoutNow } }] }],
+              billingOffer: {
+                providerMode,
+                active: true,
+                plan: selectedPlan.id as SaasPlan,
+                OR: [{ validFrom: null }, { validFrom: { lte: checkoutNow } }],
+                AND: [{ OR: [{ validUntil: null }, { validUntil: { gt: checkoutNow } }] }],
               },
+            },
+            include: { billingOffer: true },
+            orderBy: { billingOffer: { priority: "desc" } },
+          })
+        : null;
+      const offerGrant = reservedOfferGrant ?? (workspaceBilling
+        ? await prisma.organizationOfferGrant.findFirst({
+            where: {
+              organizationId,
+              status: "ELIGIBLE",
+              OR: [{ eligibleFrom: null }, { eligibleFrom: { lte: checkoutNow } }],
+              AND: [{ OR: [{ eligibleUntil: null }, { eligibleUntil: { gt: checkoutNow } }] }],
+              billingOffer: {
+                providerMode,
+                active: true,
+                plan: selectedPlan.id as SaasPlan,
+                OR: [{ validFrom: null }, { validFrom: { lte: checkoutNow } }],
+                AND: [{ OR: [{ validUntil: null }, { validUntil: { gt: checkoutNow } }] }],
+              },
+            },
+            include: { billingOffer: true },
+            orderBy: { billingOffer: { priority: "desc" } },
+          })
+        : null);
+
+      if (existing?.status === "CREATED") {
+        const cancelled = await razorpay.cancelSubscription(existing.razorpaySubscriptionId, {
+          cancel_at_cycle_end: false,
+        });
+        if (cancelled.id !== existing.razorpaySubscriptionId) {
+          throw new Error("Razorpay subscription mismatch while replacing checkout");
+        }
+        replacedProviderSubscriptionId = existing.razorpaySubscriptionId;
+      }
+
+      const totalCount = getSubscriptionCycles();
+      const gatewaySubscription = await razorpay.createSubscription({
+        plan_id: razorpayPlan.razorpayPlanId,
+        total_count: totalCount,
+        quantity,
+        customer_notify: true,
+        start_at: trialEndsAt ? Math.floor(trialEndsAt.getTime() / 1000) : undefined,
+        offer_id: offerGrant?.billingOffer.razorpayOfferId,
+        notes: {
+          app: "lab_lords",
+          billing_type: "saas_subscription",
+          organization_id: organizationId,
+          provider_mode: providerMode,
+          plan: selectedPlan.id,
+        },
+      });
+      createdGatewaySubscriptionId = gatewaySubscription.id;
+      if (gatewaySubscription.plan_id !== razorpayPlan.razorpayPlanId) {
+        throw new Error("Razorpay subscription plan mismatch during checkout creation");
+      }
+
+      const subscription = await prisma.$transaction(async tx => {
+        const leaseOwner = await tx.organization.findFirst({
+          where: { id: organizationId, billingMutationLeaseToken: leaseToken },
+          select: { id: true },
+        });
+        if (!leaseOwner) throw new Error("Billing mutation lease expired before checkout could be saved");
+        await tx.organization.update({
+          where: { id: organizationId },
+          data: { selectedPostTrialPlan: selectedPlan.id as SaasPlan },
+        });
+        const current = await tx.organizationSubscription.findUnique({ where: { organizationId } });
+        if ((current?.id ?? null) !== (existing?.id ?? null)
+          || (current?.razorpaySubscriptionId ?? null) !== (existing?.razorpaySubscriptionId ?? null)) {
+          throw new Error("Subscription changed while checkout was being created");
+        }
+
+        if (existing?.status === "CREATED") {
+          const supersededAt = new Date();
+          await tx.organizationBillingChange.updateMany({
+            where: {
+              organizationId,
+              organizationSubscriptionId: existing.id,
+              type: "SUBSCRIPTION_AUTHORIZATION",
+              operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+            },
+            data: {
+              status: "SUPERSEDED",
+              operationStatus: "ABANDONED",
+              lastError: "Superseded by a newer plan authorization request",
+              resolvedAt: supersededAt,
+            },
+          });
+          const previousReservedGrant = await tx.organizationOfferGrant.findFirst({
+            where: {
+              organizationId,
+              status: "RESERVED",
+              subscriptionId: existing.razorpaySubscriptionId,
+            },
+            include: { billingOffer: true },
+          });
+          if (previousReservedGrant && previousReservedGrant.id !== offerGrant?.id) {
+            await tx.organizationOfferGrant.update({
+              where: { id: previousReservedGrant.id },
               data: {
-                status: "SUPERSEDED",
-                operationStatus: "ABANDONED",
-                lastError: "Superseded by a newer plan authorization request",
-                resolvedAt: supersededAt,
+                status: offerGrantIsEligibleAt(previousReservedGrant, checkoutNow) ? "ELIGIBLE" : "EXPIRED",
+                reservedAt: null,
+                subscriptionId: null,
               },
             });
-            const previousReservedGrant = await tx.organizationOfferGrant.findFirst({
-              where: {
-                organizationId,
-                status: "RESERVED",
-                subscriptionId: existing.razorpaySubscriptionId,
-              },
-              include: { billingOffer: true },
-            });
-            if (previousReservedGrant && previousReservedGrant.id !== offerGrant?.id) {
-              await tx.organizationOfferGrant.update({
-                where: { id: previousReservedGrant.id },
-                data: {
-                  status: offerGrantIsEligibleAt(previousReservedGrant, now) ? "ELIGIBLE" : "EXPIRED",
-                  reservedAt: null,
-                  subscriptionId: null,
-                },
-              });
-            }
-            supersededSubscription.current = existing;
-          } else if (!TERMINAL_STATUSES.has(existing.status)) {
-            if (existing.plan === selectedPlan.id) {
-              throw new Error(`This organization already has a ${existing.status.toLowerCase()} ${selectedPlan.shortName} subscription`);
-            }
-            throw new Error("Cancel or complete the current subscription before changing plans");
           }
         }
 
-        const totalCount = getSubscriptionCycles();
-        const gatewaySubscription = await razorpay.createSubscription({
-          plan_id: razorpayPlan.razorpayPlanId,
-          total_count: totalCount,
-          quantity,
-          customer_notify: true,
-          start_at: trialEndsAt ? Math.floor(trialEndsAt.getTime() / 1000) : undefined,
-          offer_id: offerGrant?.billingOffer.razorpayOfferId,
-          notes: {
-            app: "lab_lords",
-            billing_type: "saas_subscription",
-            organization_id: organizationId,
-            plan: selectedPlan.id,
-          },
-        });
-        createdGatewaySubscriptionId = gatewaySubscription.id;
-
         const recordData = {
           organizationId,
+          providerMode,
           plan: selectedPlan.id as SaasPlan,
           amount: selectedPlan.amount ?? 0,
           amountSubunits: toRazorpaySubunits(selectedPlan.amount ?? 0, selectedPlan.currency),
@@ -753,10 +951,17 @@ export class BillingService {
           razorpaySubscriptionId: gatewaySubscription.id,
           razorpayCustomerId: gatewaySubscription.customer_id ?? null,
           status: mapSubscriptionStatus(gatewaySubscription.status),
+          authPaymentId: null,
           providerStartAt: timestampToDate(gatewaySubscription.start_at) ?? trialEndsAt,
           authorizationExpiresAt: timestampToDate(gatewaySubscription.expire_by) ?? null,
           providerPaymentMethod: "UNKNOWN" as const,
+          paidThrough: null,
+          lastConfirmedInvoiceId: null,
+          lastConfirmedPaymentId: null,
+          lastPaymentConfirmedAt: null,
+          authorizationLapsedAt: null,
           billingOfferId: offerGrant?.billingOfferId ?? null,
+          lastReconciledAt: null,
           currentStart: timestampToDate(gatewaySubscription.current_start) ?? null,
           currentEnd: timestampToDate(gatewaySubscription.current_end) ?? null,
           chargeAt: timestampToDate(gatewaySubscription.charge_at) ?? null,
@@ -767,28 +972,28 @@ export class BillingService {
           cancelledAt: null,
           createdByUserId: userId,
         };
+        const stored = current
+          ? await tx.organizationSubscription.update({ where: { id: current.id }, data: recordData })
+          : await tx.organizationSubscription.create({ data: recordData });
 
-        const stored = await (existing
-          ? tx.organizationSubscription.update({
-            where: { organizationId },
-            data: recordData,
-          })
-          : tx.organizationSubscription.create({
-            data: recordData,
-          }));
-        if (supersededSubscription.current) {
+        if (existing?.status === "CREATED") {
           await tx.organizationSubscriptionHistory.create({
             data: {
               organizationId,
               organizationSubscriptionId: stored.id,
-              razorpaySubscriptionId: supersededSubscription.current.razorpaySubscriptionId,
-              plan: supersededSubscription.current.plan,
-              fromStatus: supersededSubscription.current.status,
+              razorpaySubscriptionId: existing.razorpaySubscriptionId,
+              plan: existing.plan,
+              fromStatus: existing.status,
               toStatus: "CANCELLED",
               source: "SYSTEM",
               event: "checkout_replaced",
-              amountSubunits: supersededSubscription.current.amountSubunits,
-              currency: supersededSubscription.current.currency,
+              amountSubunits: existing.amountSubunits,
+              quantity: existing.quantity,
+              unitAmountSubunits: existing.amountSubunits,
+              totalAmountSubunits: existing.amountSubunits * existing.quantity,
+              paidThrough: existing.paidThrough,
+              dedupeKey: `SYSTEM:${existing.razorpaySubscriptionId}:checkout_replaced:CANCELLED`,
+              currency: existing.currency,
             },
           });
         }
@@ -799,21 +1004,38 @@ export class BillingService {
         if (offerGrant) {
           await tx.organizationOfferGrant.update({
             where: { id: offerGrant.id },
-            data: {
-              status: "RESERVED",
-              reservedAt: new Date(),
-              subscriptionId: gatewaySubscription.id,
-            },
+            data: { status: "RESERVED", reservedAt: new Date(), subscriptionId: gatewaySubscription.id },
           });
         }
         return stored;
-      }, { maxWait: 10_000, timeout: 30_000 });
+      });
+      persistedGatewaySubscription = true;
+
+      const operation = await enqueueAuthorizationOperation({
+        organizationId,
+        subscriptionId: subscription.id,
+        expectedProviderSubscriptionId: subscription.razorpaySubscriptionId,
+        idempotencyPrefix: "subscription-authorization",
+        fromPlan: existing?.plan ?? null,
+        toPlan: selectedPlan.id as SaasPlan,
+        fromQuantity: existing?.quantity ?? null,
+        toQuantity: quantity,
+        createdByUserId: userId,
+        returnPath,
+        now: new Date(),
+      });
+      return this.toCheckoutPayload(org, subscription, selectedPlan, operation);
     } catch (error) {
       if (createdGatewaySubscriptionId) {
         try {
-          await razorpay.cancelSubscription(createdGatewaySubscriptionId, {
-            cancel_at_cycle_end: false,
-          });
+          await razorpay.cancelSubscription(createdGatewaySubscriptionId, { cancel_at_cycle_end: false });
+          if (persistedGatewaySubscription) {
+            await reconcileLocallyCancelledCheckout(
+              organizationId,
+              createdGatewaySubscriptionId,
+              "checkout_persistence_failed"
+            );
+          }
         } catch (compensationError) {
           console.error("[SAAS_SUBSCRIPTION_COMPENSATION_FAILED]", {
             organizationId,
@@ -822,86 +1044,25 @@ export class BillingService {
           });
         }
       }
-      const replacedSubscription = supersededSubscription.current;
-      if (replacedSubscription) {
+      if (replacedProviderSubscriptionId && !persistedGatewaySubscription) {
         try {
-          await prisma.$transaction(async tx => {
-            await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT "id"
-              FROM "Organization"
-              WHERE "id" = ${organizationId}
-              FOR UPDATE
-            `;
-            const current = await tx.organizationSubscription.findUnique({
-              where: { id: replacedSubscription.id },
-            });
-            const reservedGrant = await tx.organizationOfferGrant.findFirst({
-              where: {
-                organizationId,
-                status: "RESERVED",
-                subscriptionId: replacedSubscription.razorpaySubscriptionId,
-              },
-              include: { billingOffer: true },
-            });
-            const compensationAt = new Date();
-            if (reservedGrant) {
-              await tx.organizationOfferGrant.update({
-                where: { id: reservedGrant.id },
-                data: {
-                  status: offerGrantIsEligibleAt(reservedGrant, compensationAt) ? "ELIGIBLE" : "EXPIRED",
-                  reservedAt: null,
-                  subscriptionId: null,
-                },
-              });
-            }
-            if (
-              !current
-              || current.status !== "CREATED"
-              || current.razorpaySubscriptionId !== replacedSubscription.razorpaySubscriptionId
-            ) return;
-
-            const cancelledAt = compensationAt;
-            const stored = await tx.organizationSubscription.update({
-              where: { id: current.id },
-              data: {
-                status: "CANCELLED",
-                cancelAtCycleEnd: false,
-                cancelledAt,
-                endedAt: cancelledAt,
-              },
-            });
-            await recordSubscriptionHistory(tx, stored, {
-              source: "SYSTEM",
-              fromStatus: current.status,
-              event: "checkout_replacement_failed",
-            });
-          });
+          await reconcileLocallyCancelledCheckout(
+            organizationId,
+            replacedProviderSubscriptionId,
+            "checkout_replacement_failed"
+          );
         } catch (reconciliationError) {
           console.error("[SAAS_SUBSCRIPTION_REPLACEMENT_RECONCILIATION_FAILED]", {
             organizationId,
-            razorpaySubscriptionId: replacedSubscription.razorpaySubscriptionId,
+            razorpaySubscriptionId: replacedProviderSubscriptionId,
             error: reconciliationError,
           });
         }
       }
       throw error;
+    } finally {
+      await releaseCheckoutMutationLease(organizationId, leaseToken);
     }
-
-    const operation = await enqueueAuthorizationOperation({
-      organizationId,
-      subscriptionId: subscription.id,
-      expectedProviderSubscriptionId: subscription.razorpaySubscriptionId,
-      idempotencyPrefix: "subscription-authorization",
-      fromPlan: org.subscription?.plan ?? null,
-      toPlan: selectedPlan.id as SaasPlan,
-      fromQuantity: org.subscription?.quantity ?? null,
-      toQuantity: quantity,
-      createdByUserId: userId,
-      returnPath,
-      now,
-    });
-
-    return this.toCheckoutPayload(org, subscription, selectedPlan, operation);
   }
 
   static async verifySubscriptionSuccess(
@@ -910,6 +1071,7 @@ export class BillingService {
     input: VerifySubscriptionInput
   ) {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const providerMode = resolveRazorpayMode();
     if (typeof input.changeId !== "string" || !input.changeId.trim()) {
       throw new Error("Missing billing change id");
     }
@@ -924,6 +1086,7 @@ export class BillingService {
     if (isProviderConfirmedOperationStatus(change.operationStatus)) {
       const current = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
       if (!current) throw new Error("Subscription not found");
+      assertSubscriptionProviderMode(current, providerMode);
       return {
         verified: true as const,
         operation: serializeBillingOperation(change),
@@ -948,6 +1111,7 @@ export class BillingService {
       where: { organizationId, razorpaySubscriptionId: subscriptionId },
     });
     if (!subscription) throw new Error("Subscription does not belong to this organization");
+    assertSubscriptionProviderMode(subscription, providerMode);
     const recoveryConfirmation = ["PENDING", "HALTED"].includes(subscription.status);
     if (change.organizationSubscriptionId !== subscription.id) {
       throw new Error("Billing operation subscription mismatch");
@@ -1032,30 +1196,13 @@ export class BillingService {
     if (!isSuccessfulPayment(gatewayPayment)) {
       throw new Error("Razorpay payment has not been authorized");
     }
-    if (gatewayPayment.method !== "card") {
-      await getRazorpayClient().cancelSubscription(subscriptionId, { cancel_at_cycle_end: false });
-      await prisma.organizationSubscription.update({
-        where: { id: subscription.id },
-        data: {
-          providerPaymentMethod: gatewayPayment.method === "upi" ? "UPI" : "EMANDATE",
-          status: "CANCELLED",
-          cancelledAt: new Date(),
-        },
-      });
-      await prisma.organizationBillingChange.updateMany({
-        where: {
-          id: change.id,
-          operationStatus: { notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES] },
-        },
-        data: {
-          status: "FAILED",
-          operationStatus: "DECLINED",
-          failureCategory: "UNSUPPORTED_PAYMENT_METHOD",
-          failureCode: gatewayPayment.method,
-          lastError: "V1 recurring subscriptions require card authorization",
-          declinedAt: new Date(),
-          resolvedAt: new Date(),
-        },
+    if (normalizeProviderPaymentMethod(gatewayPayment.method) !== "CARD") {
+      await BillingPaymentMethodService.enforceCardOnly({
+        organizationId,
+        organizationSubscriptionId: subscription.id,
+        razorpaySubscriptionId: subscriptionId,
+        paymentMethod: gatewayPayment.method,
+        paymentId,
       });
       throw new Error("V1 recurring subscriptions require card authorization");
     }
@@ -1147,25 +1294,25 @@ export class BillingService {
     userId: string,
     organizationId: string
   ) {
+    assertRazorpayBillingWritesEnabled(organizationId);
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
-
+    const providerMode = resolveRazorpayMode();
+    const leaseToken = await claimCheckoutMutationLease(organizationId);
     const razorpay = getRazorpayClient();
-    const updated = await prisma.$transaction(async tx => {
-      await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id"
-        FROM "Organization"
-        WHERE "id" = ${organizationId}
-        FOR UPDATE
-      `;
-      const subscription = await tx.organizationSubscription.findUnique({
-        where: { organizationId },
-      });
+    let providerCancellationSubmitted = false;
+    try {
+      const subscription = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
       if (!subscription) throw new Error("Subscription not found");
+      assertSubscriptionProviderMode(subscription, providerMode);
       if (TERMINAL_STATUSES.has(subscription.status)) {
         throw new Error("Subscription has already ended");
       }
       if (subscription.cancelAtCycleEnd) {
-        return subscription;
+        return {
+          cancelled: TERMINAL_STATUSES.has(subscription.status),
+          scheduled: subscription.cancelAtCycleEnd,
+          subscription: serializeSubscription(subscription),
+        };
       }
       if (subscription.status !== "ACTIVE") {
         throw new Error("Only an active subscription can be cancelled at the end of its billing cycle");
@@ -1175,40 +1322,71 @@ export class BillingService {
         subscription.razorpaySubscriptionId,
         { cancel_at_cycle_end: true }
       );
+      providerCancellationSubmitted = true;
       if (gatewaySubscription.id !== subscription.razorpaySubscriptionId) {
         throw new Error("Razorpay subscription mismatch during cancellation");
       }
 
-      const snapshot = subscriptionSnapshotData(gatewaySubscription);
-      const gatewayStatus = mapSubscriptionStatus(gatewaySubscription.status);
-      const cancellationRequestedAt = new Date();
-      const cancelledImmediately = TERMINAL_STATUSES.has(gatewayStatus);
-      const stored = await tx.organizationSubscription.update({
-        where: { id: subscription.id },
-        data: {
-          ...snapshot,
-          cancelAtCycleEnd: !cancelledImmediately,
-          cancellationRequestedAt,
-          cancellationScheduledAt:
-            timestampToDate(gatewaySubscription.change_scheduled_at) ?? subscription.currentEnd,
-          cancelledAt: cancelledImmediately
-            ? timestampToDate(gatewaySubscription.ended_at) ?? cancellationRequestedAt
-            : null,
-        },
+      const updated = await prisma.$transaction(async tx => {
+        const leaseOwner = await tx.organization.findFirst({
+          where: { id: organizationId, billingMutationLeaseToken: leaseToken },
+          select: { id: true },
+        });
+        if (!leaseOwner) throw new Error("Billing mutation lease expired before cancellation could be saved");
+        const current = await tx.organizationSubscription.findUnique({ where: { organizationId } });
+        if (!current || current.id !== subscription.id
+          || current.razorpaySubscriptionId !== subscription.razorpaySubscriptionId) {
+          throw new Error("Subscription changed while cancellation was being submitted");
+        }
+        assertSubscriptionProviderMode(current, providerMode);
+        const snapshot = subscriptionSnapshotData(gatewaySubscription);
+        const gatewayStatus = mapSubscriptionStatus(gatewaySubscription.status);
+        const cancellationRequestedAt = new Date();
+        const cancelledImmediately = TERMINAL_STATUSES.has(gatewayStatus);
+        const stored = await tx.organizationSubscription.update({
+          where: { id: current.id },
+          data: {
+            ...snapshot,
+            cancelAtCycleEnd: !cancelledImmediately,
+            cancellationRequestedAt,
+            cancellationScheduledAt:
+              timestampToDate(gatewaySubscription.change_scheduled_at) ?? current.currentEnd,
+            cancelledAt: cancelledImmediately
+              ? timestampToDate(gatewaySubscription.ended_at) ?? cancellationRequestedAt
+              : null,
+          },
+        });
+        await recordSubscriptionHistory(tx, stored, {
+          source: "CUSTOMER_CANCELLATION",
+          fromStatus: current.status,
+          event: "cancel_at_cycle_end",
+        });
+        return stored;
       });
-      await recordSubscriptionHistory(tx, stored, {
-        source: "CUSTOMER_CANCELLATION",
-        fromStatus: subscription.status,
-        event: "cancel_at_cycle_end",
-      });
-      return stored;
-    }, { maxWait: 10_000, timeout: 30_000 });
 
-    return {
-      cancelled: TERMINAL_STATUSES.has(updated.status),
-      scheduled: updated.cancelAtCycleEnd,
-      subscription: serializeSubscription(updated),
-    };
+      return {
+        cancelled: TERMINAL_STATUSES.has(updated.status),
+        scheduled: updated.cancelAtCycleEnd,
+        subscription: serializeSubscription(updated),
+      };
+    } catch (error) {
+      if (providerCancellationSubmitted) {
+        try {
+          const current = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
+          if (current && current.providerMode === providerMode && !current.cancelAtCycleEnd) {
+            await razorpay.cancelScheduledChanges(current.razorpaySubscriptionId);
+          }
+        } catch (compensationError) {
+          console.error("[SAAS_CANCELLATION_COMPENSATION_FAILED]", {
+            organizationId,
+            error: compensationError,
+          });
+        }
+      }
+      throw error;
+    } finally {
+      await releaseCheckoutMutationLease(organizationId, leaseToken);
+    }
   }
 
   static async changeWorkspacePlan(
@@ -1218,6 +1396,7 @@ export class BillingService {
     idempotencyKey: string,
     returnPath?: unknown
   ) {
+    assertRazorpayBillingWritesEnabled(organizationId);
     const selectedPlan = getActiveBillingPlan(planId);
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     if (organization.billingModelVersion !== "WORKSPACE_V2") {
@@ -1225,6 +1404,7 @@ export class BillingService {
     }
     const subscription = organization.subscription;
     if (!subscription) throw new Error("Subscription not found");
+    assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
     if (subscription.plan === selectedPlan.id) {
       await prisma.organization.update({
         where: { id: organizationId },
@@ -1282,8 +1462,10 @@ export class BillingService {
     if (organization.billingModelVersion !== "WORKSPACE_V2") {
       return this.cancelSubscription(userId, organizationId);
     }
+    assertRazorpayBillingWritesEnabled(organizationId);
     const subscription = organization.subscription;
     if (!subscription) throw new Error("Subscription not found");
+    assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
     const trialActive = organization.ownerTrialGrant?.status === "ACTIVE"
       && organization.ownerTrialGrant.trialEndsAt != null
       && organization.ownerTrialGrant.trialEndsAt > now;
@@ -1338,11 +1520,13 @@ export class BillingService {
   }
 
   static async getRecoveryCheckout(userId: string, organizationId: string, returnPath?: unknown) {
+    assertRazorpayBillingWritesEnabled(organizationId);
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     const subscription = organization.subscription;
     if (!subscription || !["PENDING", "HALTED"].includes(subscription.status)) {
       throw new Error("Payment recovery is only available for pending or halted subscriptions");
     }
+    assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
     const now = new Date();
     const operation = await enqueueAuthorizationOperation({
       organizationId,
@@ -1372,8 +1556,10 @@ export class BillingService {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     const change = await prisma.organizationBillingChange.findFirst({
       where: { id: changeId, organizationId },
+      include: { organizationSubscription: true },
     });
     if (!change) throw new Error("Billing operation not found");
+    assertSubscriptionProviderMode(change.organizationSubscription, resolveRazorpayMode());
     return {
       operation: serializeBillingOperation(change),
       processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
@@ -1394,8 +1580,10 @@ export class BillingService {
     if (!event) throw new Error("Unsupported checkout event");
     const change = await prisma.organizationBillingChange.findFirst({
       where: { id: changeId, organizationId, type: "SUBSCRIPTION_AUTHORIZATION" },
+      include: { organizationSubscription: true },
     });
     if (!change) throw new Error("Billing operation not found");
+    assertSubscriptionProviderMode(change.organizationSubscription, resolveRazorpayMode());
     if (["APPLIED", "SCHEDULED"].includes(change.operationStatus)) {
       return { operation: serializeBillingOperation(change), ignored: true };
     }
@@ -1455,8 +1643,10 @@ export class BillingService {
     if (!change) throw new Error("Billing operation not found");
 
     if (change.type === "SUBSCRIPTION_AUTHORIZATION") {
+      assertRazorpayBillingWritesEnabled(organizationId);
       const subscription = change.organizationSubscription;
       if (!subscription) throw new Error("Subscription not found");
+      assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
       if (isProviderConfirmedOperationStatus(change.operationStatus)) {
         return { operation: serializeBillingOperation(change), reconciled: true };
       }
@@ -1594,17 +1784,34 @@ export class BillingService {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     const change = await prisma.organizationBillingChange.findFirst({
       where: { id: changeId, organizationId },
+      include: { organizationSubscription: true },
     });
     if (!change) throw new Error("Billing change not found");
+    assertSubscriptionProviderMode(change.organizationSubscription, resolveRazorpayMode());
     if (!["APPLIED", "SCHEDULED", "ABANDONED"].includes(change.operationStatus)) {
+      const verificationStartedAt = new Date();
+      const providerCooldownBefore = new Date(verificationStartedAt.getTime() - 8_000);
       const reconciliationClaim = await prisma.organizationBillingChange.updateMany({
         where: {
           id: change.id,
           operationStatus: {
-            notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES, "ABANDONED", "VERIFYING"],
+            notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES, "ABANDONED"],
           },
+          OR: [
+            {
+              operationStatus: { not: "VERIFYING" },
+              OR: [
+                { verificationStartedAt: null },
+                { verificationStartedAt: { lte: providerCooldownBefore } },
+              ],
+            },
+            {
+              operationStatus: "VERIFYING",
+              verificationStartedAt: { lte: providerCooldownBefore },
+            },
+          ],
         },
-        data: { operationStatus: "VERIFYING", verificationStartedAt: new Date() },
+        data: { operationStatus: "VERIFYING", verificationStartedAt },
       });
       if (reconciliationClaim.count === 0) {
         const current = await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
@@ -1659,7 +1866,14 @@ export class BillingService {
     if (!change) throw new Error("Undoable billing change not found");
     if (change.type === "CANCELLATION") return this.undoWorkspaceCancellation(userId, organizationId);
     if (change.status === "SCHEDULED" && organization.subscription?.providerPaymentMethod === "CARD") {
-      await getRazorpayClient().cancelScheduledChanges(organization.subscription.razorpaySubscriptionId);
+      const result = await BillingMutationService.undoScheduledProviderChange(change.id);
+      if (change.branchId) {
+        await prisma.branch.update({
+          where: { id: change.branchId },
+          data: { billingStatus: "ACTIVE" },
+        });
+      }
+      return { undone: true, replayed: result.replayed, replayError: result.replayError };
     }
     await prisma.organizationBillingChange.update({
       where: { id: change.id },
@@ -1783,7 +1997,6 @@ export class BillingService {
             organizationSubscriptionId: result.organizationSubscriptionId ?? null,
             razorpayPaymentId: result.razorpayPaymentId ?? null,
             razorpaySubscriptionId: result.razorpaySubscriptionId ?? null,
-            processedAt: new Date(),
             processingError: null,
           },
         });
@@ -1793,6 +2006,10 @@ export class BillingService {
           ...result,
         };
       }, { maxWait: 10_000, timeout: 30_000 });
+
+      if ("duplicate" in processed && processed.duplicate) {
+        return processed;
+      }
 
       if (processed.organizationId && processed.razorpaySubscriptionId) {
         const organization = await prisma.organization.findUnique({
@@ -1813,6 +2030,18 @@ export class BillingService {
         }
       }
 
+      await prisma.razorpayWebhookEvent.updateMany({
+        where: {
+          eventId: safeEventId,
+          payloadHash,
+          processedAt: null,
+        },
+        data: {
+          processedAt: new Date(),
+          processingError: null,
+        },
+      });
+
       return processed;
     } catch (error) {
       try {
@@ -1832,62 +2061,6 @@ export class BillingService {
       }
       throw error;
     }
-  }
-
-  private static async ensureRazorpayPlan(plan: BillingPlan) {
-    const amountSubunits = toRazorpaySubunits(plan.amount ?? 0, plan.currency);
-    return prisma.$transaction(async tx => {
-      await tx.$queryRaw<Array<{ locked: string }>>`
-        SELECT pg_advisory_xact_lock(hashtext(${`lab-lords:razorpay-plan:${plan.id}`}))::text AS locked
-      `;
-      const existing = await tx.saasRazorpayPlan.findFirst({
-        where: { plan: plan.id as SaasPlan, active: true },
-        orderBy: { createdAt: "desc" },
-      });
-
-      const mappingMatchesCatalog = existing
-        && existing.amount === plan.amount
-        && existing.amountSubunits === amountSubunits
-        && existing.currency === plan.currency
-        && existing.period === plan.period
-        && existing.interval === plan.interval;
-
-      if (mappingMatchesCatalog) return existing;
-
-      const gatewayPlan = await getRazorpayClient().createPlan({
-        period: plan.period,
-        interval: plan.interval,
-        item: {
-          name: plan.name,
-          amount: amountSubunits,
-          currency: plan.currency,
-          description: plan.description,
-        },
-        notes: {
-          app: "lab_lords",
-          billing_type: "saas_plan",
-          plan: plan.id,
-        },
-      });
-
-      await tx.saasRazorpayPlan.updateMany({
-        where: { plan: plan.id as SaasPlan, active: true },
-        data: { active: false },
-      });
-
-      return tx.saasRazorpayPlan.create({
-        data: {
-          plan: plan.id as SaasPlan,
-          amount: plan.amount ?? 0,
-          amountSubunits,
-          currency: plan.currency,
-          period: plan.period,
-          interval: plan.interval,
-          razorpayPlanId: gatewayPlan.id,
-          active: true,
-        },
-      });
-    }, { maxWait: 10_000, timeout: 30_000 });
   }
 
   private static toCheckoutPayload(
@@ -1977,12 +2150,17 @@ export class BillingService {
     payload: Record<string, unknown>,
     tx: Prisma.TransactionClient
   ): Promise<WebhookProcessingResult> {
+    const providerMode = resolveRazorpayMode();
     const event = typeof payload.event === "string" ? payload.event : "unknown";
     const payloadRoot = isRecord(payload.payload) ? payload.payload : {};
     const subscriptionEntity = getWebhookEntity<RazorpaySubscription>(payloadRoot, "subscription");
     const paymentEntity = getWebhookEntity<RazorpayPayment>(payloadRoot, "payment");
-    const subscriptionId = subscriptionEntity?.id ?? paymentEntity?.subscription_id ?? null;
-    const paymentId = paymentEntity?.id ?? null;
+    const invoiceEntity = getWebhookEntity<RazorpayInvoice>(payloadRoot, "invoice");
+    const subscriptionId = subscriptionEntity?.id
+      ?? paymentEntity?.subscription_id
+      ?? invoiceEntity?.subscription_id
+      ?? null;
+    const paymentId = paymentEntity?.id ?? invoiceEntity?.payment_id ?? null;
 
     if (!subscriptionId) {
       return {
@@ -2003,10 +2181,15 @@ export class BillingService {
         razorpaySubscriptionId: subscriptionId,
       };
     }
+    assertSubscriptionProviderMode(subscription, providerMode);
 
     const updateData: Prisma.OrganizationSubscriptionUpdateInput = {};
     if (subscriptionEntity) {
       const snapshot = subscriptionSnapshotData(subscriptionEntity);
+      // A signed webhook is a reconciliation trigger, not sufficient proof of
+      // a seat change. Quantity is accepted only after a provider fetch checks
+      // the matching serialized billing operation.
+      delete snapshot.quantity;
       const resolvedStatus = resolveWebhookStatus(
         subscription.status as SaasSubscriptionStatus,
         mapSubscriptionStatus(subscriptionEntity.status)
@@ -2017,10 +2200,6 @@ export class BillingService {
         snapshot.cancelledAt = timestampToDate(subscriptionEntity.ended_at) ?? new Date();
       }
       Object.assign(updateData, snapshot);
-    }
-
-    if (paymentId && event === "subscription.authenticated" && !subscription.authPaymentId) {
-      updateData.authPaymentId = paymentId;
     }
 
     if (Object.keys(updateData).length > 0) {

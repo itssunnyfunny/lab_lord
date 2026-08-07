@@ -222,6 +222,7 @@ export async function createSaasSubscription(overrides: {
     data: {
       id: uid(),
       organizationId: overrides.organizationId,
+      providerMode: "TEST",
       plan,
       amount,
       amountSubunits: amount * 100,
