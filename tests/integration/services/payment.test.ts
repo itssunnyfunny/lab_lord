@@ -7,6 +7,8 @@ import {
   createPayment,
   createStaff,
   createUser,
+  createOrg,
+  createBranch,
 } from "@/tests/factories";
 import { freezeTime, advanceMonths, restoreTime } from "@/tests/setup/time";
 import { addMonths, format } from "date-fns";
@@ -135,6 +137,35 @@ describe("PaymentService Integration", () => {
       await expect(
         PaymentService.generateDuePaymentsForBranch(staffUser.id, branch.id)
       ).rejects.toThrow(/Unauthorized/i);
+    });
+
+    it("rejects payment generation for a read-only branch", async () => {
+      const owner = await createUser();
+      const organization = await createOrg({
+        ownerId: owner.id,
+        billingModelVersion: "WORKSPACE_V2",
+      });
+      const branch = await createBranch({ organizationId: organization.id });
+
+      await expect(
+        PaymentService.generateDuePaymentsForBranch(owner.id, branch.id)
+      ).rejects.toThrow("paid subscription is required");
+    });
+
+    it("allows an authorized manager on a writable branch", async () => {
+      const BASE = new Date("2026-01-01T00:00:00.000Z");
+      const { branch } = await createTestWorld();
+      const manager = await createUser();
+      await createStaff({ userId: manager.id, branchId: branch.id, role: "MANAGER" });
+      await createStudent({ branchId: branch.id, joinedAt: BASE });
+
+      const result = await PaymentService.generateDuePaymentsForBranch(
+        manager.id,
+        branch.id,
+        addMonths(BASE, 1)
+      );
+
+      expect(result.generatedCount).toBe(1);
     });
 
     it("ensures branch payments without requiring a user id", async () => {

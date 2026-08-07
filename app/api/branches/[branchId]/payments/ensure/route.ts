@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { PaymentService } from "@/services/payment.service";
-import { StaffService } from "@/services/staff.service";
 
 function statusForError(message: string) {
     if (message.includes("not found")) return 404;
@@ -20,9 +19,7 @@ export async function POST(
         }
 
         const { branchId } = await params;
-        await StaffService.getBranchAccess(user.id, branchId);
-
-        const result = await PaymentService.ensureDuePaymentsForBranch(branchId);
+        const result = await PaymentService.generateDuePaymentsForBranch(user.id, branchId);
         return NextResponse.json(result);
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "Internal Server Error";

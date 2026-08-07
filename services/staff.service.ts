@@ -355,9 +355,18 @@ export class StaffService {
         await this.authorize(actorId, branchId, "staff_management");
         await EntitlementService.assertBranchWritable(branchId);
 
-        return db.staff.delete({
-            where: { id: staffId },
+        const deleted = await db.staff.deleteMany({
+            where: {
+                id: staffId,
+                branchId,
+            },
         });
+
+        if (deleted.count !== 1) {
+            throw new Error("Staff member not found");
+        }
+
+        return deleted;
     }
 
     /**

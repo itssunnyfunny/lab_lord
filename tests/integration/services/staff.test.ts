@@ -220,6 +220,29 @@ describe("StaffService Integration", () => {
       expect(deleted).toBeNull();
     });
 
+    it("does not delete a staff record belonging to another branch", async () => {
+      const first = await createTestWorld();
+      const second = await createTestWorld();
+      const targetUser = await createUser();
+      const foreignStaff = await createStaff({
+        userId: targetUser.id,
+        branchId: second.branch.id,
+        role: "STAFF",
+      });
+
+      await expect(
+        StaffService.removeStaff(first.user.id, first.branch.id, foreignStaff.id)
+      ).rejects.toThrow("Staff member not found");
+
+      await expect(
+        StaffService.removeStaff(first.user.id, first.branch.id, "missing_staff")
+      ).rejects.toThrow("Staff member not found");
+
+      await expect(
+        testPrisma.staff.findUnique({ where: { id: foreignStaff.id } })
+      ).resolves.toMatchObject({ branchId: second.branch.id });
+    });
+
     it("REJECTS if actor is not the owner", async () => {
       const { branch } = await createTestWorld();
       const nonOwner = await createUser();
