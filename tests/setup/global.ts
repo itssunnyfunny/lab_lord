@@ -20,6 +20,12 @@ export async function setup() {
     );
   }
 
+  // Provider-backed billing is deliberately mode-explicit. Integration tests
+  // use isolated Test Mode records and may replace this key per test.
+  process.env.RAZORPAY_MODE ??= "TEST";
+  process.env.RAZORPAY_KEY_ID ??= "rzp_test_vitest";
+  process.env.RAZORPAY_KEY_SECRET ??= "vitest-secret";
+
   console.log("✅ Test environment loaded. DB:", process.env.DATABASE_URL?.split("@")[1]);
 }
 
