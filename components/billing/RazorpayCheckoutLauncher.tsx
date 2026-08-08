@@ -67,6 +67,7 @@ type RazorpayOptions = {
   name: string;
   description: string;
   subscription_id: string;
+  remember_customer: false;
   subscription_card_change?: true;
   prefill?: RazorpayCheckoutPayloadLike["prefill"];
   readonly: {
@@ -228,6 +229,10 @@ export function openRazorpayCheckout({
     description: payload.description
       ?? (mode === "RECOVERY" ? "Update card and retry subscription payment" : "Authorize your Lab Lords subscription"),
     subscription_id: payload.subscriptionId,
+    // Do not opt the payer into Razorpay's saved-card/one-click experience.
+    // Subscription authorization remains provider-managed and the issuer
+    // independently decides where its bank/3-D Secure OTP is sent.
+    remember_customer: false,
     ...(mode === "RECOVERY" || payload.subscription_card_change
       ? { subscription_card_change: true as const }
       : {}),

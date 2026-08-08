@@ -527,8 +527,21 @@ enum ProviderPaymentMethod {
   UNKNOWN
 }
 
+enum RazorpayMode {
+  TEST
+  LIVE
+}
+
+enum RazorpayPlanProvisioningStatus {
+  PENDING
+  PROVISIONING
+  READY
+  FAILED
+}
+
 enum BillingChangeType {
   SUBSCRIPTION_AUTHORIZATION
+  UNSUPPORTED_METHOD_CANCELLATION
   TRIAL_SUBSCRIPTION_UPDATE
   PLAN_UPGRADE
   PLAN_DOWNGRADE
@@ -598,23 +611,62 @@ model OwnerTrialGrant {
 }
 
 model SaasRazorpayPlan {
-  id             String   @id @default(cuid())
+  id                     String       @id @default(cuid())
+  providerMode           RazorpayMode
+  catalogKey             String
+  plan                   SaasPlan
+  amount                 Int
+  amountSubunits         Int
+  currency               String       @default("INR")
+  period                 String       @default("monthly")
+  interval               Int          @default(1)
+  razorpayPlanId         String       @unique
+  active                 Boolean      @default(true)
+  lastProviderVerifiedAt DateTime?
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+
+  /// Migration-managed partial unique index
+  /// `SaasRazorpayPlan_one_active_per_mode_plan_key` guarantees that only one
+  /// mapping is active for each provider mode and SaaS plan.
+  @@unique([plan, razorpayPlanId])
+  @@index([providerMode, plan, active])
+  @@index([providerMode, catalogKey])
+  @@index([providerMode, razorpayPlanId])
+}
+
+model BillingDatabaseIdentity {
+  id        Int      @id
+  identity  String   @unique @db.Uuid
+  createdAt DateTime @default(now())
+}
+
+model RazorpayPlanProvisioning {
+  id             String                           @id @default(cuid())
+  catalogKey     String                           @unique
+  providerMode   RazorpayMode
   plan           SaasPlan
   amount         Int
   amountSubunits Int
-  currency       String   @default("INR")
-  period         String   @default("monthly")
-  interval       Int      @default(1)
-  razorpayPlanId String   @unique
-  active         Boolean  @default(true)
-  createdAt      DateTime @default(now())
+  currency       String
+  period         String
+  interval       Int
+  status         RazorpayPlanProvisioningStatus   @default(PENDING)
+  leaseToken     String?
+  leaseUntil     DateTime?
+  attemptCount   Int                              @default(0)
+  razorpayPlanId String?
+  lastError      String?
+  createdAt      DateTime                         @default(now())
+  updatedAt      DateTime                         @updatedAt
 
-  @@unique([plan, razorpayPlanId])
-  @@index([plan, active])
+  @@index([providerMode, plan, status])
+  @@index([status, leaseUntil])
 }
 
 model BillingOffer {
   id                 String                   @id @default(cuid())
+  providerMode       RazorpayMode
   name               String
   plan               SaasPlan
   razorpayOfferId    String                   @unique
@@ -632,7 +684,8 @@ model BillingOffer {
   subscriptions      OrganizationSubscription[]
   grants             OrganizationOfferGrant[]
 
-  @@index([plan, active])
+  @@index([providerMode, plan, active])
+  @@index([providerMode, razorpayOfferId])
 }
 
 model OrganizationOfferGrant {
@@ -657,6 +710,7 @@ model OrganizationOfferGrant {
 model OrganizationSubscription {
   id                     String                 @id @default(cuid())
   organizationId         String                 @unique
+  providerMode           RazorpayMode
   plan                   SaasPlan
   amount                 Int
   amountSubunits         Int
@@ -698,8 +752,9 @@ model OrganizationSubscription {
   billingChanges         OrganizationBillingChange[]
   invoices               OrganizationSubscriptionInvoice[]
 
-  @@index([status])
-  @@index([plan])
+  @@index([providerMode, status])
+  @@index([providerMode, plan])
+  @@index([providerMode, razorpaySubscriptionId])
 }
 
 model OrganizationBillingChange {

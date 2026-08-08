@@ -3,7 +3,8 @@ import { getSessionUser } from "@/lib/auth";
 import { BranchService } from "@/services/branch.service";
 import { OrganizationService } from "@/services/organization.service";
 import { validateRequiredPhone, validateRequiredText } from "@/lib/formValidation";
-import { SubscriptionEntitlementError } from "@/services/entitlement.service";
+import { BillingReadOnlyError, SubscriptionEntitlementError } from "@/services/entitlement.service";
+import { BillingWritesDisabledError } from "@/lib/billingFeature";
 
 // Correctly type the params as a Promise for Next.js 15+
 interface Params {
@@ -62,6 +63,10 @@ export async function POST(req: Request, { params }: Params) {
                 { status: 403 }
             );
         }
+        const idempotencyKey = req.headers.get("idempotency-key")?.trim();
+        if (!idempotencyKey) {
+            return NextResponse.json({ error: "Idempotency-Key is required" }, { status: 400 });
+        }
 
         const body = await req.json();
 
@@ -70,16 +75,23 @@ export async function POST(req: Request, { params }: Params) {
         const contactPhoneResult = validateRequiredPhone(body.contactPhone, "Contact phone");
         if (!contactPhoneResult.ok) return NextResponse.json({ error: contactPhoneResult.error }, { status: 400 });
 
-        const branch = await BranchService.createBranch({
+        const branch = await BranchService.createBranchForOrg({
             name: nameResult.value,
             organizationId: orgId,
+            userId: user.id,
             contactPhone: contactPhoneResult.value,
+            idempotencyKey,
         });
 
-        return NextResponse.json(branch, { status: 201 });
+        return NextResponse.json(branch, {
+            status: branch.billingStatus === "PENDING_ACTIVATION" ? 202 : 201,
+        });
     } catch (error) {
-        if (error instanceof SubscriptionEntitlementError) {
+        if (error instanceof SubscriptionEntitlementError || error instanceof BillingReadOnlyError) {
             return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
+        }
+        if (error instanceof BillingWritesDisabledError) {
+            return NextResponse.json({ error: error.message, code: error.code }, { status: 503 });
         }
         console.error("Error creating branch:", error);
         return NextResponse.json(

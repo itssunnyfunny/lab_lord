@@ -139,16 +139,17 @@ export function CheckoutConfirmationDialog({
               <div className="flex gap-2 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] p-3">
                 <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--ui-badge-cyan-text)]" aria-hidden="true" />
                 <div className="space-y-1">
-                  <p>Phone and email are used for billing notifications and can be edited in Razorpay.</p>
-                  <p>Your bank sends the card OTP to the contact registered with that card.</p>
+                  <p>The editable phone and email are billing-contact defaults for Razorpay notifications. They do not tell Lab Lords which mobile number is registered with your card.</p>
+                  <p>Any bank or 3-D Secure OTP is controlled by your card issuer and sent to the mobile number, email, or device registered with that issuer.</p>
+                  <p>Lab Lords does not ask Razorpay to remember your card for one-click payments.</p>
                   {(contactEmail || contactPhone) && (
-                    <p className="text-xs text-[color:var(--ui-text-muted)]">Prefill: {[contactEmail, contactPhone].filter(Boolean).join(" · ")}</p>
+                    <p className="text-xs text-[color:var(--ui-text-muted)]">Editable billing defaults: {[contactEmail, contactPhone].filter(Boolean).join(" · ")}</p>
                   )}
                 </div>
               </div>
               {testMode && (
                 <p className="rounded-[var(--ui-radius-control)] border border-amber-500/30 bg-amber-500/10 p-3 text-amber-600">
-                  Razorpay Test Mode uses a simulated bank page. No real OTP SMS is sent.
+                  Razorpay Test Mode simulates the bank authentication step. No real OTP, SMS, or email is sent.
                 </p>
               )}
             </>

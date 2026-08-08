@@ -52,6 +52,7 @@ export async function resetDatabase() {
       "OrganizationSubscriptionHistory",
       "RazorpayWebhookEvent",
       "OrganizationSubscription",
+      "RazorpayPlanProvisioning",
       "SaasRazorpayPlan",
       "ImportCommit",
       "ImportQuestion",

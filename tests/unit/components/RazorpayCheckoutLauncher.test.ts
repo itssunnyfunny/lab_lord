@@ -12,6 +12,7 @@ type CapturedOptions = {
   config?: Record<string, unknown>;
   method?: Record<string, boolean>;
   prefill?: Record<string, string | undefined>;
+  remember_customer: boolean;
   readonly: Record<string, boolean>;
   retry: { enabled: boolean };
   subscription_card_change?: true;
@@ -90,6 +91,7 @@ describe("RazorpayCheckoutLauncher", () => {
     expect(harness.options.config).toEqual(payload.config);
     expect(harness.options.method).toBeUndefined();
     expect(harness.options.prefill).toEqual(payload.prefill);
+    expect(harness.options.remember_customer).toBe(false);
     expect(harness.options.readonly).toEqual({ name: false, email: false, contact: false });
     expect(harness.options.retry).toEqual({ enabled: true });
     expect(harness.open).toHaveBeenCalledOnce();
@@ -99,6 +101,7 @@ describe("RazorpayCheckoutLauncher", () => {
     const { harness } = openWithHarness({ mode: "RECOVERY" });
 
     expect(harness.options.subscription_card_change).toBe(true);
+    expect(harness.options.remember_customer).toBe(false);
   });
 
   it("keeps a failed attempt provisional when an in-modal retry later succeeds", async () => {

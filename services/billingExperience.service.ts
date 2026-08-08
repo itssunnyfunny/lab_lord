@@ -3,6 +3,7 @@ import { getBillingPlan } from "@/lib/billingPlans";
 import { deriveWorkspaceBillingState } from "@/lib/billingState";
 import type { BillingExperience, BillingExperienceOperation } from "@/types/billingExperience";
 import type { OrganizationBillingChange } from "@/app/generated/prisma/client";
+import { resolveRazorpayMode } from "@/lib/razorpay";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_OPERATION_STATUSES = [
@@ -111,6 +112,10 @@ export class BillingExperienceService {
       },
     });
     if (!organization) throw new Error("Organization not found");
+    const providerMode = organization.subscription ? resolveRazorpayMode() : null;
+    const subscription = organization.subscription?.providerMode === providerMode
+      ? organization.subscription
+      : null;
     const isOwner = organization.ownerId === userId;
     if (!isOwner) {
       const membership = await prisma.staff.findFirst({
@@ -130,11 +135,28 @@ export class BillingExperienceService {
 
     const [latestOperation, scheduledChanges] = await Promise.all([
       prisma.organizationBillingChange.findFirst({
-        where: { organizationId },
+        where: {
+          organizationId,
+          ...(providerMode ? {
+            OR: [
+              { organizationSubscriptionId: null },
+              { organizationSubscription: { providerMode } },
+            ],
+          } : {}),
+        },
         orderBy: { sequence: "desc" },
       }),
       prisma.organizationBillingChange.findMany({
-        where: { organizationId, operationStatus: "SCHEDULED" },
+        where: {
+          organizationId,
+          operationStatus: "SCHEDULED",
+          ...(providerMode ? {
+            OR: [
+              { organizationSubscriptionId: null },
+              { organizationSubscription: { providerMode } },
+            ],
+          } : {}),
+        },
         orderBy: { sequence: "asc" },
       }),
     ]);
@@ -148,14 +170,14 @@ export class BillingExperienceService {
           trial: organization.ownerTrialGrant
             ? { status: organization.ownerTrialGrant.status, endsAt: organization.ownerTrialGrant.trialEndsAt }
             : null,
-          subscription: organization.subscription
-            ? { status: organization.subscription.status, plan: organization.subscription.plan, paidThrough: organization.subscription.paidThrough }
+          subscription: subscription
+            ? { status: subscription.status, plan: subscription.plan, paidThrough: subscription.paidThrough }
             : null,
         })
       : {
           accessMode: "FULL" as const,
           canWrite: true,
-          effectivePlan: organization.subscription?.plan ?? "BASIC",
+          effectivePlan: subscription?.plan ?? "BASIC",
           source: "PAID" as const,
           reason: "Legacy workspace access",
         };
@@ -167,7 +189,7 @@ export class BillingExperienceService {
         : experiencePlan(state.effectivePlan);
     const entitlementPlan = effectivePlan === "STANDARD" || effectivePlan === "STANDARD_TRIAL" ? "PRO" : "BASIC";
     const entitlements = getBillingPlan(entitlementPlan)?.entitlements ?? [];
-    const providerPostTrialPlan = selectedPlan(organization.subscription);
+    const providerPostTrialPlan = selectedPlan(subscription);
     const postTrialPlan = providerPostTrialPlan
       ?? (organization.selectedPostTrialPlan === "PRO"
         ? "STANDARD" as const
@@ -180,8 +202,8 @@ export class BillingExperienceService {
         ? "BASIC"
         : null;
     const projectedUnitAmount = projectedPlanId ? getBillingPlan(projectedPlanId)?.amount ?? 0 : 0;
-    const currentUnitAmount = organization.subscription?.amount ?? 0;
-    const confirmedQuantity = organization.subscription?.quantity ?? 0;
+    const currentUnitAmount = subscription?.amount ?? 0;
+    const confirmedQuantity = subscription?.quantity ?? 0;
     const projectedQuantity = organization.branches.length;
     const activeOperation = latestOperation
       && ACTIVE_OPERATION_STATUSES.includes(latestOperation.operationStatus as typeof ACTIVE_OPERATION_STATUSES[number])
@@ -195,7 +217,7 @@ export class BillingExperienceService {
     const presentation = customerPresentation({
       trialActive,
       effectivePlan,
-      providerStatus: organization.subscription?.status ?? null,
+      providerStatus: subscription?.status ?? null,
       operationStatus: latestOperation?.operationStatus ?? null,
       operationFailureVisible: isCustomerVisibleOperationFailure(latestOperation),
       postTrialPlanSelected: postTrialPlan != null,
@@ -206,7 +228,7 @@ export class BillingExperienceService {
       ? "CONTINUE_CHECKOUT" as const
       : ["VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"].includes(activeOperation?.operationStatus ?? "")
         ? "WAIT_FOR_CONFIRMATION" as const
-        : ["PENDING", "HALTED"].includes(organization.subscription?.status ?? "")
+        : ["PENDING", "HALTED"].includes(subscription?.status ?? "")
           ? "UPDATE_CARD" as const
           : latestFailed && latestOperation?.type === "SUBSCRIPTION_AUTHORIZATION"
             ? "RETRY_AUTHORIZATION" as const
@@ -227,14 +249,14 @@ export class BillingExperienceService {
       accessMode: state.accessMode,
       effectivePlan,
       selectedPostTrialPlan: postTrialPlan,
-      providerStatus: organization.subscription?.status ?? null,
+      providerStatus: subscription?.status ?? null,
       customerState: presentation.state,
       customerMessage: presentation.message,
       trialEndsAt: organization.ownerTrialGrant?.trialEndsAt?.toISOString() ?? null,
       trialDaysRemaining: trialActive && organization.ownerTrialGrant?.trialEndsAt
         ? Math.max(1, Math.ceil((organization.ownerTrialGrant.trialEndsAt.getTime() - now.getTime()) / DAY_MS))
         : null,
-      paidThrough: organization.subscription?.paidThrough?.toISOString() ?? null,
+      paidThrough: subscription?.paidThrough?.toISOString() ?? null,
       confirmedQuantity,
       projectedQuantity,
       currentUnitAmount,
@@ -242,11 +264,11 @@ export class BillingExperienceService {
       projectedUnitAmount,
       projectedMonthlyTotal: projectedUnitAmount * projectedQuantity,
       authorizationStatus,
-      planFeeDueToday: trialActive || (organization.subscription?.paidThrough?.getTime() ?? 0) > now.getTime()
+      planFeeDueToday: trialActive || (subscription?.paidThrough?.getTime() ?? 0) > now.getTime()
         ? 0
         : projectedUnitAmount * projectedQuantity,
       nextChargeAt: authorizationStatus === "AUTHORIZED"
-        ? organization.subscription?.chargeAt?.toISOString() ?? null
+        ? subscription?.chargeAt?.toISOString() ?? null
         : null,
       paymentAction,
       entitlements: [...entitlements],

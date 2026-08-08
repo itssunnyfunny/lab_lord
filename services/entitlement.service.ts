@@ -6,6 +6,7 @@ import {
 } from "@/lib/billingPlans";
 import type { OrganizationSubscription } from "@/app/generated/prisma/client";
 import { deriveWorkspaceBillingState, type BillingAccessMode } from "@/lib/billingState";
+import { resolveRazorpayMode } from "@/lib/razorpay";
 
 const PREMIUM_ACCESS_STATUSES = new Set(["AUTHENTICATED", "ACTIVE"]);
 const GRACE_ACCESS_STATUSES = new Set(["PENDING", "HALTED"]);
@@ -68,6 +69,10 @@ export class EntitlementService {
       },
     });
     if (!organization) throw new Error("Organization not found");
+    const subscription = organization.subscription
+      && organization.subscription.providerMode === resolveRazorpayMode()
+      ? organization.subscription
+      : null;
 
     if (organization.billingModelVersion === "WORKSPACE_V2") {
       const state = deriveWorkspaceBillingState({
@@ -78,11 +83,11 @@ export class EntitlementService {
               endsAt: organization.ownerTrialGrant.trialEndsAt,
             }
           : null,
-        subscription: organization.subscription
+        subscription: subscription
           ? {
-              status: organization.subscription.status,
-              plan: organization.subscription.plan as BillingPlanId,
-              paidThrough: organization.subscription.paidThrough,
+              status: subscription.status,
+              plan: subscription.plan as BillingPlanId,
+              paidThrough: subscription.paidThrough,
             }
           : null,
       });
@@ -90,9 +95,9 @@ export class EntitlementService {
 
       return {
         organizationId,
-        plan: organization.subscription?.plan as BillingPlanId | undefined ?? null,
+        plan: subscription?.plan as BillingPlanId | undefined ?? null,
         effectivePlan: state.effectivePlan ?? "BASIC",
-        subscriptionStatus: organization.subscription?.status ?? null,
+        subscriptionStatus: subscription?.status ?? null,
         fallbackAccess: state.source === "NONE",
         entitlements: selectedPlan ? [...selectedPlan.entitlements] : [],
         limits: { maxBranches: null },
@@ -109,7 +114,7 @@ export class EntitlementService {
       };
     }
 
-    if (!organization.subscription) {
+    if (!subscription) {
       const basicPlan = getBillingPlan("BASIC");
       if (!basicPlan) throw new Error("Basic subscription plan configuration is missing");
       return {
@@ -128,17 +133,17 @@ export class EntitlementService {
       };
     }
 
-    const selectedPlan = getBillingPlan(organization.subscription.plan);
-    const entitledPlan = subscriptionHasPremiumAccess(organization.subscription)
+    const selectedPlan = getBillingPlan(subscription.plan);
+    const entitledPlan = subscriptionHasPremiumAccess(subscription)
       ? selectedPlan
       : getBillingPlan("BASIC");
     if (!entitledPlan) throw new Error("Subscription plan configuration is missing");
 
     return {
       organizationId,
-      plan: organization.subscription.plan as BillingPlanId,
+      plan: subscription.plan as BillingPlanId,
       effectivePlan: entitledPlan.id,
-      subscriptionStatus: organization.subscription.status,
+      subscriptionStatus: subscription.status,
       fallbackAccess: entitledPlan.id !== selectedPlan?.id,
       entitlements: [...entitledPlan.entitlements],
       limits: { ...entitledPlan.limits },

@@ -313,6 +313,7 @@ type CheckoutScenario = "hold" | "dismiss" | "decline" | "technical" | "ambiguou
 type CapturedRazorpayOptions = {
   readonly?: { name: boolean; email: boolean; contact: boolean };
   prefill?: { name?: string; email?: string; contact?: string };
+  remember_customer?: boolean;
   config?: Record<string, unknown>;
   subscriptionId?: string;
 };
@@ -337,6 +338,7 @@ async function installRazorpayMock(page: Page) {
     };
     type MockOptions = {
       subscription_id: string;
+      remember_customer?: boolean;
       readonly?: { name: boolean; email: boolean; contact: boolean };
       prefill?: { name?: string; email?: string; contact?: string };
       config?: Record<string, unknown>;
@@ -380,6 +382,7 @@ async function installRazorpayMock(page: Page) {
         harness.lastOptions = {
           readonly: this.options.readonly,
           prefill: this.options.prefill,
+          remember_customer: this.options.remember_customer,
           config: this.options.config,
           subscriptionId: this.options.subscription_id,
         };
@@ -697,9 +700,10 @@ test("billingPlan query opens review first and passes editable payer defaults to
   await expect(confirmation.getByText(/2 branches × ₹499 per branch/)).toBeVisible();
   await expect(confirmation.getByText(/If card authorization succeeds.*5 September 2026/i)).toBeVisible();
   await expect(confirmation.getByText(/temporary ₹5 card-verification payment/i)).toBeVisible();
-  await expect(confirmation.getByText(/Phone and email are used for billing notifications and can be edited/i)).toBeVisible();
-  await expect(confirmation.getByText(/bank sends the card OTP to the contact registered with that card/i)).toBeVisible();
-  await expect(confirmation.getByText(/Test Mode uses a simulated bank page.*No real OTP SMS is sent/i)).toBeVisible();
+  await expect(confirmation.getByText(/editable phone and email are billing-contact defaults.*do not tell Lab Lords which mobile number is registered with your card/i)).toBeVisible();
+  await expect(confirmation.getByText(/bank or 3-D Secure OTP is controlled by your card issuer.*mobile number, email, or device registered with that issuer/i)).toBeVisible();
+  await expect(confirmation.getByText(/does not ask Razorpay to remember your card for one-click payments/i)).toBeVisible();
+  await expect(confirmation.getByText(/Test Mode simulates the bank authentication step.*No real OTP, SMS, or email is sent/i)).toBeVisible();
 
   await confirmation.getByRole("button", { name: "Continue to Razorpay" }).click();
   await expect.poll(async () => (await getCheckoutHarness(page)).opens).toBe(1);
@@ -709,6 +713,7 @@ test("billingPlan query opens review first and passes editable payer defaults to
 
   const harness = await getCheckoutHarness(page);
   expect(harness.lastOptions).toEqual(expect.objectContaining({
+    remember_customer: false,
     readonly: { name: false, email: false, contact: false },
     prefill: {
       name: "Billing Owner",
@@ -916,6 +921,7 @@ test("processing retry reopens Razorpay only after the explicit retry click", as
   await expect.poll(async () => (await getCheckoutHarness(page)).opens).toBe(1);
   expect(controller.retryRequests).toBe(1);
   expect((await getCheckoutHarness(page)).lastOptions).toEqual(expect.objectContaining({
+    remember_customer: false,
     readonly: { name: false, email: false, contact: false },
     subscriptionId: "sub_playwright_1",
   }));

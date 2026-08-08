@@ -13,8 +13,14 @@ import { createUser, createOrg, createStaff } from "@/tests/factories";
  */
 
 describe("BranchService Integration", () => {
+  let branchCreateSequence = 0;
+  const branchCreateKey = () => `branch-service-test-${++branchCreateSequence}`;
+
   afterAll(async () => { await disconnectDatabase(); });
-  beforeEach(async () => { await resetDatabase(); });
+  beforeEach(async () => {
+    branchCreateSequence = 0;
+    await resetDatabase();
+  });
 
   // ─── createBranchForOrg ───────────────────────────────────────────────────
 
@@ -28,6 +34,7 @@ describe("BranchService Integration", () => {
         userId: user.id,
         name: "Main Branch",
         contactPhone: "9876543210",
+        idempotencyKey: branchCreateKey(),
       });
 
       expect(branch.organizationId).toBe(org.id);
@@ -43,6 +50,7 @@ describe("BranchService Integration", () => {
         userId: user.id,
         name: "Shift Branch",
         contactPhone: "9876543210",
+        idempotencyKey: branchCreateKey(),
       });
 
       const shifts = await testPrisma.shift.findMany({
@@ -76,6 +84,7 @@ describe("BranchService Integration", () => {
         name: "Seat Branch",
         contactPhone: "9876543210",
         seatCount: 5,
+        idempotencyKey: branchCreateKey(),
       });
 
       const count = await testPrisma.seat.count({ where: { branchId: branch.id } });
@@ -92,6 +101,7 @@ describe("BranchService Integration", () => {
         name: "Custom Seat Branch",
         contactPhone: "9876543210",
         seatCount: 5,
+        idempotencyKey: branchCreateKey(),
         seatNumbering: {
           mode: "RANGE",
           ranges: [
@@ -115,6 +125,7 @@ describe("BranchService Integration", () => {
         userId: user.id,
         name: "Staff Branch",
         contactPhone: "9876543210",
+        idempotencyKey: branchCreateKey(),
       });
 
       const staffRecord = await testPrisma.staff.findFirst({
@@ -135,6 +146,7 @@ describe("BranchService Integration", () => {
           userId: otherUser.id,
           name: "Unauthorized Branch",
           contactPhone: "9876543210",
+          idempotencyKey: branchCreateKey(),
         })
       ).rejects.toThrow(/Unauthorized/i);
 
@@ -153,6 +165,7 @@ describe("BranchService Integration", () => {
           userId: user.id,
           name: "",
           contactPhone: "9876543210",
+          idempotencyKey: branchCreateKey(),
         })
       ).rejects.toThrow(/required/i);
 
@@ -162,6 +175,7 @@ describe("BranchService Integration", () => {
           userId: user.id,
           name: "Missing Phone",
           contactPhone: "",
+          idempotencyKey: branchCreateKey(),
         })
       ).rejects.toThrow(/contact phone is required/i);
 
@@ -172,6 +186,7 @@ describe("BranchService Integration", () => {
           name: "Invalid Seats",
           contactPhone: "9876543210",
           seatCount: -1,
+          idempotencyKey: branchCreateKey(),
         })
       ).rejects.toThrow(/whole number|at least/i);
 
@@ -181,6 +196,7 @@ describe("BranchService Integration", () => {
           userId: user.id,
           name: "Invalid Shifts",
           contactPhone: "9876543210",
+          idempotencyKey: branchCreateKey(),
           shifts: [
             { name: "Morning", startTime: "06:00", endTime: "09:59", price: 0 },
             { name: "Morning", startTime: "10:00", endTime: "15:59", price: 0 },
@@ -206,6 +222,7 @@ describe("BranchService Integration", () => {
         userId: user.id,
         name: "Lookup Branch",
         contactPhone: "9876543210",
+        idempotencyKey: branchCreateKey(),
       });
 
       const found = await BranchService.getBranchById(branch.id);
@@ -224,6 +241,7 @@ describe("BranchService Integration", () => {
         userId: owner.id,
         name: "Payment Branch",
         contactPhone: "9876543210",
+        idempotencyKey: branchCreateKey(),
       });
       const staffRecord = await createStaff({ userId: staff.id, branchId: branch.id, role: "STAFF" });
       await testPrisma.staffPermissionOverride.create({
@@ -251,6 +269,7 @@ describe("BranchService Integration", () => {
         userId: user.id,
         name: "Settings Branch",
         contactPhone: "9876543210",
+        idempotencyKey: branchCreateKey(),
       });
 
       const updated = await BranchService.updateSettings(user.id, branch.id, {
@@ -284,6 +303,7 @@ describe("BranchService Integration", () => {
         userId: owner.id,
         name: "Managed Branch",
         contactPhone: "9876543210",
+        idempotencyKey: branchCreateKey(),
       });
       await createStaff({ userId: manager.id, branchId: branch.id, role: "MANAGER" });
 
@@ -303,6 +323,7 @@ describe("BranchService Integration", () => {
         userId: owner.id,
         name: "Staff Branch",
         contactPhone: "9876543210",
+        idempotencyKey: branchCreateKey(),
       });
       await createStaff({ userId: staff.id, branchId: branch.id, role: "STAFF" });
 
@@ -321,6 +342,7 @@ describe("BranchService Integration", () => {
         userId: user.id,
         name: "Invalid Branch",
         contactPhone: "9876543210",
+        idempotencyKey: branchCreateKey(),
       });
 
       await expect(

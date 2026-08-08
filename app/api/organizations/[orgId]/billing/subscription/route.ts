@@ -1,8 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { BillingService } from "@/services/billing.service";
+import { BillingWritesDisabledError } from "@/lib/billingFeature";
+import { RazorpayApiError, RazorpayConfigurationError } from "@/lib/razorpay";
+import {
+  RazorpayPlanCatalogBusyError,
+  RazorpayPlanCatalogProvisioningError,
+} from "@/services/razorpayPlanCatalog.service";
 
-function errorStatus(message: string) {
+function errorStatus(message: string, error?: unknown) {
+  if (error instanceof BillingWritesDisabledError) return 503;
+  if (
+    error instanceof RazorpayConfigurationError
+    || error instanceof RazorpayPlanCatalogBusyError
+    || error instanceof RazorpayPlanCatalogProvisioningError
+  ) return 503;
+  if (error instanceof RazorpayApiError) return 502;
   if (message.includes("not found")) return 404;
   if (message.includes("Unauthorized")) return 403;
   if (
@@ -29,7 +42,7 @@ export async function POST(
     return NextResponse.json(checkout);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: message }, { status: errorStatus(message) });
+    return NextResponse.json({ error: message }, { status: errorStatus(message, error) });
   }
 }
 
@@ -50,6 +63,6 @@ export async function PATCH(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: message }, { status: errorStatus(message) });
+    return NextResponse.json({ error: message }, { status: errorStatus(message, error) });
   }
 }
