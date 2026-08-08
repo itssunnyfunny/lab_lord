@@ -47,7 +47,7 @@ export const chromePopoverHeaderClass =
     "flex items-center justify-between border-b border-[color:var(--ui-panel-header-border)] px-4 py-3";
 
 export const chromePopoverScrollClass =
-    "max-h-[min(28rem,calc(100dvh-6rem))] overflow-y-auto py-2 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent";
+    "max-h-[min(28rem,calc(100dvh-6rem))] overflow-y-auto py-2 scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50";
 
 export const chromeListItemClass =
     "flex w-full items-center gap-3 rounded-[var(--ui-radius-control)] px-3 py-2.5 text-left text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--text-primary)]";

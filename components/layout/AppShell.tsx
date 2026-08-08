@@ -144,7 +144,7 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
                 </header>
 
                 {/* Page Content */}
-                <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8 scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50">
                     {billing?.experience && <ReadOnlyBanner experience={billing.experience} />}
                     {billing?.experience && <BillingBanner experience={billing.experience} />}
                     {children}

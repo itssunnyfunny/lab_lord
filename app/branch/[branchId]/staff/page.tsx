@@ -1186,7 +1186,7 @@ function StaffContent({
                 <div className="md:hidden">{staffCards}</div>
                 <Card noHover className="hidden overflow-visible p-0 md:block md:p-0">
                     <div
-                        className="w-full overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent"
+                        className="w-full overflow-x-auto scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50"
                         role="region"
                         aria-label="Branch staff directory"
                         tabIndex={0}

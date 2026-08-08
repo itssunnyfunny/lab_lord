@@ -56,7 +56,7 @@ export function DataTable<T extends { id: string | number }>({
             role="region"
             aria-label={`${caption} table`}
             tabIndex={0}
-            className="w-full overflow-x-auto overflow-y-hidden rounded-[var(--ui-table-radius)] border border-[color:var(--ui-table-border)] bg-[color:var(--ui-table-bg)] shadow-[var(--ui-table-shadow)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)] scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent"
+            className="w-full overflow-x-auto overflow-y-hidden rounded-[var(--ui-table-radius)] border border-[color:var(--ui-table-border)] bg-[color:var(--ui-table-bg)] shadow-[var(--ui-table-shadow)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)] scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50"
         >
             <table className="w-full text-left text-sm" style={{ minWidth: tableMinWidth }}>
                 <caption className="sr-only">{caption}</caption>
