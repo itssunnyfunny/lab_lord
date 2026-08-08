@@ -3,6 +3,7 @@
 import { DataTable } from "@/components/tables/DataTable";
 import { ViewToggle } from "@/components/tables/ViewToggle";
 import { Badge } from "@/components/ui/Badge";
+import { Avatar } from "@/components/ui/Avatar";
 import { AppButton, Dialog, Drawer, PageLoadingSkeleton, PageShell, useToast } from "@/components/ui";
 import { Button } from "@/components/ui/Button";
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
@@ -852,14 +853,7 @@ function StudentsContent({
                     <div className={cn("relative flex min-h-[230px] flex-col", pageGridCardClass, pageGridCardHoverClass)}>
                         <div className="flex items-start justify-between gap-3">
                             <div className="flex min-w-0 items-center gap-3">
-                                <div className={cn("h-11 w-11 flex-shrink-0 overflow-hidden", pageFilterShellClass)}>
-                                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                                    <img
-                                        src={`https://ui-avatars.com/api/?name=${encodeURIComponent(item.name)}&background=random`}
-                                        alt={item.name}
-                                        className="h-full w-full object-cover"
-                                    />
-                                </div>
+                                <Avatar name={item.name} size="lg" />
                                 <div className="min-w-0">
                                     <p className="truncate font-medium text-[color:var(--text-primary)]">{item.name}</p>
                                     <p className={cn("truncate text-xs", pageSubtleTextClass)}>{item.phone || "No phone"}</p>
@@ -901,10 +895,7 @@ function StudentsContent({
                         header: "Student",
                         accessor: (item) => (
                             <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 rounded-full bg-[color:var(--ui-form-input-select-bg)] border border-[color:var(--ui-form-surface-border)] overflow-hidden flex-shrink-0">
-                                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                                    <img src={`https://ui-avatars.com/api/?name=${encodeURIComponent(item.name)}&background=random`} alt={item.name} />
-                                </div>
+                                <Avatar name={item.name} size="sm" />
                                 <div>
                                     <p className="font-medium text-[color:var(--text-primary)]">{item.name}</p>
                                     <p className={cn("text-xs", pageSubtleTextClass)}>{item.phone || "No phone"}</p>

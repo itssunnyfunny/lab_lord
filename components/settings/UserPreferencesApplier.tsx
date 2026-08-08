@@ -27,6 +27,7 @@ const DEFAULT_PREFERENCES: UserDisplayPreferences = {
 const PREFERENCE_EVENT = "lablords:preferences-updated";
 
 type UserPreferencesContextValue = UserDisplayPreferences & {
+    profileName: string | null;
     formatDate: (value: Date | string | number, options?: Intl.DateTimeFormatOptions) => string;
     formatDateTime: (value: Date | string | number) => string;
     formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
@@ -63,28 +64,37 @@ function formatIsoDate(date: Date, locale: string, timezone: string) {
     return `${values.get("year")}-${values.get("month")}-${values.get("day")}`;
 }
 
-export function notifyUserPreferencesChanged(preferences: Partial<UserDisplayPreferences>) {
+export function notifyUserPreferencesChanged(
+    preferences: Partial<UserDisplayPreferences> & { name?: string | null }
+) {
     window.dispatchEvent(new CustomEvent(PREFERENCE_EVENT, { detail: preferences }));
 }
 
 export function UserPreferencesProvider({ children }: { children: ReactNode }) {
     const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES);
+    const [profileName, setProfileName] = useState<string | null>(null);
 
     useEffect(() => {
         let cancelled = false;
 
         fetch("/api/users/me", { cache: "no-store" })
-            .then(response => response.ok ? response.json() as Promise<Partial<UserDisplayPreferences>> : null)
+            .then(response => response.ok
+                ? response.json() as Promise<Partial<UserDisplayPreferences> & { name?: string | null }>
+                : null)
             .then(value => {
-                if (!cancelled && value) setPreferences(normalizePreferences(value));
+                if (!cancelled && value) {
+                    setPreferences(normalizePreferences(value));
+                    setProfileName(value.name?.trim() || null);
+                }
             })
             .catch(() => {
                 // Defaults keep the authenticated shell usable when preferences are unavailable.
             });
 
         const handlePreferenceUpdate = (event: Event) => {
-            const detail = (event as CustomEvent<Partial<UserDisplayPreferences>>).detail;
+            const detail = (event as CustomEvent<Partial<UserDisplayPreferences> & { name?: string | null }>).detail;
             setPreferences(current => normalizePreferences({ ...current, ...detail }));
+            if ("name" in detail) setProfileName(detail.name?.trim() || null);
         };
         window.addEventListener(PREFERENCE_EVENT, handlePreferenceUpdate);
 
@@ -132,10 +142,11 @@ export function UserPreferencesProvider({ children }: { children: ReactNode }) {
 
     const value = useMemo<UserPreferencesContextValue>(() => ({
         ...preferences,
+        profileName,
         formatDate,
         formatDateTime,
         formatNumber,
-    }), [formatDate, formatDateTime, formatNumber, preferences]);
+    }), [formatDate, formatDateTime, formatNumber, preferences, profileName]);
 
     return <UserPreferencesContext.Provider value={value}>{children}</UserPreferencesContext.Provider>;
 }
@@ -151,6 +162,7 @@ export function useUserPreferences(): UserPreferencesContextValue {
     if (!value) {
         return {
             ...DEFAULT_PREFERENCES,
+            profileName: null,
             formatDate: input => new Intl.DateTimeFormat(DEFAULT_PREFERENCES.locale, defaultDateOptions(DEFAULT_PREFERENCES.dateFormat)).format(new Date(input)),
             formatDateTime: input => new Intl.DateTimeFormat(DEFAULT_PREFERENCES.locale, { ...defaultDateOptions(DEFAULT_PREFERENCES.dateFormat), hour: "2-digit", minute: "2-digit" }).format(new Date(input)),
             formatNumber: (input, options) => new Intl.NumberFormat(DEFAULT_PREFERENCES.locale, options).format(input),

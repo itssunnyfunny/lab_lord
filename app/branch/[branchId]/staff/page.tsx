@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, use } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/Badge";
+import { Avatar } from "@/components/ui/Avatar";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Dialog, PageLoadingSkeleton, useToast } from "@/components/ui";
@@ -1075,9 +1076,7 @@ function StaffContent({
                 >
                     <div className="flex items-start justify-between gap-3">
                         <div className="flex min-w-0 items-center gap-3">
-                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-cyan-500/20 to-purple-600/20 border border-[color:var(--ui-card-border)] flex items-center justify-center text-sm font-bold text-cyan-300 flex-shrink-0">
-                                {(member.user?.name || member.user?.email || "?")[0].toUpperCase()}
-                            </div>
+                            <Avatar name={member.user?.name || member.user?.email || "Staff member"} />
                             <div className="min-w-0">
                                 <p className="truncate font-medium text-[color:var(--ui-table-text)]">{member.user?.name || <span className={cn("italic text-xs", pageSubtleTextClass)}>No name</span>}</p>
                                 <p className={cn("mt-1 flex min-w-0 items-center gap-1 truncate text-xs", pageSubtleTextClass)}>
@@ -1219,9 +1218,7 @@ function StaffContent({
                                     {/* Member */}
                                     <td className="px-6 py-4">
                                         <div className="flex items-center gap-3">
-                                            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-cyan-500/20 to-purple-600/20 border border-[color:var(--ui-card-border)] flex items-center justify-center text-sm font-bold text-cyan-300 flex-shrink-0">
-                                                {(member.user?.name || member.user?.email || "?")[0].toUpperCase()}
-                                            </div>
+                                            <Avatar name={member.user?.name || member.user?.email || "Staff member"} size="sm" />
                                             <div>
                                                 <p className="font-medium text-[color:var(--ui-table-text)]">{member.user?.name || <span className="text-xs italic text-[color:var(--ui-table-subtle)]">No name</span>}</p>
                                                 <p className="flex items-center gap-1 text-xs text-[color:var(--ui-table-subtle)]">

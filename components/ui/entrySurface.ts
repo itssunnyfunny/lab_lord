@@ -66,6 +66,9 @@ export const entryClerkAppearance = {
             "!text-slate-400 hover:!text-white focus-visible:ring-2 focus-visible:ring-cyan-300/40",
         formFieldAction:
             "font-medium !text-cyan-300 hover:!text-cyan-200",
+        formFieldHintText: "text-sm leading-5 !text-slate-300",
+        formFieldInfoText: "text-sm leading-5 !text-slate-300",
+        formFieldWarningText: "text-sm leading-5 !text-amber-200",
         formFieldErrorText: "text-sm !text-red-300",
         formFieldSuccessText: "text-sm !text-emerald-300",
         formButtonPrimary:
@@ -122,7 +125,8 @@ export const accountProfileClerkAppearance = {
         modalBackdrop: "!bg-black/75 backdrop-blur-sm",
         modalContent:
             "overflow-hidden rounded-2xl !border !border-white/10 !bg-[#0f111a] shadow-[0_28px_90px_rgba(0,0,0,0.58)]",
-        cardBox: "shadow-none",
+        rootBox: "!text-slate-100",
+        cardBox: "!bg-[#0f111a] shadow-none",
         card:
             "rounded-2xl !border !border-white/10 !bg-[#0f111a] shadow-[0_28px_90px_rgba(0,0,0,0.52)]",
         navbar: "!border-white/10 !bg-[#0b0d14]",
@@ -156,5 +160,14 @@ export const accountProfileClerkAppearance = {
         alertText: "!text-red-200",
         modalCloseButton:
             "rounded-lg !text-slate-400 hover:!bg-white/[0.06] hover:!text-white",
+    },
+};
+
+export const clerkAppAppearance = {
+    variables: clerkThemeVariables,
+    elements: {
+        ...entryClerkAppearance.elements,
+        ...accountMenuClerkAppearance.elements,
+        ...accountProfileClerkAppearance.elements,
     },
 };

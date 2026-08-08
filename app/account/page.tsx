@@ -31,6 +31,7 @@ import {
     SettingsWorkspace,
 } from "@/components/settings/SettingsWorkspace";
 import { AppButton, PageLoadingSkeleton } from "@/components/ui";
+import { Avatar } from "@/components/ui/Avatar";
 import { focusFirstInvalidField } from "@/components/ui/FormField";
 import {
     notifyUserPreferencesChanged,
@@ -206,6 +207,7 @@ export default function AccountPage() {
             setProfile(nextProfile);
             setForm(toForm(nextProfile));
             notifyUserPreferencesChanged({
+                name: nextProfile.name,
                 densityPreference: nextProfile.densityPreference,
                 locale: nextProfile.locale,
                 timezone: nextProfile.timezone,
@@ -248,6 +250,17 @@ export default function AccountPage() {
                 onSectionChange={setActiveSection}
             >
                 <SettingsPanel id="profile" title="Profile" description="These details identify you across the workspace." icon={User}>
+                    <div className="mb-2 flex items-center gap-4 rounded-[var(--ui-radius-control)] border border-cyan-300/15 bg-gradient-to-r from-cyan-400/[0.08] to-violet-400/[0.05] p-4">
+                        <Avatar name={profile.name || profile.email} size="xl" />
+                        <div className="min-w-0 flex-1">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300">Workspace identity</p>
+                            <p className="mt-1 truncate font-semibold text-[color:var(--text-primary)]">{profile.name || "Add your display name"}</p>
+                            <p className="truncate text-xs text-[color:var(--text-secondary)]">{profile.email}</p>
+                        </div>
+                        <span className="hidden rounded-full border border-emerald-300/20 bg-emerald-400/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-200 sm:inline-flex">
+                            Active
+                        </span>
+                    </div>
                     <SettingsField label="Display name" description="Shown in account menus and staff lists." error={nameError} errorId="account-name-error">
                         <SettingsInput
                             value={form.name ?? ""}

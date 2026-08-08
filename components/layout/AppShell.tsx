@@ -24,7 +24,7 @@ import { useBillingExperience } from "@/components/billing/BillingExperienceProv
 import { BillingBanner } from "@/components/billing/BillingBanner";
 import { ReadOnlyBanner } from "@/components/billing/ReadOnlyBanner";
 import { WorkspaceSwitcher } from "@/components/layout/WorkspaceSwitcher";
-import { UserPreferencesProvider } from "@/components/settings/UserPreferencesApplier";
+import { UserPreferencesProvider, useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { ToastProvider } from "@/components/ui/Toast";
 import { RouteTitleUpdater } from "@/components/layout/RouteTitleUpdater";
 import { Drawer } from "@/components/ui/Drawer";
@@ -43,7 +43,12 @@ interface AppShellProps {
 
 function AccountSummary({ user }: { user?: User }) {
     const { user: clerkUser } = useUser();
-    const displayName = user?.name ?? clerkUser?.fullName ?? clerkUser?.primaryEmailAddress?.emailAddress ?? "Account";
+    const { profileName } = useUserPreferences();
+    const displayName = profileName
+        || user?.name?.trim()
+        || clerkUser?.fullName?.trim()
+        || clerkUser?.firstName?.trim()
+        || "Set up profile";
     const displayRole = user?.role ?? "Workspace User";
 
     return (

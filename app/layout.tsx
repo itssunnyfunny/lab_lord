@@ -6,6 +6,7 @@ import { absoluteUrl, siteConfig } from "@/lib/site";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import { Suspense } from "react";
+import { clerkAppAppearance } from "@/components/ui/entrySurface";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -101,6 +102,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <ClerkProvider
+          appearance={clerkAppAppearance}
           signInFallbackRedirectUrl="/app"
           signUpFallbackRedirectUrl="/app"
           afterSignOutUrl="/"
