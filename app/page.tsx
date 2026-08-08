@@ -57,6 +57,10 @@ function LandingContent({ isLoaded, isSignedIn }: LandingContentProps) {
     router.push("/app");
   };
 
+  const handleTourClick = (source = "landing_product_tour") => {
+    trackLandingClick(source);
+  };
+
   const handlePlanPurchase = useCallback(async (planId: CheckoutBillingPlanId, trackClick = true) => {
     if (!isLoaded) return;
     if (trackClick) {
@@ -101,6 +105,7 @@ function LandingContent({ isLoaded, isSignedIn }: LandingContentProps) {
         <LandingHero
           isSignedIn={isSignedIn}
           onWorkspaceClick={handleWorkspaceClick}
+          onTourClick={handleTourClick}
         />
         <LandingMockup />
       </div>

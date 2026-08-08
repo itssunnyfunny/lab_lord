@@ -53,18 +53,21 @@ export function LandingMockup() {
       <span className="landing-section-glow right-[8%] top-16 h-44 w-44 bg-cyan-400/10" aria-hidden="true" />
       <div className={`${landingContainerClass} relative`}>
         <div className="mb-10 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(280px,0.4fr)] lg:items-end">
-          <LandingReveal variant="left">
-            <p className={landingEyebrowClass}>The operating layer</p>
-            <h2 className={`${landingTitleClass} mt-3`}>Replace the register, the spreadsheet, and the staff WhatsApp loop.</h2>
+          <LandingReveal variant="left" alwaysVisible>
+            <p className={landingEyebrowClass}>Sample product tour</p>
+            <h2 id="product-tour" className={`${landingTitleClass} mt-3 scroll-mt-24`}>Replace the register, the spreadsheet, and the staff WhatsApp loop.</h2>
             <p className={`${landingDescriptionClass} mt-4 max-w-2xl`}>
               Lab Lords is designed around the actual pressure points of offline education: physical seats, time-bound shifts, monthly collections, branch staff, and owner approvals.
             </p>
+            <p className="mt-3 inline-flex rounded-full border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] px-3 py-1.5 text-xs font-semibold text-[color:var(--ui-badge-cyan-text)]">
+              Illustrative workspace and sample data
+            </p>
           </LandingReveal>
 
-          <LandingReveal variant="right" delay={120} className={`${landingPanelClass} landing-animated-card p-4`}>
+          <LandingReveal alwaysVisible variant="right" delay={120} className={`${landingPanelClass} landing-animated-card p-4`}>
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className={landingSubtleTextClass + " text-xs font-semibold uppercase tracking-wide"}>Decision speed</p>
+                <p className={landingSubtleTextClass + " text-xs font-semibold uppercase tracking-wide"}>Sample decision time</p>
                 <p className="mt-2 text-3xl font-semibold tracking-tight text-[color:var(--text-primary)]">9:12 AM</p>
               </div>
               <div className="landing-live-pulse flex h-11 w-11 items-center justify-center rounded-[var(--ui-radius-control)] border border-[color:var(--ui-badge-success-border)] bg-[color:var(--ui-badge-success-bg)] text-[color:var(--ui-badge-success-text)]">
@@ -78,15 +81,15 @@ export function LandingMockup() {
         </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
-          <LandingReveal variant="scale" className={`${landingPanelClass} landing-animated-card overflow-hidden`}>
+          <LandingReveal alwaysVisible variant="scale" className={`${landingPanelClass} landing-animated-card overflow-hidden`}>
             <div className="flex flex-col gap-3 border-b border-[color:var(--ui-panel-header-border)] bg-[color:var(--ui-form-muted-surface-bg)] px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Owner cockpit</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Sample owner workspace</p>
                 <h3 className="mt-1 text-xl font-semibold tracking-tight text-[color:var(--text-primary)]">Downtown Branch</h3>
               </div>
               <div className="flex w-max items-center gap-2 rounded-full border border-[color:var(--ui-badge-success-border)] bg-[color:var(--ui-badge-success-bg)] px-3 py-1.5 text-xs font-semibold text-[color:var(--ui-badge-success-text)]">
                 <ArrowUpRight size={13} />
-                Healthy trend
+                Sample trend
               </div>
             </div>
 
@@ -153,7 +156,7 @@ export function LandingMockup() {
           </LandingReveal>
 
           <div className="grid grid-cols-1 gap-4">
-            <LandingReveal delay={140} variant="right" className={`${landingPanelClass} landing-animated-card p-4`}>
+            <LandingReveal alwaysVisible delay={140} variant="right" className={`${landingPanelClass} landing-animated-card p-4`}>
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Action queue</p>
@@ -176,7 +179,7 @@ export function LandingMockup() {
               </div>
             </LandingReveal>
 
-            <LandingReveal delay={240} variant="right" className={`${landingPanelClass} landing-animated-card p-4`}>
+            <LandingReveal alwaysVisible delay={240} variant="right" className={`${landingPanelClass} landing-animated-card p-4`}>
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Collections</p>

@@ -10,6 +10,7 @@ type LandingRevealProps = {
   className?: string;
   delay?: number;
   variant?: LandingRevealVariant;
+  alwaysVisible?: boolean;
 };
 
 export function LandingReveal({
@@ -17,31 +18,47 @@ export function LandingReveal({
   className,
   delay = 0,
   variant = "up",
+  alwaysVisible = false,
 }: LandingRevealProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const [isVisible, setIsVisible] = useState(false);
+  const [isVisible, setIsVisible] = useState(true);
 
   useEffect(() => {
+    if (alwaysVisible) return;
+
     const element = ref.current;
     if (!element) return;
 
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry?.isIntersecting) {
-          setIsVisible(true);
-          observer.disconnect();
-        }
-      },
-      {
-        rootMargin: "0px 0px -12% 0px",
-        threshold: 0.16,
-      },
-    );
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
-    observer.observe(element);
+    const bounds = element.getBoundingClientRect();
+    const isAlreadyInView = bounds.top < window.innerHeight * 0.88 && bounds.bottom > 0;
+    if (isAlreadyInView) return;
 
-    return () => observer.disconnect();
-  }, []);
+    let observer: IntersectionObserver | undefined;
+    const animationFrame = window.requestAnimationFrame(() => {
+      setIsVisible(false);
+      observer = new IntersectionObserver(
+        ([entry]) => {
+          if (entry?.isIntersecting) {
+            setIsVisible(true);
+            observer?.disconnect();
+          }
+        },
+        {
+          rootMargin: "0px 0px -12% 0px",
+          threshold: 0.16,
+        },
+      );
+
+      observer.observe(element);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      observer?.disconnect();
+    };
+  }, [alwaysVisible]);
 
   return (
     <div

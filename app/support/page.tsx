@@ -20,11 +20,25 @@ const sections: LegalSection[] = [
   },
 ];
 
+const supportDescription = "Contact Lab Lords support or send a bug report with page, browser, and timestamp context.";
+
 export const metadata: Metadata = {
   title: "Support",
-  description: "Contact Lab Lords support or send a bug report with page, browser, and timestamp context.",
+  description: supportDescription,
   alternates: {
     canonical: absoluteUrl("/support"),
+  },
+  openGraph: {
+    type: "website",
+    url: absoluteUrl("/support"),
+    siteName: siteConfig.name,
+    title: "Lab Lords Support",
+    description: supportDescription,
+  },
+  twitter: {
+    card: "summary",
+    title: "Lab Lords Support",
+    description: supportDescription,
   },
 };
 
