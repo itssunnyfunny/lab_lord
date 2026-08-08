@@ -1,7 +1,8 @@
 :root {
     /* === TYPOGRAPHY === */
-    --font-ops: "Aptos", "Inter", "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-ops-display: "Aptos Display", "Inter Tight", "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-ops: var(--font-geist-sans), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-ops-display: var(--font-geist-sans), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-ops-mono: var(--font-geist-mono), "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 
     /* === COLORS === */
     /* Main Background: Deep Cosmic Blue/Black */
@@ -23,10 +24,11 @@
 
     --text-primary: #ffffff;
     --text-secondary: #9ca3af; /* gray-400 */
-    --text-muted: #6b7280; /* gray-500 */
+    --text-muted: #8b93a3;
 
     /* Accents */
     --accent-primary: #7c3aed; /* violet-600 */
+    --accent-secondary: #8b5cf6; /* violet-500 */
     --accent-glow: rgba(124, 58, 237, 0.3);
 
     --accent-success: #10b981; /* emerald-500 */
@@ -59,8 +61,13 @@
     --ui-radius-control: 8px;
     --ui-radius-panel: 8px;
 
-    --ui-focus-ring: rgba(103, 232, 249, 0.5);
+    --ui-focus-ring: #67e8f9;
     --ui-control-disabled-opacity: 0.5;
+
+    /* Canonical semantic aliases used by application surfaces. */
+    --ui-text: var(--text-primary);
+    --ui-text-muted: var(--text-muted);
+    --ui-accent: var(--accent-cyan);
 
     --ui-panel-bg: rgba(11, 15, 20, 0.8);
     --ui-panel-border: rgba(255, 255, 255, 0.1);
@@ -71,7 +78,7 @@
 
     --ui-stat-title: #9ca3af;
     --ui-stat-value: #ffffff;
-    --ui-stat-subtitle: #6b7280;
+    --ui-stat-subtitle: var(--text-muted);
     --ui-stat-track: rgba(255, 255, 255, 0.1);
     --ui-stat-alert: #fda4af;
     --ui-stat-alert-dot: #fb7185;
@@ -138,7 +145,7 @@
     --ui-table-divider: rgba(255, 255, 255, 0.08);
     --ui-table-text: #ffffff;
     --ui-table-muted: #9ca3af;
-    --ui-table-subtle: #6b7280;
+    --ui-table-subtle: var(--text-muted);
     --ui-table-empty-border: rgba(255, 255, 255, 0.1);
     --ui-table-cell-bg: rgba(255, 255, 255, 0.03);
     --ui-table-action-bg: rgba(255, 255, 255, 0.05);
@@ -150,7 +157,7 @@
     --ui-view-toggle-border: rgba(255, 255, 255, 0.1);
     --ui-view-toggle-hover-bg: rgba(255, 255, 255, 0.1);
     --ui-view-toggle-hover-text: #ffffff;
-    --ui-view-toggle-text: #6b7280;
+    --ui-view-toggle-text: var(--text-muted);
     --ui-view-toggle-table-active-bg: rgba(6, 182, 212, 0.1);
     --ui-view-toggle-table-active-text: #67e8f9;
     --ui-view-toggle-table-ring: rgba(6, 182, 212, 0.2);
@@ -211,8 +218,8 @@
     --ui-form-dialog-shadow: var(--ui-dialog-shadow);
     --ui-form-label: #d1d5db;
     --ui-form-label-strong: #ffffff;
-    --ui-form-help: #6b7280;
-    --ui-form-icon: #6b7280;
+    --ui-form-help: var(--text-muted);
+    --ui-form-icon: var(--text-muted);
     --ui-form-accent: #67e8f9;
     --ui-form-accent-hover: #a5f3fc;
     --ui-form-required: #fb7185;
@@ -220,9 +227,13 @@
     --ui-form-input-select-bg: #0f111a;
     --ui-form-input-border: rgba(255, 255, 255, 0.1);
     --ui-form-input-text: #ffffff;
-    --ui-form-input-placeholder: #6b7280;
-    --ui-form-input-focus-border: rgba(103, 232, 249, 0.5);
+    --ui-form-input-placeholder: var(--text-muted);
+    --ui-form-input-focus-border: #67e8f9;
     --ui-form-input-focus-ring: rgba(103, 232, 249, 0.16);
+    --ui-form-bg: var(--ui-form-muted-surface-bg);
+    --ui-form-field-bg: var(--ui-form-input-bg);
+    --ui-form-field-border: var(--ui-form-input-border);
+    --ui-form-field-focus-border: var(--ui-form-input-focus-border);
     --ui-form-surface-bg: rgba(255, 255, 255, 0.03);
     --ui-form-surface-hover-bg: rgba(255, 255, 255, 0.06);
     --ui-form-surface-border: rgba(255, 255, 255, 0.08);
@@ -258,7 +269,7 @@
     --ui-menu-item-danger-hover-bg: rgba(239, 68, 68, 0.1);
     --ui-menu-item-warning-text: #fbbf24;
     --ui-menu-item-warning-hover-bg: rgba(245, 158, 11, 0.1);
-    --ui-menu-trigger-text: #6b7280;
+    --ui-menu-trigger-text: var(--text-muted);
     --ui-menu-trigger-hover-bg: rgba(255, 255, 255, 0.1);
     --ui-menu-trigger-hover-text: #ffffff;
     --ui-menu-trigger-active-bg: rgba(255, 255, 255, 0.1);

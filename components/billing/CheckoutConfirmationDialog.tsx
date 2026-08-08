@@ -1,9 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
-import { createPortal } from "react-dom";
-import { CreditCard, ShieldCheck, X } from "lucide-react";
-import { AppButton } from "@/components/ui";
+import { CreditCard, ShieldCheck } from "lucide-react";
+import { AppButton, Dialog } from "@/components/ui";
 
 type CheckoutConfirmationDialogProps = {
   isOpen: boolean;
@@ -58,57 +56,6 @@ export function CheckoutConfirmationDialog({
   onClose,
   onConfirm,
 }: CheckoutConfirmationDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    previouslyFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialogRef.current?.focus();
-  }, [isOpen]);
-
-  const closeAndRestoreFocus = useCallback(() => {
-    const previouslyFocused = previouslyFocusedRef.current;
-    onClose();
-    window.setTimeout(() => previouslyFocused?.focus(), 0);
-  }, [onClose]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = previousOverflow; };
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !loading) closeAndRestoreFocus();
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      ) ?? []);
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialogRef.current?.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeAndRestoreFocus, isOpen, loading]);
-
-  if (!isOpen || typeof document === "undefined") return null;
-
   const providerUpdate = changeTiming !== "AUTHORIZATION";
   const firstPlanCharge = purpose === "RECOVERY"
     ? "Razorpay will update the authorized card and retry the outstanding renewal. Lab Lords restores full access only after the payment and paid period are confirmed."
@@ -140,48 +87,31 @@ export function CheckoutConfirmationDialog({
       : `Change your plan to ${planName}`
     : `Authorize ${planName}${trialActive ? " after your trial" : ""}`;
 
-  return createPortal(
-    <div className="fixed inset-0 z-[100] flex items-end justify-center p-3 sm:items-center sm:p-4">
-      <button
-        type="button"
-        className="absolute inset-0 cursor-default bg-[color:var(--ui-backdrop-bg)] backdrop-blur-sm"
-        onClick={loading ? undefined : closeAndRestoreFocus}
-        tabIndex={-1}
-        aria-label="Close authorization summary"
-      />
-      <div
-        ref={dialogRef}
-        className="relative max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-[var(--ui-dialog-radius)] border border-[color:var(--ui-dialog-border)] bg-[color:var(--ui-dialog-bg)] p-4 shadow-[var(--ui-dialog-shadow)] sm:p-6"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="checkout-confirmation-title"
-        tabIndex={-1}
-      >
-        <div className="flex items-start gap-3 pr-9">
-          <div className="rounded-full bg-[color:var(--ui-dialog-icon-info-bg)] p-2 text-[color:var(--ui-dialog-icon-info-text)]">
-            <CreditCard className="h-5 w-5" aria-hidden="true" />
-          </div>
-          <div>
-            <h2 id="checkout-confirmation-title" className="text-lg font-bold text-[color:var(--ui-dialog-title)]">
-              {title}
-            </h2>
-            <p className="mt-1 text-sm text-[color:var(--ui-dialog-description)]">
-              {purpose === "RECOVERY"
-                ? "Review the current recurring branch billing before opening secure Checkout."
-                : "Review the recurring branch billing before confirming this change."}
-            </p>
-          </div>
+  return (
+    <Dialog
+      open={isOpen}
+      onClose={onClose}
+      title={title}
+      description={purpose === "RECOVERY"
+        ? "Review the current recurring branch billing before opening secure Checkout."
+        : "Review the recurring branch billing before confirming this change."}
+      icon={(
+        <div className="rounded-full bg-[color:var(--ui-dialog-icon-info-bg)] p-2 text-[color:var(--ui-dialog-icon-info-text)]">
+          <CreditCard className="h-5 w-5" />
         </div>
-        <button
-          type="button"
-          className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-[var(--ui-radius-control)] text-[color:var(--ui-text-muted)] hover:bg-[color:var(--ui-form-muted-surface-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]"
-          onClick={closeAndRestoreFocus}
-          disabled={loading}
-          aria-label="Close authorization summary"
-        >
-          <X className="h-4 w-4" aria-hidden="true" />
-        </button>
-
+      )}
+      closeLabel="Close authorization summary"
+      closeDisabled={loading}
+      className="max-w-lg"
+      footer={(
+        <>
+          <AppButton variant="quiet" onClick={onClose} disabled={loading} data-dialog-initial-focus>Not now</AppButton>
+          <AppButton variant="primary" onClick={() => void onConfirm()} isLoading={loading}>
+            {providerUpdate && purpose !== "RECOVERY" ? "Confirm plan change" : "Continue to Razorpay"}
+          </AppButton>
+        </>
+      )}
+    >
         <dl className="mt-5 grid gap-3 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)] p-4 sm:grid-cols-2">
           <div>
             <dt className="text-xs font-medium uppercase tracking-wide text-[color:var(--ui-text-muted)]">
@@ -230,14 +160,6 @@ export function CheckoutConfirmationDialog({
           )}
         </div>
 
-        <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-          <AppButton variant="quiet" onClick={closeAndRestoreFocus} disabled={loading}>Not now</AppButton>
-          <AppButton variant="primary" onClick={() => void onConfirm()} isLoading={loading}>
-            {providerUpdate && purpose !== "RECOVERY" ? "Confirm plan change" : "Continue to Razorpay"}
-          </AppButton>
-        </div>
-      </div>
-    </div>,
-    document.body
+    </Dialog>
   );
 }
