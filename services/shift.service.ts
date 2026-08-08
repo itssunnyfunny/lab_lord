@@ -570,7 +570,6 @@ export class ShiftService {
 
     static async listShifts(userId: string, branchId: string) {
         await this.assertBranchAccess(userId, branchId, "seat_allocation");
-        await this.ensureDefaultShifts(branchId);
         return prisma.shift.findMany({
             where: { branchId, status: "ACTIVE" },
             orderBy: { name: "asc" },

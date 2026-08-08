@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { sortSeatsByLabel } from "@/lib/seatNumbering";
+import { EntitlementService } from "@/services/entitlement.service";
 import { StaffService } from "@/services/staff.service";
 import { mapImportColumns } from "@/importing/ai/import-column-mapper.ai";
 import type {
@@ -347,8 +348,13 @@ export class ImportSessionService {
         await StaffService.authorize(userId, branchId, "students");
     }
 
-    static async createSession(userId: string, branchId: string, input: CreateImportSessionInput) {
+    private static async authorizeMutation(userId: string, branchId: string) {
         await this.authorize(userId, branchId);
+        await EntitlementService.assertBranchWritable(branchId);
+    }
+
+    static async createSession(userId: string, branchId: string, input: CreateImportSessionInput) {
+        await this.authorizeMutation(userId, branchId);
         const parsed = await parseImportSource(input);
         assertImportRowLimit(parsed.rows.length);
         const sourceProfile = buildImportSourceProfile(parsed);
@@ -628,7 +634,7 @@ export class ImportSessionService {
     }
 
     static async analyzeSession(userId: string, branchId: string, sessionId: string) {
-        await this.authorize(userId, branchId);
+        await this.authorizeMutation(userId, branchId);
         const session = await prisma.importSession.findFirst({
             where: { id: sessionId, branchId },
             include: { rows: { orderBy: { rowNumber: "asc" } } },
@@ -671,7 +677,7 @@ export class ImportSessionService {
                 data: { mapping: asJson(mapping) },
             });
 
-            return this.revalidateSession(userId, branchId, sessionId);
+            return this.revalidateAuthorizedSession(userId, branchId, sessionId);
         } catch (error) {
             await prisma.importSession.update({
                 where: { id: sessionId },
@@ -693,7 +699,7 @@ export class ImportSessionService {
         sessionId: string,
         input: { columnMappings?: ImportColumnMapping[]; importOptions?: Partial<ImportMappingState["importOptions"]> }
     ) {
-        await this.authorize(userId, branchId);
+        await this.authorizeMutation(userId, branchId);
         const session = await prisma.importSession.findFirst({
             where: { id: sessionId, branchId },
             include: { rows: { orderBy: { rowNumber: "asc" }, select: { rawData: true } } },
@@ -740,7 +746,7 @@ export class ImportSessionService {
             data: { mapping: asJson(next) },
         });
 
-        return this.revalidateSession(userId, branchId, sessionId);
+        return this.revalidateAuthorizedSession(userId, branchId, sessionId);
     }
 
     static async updateRows(
@@ -753,7 +759,7 @@ export class ImportSessionService {
             unskipRowIds?: string[];
         }
     ) {
-        await this.authorize(userId, branchId);
+        await this.authorizeMutation(userId, branchId);
         const session = await prisma.importSession.findFirst({ where: { id: sessionId, branchId } });
         if (!session) throw new Error("Import session not found");
 
@@ -804,11 +810,15 @@ export class ImportSessionService {
             });
         }
 
-        return this.revalidateSession(userId, branchId, sessionId);
+        return this.revalidateAuthorizedSession(userId, branchId, sessionId);
     }
 
     static async revalidateSession(userId: string, branchId: string, sessionId: string) {
-        await this.authorize(userId, branchId);
+        await this.authorizeMutation(userId, branchId);
+        return this.revalidateAuthorizedSession(userId, branchId, sessionId);
+    }
+
+    private static async revalidateAuthorizedSession(userId: string, branchId: string, sessionId: string) {
         const session = await prisma.importSession.findFirst({
             where: { id: sessionId, branchId },
             include: { rows: { orderBy: { rowNumber: "asc" } } },

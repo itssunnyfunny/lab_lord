@@ -4,7 +4,9 @@ import { createImportPlanVersion } from "@/importing/utils/import-plan-checks";
 
 const mocks = vi.hoisted(() => ({
     revalidateSession: vi.fn(),
+    getSessionDetail: vi.fn(),
     authorize: vi.fn(),
+    assertBranchWritable: vi.fn(),
     prisma: {
         $transaction: vi.fn(),
         seat: { findMany: vi.fn() },
@@ -31,6 +33,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/importing/services/import-session.service", () => ({
     ImportSessionService: {
         revalidateSession: mocks.revalidateSession,
+        getSessionDetail: mocks.getSessionDetail,
     },
 }));
 
@@ -41,6 +44,12 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/services/staff.service", () => ({
     StaffService: {
         authorize: mocks.authorize,
+    },
+}));
+
+vi.mock("@/services/entitlement.service", () => ({
+    EntitlementService: {
+        assertBranchWritable: mocks.assertBranchWritable,
     },
 }));
 
@@ -134,6 +143,7 @@ describe("ImportCommitService", () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date("2026-07-03T00:00:00.000Z"));
         mocks.authorize.mockResolvedValue(true);
+        mocks.assertBranchWritable.mockResolvedValue({});
         mocks.prisma.seat.findMany.mockResolvedValue([{ id: "seat_1", label: "A1" }]);
         mocks.prisma.shift.findMany.mockResolvedValue([{ id: "shift_1", name: "Morning" }]);
         mocks.prisma.multiShift.findMany.mockResolvedValue([]);
@@ -174,6 +184,23 @@ describe("ImportCommitService", () => {
         const { ImportCommitService } = await import("@/importing/services/import-commit.service");
 
         await expect(ImportCommitService.commitSession("user_1", "branch_1", "session_1")).rejects.toThrow("plan version");
+        expect(mocks.revalidateSession).not.toHaveBeenCalled();
+    });
+
+    it("blocks commit before reading or mutating a read-only branch", async () => {
+        mocks.assertBranchWritable.mockRejectedValueOnce(new Error("Branch is read-only"));
+        const { ImportCommitService } = await import("@/importing/services/import-commit.service");
+
+        await expect(ImportCommitService.commitSession(
+            "user_1",
+            "branch_1",
+            "session_1",
+            "SAFE_PARTIAL",
+            planVersionFor(readyDetail)
+        )).rejects.toThrow("read-only");
+
+        expect(mocks.assertBranchWritable).toHaveBeenCalledWith("branch_1");
+        expect(mocks.prisma.importSession.findFirst).not.toHaveBeenCalled();
         expect(mocks.revalidateSession).not.toHaveBeenCalled();
     });
 
@@ -549,7 +576,7 @@ describe("ImportCommitService", () => {
     });
 
     it("previews generated dues for student-only rows when payment generation is enabled", async () => {
-        mocks.revalidateSession.mockResolvedValueOnce({
+        mocks.getSessionDetail.mockResolvedValueOnce({
             status: "READY_TO_COMMIT",
             mapping: {
                 importOptions: {
@@ -581,10 +608,11 @@ describe("ImportCommitService", () => {
 
         expect(preview.summary.generatePayments).toBe(1);
         expect(preview.summary.markPaid).toBe(0);
+        expect(mocks.revalidateSession).not.toHaveBeenCalled();
     });
 
     it("previews one allocation per component shift for multi-shift rows", async () => {
-        mocks.revalidateSession.mockResolvedValueOnce({
+        mocks.getSessionDetail.mockResolvedValueOnce({
             status: "READY_TO_COMMIT",
             mapping: {
                 importOptions: {
@@ -615,7 +643,7 @@ describe("ImportCommitService", () => {
     });
 
     it("previews safe partial as committable when blocked rows have unresolved payment words", async () => {
-        mocks.revalidateSession.mockResolvedValueOnce({
+        mocks.getSessionDetail.mockResolvedValueOnce({
             status: "VALIDATED",
             mapping: {
                 importOptions: {

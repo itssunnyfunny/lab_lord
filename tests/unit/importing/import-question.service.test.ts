@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     authorize: vi.fn(),
+    assertBranchWritable: vi.fn(),
     revalidateSession: vi.fn(),
     getSessionDetail: vi.fn(),
     prisma: {
@@ -18,6 +19,12 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/services/staff.service", () => ({
     StaffService: {
         authorize: mocks.authorize,
+    },
+}));
+
+vi.mock("@/services/entitlement.service", () => ({
+    EntitlementService: {
+        assertBranchWritable: mocks.assertBranchWritable,
     },
 }));
 
@@ -51,6 +58,7 @@ describe("ImportQuestionService", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mocks.authorize.mockResolvedValue(true);
+        mocks.assertBranchWritable.mockResolvedValue({});
         mocks.prisma.importQuestion.update.mockResolvedValue({});
         mocks.prisma.importSession.update.mockResolvedValue({});
         mocks.revalidateSession.mockResolvedValue({ id: "session_1" });
@@ -65,6 +73,20 @@ describe("ImportQuestionService", () => {
             answer: "CURRENT_MONTH",
         })).rejects.toThrow("Unauthorized");
 
+        expect(mocks.prisma.importSession.findFirst).not.toHaveBeenCalled();
+        expect(mocks.prisma.importQuestion.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks question mutations when the branch is read-only", async () => {
+        mocks.assertBranchWritable.mockRejectedValueOnce(new Error("Branch is read-only"));
+        const { ImportQuestionService } = await import("@/importing/services/import-question.service");
+
+        await expect(ImportQuestionService.answerQuestion("user_1", "branch_1", "session_1", {
+            questionId: "question_1",
+            answer: "CURRENT_MONTH",
+        })).rejects.toThrow("read-only");
+
+        expect(mocks.assertBranchWritable).toHaveBeenCalledWith("branch_1");
         expect(mocks.prisma.importSession.findFirst).not.toHaveBeenCalled();
         expect(mocks.prisma.importQuestion.update).not.toHaveBeenCalled();
     });

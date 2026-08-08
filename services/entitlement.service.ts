@@ -204,6 +204,9 @@ export class EntitlementService {
     if (branch.billingStatus === "PENDING_ACTIVATION") {
       throw new BillingReadOnlyError("This branch is awaiting provider-confirmed billing activation");
     }
+    if (branch.billingStatus === "REMOVAL_SCHEDULED") {
+      throw new BillingReadOnlyError("This branch is read-only while removal is scheduled");
+    }
     return this.assertOrganizationWritable(branch.organizationId);
   }
 }

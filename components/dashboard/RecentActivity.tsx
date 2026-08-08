@@ -7,8 +7,8 @@ import {
     pageSectionDividerClass,
     pageSubtleTextClass,
 } from "@/components/ui/pageSurface";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { cn } from "@/lib/utils";
-import { formatDistanceToNow } from "date-fns";
 import { Activity, ArrowRight, IndianRupee, LayoutGrid, TriangleAlert, UserPlus } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -23,11 +23,11 @@ interface RecentActivityProps {
     branchId: string;
 }
 
-function formatMoney(amount: number) {
-    return `Rs ${amount.toLocaleString("en-IN")}`;
-}
-
-function getActivityContent(item: ActivityItem) {
+function getActivityContent(
+    item: ActivityItem,
+    formatMoney: (amount: number) => string,
+    formatNumber: (value: number) => string,
+) {
     switch (item.type) {
         case "allocation":
             return {
@@ -48,7 +48,7 @@ function getActivityContent(item: ActivityItem) {
                 icon: TriangleAlert,
                 iconClass: "bg-rose-400/10 text-rose-300",
                 title: "Overdue payments detected",
-                description: `${item.count} student${item.count === 1 ? "" : "s"} need follow-up.`,
+                description: `${formatNumber(item.count)} student${item.count === 1 ? "" : "s"} need follow-up.`,
             };
         case "enrollment":
             return {
@@ -77,6 +77,12 @@ function EmptyActivity() {
 export function RecentActivity({ items, branchId }: RecentActivityProps) {
     const router = useRouter();
     const visibleItems = items.slice(0, 7);
+    const { formatDateTime, formatNumber } = useUserPreferences();
+    const formatMoney = (amount: number) => formatNumber(amount, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
 
     return (
         <AppPanel
@@ -100,9 +106,8 @@ export function RecentActivity({ items, branchId }: RecentActivityProps) {
             ) : (
                 <div className={cn("divide-y", pageSectionDividerClass)}>
                     {visibleItems.map((item, index) => {
-                        const content = getActivityContent(item);
+                        const content = getActivityContent(item, formatMoney, formatNumber);
                         const Icon = content.icon;
-                        const timeAgo = formatDistanceToNow(new Date(item.ts), { addSuffix: true });
 
                         return (
                             <div key={`${item.type}-${item.ts}-${index}`} className="flex gap-3 px-4 py-3">
@@ -112,7 +117,9 @@ export function RecentActivity({ items, branchId }: RecentActivityProps) {
                                 <div className="min-w-0 flex-1">
                                     <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
                                         <p className="text-sm font-medium text-[color:var(--text-primary)]">{content.title}</p>
-                                        <span className={cn("shrink-0 text-xs", pageSubtleTextClass)}>{timeAgo}</span>
+                                        <time dateTime={item.ts} className={cn("shrink-0 text-xs", pageSubtleTextClass)}>
+                                            {formatDateTime(item.ts)}
+                                        </time>
                                     </div>
                                     <p className={cn("mt-1 text-xs leading-5", pageMutedTextClass)}>{content.description}</p>
                                 </div>

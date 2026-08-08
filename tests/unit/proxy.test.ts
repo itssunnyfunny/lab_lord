@@ -32,8 +32,6 @@ describe("proxy matcher", () => {
     "https://lablords.in/org/example",
     "https://lablords.in/org/example/settings",
     "https://lablords.in/onboarding",
-    "https://lablords.in/invite",
-    "https://lablords.in/invite/example-token",
   ])("runs Clerk and requires authentication for private route %s", url => {
     expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true);
     expect(isProtectedRoute(new NextRequest(url))).toBe(true);
@@ -55,6 +53,8 @@ describe("proxy matcher", () => {
     "https://lablords.in/software/fee-reminder",
     "https://lablords.in/software/coaching-management",
     "https://lablords.in/software/tuition-management",
+    "https://lablords.in/invite",
+    "https://lablords.in/invite/example-token",
   ])("keeps public page %s accessible without authentication", url => {
     expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true);
     expect(isProtectedRoute(new NextRequest(url))).toBe(false);

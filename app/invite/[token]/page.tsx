@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { CheckCircle2, Clock, ShieldAlert, UserPlus } from "lucide-react";
 import { LogoMark } from "@/components/brand/AppLogo";
 import { AmbientBackground } from "@/components/ui/AmbientBackground";
@@ -7,6 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import { getSessionUser } from "@/lib/auth";
 import { StaffInviteService } from "@/services/staffInvite.service";
+import { InviteAcceptanceActions } from "./InviteAcceptanceActions";
 import {
     entryContentClass,
     entryIconFrameClass,
@@ -63,10 +63,10 @@ function InviteState({
                 <h1 className={entryTitleClass}>{title}</h1>
                 <p className={cn("mt-3", entrySubtitleClass)}>{message}</p>
                 <Link
-                    href="/org"
+                    href="/app"
                     className={cn(entrySecondaryLinkClass, "mt-6")}
                 >
-                    Go to workspaces
+                    Return to workspaces
                 </Link>
             </section>
         </main>
@@ -84,7 +84,7 @@ export default async function StaffInvitePage({ params }: InvitePageProps) {
         return (
             <InviteState
                 title="Invite not found"
-                message="This invite link is invalid or has been removed. Ask the branch owner to send a fresh link."
+                message="This invite link is invalid, has been removed, or uses an older format. Ask the branch owner to send a fresh link."
                 variant="danger"
             />
         );
@@ -111,23 +111,6 @@ export default async function StaffInvitePage({ params }: InvitePageProps) {
     }
 
     const user = await getSessionUser();
-    if (user) {
-        let accepted;
-        try {
-            accepted = await StaffInviteService.acceptInvite(user.id, token);
-        } catch (error) {
-            const message = error instanceof Error ? error.message : "Could not accept invite";
-            return (
-                <InviteState
-                    title="Could not accept invite"
-                    message={message}
-                    variant="danger"
-                />
-            );
-        }
-
-        redirect(`/branch/${accepted.branchId}`);
-    }
 
     return (
         <main className={entryRootClass}>
@@ -144,15 +127,37 @@ export default async function StaffInvitePage({ params }: InvitePageProps) {
                 </div>
                 <p className={cn("mt-2 text-sm", entryMutedTextClass)}>{invite.branch.organization.name}</p>
                 <p className={cn("mt-5", entrySubtitleClass)}>
-                    Sign in or create an account to accept this branch invite. Once you are authenticated, your access will be created automatically and you will land inside the branch workspace.
+                    {user
+                        ? "Review the workspace and role below, then explicitly accept when you are ready. No access is created until you confirm."
+                        : "Sign in or create an account to review and accept this branch invite. This link only works for the intended email address."}
                 </p>
                 <div className={cn(entryInlineInfoClass, "mt-6 p-4 text-sm", entryMutedTextClass)}>
-                    <span className="font-medium text-[color:var(--text-primary)]">Expires:</span>{" "}
-                    {invite.expiresAt.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                    <dl className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                            <dt className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">Role</dt>
+                            <dd className="mt-1 font-medium text-[color:var(--text-primary)]">
+                                {invite.role === "MANAGER" ? "Manager" : "Staff"}
+                            </dd>
+                        </div>
+                        <div>
+                            <dt className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">Expires</dt>
+                            <dd className="mt-1 font-medium text-[color:var(--text-primary)]">
+                                {invite.expiresAt.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                            </dd>
+                        </div>
+                    </dl>
                 </div>
-                <div className="mt-6">
-                    <AuthLinks invitePath={invitePath} />
-                </div>
+                {user ? (
+                    <InviteAcceptanceActions
+                        token={token}
+                        invitePath={invitePath}
+                        signedInEmail={user.email ?? "Current account"}
+                    />
+                ) : (
+                    <div className="mt-6">
+                        <AuthLinks invitePath={invitePath} />
+                    </div>
+                )}
             </section>
         </main>
     );

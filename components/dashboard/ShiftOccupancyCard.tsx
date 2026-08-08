@@ -6,6 +6,7 @@ import {
     pageSectionDividerClass,
     pageSubtleTextClass,
 } from "@/components/ui/pageSurface";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { cn } from "@/lib/utils";
 import { ArrowRight, CalendarCheck, CheckCircle2, TriangleAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -55,6 +56,7 @@ function getShiftState(percent: number) {
 
 export function ShiftOccupancyCard({ shifts, branchId }: ShiftOccupancyCardProps) {
     const router = useRouter();
+    const { formatNumber } = useUserPreferences();
 
     return (
         <AppPanel
@@ -103,7 +105,7 @@ export function ShiftOccupancyCard({ shifts, branchId }: ShiftOccupancyCardProps
                                     <div className="min-w-0">
                                         <p className="truncate text-sm font-medium text-[color:var(--text-primary)]">{shift.shiftName}</p>
                                         <p className={cn("mt-1 text-xs", pageSubtleTextClass)}>
-                                            {shift.used.toLocaleString("en-IN")} of {shift.capacity.toLocaleString("en-IN")} slots used
+                                            {formatNumber(shift.used)} of {formatNumber(shift.capacity)} slots used
                                         </p>
                                     </div>
                                     <span
@@ -121,7 +123,10 @@ export function ShiftOccupancyCard({ shifts, branchId }: ShiftOccupancyCardProps
                                         <div className={cn("h-full rounded-full", state.bar)} style={{ width: `${percent}%` }} />
                                     </div>
                                     <span className={cn("w-11 text-right text-xs font-semibold", state.text)}>
-                                        {shift.occupancyPercent.toFixed(0)}%
+                                        {formatNumber(shift.occupancyPercent / 100, {
+                                            style: "percent",
+                                            maximumFractionDigits: 0,
+                                        })}
                                     </span>
                                 </div>
                             </div>

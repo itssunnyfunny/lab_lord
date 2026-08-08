@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { ImportSessionService } from "./import-session.service";
+import { EntitlementService } from "@/services/entitlement.service";
 import { StaffService } from "@/services/staff.service";
 import { inferConfirmedPaymentMapping } from "@/importing/utils/payment-mapping-inference";
 import type { ImportAIQuestion, ImportMappingState, ImportOptions } from "@/importing/contracts/import-session.contract";
@@ -105,6 +106,7 @@ export class ImportQuestionService {
         input: { questionId: string; answer: unknown; applyToAffectedRows?: boolean }
     ) {
         await StaffService.authorize(userId, branchId, "students");
+        await EntitlementService.assertBranchWritable(branchId);
         const session = await prisma.importSession.findFirst({
             where: { id: sessionId, branchId },
             include: { questions: { where: { id: input.questionId } }, rows: { select: { rawData: true } } },

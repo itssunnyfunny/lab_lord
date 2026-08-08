@@ -5,7 +5,6 @@ export const isProtectedRoute = createRouteMatcher([
   "/account(.*)",
   "/app(.*)",
   "/branch(.*)",
-  "/invite(.*)",
   "/onboarding(.*)",
   "/org(.*)",
 ]);

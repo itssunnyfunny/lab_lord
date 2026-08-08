@@ -1,4 +1,4 @@
-import type { StaffAction } from "@/types";
+import type { PagedResult, StaffAction } from "@/types";
 
 export type BranchNotificationSeverity = "critical" | "warning" | "info";
 
@@ -25,15 +25,14 @@ export type BranchNotificationAccess = {
     permissions: Partial<Record<StaffAction, boolean>>;
 };
 
-export type OverduePaymentNotificationData = {
-    count: number;
-    payments?: {
-        paymentId?: string | null;
-        studentName?: string | null;
-        amount?: number | null;
-        dueDate?: Date | string | null;
-    }[];
+export type OverduePaymentNotificationRecord = {
+    paymentId?: string | null;
+    studentName?: string | null;
+    amount?: number | null;
+    dueDate?: Date | string | null;
 };
+
+export type OverduePaymentNotificationData = PagedResult<OverduePaymentNotificationRecord>;
 
 export type StudentNotificationRecord = {
     id: string;
@@ -81,6 +80,18 @@ function plural(count: number, singular: string, pluralForm = `${singular}s`) {
 
 function href(branchId: string, path: string) {
     return `/branch/${branchId}/${path}`;
+}
+
+type OverduePaymentRecord = OverduePaymentNotificationData["items"][number];
+
+function paymentHref(branchId: string, payment: OverduePaymentRecord | undefined) {
+    if (!payment?.paymentId) return href(branchId, "overdue");
+    const params = new URLSearchParams({ paymentId: payment.paymentId, status: "DUE" });
+    if (payment.dueDate) {
+        const dueDate = payment.dueDate instanceof Date ? payment.dueDate : new Date(payment.dueDate);
+        if (!Number.isNaN(dueDate.getTime())) params.set("month", dueDate.toISOString().slice(0, 7));
+    }
+    return `${href(branchId, "payments")}?${params.toString()}`;
 }
 
 function formatMoney(value: number | null | undefined) {
@@ -146,10 +157,10 @@ function nextExpiringInvite(invites: StaffInviteNotificationRecord[] = []) {
 export function buildBranchNotifications(input: BuildBranchNotificationsInput): BranchNotification[] {
     const notifications: BranchNotification[] = [];
 
-    if (can(input.access, "view_payments") && input.overdue && input.overdue.count > 0) {
-        const firstPayment = input.overdue.payments?.[0];
-        const overdueKey = input.overdue.payments
-            ?.map(payment => compactKeyParts([
+    if (can(input.access, "view_payments") && input.overdue && input.overdue.total > 0) {
+        const firstPayment = input.overdue.items[0];
+        const overdueKey = input.overdue.items
+            .map(payment => compactKeyParts([
                 payment.paymentId,
                 payment.studentName,
                 payment.amount,
@@ -164,13 +175,13 @@ export function buildBranchNotifications(input: BuildBranchNotificationsInput): 
 
         notifications.push({
             id: "overdue-payments",
-            readKey: compactKeyParts(["overdue_payments", input.overdue.count, overdueKey]),
+            readKey: compactKeyParts(["overdue_payments", input.overdue.total, overdueKey]),
             kind: "overdue_payments",
-            severity: input.overdue.count >= 5 ? "critical" : "warning",
-            title: `${input.overdue.count} overdue ${plural(input.overdue.count, "payment")}`,
+            severity: input.overdue.total >= 5 ? "critical" : "warning",
+            title: `${input.overdue.total} overdue ${plural(input.overdue.total, "payment")}`,
             message: details,
-            href: href(input.branchId, "overdue"),
-            count: input.overdue.count,
+            href: paymentHref(input.branchId, firstPayment),
+            count: input.overdue.total,
             sort: 100,
         });
     }
@@ -191,7 +202,7 @@ export function buildBranchNotifications(input: BuildBranchNotificationsInput): 
                     ? "1 active student without a seat"
                     : `${unseated.length} active students without seats`,
                 message: "Assign seats to complete active student onboarding.",
-                href: href(input.branchId, "allocations"),
+                href: `${href(input.branchId, "allocations")}?studentId=${encodeURIComponent(unseated[0].id)}`,
                 count: unseated.length,
                 sort: 80,
             });

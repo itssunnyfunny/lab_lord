@@ -54,6 +54,7 @@ export async function POST(
 
         await StaffService.authorize(user.id, branchId, "analytics")
         await EntitlementService.assertBranchEntitlement(branchId, "AI_ACCESS")
+        await EntitlementService.assertBranchWritable(branchId)
 
         const rateLimit = checkRateLimit(
             getRequestRateLimitKey(req, "ai-message-generation", `${user.id}:${branchId}`),
