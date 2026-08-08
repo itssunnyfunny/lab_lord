@@ -3,11 +3,11 @@
 import { DataTable } from "@/components/tables/DataTable";
 import { ViewToggle } from "@/components/tables/ViewToggle";
 import { Badge } from "@/components/ui/Badge";
-import { AppButton, PageLoadingSkeleton, PageShell } from "@/components/ui";
+import { AppButton, Dialog, Drawer, PageLoadingSkeleton, PageShell, useToast } from "@/components/ui";
 import { Button } from "@/components/ui/Button";
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
 import {
-    Loader2, AlertCircle, ArrowLeft, X,
+    AlertCircle, ArrowLeft,
     Eye, Pencil, PowerOff, Power,
     AlertTriangle, CheckCircle2, MinusCircle, Clock, ArrowRightLeft, Armchair, Download, Search, UserPlus,
 } from "lucide-react";
@@ -17,16 +17,12 @@ import { payments } from "@/lib/api/payments";
 import { branches } from "@/lib/api/branches";
 import { StudentStatus, type Student, type Payment, type Shift } from "@/app/generated/prisma/browser";
 import { format } from "date-fns";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AddStudentDialog } from "./AddStudentDialog";
 import { EditStudentDialog } from "./EditStudentDialog";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
     formControlClass,
-    formDialogOverlayClass,
-    formDialogPanelClass,
-    formDrawerHeaderClass,
-    formDrawerPanelClass,
     formHelpTextClass,
     formSuccessBannerClass,
     formSurfaceClass,
@@ -54,12 +50,13 @@ import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
 import { getPermissionHelpText } from "@/lib/permissionMessages";
 import { useDataViewMode } from "@/hooks/useDataViewMode";
 import { RowActionsMenu, type RowActionsMenuItem } from "@/components/ui/RowActionsMenu";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
+import type { CapabilityDecision } from "@/types";
+import Link from "next/link";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 
 type DueResolution = "PAID" | "WAIVED" | "KEEP";
 type StudentRosterTab = "ACTIVE" | "INACTIVE";
-
-const formatCurrency = (amount: number) =>
-    new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(amount);
 
 function escapeCsvValue(value: string | number | null | undefined) {
     const text = value == null ? "" : String(value);
@@ -194,9 +191,13 @@ interface InactivateDialogProps {
 }
 
 function InactivateDialog({ student, duePayments, onConfirm, onCancel, loading }: InactivateDialogProps) {
+    const { formatNumber } = useUserPreferences();
+    const formatCurrency = (amount: number) => formatNumber(amount, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
     const [resolution, setResolution] = useState<DueResolution>("WAIVED");
-
-    if (!student) return null;
 
     const totalDue = duePayments.reduce((sum, p) => sum + p.amount, 0);
     const hasDues = duePayments.length > 0;
@@ -226,22 +227,33 @@ function InactivateDialog({ student, duePayments, onConfirm, onCancel, loading }
     ];
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className={cn("cursor-pointer", formDialogOverlayClass)} onClick={onCancel} />
-            <div className={cn("relative w-full max-w-md p-6 animate-in zoom-in-95 duration-200", formDialogPanelClass)}>
-                {/* Header */}
-                <div className="flex items-start gap-3 mb-5">
-                    <div className="w-10 h-10 rounded-full bg-[color:var(--ui-dialog-icon-danger-bg)] text-[color:var(--ui-dialog-icon-danger-text)] flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <AlertTriangle size={18} />
-                    </div>
-                    <div>
-                        <h3 className="text-lg font-semibold leading-tight text-[color:var(--text-primary)]">Deactivate {student.name}?</h3>
-                        <p className={cn("mt-0.5 text-sm", formHelpTextClass)}>
-                            Their seat allocation will be ended immediately.
-                        </p>
-                    </div>
-                </div>
-
+        <Dialog
+            open={Boolean(student)}
+            onClose={onCancel}
+            title={`Deactivate ${student?.name ?? "student"}?`}
+            description="Their active seat allocation will be ended immediately."
+            icon={<span className="flex h-10 w-10 items-center justify-center rounded-full bg-[color:var(--ui-dialog-icon-danger-bg)] text-[color:var(--ui-dialog-icon-danger-text)]"><AlertTriangle size={18} /></span>}
+            role="alertdialog"
+            closeDisabled={loading}
+            className="max-w-md"
+            footer={(
+                <>
+                    <Button variant="outline" onClick={onCancel} disabled={loading} data-dialog-initial-focus>
+                        Cancel
+                    </Button>
+                    <Button
+                        variant="danger"
+                        onClick={() => onConfirm(hasDues ? resolution : "KEEP")}
+                        disabled={loading}
+                        isLoading={loading}
+                        icon={PowerOff}
+                    >
+                        Confirm deactivate
+                    </Button>
+                </>
+            )}
+        >
+            <div>
                 {/* Due payments summary */}
                 {hasDues ? (
                     <div className={cn("mb-5 p-4", formWarningBannerClass)}>
@@ -296,23 +308,8 @@ function InactivateDialog({ student, duePayments, onConfirm, onCancel, loading }
                     No future billing cycles will be generated after deactivation.
                 </p>
 
-                {/* Actions */}
-                <div className="flex gap-3">
-                    <Button variant="outline" className="flex-1" onClick={onCancel} disabled={loading}>
-                        Cancel
-                    </Button>
-                    <Button
-                        variant="danger"
-                        className="flex-1"
-                        onClick={() => onConfirm(hasDues ? resolution : "KEEP")}
-                        disabled={loading}
-                    >
-                        {loading ? <Loader2 size={14} className="animate-spin" /> : <PowerOff size={14} />}
-                        {loading ? "Deactivating..." : "Confirm deactivate"}
-                    </Button>
-                </div>
             </div>
-        </div>
+        </Dialog>
     );
 }
 
@@ -327,7 +324,9 @@ export default function StudentsPage({ params }: { params: Promise<{ branchId: s
                 <StudentsContent
                     branchId={branchId}
                     canViewPayments={access.permissions.view_payments}
-                    canAllocateSeats={access.permissions.seat_allocation}
+                    canViewAllocations={access.permissions.seat_allocation}
+                    manageDecision={getBranchCapabilityDecision(access, "studentsManage")}
+                    allocationDecision={getBranchCapabilityDecision(access, "allocationsManage")}
                 />
             )}
         </BranchAccessGuard>
@@ -337,26 +336,50 @@ export default function StudentsPage({ params }: { params: Promise<{ branchId: s
 function StudentsContent({
     branchId,
     canViewPayments,
-    canAllocateSeats,
+    canViewAllocations,
+    manageDecision,
+    allocationDecision,
 }: {
     branchId: string;
     canViewPayments: boolean;
-    canAllocateSeats: boolean;
+    canViewAllocations: boolean;
+    manageDecision: CapabilityDecision;
+    allocationDecision: CapabilityDecision;
 }) {
     const router = useRouter();
+    const toast = useToast();
+    const { formatDate, formatNumber } = useUserPreferences();
+    const formatCurrency = (amount: number) => formatNumber(amount, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
+    const searchParams = useSearchParams();
+    const targetStudentId = searchParams.get("studentId");
+    const targetStudentStatus = searchParams.get("status");
     const paymentHelpText = getPermissionHelpText("view_payments");
     const allocationHelpText = getPermissionHelpText("seat_allocation");
 
     const [allStudents, setAllStudents] = useState<StudentListItem[]>([]);
     const [allPayments, setAllPayments] = useState<Payment[]>([]);
     const [shifts, setShifts] = useState<Shift[]>([]);
+    const [studentTotals, setStudentTotals] = useState<Record<StudentRosterTab, number>>({
+        ACTIVE: 0,
+        INACTIVE: 0,
+    });
+    const [nextStudentCursor, setNextStudentCursor] = useState<string | null>(null);
 
-    const [activeTab, setActiveTab] = useState<StudentRosterTab>("ACTIVE");
+    const [activeTab, setActiveTab] = useState<StudentRosterTab>(() => (
+        targetStudentStatus === "INACTIVE" ? "INACTIVE" : "ACTIVE"
+    ));
     const [selectedShift, setSelectedShift] = useState<string>("");
     const [searchQuery, setSearchQuery] = useState("");
+    const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
     const [viewMode, setViewMode] = useDataViewMode();
 
     const [loading, setLoading] = useState(true);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [exporting, setExporting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     // Add dialog
@@ -377,62 +400,154 @@ function StudentsContent({
     const [activateTarget, setActivateTarget] = useState<Student | null>(null);
     const [activateLoading, setActivateLoading] = useState(false);
 
-    const loadData = useCallback(async () => {
-        setLoading(true);
+    useEffect(() => {
+        const timeout = window.setTimeout(() => {
+            setDebouncedSearchQuery(searchQuery.trim());
+        }, 300);
+        return () => window.clearTimeout(timeout);
+    }, [searchQuery]);
+
+    const loadAuxiliaryData = useCallback(async () => {
         try {
             const paymentListPromise = canViewPayments
                 ? Promise.all([
-                    payments.list(branchId),
-                    payments.list(branchId, "WAIVED"),
+                    payments.listAll(branchId),
+                    payments.listAll(branchId, { status: "WAIVED" }),
                 ]).then(([activePayments, waivedPayments]) => [...activePayments, ...waivedPayments])
                 : Promise.resolve([]);
 
-            const [studentsList, paymentsList, shiftsList] = await Promise.all([
-                students.list(branchId, selectedShift || undefined),
+            const [paymentsList, shiftsList] = await Promise.all([
                 paymentListPromise,
-                canAllocateSeats ? branches.getShifts(branchId) : Promise.resolve([]),
+                canViewAllocations ? branches.getShifts(branchId) : Promise.resolve([]),
             ]);
-            setAllStudents(studentsList);
             setAllPayments(paymentsList);
             setShifts(shiftsList);
-            setError(null);
         } catch {
             setError("Failed to load students data.");
-        } finally {
-            setLoading(false);
         }
-    }, [branchId, canAllocateSeats, canViewPayments, selectedShift]);
+    }, [branchId, canViewAllocations, canViewPayments]);
 
-    useEffect(() => { loadData(); }, [loadData]);
+    const loadStudentPage = useCallback(async (cursor?: string, append = false) => {
+        if (append) setLoadingMore(true);
+        else setLoading(true);
+
+        try {
+            const listParams = {
+                status: activeTab as StudentStatus,
+                shiftId: selectedShift || undefined,
+                query: debouncedSearchQuery || undefined,
+            };
+            const otherStatus: StudentRosterTab = activeTab === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+
+            if (append) {
+                const page = await students.list(branchId, {
+                    ...listParams,
+                    cursor,
+                    limit: 50,
+                });
+                setAllStudents(previous => [...previous, ...page.items]);
+                setNextStudentCursor(page.nextCursor);
+                setStudentTotals(previous => ({ ...previous, [activeTab]: page.total }));
+            } else {
+                const shouldResolveDeepLink = Boolean(
+                    targetStudentId && (!targetStudentStatus || targetStudentStatus === activeTab)
+                );
+                const currentPagePromise = shouldResolveDeepLink
+                    ? students.listAll(branchId, listParams).then(items => ({
+                        items,
+                        nextCursor: null,
+                        total: items.length,
+                    }))
+                    : students.list(branchId, { ...listParams, limit: 50 });
+                const otherCountPromise = students.list(branchId, {
+                    ...listParams,
+                    status: otherStatus as StudentStatus,
+                    limit: 1,
+                });
+                const [page, otherPage] = await Promise.all([currentPagePromise, otherCountPromise]);
+
+                setAllStudents(page.items);
+                setNextStudentCursor(page.nextCursor);
+                setStudentTotals({
+                    [activeTab]: page.total,
+                    [otherStatus]: otherPage.total,
+                } as Record<StudentRosterTab, number>);
+            }
+            setError(null);
+        } catch (loadError) {
+            if (append) {
+                toast.show({
+                    title: "More students could not be loaded",
+                    description: loadError instanceof Error ? loadError.message : "Try again.",
+                    tone: "error",
+                });
+            } else {
+                setError("Failed to load students data.");
+            }
+        } finally {
+            if (append) setLoadingMore(false);
+            else setLoading(false);
+        }
+    }, [activeTab, branchId, debouncedSearchQuery, selectedShift, targetStudentId, targetStudentStatus, toast]);
+
+    useEffect(() => { void loadStudentPage(); }, [loadStudentPage]);
+    useEffect(() => { void loadAuxiliaryData(); }, [loadAuxiliaryData]);
+
+    useEffect(() => {
+        if (targetStudentStatus === "ACTIVE" || targetStudentStatus === "INACTIVE") {
+            setActiveTab(targetStudentStatus);
+        }
+    }, [targetStudentStatus]);
 
     // ── Financial map ─────────────────────────────────────────────────────────
     const studentFinancials = useMemo(() => {
         const map = new Map<string, { totalDue: number; totalPaid: number; totalWaived: number; admissionPaid: boolean; payments: Payment[] }>();
-        allStudents.forEach(s => {
-            const sp = allPayments.filter(p => p.studentId === s.id);
-            map.set(s.id, {
+        allPayments.forEach(payment => {
+            const current = map.get(payment.studentId) ?? {
+                totalDue: 0,
+                totalPaid: 0,
+                totalWaived: 0,
+                admissionPaid: false,
+                payments: [],
+            };
                 // WAIVED excluded from totalDue — it's resolved
-                totalDue: sp.filter(p => p.status === "DUE").reduce((sum, p) => sum + p.amount, 0),
-                totalPaid: sp.filter(p => p.status === "PAID").reduce((sum, p) => sum + p.amount, 0),
-                totalWaived: sp.filter(p => p.status === "WAIVED").reduce((sum, p) => sum + p.amount, 0),
-                admissionPaid: sp.some(p => p.type === "ADMISSION" && p.status === "PAID"),
-                payments: sp,
-            });
+            current.payments.push(payment);
+            if (payment.status === "DUE") current.totalDue += payment.amount;
+            if (payment.status === "PAID") current.totalPaid += payment.amount;
+            if (payment.status === "WAIVED") current.totalWaived += payment.amount;
+            if (payment.type === "ADMISSION" && payment.status === "PAID") current.admissionPaid = true;
+            map.set(payment.studentId, current);
         });
         return map;
-    }, [allStudents, allPayments]);
+    }, [allPayments]);
 
-    const filteredStudents = allStudents.filter(s => {
-        const matchesTab = s.status === activeTab;
-        const q = searchQuery.toLowerCase();
-        return matchesTab && (s.name.toLowerCase().includes(q) || (s.phone && s.phone.includes(q)));
-    });
+    const filteredStudents = allStudents;
 
-    const handleExportStudents = () => {
-        const paymentHeaders = canViewPayments ? ["Total Due", "Total Paid", "Total Waived"] : [];
-        const rows = [
-            ["Name", "Phone", "Status", "Monthly Fee", "Joined", "Seat", "Shift", ...paymentHeaders],
-            ...filteredStudents.map(student => {
+    useEffect(() => {
+        if (loading || !targetStudentId) return;
+        const target = document.getElementById(`student-table-${targetStudentId}`)
+            ?? document.getElementById(`student-grid-${targetStudentId}`);
+        if (!target) return;
+        const focusFrame = window.requestAnimationFrame(() => {
+            const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+            target.focus({ preventScroll: true });
+        });
+        return () => window.cancelAnimationFrame(focusFrame);
+    }, [activeTab, allStudents, loading, targetStudentId]);
+
+    const handleExportStudents = async () => {
+        setExporting(true);
+        try {
+            const exportStudents = await students.listAll(branchId, {
+                status: activeTab as StudentStatus,
+                shiftId: selectedShift || undefined,
+                query: debouncedSearchQuery || undefined,
+            });
+            const paymentHeaders = canViewPayments ? ["Total Due", "Total Paid", "Total Waived"] : [];
+            const rows = [
+                ["Name", "Phone", "Status", "Monthly Fee", "Joined", "Seat", "Shift", ...paymentHeaders],
+                ...exportStudents.map(student => {
                 const financials = studentFinancials.get(student.id);
                 const seatShift = getSeatShiftLabels(student);
                 const baseRow = [
@@ -453,10 +568,19 @@ function StudentsContent({
                     financials?.totalPaid ?? 0,
                     financials?.totalWaived ?? 0,
                 ];
-            }),
-        ];
+                }),
+            ];
 
-        downloadCsv(`students-${branchId}-${activeTab.toLowerCase()}.csv`, rows);
+            downloadCsv(`students-${branchId}-${activeTab.toLowerCase()}.csv`, rows);
+        } catch (exportError) {
+            toast.show({
+                title: "Student export failed",
+                description: exportError instanceof Error ? exportError.message : "Try again.",
+                tone: "error",
+            });
+        } finally {
+            setExporting(false);
+        }
     };
 
     const renderFeeSummary = (item: Student) => {
@@ -487,32 +611,42 @@ function StudentsContent({
                     icon: Eye,
                     onClick: () => { setSelectedStudent(item); setIsDrawerOpen(true); },
                 }] : []),
-                {
+                ...(manageDecision.allowed || manageDecision.blocker !== "permission" ? [{
                     label: "Edit Details",
                     icon: Pencil,
+                    disabled: !manageDecision.allowed,
+                    description: manageDecision.allowed ? undefined : manageDecision.reason,
                     onClick: () => setEditTarget(item),
-                },
-                item.status === "ACTIVE"
+                }] : []),
+                ...(manageDecision.allowed || manageDecision.blocker !== "permission" ? [item.status === "ACTIVE"
                     ? {
                         label: "Deactivate",
                         icon: PowerOff,
                         variant: "danger" as const,
+                        disabled: !manageDecision.allowed,
+                        description: manageDecision.allowed ? undefined : manageDecision.reason,
                         onClick: () => setInactivateTarget(item),
                     }
                     : {
                         label: "Activate",
                         icon: Power,
+                        disabled: !manageDecision.allowed,
+                        description: manageDecision.allowed ? undefined : manageDecision.reason,
                         onClick: () => handleActivateClick(item),
-                    },
-                ...(item.status === "ACTIVE" && canAllocateSeats
+                    }] : []),
+                ...(item.status === "ACTIVE" && canViewAllocations
                     ? [{
                         label: "Allocate Seat",
                         icon: CheckCircle2,
+                        disabled: !allocationDecision.allowed,
+                        description: allocationDecision.allowed ? undefined : allocationDecision.reason,
                         onClick: () => router.push(`/branch/${branchId}/allocations?studentId=${item.id}&studentName=${encodeURIComponent(item.name)}`),
                     },
                     {
                         label: "Change Seat",
                         icon: ArrowRightLeft,
+                        disabled: !allocationDecision.allowed,
+                        description: allocationDecision.allowed ? undefined : allocationDecision.reason,
                         onClick: () => router.push(`/branch/${branchId}/allocations?changeStudentId=${item.id}&studentName=${encodeURIComponent(item.name)}`),
                     }]
                     : []
@@ -524,6 +658,10 @@ function StudentsContent({
     // ── Inactivate Student ────────────────────────────────────────────────────
     const handleInactivateConfirm = async (resolution: DueResolution) => {
         if (!inactivateTarget) return;
+        if (!manageDecision.allowed) {
+            toast.show({ title: "Student changes unavailable", description: manageDecision.reason, tone: "error" });
+            return;
+        }
         setInactivateLoading(true);
         try {
             const res = await fetch(`/api/branches/${branchId}/students`, {
@@ -537,9 +675,15 @@ function StudentsContent({
             });
             if (!res.ok) throw new Error("Failed to update status.");
             setInactivateTarget(null);
-            await loadData();
-        } catch {
-            alert("Failed to deactivate student.");
+            await Promise.all([loadStudentPage(), loadAuxiliaryData()]);
+            toast.show({ title: "Student deactivated", tone: "success" });
+        } catch (error) {
+            toast.show({
+                title: "Student was not deactivated",
+                description: error instanceof Error ? error.message : "Try again. No student status was changed.",
+                tone: "error",
+                persistent: true,
+            });
         } finally {
             setInactivateLoading(false);
         }
@@ -552,6 +696,10 @@ function StudentsContent({
 
     const confirmActivate = async () => {
         if (!activateTarget) return;
+        if (!manageDecision.allowed) {
+            toast.show({ title: "Student changes unavailable", description: manageDecision.reason, tone: "error" });
+            return;
+        }
         setActivateLoading(true);
         try {
             const res = await fetch(`/api/branches/${branchId}/students`, {
@@ -560,10 +708,16 @@ function StudentsContent({
                 body: JSON.stringify({ id: activateTarget.id, status: "ACTIVE" }),
             });
             if (!res.ok) throw new Error();
-            setAllStudents(prev => prev.map(s => s.id === activateTarget.id ? { ...s, status: "ACTIVE" as StudentStatus } : s));
             setActivateTarget(null);
-        } catch {
-            alert("Failed to activate student.");
+            await loadStudentPage();
+            toast.show({ title: "Student reactivated", tone: "success" });
+        } catch (error) {
+            toast.show({
+                title: "Student was not reactivated",
+                description: error instanceof Error ? error.message : "Try again. No student status was changed.",
+                tone: "error",
+                persistent: true,
+            });
         } finally {
             setActivateLoading(false);
         }
@@ -603,26 +757,44 @@ function StudentsContent({
                             value={searchQuery}
                             onChange={(event) => setSearchQuery(event.target.value)}
                             placeholder="Search name or phone..."
+                            aria-label="Search students by name or phone"
                             className={cn(formControlClass, "h-10 pl-9 pr-3 text-sm")}
                         />
                     </div>
-                    <AppButton variant="secondary" icon={Download} onClick={handleExportStudents}>
+                    <AppButton variant="secondary" icon={Download} onClick={() => void handleExportStudents()} isLoading={exporting}>
                         Export
                     </AppButton>
-                    <AppButton variant="primary" icon={UserPlus} onClick={() => setIsAddModalOpen(true)}>
+                    <AppButton
+                        variant="primary"
+                        icon={UserPlus}
+                        onClick={() => setIsAddModalOpen(true)}
+                        disabled={!manageDecision.allowed}
+                        title={manageDecision.allowed ? undefined : manageDecision.reason}
+                    >
                         Add student
                     </AppButton>
                 </div>
             </header>
 
-            {(!canViewPayments || !canAllocateSeats) && (
+            {!manageDecision.allowed && manageDecision.blocker !== "permission" && (
+                <div className={cn("px-4 py-3 text-sm", formWarningBannerClass)} role="status">
+                    Student changes are disabled. {manageDecision.reason}{" "}
+                    {manageDecision.recoveryHref ? (
+                        <Link className="font-semibold underline underline-offset-4" href={manageDecision.recoveryHref}>
+                            Resolve access
+                        </Link>
+                    ) : null}
+                </div>
+            )}
+
+            {(!canViewPayments || !canViewAllocations) && (
                 <div className="grid gap-2 md:grid-cols-2">
                     {!canViewPayments && (
                         <div className={cn("px-4 py-3 text-sm", formWarningBannerClass)}>
                             Fee details are hidden. {paymentHelpText}
                         </div>
                     )}
-                    {!canAllocateSeats && (
+                    {!canViewAllocations && (
                         <div className={cn("px-4 py-3 text-sm", formWarningBannerClass)}>
                             Seat assignment actions are disabled. {allocationHelpText}
                         </div>
@@ -632,8 +804,9 @@ function StudentsContent({
 
             <div className={cn("flex flex-col gap-4 border-b pb-4 md:flex-row md:items-center md:justify-between", pageSectionDividerClass)}>
                 <div className={cn("flex items-center gap-3 px-3 py-2", pageFilterShellClass)}>
-                    <span className={cn("text-sm", pageSubtleTextClass)}>Shift</span>
+                    <label htmlFor="student-shift-filter" className={cn("text-sm", pageSubtleTextClass)}>Shift</label>
                     <select
+                        id="student-shift-filter"
                         className={cn(formControlClass, "w-auto bg-[color:var(--ui-form-input-select-bg)] px-3 py-1.5 text-sm")}
                         value={selectedShift}
                         onChange={e => setSelectedShift(e.target.value)}
@@ -652,7 +825,7 @@ function StudentsContent({
                                 key={tab}
                                 tab={tab}
                                 active={activeTab === tab}
-                                count={allStudents.filter(s => s.status === tab).length}
+                                count={studentTotals[tab]}
                                 onClick={() => setActiveTab(tab)}
                             />
                         ))}
@@ -663,7 +836,16 @@ function StudentsContent({
             </div>
 
             <DataTable
+                caption="Students"
                 data={filteredStudents}
+                getRowAttributes={(item, view) => ({
+                    id: `student-${view}-${item.id}`,
+                    tabIndex: -1,
+                    "aria-label": item.id === targetStudentId ? `${item.name}, selected search result` : undefined,
+                    className: item.id === targetStudentId
+                        ? "rounded-[var(--ui-radius-control)] bg-cyan-400/10 ring-2 ring-cyan-300/70"
+                        : undefined,
+                })}
                 viewMode={viewMode}
                 emptyMessage="No students found for this view."
                 renderGridCard={(item, actions) => (
@@ -692,7 +874,7 @@ function StudentsContent({
                         <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                             <div className={pageInsetMetricClass}>
                                 <div className={cn("text-xs", pageSubtleTextClass)}>Joined</div>
-                                <div className={cn("mt-1 truncate", pageMutedTextClass)}>{format(new Date(item.joinedAt), "PP")}</div>
+                                <div className={cn("mt-1 truncate", pageMutedTextClass)}>{formatDate(item.joinedAt)}</div>
                             </div>
                             <div className={pageInsetMetricClass}>
                                 <div className={cn("text-xs", pageSubtleTextClass)}>Monthly fee</div>
@@ -746,18 +928,35 @@ function StudentsContent({
                     },
                     {
                         header: "Joined",
-                        accessor: (item) => <span className="text-sm text-textSecondary">{format(new Date(item.joinedAt), "PP")}</span>
+                        accessor: (item) => <span className="text-sm text-textSecondary">{formatDate(item.joinedAt)}</span>
                     },
                 ]}
                 actions={renderStudentActions}
             />
 
+            <div className="flex flex-col items-center gap-2" aria-live="polite">
+                <p className={cn("text-sm", pageMutedTextClass)}>
+                    Showing {allStudents.length} of {studentTotals[activeTab]} {activeTab.toLowerCase()} students
+                </p>
+                {nextStudentCursor ? (
+                    <AppButton
+                        variant="secondary"
+                        isLoading={loadingMore}
+                        aria-label={`Load more ${activeTab.toLowerCase()} students; ${allStudents.length} of ${studentTotals[activeTab]} shown`}
+                        onClick={() => void loadStudentPage(nextStudentCursor, true)}
+                    >
+                        Load more students
+                    </AppButton>
+                ) : null}
+            </div>
+
             {/* Add dialog */}
             <AddStudentDialog
                 isOpen={isAddModalOpen}
                 onClose={() => setIsAddModalOpen(false)}
-                onSuccess={() => loadData()}
+                onSuccess={() => { void loadStudentPage(); }}
                 branchId={branchId}
+                allocationDecision={allocationDecision}
             />
 
             {/* Edit dialog */}
@@ -816,8 +1015,12 @@ interface FeeDetailsDrawerProps {
 }
 
 function FeeDetailsDrawer({ isOpen, onClose, student, financials }: FeeDetailsDrawerProps) {
-    if (!isOpen || !student) return null;
-
+    const { formatDate, formatNumber } = useUserPreferences();
+    const formatCurrency = (amount: number) => formatNumber(amount, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
     const paymentBadge = (status: string) => {
         if (status === "PAID") return <Badge variant="success" className="text-[10px] h-5 px-1.5">PAID</Badge>;
         if (status === "DUE") return <Badge variant="warning" className="text-[10px] h-5 px-1.5">DUE</Badge>;
@@ -830,23 +1033,21 @@ function FeeDetailsDrawer({ isOpen, onClose, student, financials }: FeeDetailsDr
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex justify-end">
-            <div className={cn("cursor-pointer animate-in fade-in", formDialogOverlayClass)} onClick={onClose} />
-            <div className={cn("relative h-full w-full max-w-md p-6 animate-in slide-in-from-right duration-300", formDrawerPanelClass)}>
-                <button onClick={onClose} className="absolute top-4 right-4 cursor-pointer text-textMuted transition-colors hover:text-[color:var(--text-primary)]">
-                    <X size={20} />
-                </button>
-
-                <div className="mt-2 space-y-6">
+        <Drawer
+            open={isOpen && Boolean(student)}
+            onClose={onClose}
+            title={student?.name ?? "Student fees"}
+            description={student?.phone ?? "Payment history"}
+            className="max-w-md"
+        >
+                <div className="space-y-6">
                     <div>
-                        <h3 className="text-xl font-bold text-[color:var(--text-primary)]">{student.name}</h3>
-                        <p className="text-sm text-textSecondary">{student.phone}</p>
-                        <div className="mt-2 text-sm text-textMuted">Joined {format(new Date(student.joinedAt), "PP")}</div>
-                        <Badge className="mt-2" variant={student.status === "ACTIVE" ? "success" : "default"}>{student.status}</Badge>
+                        {student ? <div className="text-sm text-textMuted">Joined {formatDate(student.joinedAt)}</div> : null}
+                        {student ? <Badge className="mt-2" variant={student.status === "ACTIVE" ? "success" : "default"}>{student.status}</Badge> : null}
                     </div>
 
                     <div className="space-y-4">
-                        <h4 className={cn("pb-2 text-sm font-semibold uppercase tracking-wider text-textMuted", formDrawerHeaderClass)}>Payment History</h4>
+                        <h3 className="border-b border-[color:var(--ui-form-section-divider)] pb-2 text-sm font-semibold uppercase tracking-wider text-textMuted">Payment history</h3>
 
                         <div className="grid grid-cols-2 gap-3 mb-1">
                             <div className={cn("p-3 text-center", formSurfaceClass)}>
@@ -868,7 +1069,7 @@ function FeeDetailsDrawer({ isOpen, onClose, student, financials }: FeeDetailsDr
                         )}
 
                         <div className="space-y-3 max-h-[55vh] overflow-y-auto pr-2">
-                            {(financials?.payments || [])
+                            {[...(financials?.payments || [])]
                                 .sort((a, b) => new Date(b.dueDate).getTime() - new Date(a.dueDate).getTime())
                                 .map(p => (
                                     <div key={p.id} className={cn(
@@ -881,7 +1082,7 @@ function FeeDetailsDrawer({ isOpen, onClose, student, financials }: FeeDetailsDr
                                             <div className="text-sm font-medium text-[color:var(--text-primary)]">
                                                 {p.type === "ADMISSION" ? "Admission Fee" : "Monthly Fee"}
                                             </div>
-                                            <div className="text-xs text-textSecondary">Due: {format(new Date(p.dueDate), "MMM d, yyyy")}</div>
+                                            <div className="text-xs text-textSecondary">Due: {formatDate(p.dueDate)}</div>
                                         </div>
                                         <div className="text-right">
                                             <div className="text-sm font-bold text-[color:var(--text-primary)]">{formatCurrency(p.amount)}</div>
@@ -895,7 +1096,6 @@ function FeeDetailsDrawer({ isOpen, onClose, student, financials }: FeeDetailsDr
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
+        </Drawer>
     );
 }

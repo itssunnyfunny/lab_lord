@@ -9,7 +9,7 @@ import {
     RefreshCw,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { AppButton, AppPanel, PageLoadingSkeleton, PageShell } from "@/components/ui";
+import { AppButton, AppPanel, ErrorState, PageLoadingSkeleton, PageShell } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
 import { BranchHealthPanel } from "@/components/ai/BranchHealthPanel";
@@ -22,6 +22,8 @@ import {
     pageMutedTextClass,
     pageSubtleTextClass,
 } from "@/components/ui/pageSurface";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 
 interface AIResponse {
     report?: AIStructuredBranchReport;
@@ -75,19 +77,6 @@ function formatLabel(value: string) {
     return value.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function formatCurrency(value: number) {
-    return new Intl.NumberFormat("en-IN", {
-        style: "currency",
-        currency: "INR",
-        maximumFractionDigits: 0,
-    }).format(value);
-}
-
-function formatDate(value?: string) {
-    if (!value) return "Not available";
-    return new Date(value).toLocaleString();
-}
-
 function escapeHtml(value: string | number | null | undefined) {
     return String(value ?? "")
         .replace(/&/g, "&amp;")
@@ -111,12 +100,16 @@ function buildDownloadReportHtml({
     snapshot,
     signals,
     riskDrivers,
+    formatCurrency,
+    formatDate,
 }: {
     branchName: string;
     report: AIStructuredBranchReport;
     snapshot: AIBranchReportSnapshot | null;
     signals: ReportSignal[];
     riskDrivers: RiskDriver[];
+    formatCurrency: (value: number) => string;
+    formatDate: (value?: string) => string;
 }) {
     const findings = report.keyFindings?.filter(Boolean).slice(0, 3) ?? [];
     const metricCards = snapshot
@@ -138,11 +131,12 @@ function buildDownloadReportHtml({
             <section class="section">
                 <h2>Score Drivers</h2>
                 <table>
-                    <thead><tr><th>Driver</th><th>Severity</th><th>Explanation</th></tr></thead>
+                    <caption>Risk drivers used in this report</caption>
+                    <thead><tr><th scope="col">Driver</th><th scope="col">Severity</th><th scope="col">Explanation</th></tr></thead>
                     <tbody>
                         ${riskDrivers.map((risk) => `
                             <tr>
-                                <td>${escapeHtml(formatLabel(risk.type))}</td>
+                                <th scope="row">${escapeHtml(formatLabel(risk.type))}</th>
                                 <td>${escapeHtml(risk.severity)}</td>
                                 <td>${escapeHtml(risk.explanation)}</td>
                             </tr>
@@ -211,11 +205,12 @@ function buildDownloadReportHtml({
         <section class="section">
             <h2>Signal Breakdown</h2>
             <table>
-                <thead><tr><th>Signal</th><th>Risk</th><th>Observation</th></tr></thead>
+                <caption>Branch health signals and observations</caption>
+                <thead><tr><th scope="col">Signal</th><th scope="col">Risk</th><th scope="col">Observation</th></tr></thead>
                 <tbody>
                     ${signals.map((signal) => `
                         <tr>
-                            <td>${escapeHtml(signal.label)}</td>
+                            <th scope="row">${escapeHtml(signal.label)}</th>
                             <td>${escapeHtml(signal.riskLevel)}</td>
                             <td>${escapeHtml(signal.observation)}</td>
                         </tr>
@@ -280,12 +275,37 @@ export default function AIReportsPage() {
 
     return (
         <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.aiReports} feature="AI_REPORTS">
-            <AIReportsContent branchId={branchId} />
+            {access => {
+                const decision = getBranchCapabilityDecision(access, "aiGenerate");
+                return decision.allowed ? (
+                    <AIReportsContent branchId={branchId} />
+                ) : (
+                    <ErrorState
+                        title="Report generation unavailable"
+                        description={decision.reason}
+                        restricted
+                        action={decision.recoveryHref ? (
+                            <a href={decision.recoveryHref} className="inline-flex min-h-11 items-center font-semibold text-cyan-200 underline underline-offset-4">
+                                Review billing
+                            </a>
+                        ) : undefined}
+                    />
+                );
+            }}
         </BranchAccessGuard>
     );
 }
 
 function AIReportsContent({ branchId }: { branchId: string }) {
+    const { formatDateTime, formatNumber } = useUserPreferences();
+    const formatCurrency = useCallback((value: number) => formatNumber(value, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    }), [formatNumber]);
+    const formatDate = useCallback((value?: string) => (
+        value ? formatDateTime(value) : "Not available"
+    ), [formatDateTime]);
     const [data, setData] = useState<AIResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -345,9 +365,11 @@ function AIReportsContent({ branchId }: { branchId: string }) {
                 snapshot,
                 signals: reportSignals,
                 riskDrivers,
+                formatCurrency,
+                formatDate,
             })
         );
-    }, [branchName, report, reportSignals, riskDrivers, snapshot]);
+    }, [branchName, formatCurrency, formatDate, report, reportSignals, riskDrivers, snapshot]);
 
     if (loading) {
         return <PageLoadingSkeleton label="Loading AI branch report" variant="ai" maxWidth="content" />;
@@ -355,7 +377,7 @@ function AIReportsContent({ branchId }: { branchId: string }) {
 
     return (
         <>
-            <div className="ai-report-screen p-4 md:p-8">
+            <div className="ai-report-screen">
                 <PageShell maxWidth="content">
                     <PageHeader
                         title="AI Branch Report"
@@ -472,6 +494,8 @@ function AIReportsContent({ branchId }: { branchId: string }) {
                 snapshot={snapshot}
                 signals={reportSignals}
                 riskDrivers={riskDrivers}
+                formatCurrency={formatCurrency}
+                formatDate={formatDate}
             />
         </>
     );
@@ -483,12 +507,16 @@ function PrintableAIReport({
     snapshot,
     signals,
     riskDrivers,
+    formatCurrency,
+    formatDate,
 }: {
     branchName: string;
     report: AIStructuredBranchReport | null;
     snapshot: AIBranchReportSnapshot | null;
     signals: ReportSignal[];
     riskDrivers: RiskDriver[];
+    formatCurrency: (value: number) => string;
+    formatDate: (value?: string) => string;
 }) {
     if (!report) return null;
 
@@ -677,17 +705,18 @@ function PrintableAIReport({
                     <section className="ai-report-print-section">
                         <h2>Signal Breakdown</h2>
                         <table className="ai-report-print-table">
+                            <caption className="sr-only">Branch health signals and observations</caption>
                             <thead>
                                 <tr>
-                                    <th>Signal</th>
-                                    <th>Risk</th>
-                                    <th>Observation</th>
+                                    <th scope="col">Signal</th>
+                                    <th scope="col">Risk</th>
+                                    <th scope="col">Observation</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {signals.map((signal) => (
                                     <tr key={signal.label}>
-                                        <td>{signal.label}</td>
+                                        <th scope="row">{signal.label}</th>
                                         <td>{signal.riskLevel}</td>
                                         <td>{signal.observation}</td>
                                     </tr>
@@ -715,17 +744,18 @@ function PrintableAIReport({
                         <section className="ai-report-print-section">
                             <h2>Score Drivers</h2>
                             <table className="ai-report-print-table">
+                                <caption className="sr-only">Risk drivers used in this report</caption>
                                 <thead>
                                     <tr>
-                                        <th>Driver</th>
-                                        <th>Severity</th>
-                                        <th>Explanation</th>
+                                        <th scope="col">Driver</th>
+                                        <th scope="col">Severity</th>
+                                        <th scope="col">Explanation</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {riskDrivers.map((risk, index) => (
                                         <tr key={`${risk.type}-${index}`}>
-                                            <td>{formatLabel(risk.type)}</td>
+                                            <th scope="row">{formatLabel(risk.type)}</th>
                                             <td>{risk.severity}</td>
                                             <td>{risk.explanation}</td>
                                         </tr>

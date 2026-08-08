@@ -11,6 +11,11 @@ import {
     StaffRole,
 } from "@/types";
 import { EntitlementService } from "@/services/entitlement.service";
+import {
+    type DateIdCursor,
+    pageFromRows,
+    parsePageLimit,
+} from "@/lib/cursorPagination";
 
 // ==========================================
 // 1. TYPES & PERMISSION MATRIX
@@ -490,6 +495,59 @@ export class StaffService {
                 },
                 permissionOverrides: true,
             },
+            orderBy: [
+                { createdAt: "asc" },
+                { id: "asc" },
+            ],
         });
+    }
+
+    static async listStaffPage(
+        actorId: string,
+        branchId: string,
+        options: { cursor?: DateIdCursor | null; limit?: number } = {}
+    ) {
+        await this.authorize(actorId, branchId, "manage_branch");
+        await EntitlementService.assertBranchEntitlement(branchId, "STAFF_MANAGEMENT");
+
+        const limit = parsePageLimit(
+            options.limit == null ? undefined : String(options.limit)
+        );
+        const cursor = options.cursor ?? null;
+        const cursorWhere = cursor
+            ? {
+                OR: [
+                    { createdAt: { gt: cursor.sort } },
+                    { createdAt: cursor.sort, id: { gt: cursor.id } },
+                ],
+            }
+            : {};
+
+        const [rows, total] = await Promise.all([
+            db.staff.findMany({
+                where: { branchId, ...cursorWhere },
+                include: {
+                    user: {
+                        select: {
+                            id: true,
+                            email: true,
+                            name: true,
+                        },
+                    },
+                    permissionOverrides: true,
+                },
+                orderBy: [
+                    { createdAt: "asc" },
+                    { id: "asc" },
+                ],
+                take: limit + 1,
+            }),
+            db.staff.count({ where: { branchId } }),
+        ]);
+
+        return pageFromRows(rows, limit, total, row => ({
+            sort: row.createdAt,
+            id: row.id,
+        }));
     }
 }

@@ -3,6 +3,11 @@ import { StaffService } from "@/services/staff.service";
 import { getSessionUser } from "@/lib/auth";
 import { StaffRole } from "@/types";
 import { SubscriptionEntitlementError } from "@/services/entitlement.service";
+import {
+    decodeDateIdCursor,
+    PaginationInputError,
+    parsePageLimit,
+} from "@/lib/cursorPagination";
 
 function isStaffRole(role: unknown): role is StaffRole {
     return role === StaffRole.MANAGER || role === StaffRole.STAFF;
@@ -20,13 +25,23 @@ export async function GET(
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const staffMembers = await StaffService.listStaff(user.id, branchId);
+        const limit = parsePageLimit(req.nextUrl.searchParams.get("limit"));
+        const cursor = decodeDateIdCursor(req.nextUrl.searchParams.get("cursor"));
+        const staffMembers = await StaffService.listStaffPage(user.id, branchId, {
+            cursor,
+            limit,
+        });
         return NextResponse.json(staffMembers);
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "Failed to list staff";
+        const status = error instanceof PaginationInputError
+            ? 400
+            : error instanceof SubscriptionEntitlementError || message.includes("Unauthorized")
+                ? 403
+                : 500;
         return NextResponse.json(
             { error: message },
-            { status: 403 } // 403 because it's usually permission denied
+            { status }
         );
     }
 }

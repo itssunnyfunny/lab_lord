@@ -1,6 +1,6 @@
 "use client";
 
-import { type ComponentType, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, type ComponentType, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
 import { AllocationsTable } from "@/components/allocations/AllocationsTable";
@@ -25,6 +25,10 @@ import {
 } from "@/components/ui/pageSurface";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ArrowRightLeft, CalendarCheck, UserPlus, Users } from "lucide-react";
+import { seats } from "@/lib/api/seats";
+import type { CapabilityDecision, PagedResult } from "@/types/ui";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
+import { formWarningBannerClass } from "@/components/ui/formSurface";
 
 interface AllocationRow {
     id: string;
@@ -41,24 +45,54 @@ interface AllocationRow {
 
 type AllocationTab = "ACTIVE" | "ENDED";
 
+const EMPTY_TOTALS: Record<AllocationTab, number> = { ACTIVE: 0, ENDED: 0 };
+const EMPTY_CURSORS: Record<AllocationTab, string | null> = { ACTIVE: null, ENDED: null };
+
+function mergeAllocationRows(current: AllocationRow[], incoming: AllocationRow[]) {
+    const byId = new Map(current.map(allocation => [allocation.id, allocation]));
+    incoming.forEach(allocation => byId.set(allocation.id, allocation));
+    return Array.from(byId.values());
+}
+
 export default function AllocationsPage() {
     const params = useParams();
     const branchId = params?.branchId as string;
 
     return (
         <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.allocations}>
-            <AllocationsContent branchId={branchId} />
+            {access => (
+                <Suspense fallback={<PageLoadingSkeleton label="Loading allocations" variant="table" rows={6} />}>
+                    <AllocationsContent
+                        branchId={branchId}
+                        manageDecision={getBranchCapabilityDecision(access, "allocationsManage")}
+                    />
+                </Suspense>
+            )}
         </BranchAccessGuard>
     );
 }
 
-function AllocationsContent({ branchId }: { branchId: string }) {
+function AllocationsContent({
+    branchId,
+    manageDecision,
+}: {
+    branchId: string;
+    manageDecision: CapabilityDecision;
+}) {
+    const canManageAllocations = manageDecision.allowed;
+    const showManageActions = manageDecision.blocker !== "permission";
     const searchParams = useSearchParams();
     const router = useRouter();
+    const loadSequence = useRef(0);
 
     const [allocations, setAllocations] = useState<AllocationRow[]>([]);
+    const [nextCursors, setNextCursors] = useState<Record<AllocationTab, string | null>>(EMPTY_CURSORS);
+    const [allocationTotals, setAllocationTotals] = useState<Record<AllocationTab, number>>(EMPTY_TOTALS);
     const [loading, setLoading] = useState(true);
+    const [loadingMoreTab, setLoadingMoreTab] = useState<AllocationTab | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+    const [linkedRecordError, setLinkedRecordError] = useState<string | null>(null);
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<AllocationTab>("ACTIVE");
     const [viewMode, setViewMode] = useDataViewMode();
@@ -69,6 +103,8 @@ function AllocationsContent({ branchId }: { branchId: string }) {
     // Change seat: navigated from students page with existing allocation
     const changeStudentId = searchParams.get("changeStudentId") ?? undefined;
     const changeStudentName = searchParams.get("studentName") ?? undefined;
+    const linkedAllocationId = searchParams.get("allocationId") ?? undefined;
+    const linkedStatus = searchParams.get("status");
 
     const [updateTarget, setUpdateTarget] = useState<{
         ids: string[];
@@ -82,14 +118,20 @@ function AllocationsContent({ branchId }: { branchId: string }) {
 
     // Auto-open dialog when navigated from students page with ?studentId=...
     useEffect(() => {
-        if (preselectedStudentId) {
+        if (preselectedStudentId && canManageAllocations) {
             setIsDialogOpen(true);
         }
-    }, [preselectedStudentId]);
+    }, [canManageAllocations, preselectedStudentId]);
+
+    useEffect(() => {
+        if (linkedStatus === "ACTIVE" || linkedStatus === "ENDED") {
+            setActiveTab(linkedStatus);
+        }
+    }, [linkedStatus]);
 
     // Auto-open update dialog when navigated with ?changeStudentId=...
     useEffect(() => {
-        if (!changeStudentId || allocations.length === 0) return;
+        if (!canManageAllocations || !changeStudentId || allocations.length === 0) return;
         // Find the active allocation(s) for this student
         const studentAllocs = allocations.filter(
             (a) => a.studentId === changeStudentId && !a.endDate
@@ -108,27 +150,132 @@ function AllocationsContent({ branchId }: { branchId: string }) {
         });
         // Clear query param
         router.replace(`/branch/${branchId}/allocations`);
-    }, [allocations, branchId, changeStudentId, changeStudentName, router]);
+    }, [allocations, branchId, canManageAllocations, changeStudentId, changeStudentName, router]);
 
     const fetchAllocations = useCallback(async () => {
+        const sequence = ++loadSequence.current;
+        setLoading(true);
         try {
-            const res = await fetch(`/api/branches/${branchId}/seat-allocations`);
-            if (!res.ok) throw new Error("Failed to load allocations");
-            const data = await res.json();
-            setAllocations(data);
+            setError(null);
+            setLinkedRecordError(null);
+
+            let [activePage, endedPage] = await Promise.all([
+                seats.listAllocations<AllocationRow>(branchId, { status: "ACTIVE" }),
+                seats.listAllocations<AllocationRow>(branchId, { status: "ENDED" }),
+            ]);
+
+            const loadUntil = async (
+                status: AllocationTab,
+                initialPage: PagedResult<AllocationRow>,
+                predicate: (allocation: AllocationRow) => boolean
+            ) => {
+                let page = initialPage;
+                let items = [...page.items];
+                while (!items.some(predicate) && page.nextCursor) {
+                    page = await seats.listAllocations<AllocationRow>(branchId, {
+                        status,
+                        cursor: page.nextCursor,
+                    });
+                    items = mergeAllocationRows(items, page.items);
+                }
+                return { ...page, items };
+            };
+
+            if (changeStudentId) {
+                const studentAllocations = await seats.listAllocations<AllocationRow>(branchId, {
+                    status: "ACTIVE",
+                    studentId: changeStudentId,
+                    all: true,
+                });
+                activePage = {
+                    ...activePage,
+                    items: mergeAllocationRows(activePage.items, studentAllocations.items),
+                };
+            }
+
+            if (linkedAllocationId) {
+                activePage = await loadUntil(
+                    "ACTIVE",
+                    activePage,
+                    allocation => allocation.id === linkedAllocationId
+                );
+                if (!activePage.items.some(allocation => allocation.id === linkedAllocationId)) {
+                    endedPage = await loadUntil(
+                        "ENDED",
+                        endedPage,
+                        allocation => allocation.id === linkedAllocationId
+                    );
+                }
+            }
+
+            if (sequence !== loadSequence.current) return;
+
+            setAllocations([...activePage.items, ...endedPage.items]);
+            setNextCursors({ ACTIVE: activePage.nextCursor, ENDED: endedPage.nextCursor });
+            setAllocationTotals({ ACTIVE: activePage.total, ENDED: endedPage.total });
+
+            if (linkedAllocationId) {
+                const target = [...activePage.items, ...endedPage.items]
+                    .find(allocation => allocation.id === linkedAllocationId);
+                if (target) {
+                    setActiveTab(target.endDate ? "ENDED" : "ACTIVE");
+                } else {
+                    setLinkedRecordError("The linked allocation could not be found in this branch.");
+                }
+            }
         } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : "Failed to load allocations");
+            if (sequence === loadSequence.current) {
+                setError(err instanceof Error ? err.message : "Failed to load allocations");
+            }
         } finally {
-            setLoading(false);
+            if (sequence === loadSequence.current) setLoading(false);
         }
-    }, [branchId]);
+    }, [branchId, changeStudentId, linkedAllocationId]);
+
+    const loadMoreAllocations = useCallback(async (status: AllocationTab) => {
+        const cursor = nextCursors[status];
+        if (!cursor || loadingMoreTab) return;
+
+        setLoadingMoreTab(status);
+        setLoadMoreError(null);
+        try {
+            const page = await seats.listAllocations<AllocationRow>(branchId, { status, cursor });
+            setAllocations(current => mergeAllocationRows(current, page.items));
+            setNextCursors(current => ({ ...current, [status]: page.nextCursor }));
+            setAllocationTotals(current => ({ ...current, [status]: page.total }));
+        } catch (loadError) {
+            setLoadMoreError(loadError instanceof Error ? loadError.message : "Failed to load more allocations.");
+        } finally {
+            setLoadingMoreTab(null);
+        }
+    }, [branchId, loadingMoreTab, nextCursors]);
 
     useEffect(() => {
         if (!branchId) return;
-        fetchAllocations();
+        void fetchAllocations();
     }, [branchId, fetchAllocations]);
 
+    useEffect(() => {
+        if (!linkedAllocationId || !allocations.some(allocation => allocation.id === linkedAllocationId)) return;
+        const frame = window.requestAnimationFrame(() => {
+            const candidates = [
+                document.getElementById(`allocation-record-${linkedAllocationId}-card`),
+                document.getElementById(`allocation-record-${linkedAllocationId}-row`),
+            ];
+            const target = candidates.find(candidate => candidate && candidate.getClientRects().length > 0);
+            target?.focus({ preventScroll: true });
+            target?.scrollIntoView({
+                block: "center",
+                behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+            });
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [activeTab, allocations, linkedAllocationId, viewMode]);
+
     const handleEndAllocation = async (ids: string | string[]) => {
+        if (!manageDecision.allowed) {
+            throw new Error(manageDecision.reason ?? "Allocation changes are unavailable.");
+        }
         const idArray = Array.isArray(ids) ? ids : [ids];
         for (const id of idArray) {
             const res = await fetch(`/api/seat-allocations/${id}/end`, {
@@ -150,12 +297,15 @@ function AllocationsContent({ branchId }: { branchId: string }) {
         }
     };
 
+    const openAllocateDialog = () => {
+        if (!manageDecision.allowed) return;
+        setIsDialogOpen(true);
+    };
+
     const allocationCounts = useMemo(() => {
-        const active = allocations.filter(alloc => !alloc.endDate).length;
-        const ended = allocations.length - active;
         const multiShift = allocations.filter(alloc => alloc.multiShiftId || alloc.multiShift).length;
-        return { active, ended, multiShift };
-    }, [allocations]);
+        return { active: allocationTotals.ACTIVE, ended: allocationTotals.ENDED, multiShift };
+    }, [allocationTotals, allocations]);
 
     if (loading) return <PageLoadingSkeleton label="Loading allocations" variant="table" rows={6} />;
 
@@ -185,19 +335,44 @@ function AllocationsContent({ branchId }: { branchId: string }) {
                     </p>
                 </div>
 
-                <AppButton variant="primary" icon={UserPlus} onClick={() => setIsDialogOpen(true)}>
-                    Allocate seat
-                </AppButton>
+                {showManageActions ? (
+                    <AppButton
+                        variant="primary"
+                        icon={UserPlus}
+                        onClick={openAllocateDialog}
+                        disabled={!canManageAllocations}
+                        title={canManageAllocations ? undefined : manageDecision.reason ?? undefined}
+                    >
+                        Allocate seat
+                    </AppButton>
+                ) : null}
             </header>
+
+            {!canManageAllocations ? (
+                <div className={cn("px-4 py-3 text-sm", formWarningBannerClass)}>
+                    Allocation changes are disabled. {manageDecision.reason}
+                    {manageDecision.recoveryHref ? (
+                        <a href={manageDecision.recoveryHref} className="ml-2 inline-flex min-h-11 items-center font-semibold underline underline-offset-4">
+                            Review billing
+                        </a>
+                    ) : null}
+                </div>
+            ) : null}
 
             <section className="grid gap-3 sm:grid-cols-3">
                 <AllocationMetric icon={Users} label="Active" value={allocationCounts.active} detail="Current seat assignments" tone="success" />
                 <AllocationMetric icon={CalendarCheck} label="Ended" value={allocationCounts.ended} detail="Historical allocations" tone="neutral" />
-                <AllocationMetric icon={ArrowRightLeft} label="Multi-shift" value={allocationCounts.multiShift} detail="Linked shift assignments" tone="info" />
+                <AllocationMetric icon={ArrowRightLeft} label="Loaded multi-shift" value={allocationCounts.multiShift} detail="Loaded linked assignments" tone="info" />
             </section>
 
+            {linkedRecordError && (
+                <p role="alert" className="text-sm text-[color:var(--ui-tone-danger-text)]">
+                    {linkedRecordError}
+                </p>
+            )}
+
             <div className={cn("flex flex-col gap-3 border-b pb-4 md:flex-row md:items-center md:justify-between", pageSectionDividerClass)}>
-                <div className="flex max-w-full items-center gap-2 overflow-x-auto">
+                <div role="group" className="flex max-w-full items-center gap-2 overflow-x-auto" aria-label="Allocation status filter">
                     {(["ACTIVE", "ENDED"] as const).map(tab => {
                         const active = activeTab === tab;
                         const count = tab === "ACTIVE" ? allocationCounts.active : allocationCounts.ended;
@@ -241,8 +416,15 @@ function AllocationsContent({ branchId }: { branchId: string }) {
                             ? "No seats are currently allocated. Assign a student to a seat when they are ready to start."
                             : "Ended allocations will appear here after seats are released."}
                     </p>
-                    {activeTab === "ACTIVE" && (
-                        <AppButton className="mt-5" variant="primary" icon={UserPlus} onClick={() => setIsDialogOpen(true)}>
+                    {activeTab === "ACTIVE" && showManageActions && (
+                        <AppButton
+                            className="mt-5"
+                            variant="primary"
+                            icon={UserPlus}
+                            onClick={openAllocateDialog}
+                            disabled={!canManageAllocations}
+                            title={canManageAllocations ? undefined : manageDecision.reason ?? undefined}
+                        >
                             Allocate seat
                         </AppButton>
                     )}
@@ -251,28 +433,59 @@ function AllocationsContent({ branchId }: { branchId: string }) {
                 <AllocationsTable
                     allocations={filteredAllocations}
                     viewMode={viewMode}
+                    highlightedAllocationId={linkedAllocationId}
                     onEndAllocation={handleEndAllocation}
+                    showActions={showManageActions}
+                    actionsEnabled={canManageAllocations}
+                    actionsDisabledReason={manageDecision.reason ?? undefined}
                     onUpdateAllocation={(ids, studentId, studentName, currentSeatId, currentFee, currentShiftIds, currentMultiShiftId) =>
-                        setUpdateTarget({ ids, studentId, studentName, currentSeatId, currentFee, currentShiftIds, currentMultiShiftId })
+                        canManageAllocations
+                            ? setUpdateTarget({ ids, studentId, studentName, currentSeatId, currentFee, currentShiftIds, currentMultiShiftId })
+                            : undefined
                     }
                     isEndedTab={activeTab === "ENDED"}
                 />
             )}
 
-            <AllocateSeatDialog
-                branchId={branchId}
-                isOpen={isDialogOpen}
-                preselectedStudentId={preselectedStudentId}
-                preselectedStudentName={preselectedStudentName}
-                onClose={handleClose}
-                onSuccess={() => {
-                    fetchAllocations();
-                    handleClose();
-                }}
-            />
+            <div className="flex flex-col items-center gap-2" aria-busy={loadingMoreTab === activeTab}>
+                <p id="allocation-page-progress" className={cn("text-sm", pageMutedTextClass)} aria-live="polite">
+                    Showing {filteredAllocations.length} of {allocationTotals[activeTab]} {activeTab.toLowerCase()} allocations
+                </p>
+                {nextCursors[activeTab] && (
+                    <AppButton
+                        type="button"
+                        variant="secondary"
+                        onClick={() => void loadMoreAllocations(activeTab)}
+                        isLoading={loadingMoreTab === activeTab}
+                        disabled={loadingMoreTab !== null}
+                        aria-describedby="allocation-page-progress"
+                    >
+                        Load more {activeTab.toLowerCase()} allocations
+                    </AppButton>
+                )}
+                {loadMoreError && (
+                    <p role="alert" className="text-sm text-[color:var(--ui-tone-danger-text)]">
+                        {loadMoreError}
+                    </p>
+                )}
+            </div>
+
+            {canManageAllocations ? (
+                <AllocateSeatDialog
+                    branchId={branchId}
+                    isOpen={isDialogOpen}
+                    preselectedStudentId={preselectedStudentId}
+                    preselectedStudentName={preselectedStudentName}
+                    onClose={handleClose}
+                    onSuccess={() => {
+                        fetchAllocations();
+                        handleClose();
+                    }}
+                />
+            ) : null}
 
             {/* Update (change seat/shift) dialog */}
-            {updateTarget && (
+            {canManageAllocations && updateTarget && (
                 <UpdateAllocationDialog
                     isOpen={!!updateTarget}
                     branchId={branchId}

@@ -21,6 +21,8 @@ vi.mock("@/lib/prisma", () => ({
     },
     staff: {
       findUnique: vi.fn(),
+      findMany: vi.fn(),
+      count: vi.fn(),
     },
     organization: {
       findUnique: vi.fn().mockResolvedValue({
@@ -39,6 +41,7 @@ vi.mock("@/lib/prisma", () => ({
 import { StaffService, PERMISSION_MATRIX } from "@/services/staff.service";
 import { prisma } from "@/lib/prisma";
 import { STAFF_ACTIONS, StaffPermissionAction } from "@/types";
+import { decodeDateIdCursor } from "@/lib/cursorPagination";
 
 const mockBranch = (ownerId: string) =>
   prisma.branch.findUnique = vi.fn().mockResolvedValue({
@@ -228,5 +231,57 @@ describe("StaffService.getBranchAccess()", () => {
     mockStaff(null);
 
     await expect(StaffService.getBranchAccess(OTHER_ID, "branch_1")).rejects.toThrow("Not a staff member");
+  });
+});
+
+describe("StaffService.listStaffPage()", () => {
+  const OWNER_ID = "user_owner";
+  const createdAt = new Date("2026-08-08T09:00:00.000Z");
+  const staffRows = ["staff_1", "staff_2", "staff_3"].map((id) => ({
+    id,
+    userId: `user_${id}`,
+    branchId: "branch_1",
+    role: "STAFF" as const,
+    createdAt,
+    user: { id: `user_${id}`, name: id, email: `${id}@example.com` },
+    permissionOverrides: [],
+  }));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBranch(OWNER_ID);
+    vi.mocked(prisma.staff.findMany).mockResolvedValue(staffRows as never);
+    vi.mocked(prisma.staff.count).mockResolvedValue(8);
+  });
+
+  it("uses createdAt/id look-ahead pagination", async () => {
+    const page = await StaffService.listStaffPage(OWNER_ID, "branch_1", { limit: 2 });
+
+    expect(page.items.map(member => member.id)).toEqual(["staff_1", "staff_2"]);
+    expect(page.total).toBe(8);
+    expect(decodeDateIdCursor(page.nextCursor)).toEqual({ sort: createdAt, id: "staff_2" });
+    expect(prisma.staff.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { branchId: "branch_1" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: 3,
+    }));
+  });
+
+  it("continues after both cursor columns", async () => {
+    vi.mocked(prisma.staff.findMany).mockResolvedValue([]);
+    const cursor = { sort: createdAt, id: "staff_50" };
+
+    await StaffService.listStaffPage(OWNER_ID, "branch_1", { cursor, limit: 50 });
+
+    expect(prisma.staff.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        branchId: "branch_1",
+        OR: [
+          { createdAt: { gt: createdAt } },
+          { createdAt, id: { gt: "staff_50" } },
+        ],
+      },
+      take: 51,
+    }));
   });
 });

@@ -172,6 +172,7 @@ export function SeatNumberingBuilder({
                 <div className="max-w-xs space-y-1.5">
                     <label className={formLabelClass}>Seat count</label>
                     <input
+                        aria-label="Seat count"
                         type="number"
                         min="1"
                         max={FORM_LIMITS.seatsMax}
@@ -193,6 +194,7 @@ export function SeatNumberingBuilder({
                                 <div className="col-span-2 sm:col-span-3">
                                     <label className={cn("mb-1 block text-[10px] uppercase", formHelpTextClass)}>Prefix</label>
                                     <input
+                                        aria-label={`Range ${index + 1} prefix`}
                                         type="text"
                                         disabled={disabled}
                                         value={range.prefix}
@@ -205,6 +207,7 @@ export function SeatNumberingBuilder({
                                 <div className="sm:col-span-2">
                                     <label className={cn("mb-1 block text-[10px] uppercase", formHelpTextClass)}>Start</label>
                                     <input
+                                        aria-label={`Range ${index + 1} start`}
                                         type="number"
                                         disabled={disabled}
                                         value={range.start}
@@ -218,6 +221,7 @@ export function SeatNumberingBuilder({
                                 <div className="sm:col-span-2">
                                     <label className={cn("mb-1 block text-[10px] uppercase", formHelpTextClass)}>End</label>
                                     <input
+                                        aria-label={`Range ${index + 1} end`}
                                         type="number"
                                         disabled={disabled}
                                         value={range.end}
@@ -231,6 +235,7 @@ export function SeatNumberingBuilder({
                                 <div className="sm:col-span-2">
                                     <label className={cn("mb-1 block text-[10px] uppercase", formHelpTextClass)}>Padding</label>
                                     <input
+                                        aria-label={`Range ${index + 1} padding`}
                                         type="number"
                                         disabled={disabled}
                                         value={range.padTo ?? 0}
@@ -244,6 +249,7 @@ export function SeatNumberingBuilder({
                                 <div className="sm:col-span-2">
                                     <label className={cn("mb-1 block text-[10px] uppercase", formHelpTextClass)}>Separator</label>
                                     <select
+                                        aria-label={`Range ${index + 1} separator`}
                                         disabled={disabled}
                                         value={range.separator ?? ""}
                                         onChange={(event) => updateRange(index, { separator: event.target.value as SeatNumberingSeparator })}

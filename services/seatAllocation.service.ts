@@ -1,9 +1,22 @@
 import { prisma } from "@/lib/prisma";
 import { StaffService } from "@/services/staff.service";
 import { StudentStatus, SeatAllocationFilters } from "@/types";
-import type { SeatAllocation } from "@/app/generated/prisma/client";
+import type { Prisma, SeatAllocation } from "@/app/generated/prisma/client";
 import { parseNullableTime, timesOverlap } from "@/utils/shiftTime";
 import { EntitlementService } from "@/services/entitlement.service";
+import {
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    pageFromRows,
+    PaginationInputError,
+    type DateIdCursor,
+} from "@/lib/cursorPagination";
+
+export type SeatAllocationListOptions = {
+    cursor?: DateIdCursor | null;
+    limit?: number;
+    all?: boolean;
+};
 
 export class SeatAllocationService {
     private static async getSeatBranchId(seatId: string) {
@@ -376,26 +389,67 @@ export class SeatAllocationService {
     static async listAllocations(
         userId: string,
         branchId: string,
-        filters?: SeatAllocationFilters
+        filters: SeatAllocationFilters = {},
+        options: SeatAllocationListOptions = {}
     ) {
         await StaffService.authorize(userId, branchId, "seat_allocation");
 
-        return prisma.seatAllocation.findMany({
-            where: {
-                seat: { branchId }, // Strictly scoped to branch via seat
-                studentId: filters?.studentId,
-                shiftId: filters?.shiftId,
-                endDate: filters?.activeOnly ? null : undefined,
-            },
+        const limit = options.limit ?? DEFAULT_PAGE_SIZE;
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE) {
+            throw new PaginationInputError(`limit must be between 1 and ${MAX_PAGE_SIZE}`);
+        }
+
+        const endDate = filters.status === "ACTIVE" || filters.activeOnly
+            ? null
+            : filters.status === "ENDED"
+                ? { not: null }
+                : undefined;
+        const baseWhere: Prisma.SeatAllocationWhereInput = {
+            seat: { branchId },
+            studentId: filters.studentId,
+            shiftId: filters.shiftId,
+            endDate,
+        };
+        const pageWhere: Prisma.SeatAllocationWhereInput = options.cursor
+            ? {
+                ...baseWhere,
+                OR: [
+                    { startDate: { lt: options.cursor.sort } },
+                    {
+                        startDate: options.cursor.sort,
+                        id: { lt: options.cursor.id },
+                    },
+                ],
+            }
+            : baseWhere;
+
+        const query = {
+            where: options.all ? baseWhere : pageWhere,
             include: {
                 seat: true,
                 student: true,
                 shift: true,
                 multiShift: { select: { id: true, name: true } },
             },
-            orderBy: {
-                startDate: "desc",
-            },
-        });
+            orderBy: [
+                { startDate: "desc" as const },
+                { id: "desc" as const },
+            ],
+            ...(options.all ? {} : { take: limit + 1 }),
+        } satisfies Prisma.SeatAllocationFindManyArgs;
+
+        const [allocations, total] = await Promise.all([
+            prisma.seatAllocation.findMany(query),
+            prisma.seatAllocation.count({ where: baseWhere }),
+        ]);
+
+        if (options.all) {
+            return { items: allocations, nextCursor: null, total };
+        }
+
+        return pageFromRows(allocations, limit, total, allocation => ({
+            sort: allocation.startDate,
+            id: allocation.id,
+        }));
     }
 }

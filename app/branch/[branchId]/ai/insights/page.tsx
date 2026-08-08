@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { AppPanel, PageLoadingSkeleton, PageShell } from "@/components/ui";
+import { AppPanel, ErrorState, PageLoadingSkeleton, PageShell } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
 import { AlertTriangle, CheckCircle, Info } from "lucide-react";
@@ -17,6 +17,7 @@ import {
     pageMutedTextClass,
     pageSubtleTextClass,
 } from "@/components/ui/pageSurface";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 
 interface AIResponse {
     health: { summary: string };
@@ -34,7 +35,23 @@ export default function AIInsightsPage() {
 
     return (
         <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.aiInsights} feature="AI_INSIGHTS">
-            <AIInsightsContent branchId={branchId} />
+            {access => {
+                const decision = getBranchCapabilityDecision(access, "aiGenerate");
+                return decision.allowed ? (
+                    <AIInsightsContent branchId={branchId} />
+                ) : (
+                    <ErrorState
+                        title="Insight generation unavailable"
+                        description={decision.reason}
+                        restricted
+                        action={decision.recoveryHref ? (
+                            <a href={decision.recoveryHref} className="inline-flex min-h-11 items-center font-semibold text-cyan-200 underline underline-offset-4">
+                                Review billing
+                            </a>
+                        ) : undefined}
+                    />
+                );
+            }}
         </BranchAccessGuard>
     );
 }
@@ -72,24 +89,20 @@ function AIInsightsContent({ branchId }: { branchId: string }) {
 
     if (error) {
         return (
-            <div className="p-4 md:p-8">
-                <PageShell maxWidth="content">
-                    <div className={cn("px-4 py-3 text-sm", formErrorBannerClass)}>
-                        <AlertTriangle className="mr-2 inline h-4 w-4" />
-                        {error}
-                    </div>
-                </PageShell>
-            </div>
+            <PageShell maxWidth="content">
+                <div className={cn("px-4 py-3 text-sm", formErrorBannerClass)}>
+                    <AlertTriangle className="mr-2 inline h-4 w-4" />
+                    {error}
+                </div>
+            </PageShell>
         );
     }
 
     if (!data) {
         return (
-            <div className="p-4 md:p-8">
-                <PageShell maxWidth="content">
-                    <div className={pageEmptyStateClass}>No data received from API.</div>
-                </PageShell>
-            </div>
+            <PageShell maxWidth="content">
+                <div className={pageEmptyStateClass}>No data received from API.</div>
+            </PageShell>
         );
     }
 
@@ -97,8 +110,7 @@ function AIInsightsContent({ branchId }: { branchId: string }) {
     const actions = data.actions?.items ?? [];
 
     return (
-        <div className="p-4 md:p-8">
-            <PageShell maxWidth="content">
+        <PageShell maxWidth="content">
                 <PageHeader
                     title="Smart Insights"
                     subtitle="AI-driven analysis of your branch health."
@@ -170,7 +182,6 @@ function AIInsightsContent({ branchId }: { branchId: string }) {
                         )}
                     </AppPanel>
                 </div>
-            </PageShell>
-        </div>
+        </PageShell>
     );
 }

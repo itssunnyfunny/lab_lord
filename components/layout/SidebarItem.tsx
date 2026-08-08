@@ -2,6 +2,7 @@
 
 import { cn } from "@/lib/utils";
 import { LockKeyhole, LucideIcon } from "lucide-react";
+import Link from "next/link";
 import React from "react";
 
 interface SidebarItemProps {
@@ -9,17 +10,15 @@ interface SidebarItemProps {
     label: string;
     isActive: boolean;
     onClick?: () => void;
+    href?: string;
     isCollapsed?: boolean;
     density?: "default" | "compact";
     locked?: boolean;
     badge?: string;
 }
 
-export const SidebarItem = ({ icon: Icon, label, isActive, onClick, isCollapsed, density = "default", locked = false, badge }: SidebarItemProps) => (
-    <button
-        onClick={onClick}
-        aria-current={isActive ? "page" : undefined}
-        className={cn(
+export const SidebarItem = ({ icon: Icon, label, isActive, onClick, href, isCollapsed, density = "default", locked = false, badge }: SidebarItemProps) => {
+    const className = cn(
             "group relative flex w-full items-center text-left transition-all duration-300",
             density === "compact"
                 ? "h-9 gap-2.5 rounded-lg border px-2.5"
@@ -31,8 +30,8 @@ export const SidebarItem = ({ icon: Icon, label, isActive, onClick, isCollapsed,
                 : density === "compact"
                     ? "border-transparent text-[color:var(--text-secondary)] hover:border-[color:var(--ui-form-surface-border)] hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--text-primary)]"
                     : "border-transparent text-[color:var(--text-secondary)] hover:border-[color:var(--ui-form-surface-border)] hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--text-primary)]"
-        )}
-    >
+        );
+    const content = <>
         <Icon
             size={density === "compact" ? 17 : 20}
             className={cn(
@@ -56,5 +55,19 @@ export const SidebarItem = ({ icon: Icon, label, isActive, onClick, isCollapsed,
         )} />}
         {!isCollapsed && locked && <LockKeyhole size={13} className="shrink-0 text-amber-500" aria-label="Standard plan required" />}
         {!isCollapsed && badge && <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-600">{badge}</span>}
-    </button>
-);
+    </>;
+
+    if (href) {
+        return (
+            <Link href={href} aria-current={isActive ? "page" : undefined} className={className}>
+                {content}
+            </Link>
+        );
+    }
+
+    return (
+        <button type="button" onClick={onClick} aria-current={isActive ? "page" : undefined} className={className}>
+            {content}
+        </button>
+    );
+};

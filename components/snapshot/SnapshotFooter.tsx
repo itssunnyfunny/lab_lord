@@ -1,17 +1,10 @@
 "use client";
 
 import { AppPanel } from "@/components/ui";
-import { analytics, BranchSnapshot } from "@/lib/api/analytics";
-import { format } from "date-fns";
-import { useEffect, useState } from "react";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
+import { analytics, BranchSnapshot, TrendData } from "@/lib/api/analytics";
+import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-
-const formatMoney = (amount: number) =>
-    new Intl.NumberFormat("en-IN", {
-        style: "currency",
-        currency: "INR",
-        maximumFractionDigits: 0,
-    }).format(amount);
 
 const tooltipStyle = {
     backgroundColor: "var(--ui-menu-bg)",
@@ -20,8 +13,14 @@ const tooltipStyle = {
 };
 
 export function SnapshotFooter({ snapshot, branchId }: { snapshot?: BranchSnapshot; branchId?: string }) {
-    const [studentData, setStudentData] = useState<{ name: string; active: number; inactive: number }[]>([]);
-    const [paymentData, setPaymentData] = useState<{ name: string; paid: number; due: number }[]>([]);
+    const [studentTrends, setStudentTrends] = useState<TrendData>([]);
+    const [paymentTrends, setPaymentTrends] = useState<TrendData>([]);
+    const { formatDate, formatNumber } = useUserPreferences();
+    const formatMoney = (amount: number) => formatNumber(amount, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
 
     useEffect(() => {
         if (!branchId) return;
@@ -35,29 +34,44 @@ export function SnapshotFooter({ snapshot, branchId }: { snapshot?: BranchSnapsh
                     analytics.getTrends(branchId, { from, to, type: "payment" }),
                 ]);
 
-                const stuMap = new Map<string, { name: string; active: number; inactive: number }>();
-                stu.forEach(t => {
-                    const d = format(new Date(t.date), "EEE");
-                    if (!stuMap.has(d)) stuMap.set(d, { name: d, active: 0, inactive: 0 });
-                    if (t.category === "Active") stuMap.get(d)!.active = t.value;
-                    if (t.category === "Inactive") stuMap.get(d)!.inactive = t.value;
-                });
-                setStudentData(Array.from(stuMap.values()));
-
-                const payMap = new Map<string, { name: string; paid: number; due: number }>();
-                pay.forEach(t => {
-                    const d = format(new Date(t.date), "EEE");
-                    if (!payMap.has(d)) payMap.set(d, { name: d, paid: 0, due: 0 });
-                    if (t.category === "Collected") payMap.get(d)!.paid = t.value;
-                    if (t.category === "Pending") payMap.get(d)!.due = t.value;
-                });
-                setPaymentData(Array.from(payMap.values()));
+                setStudentTrends(stu);
+                setPaymentTrends(pay);
             } catch (err) {
                 console.error("Failed to load footer trends", err);
             }
         };
         loadTrends();
     }, [branchId]);
+
+    const studentData = useMemo(() => {
+        const dataByDate = new Map<string, { name: string; active: number; inactive: number }>();
+        studentTrends.forEach(trend => {
+            const point = dataByDate.get(trend.date) ?? {
+                name: formatDate(trend.date, { weekday: "short" }),
+                active: 0,
+                inactive: 0,
+            };
+            if (trend.category === "Active") point.active = trend.value;
+            if (trend.category === "Inactive") point.inactive = trend.value;
+            dataByDate.set(trend.date, point);
+        });
+        return Array.from(dataByDate.values());
+    }, [formatDate, studentTrends]);
+
+    const paymentData = useMemo(() => {
+        const dataByDate = new Map<string, { name: string; paid: number; due: number }>();
+        paymentTrends.forEach(trend => {
+            const point = dataByDate.get(trend.date) ?? {
+                name: formatDate(trend.date, { weekday: "short" }),
+                paid: 0,
+                due: 0,
+            };
+            if (trend.category === "Collected") point.paid = trend.value;
+            if (trend.category === "Pending") point.due = trend.value;
+            dataByDate.set(trend.date, point);
+        });
+        return Array.from(dataByDate.values());
+    }, [formatDate, paymentTrends]);
 
     if (!snapshot) return null;
 
@@ -67,11 +81,20 @@ export function SnapshotFooter({ snapshot, branchId }: { snapshot?: BranchSnapsh
                 <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={studentData.length > 0 ? studentData : [{ name: "Loading", active: 0, inactive: 0 }]} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                         <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: "var(--ui-table-muted)", fontSize: 12 }} dy={10} />
-                        <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--ui-table-muted)", fontSize: 12 }} />
+                        <YAxis
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fill: "var(--ui-table-muted)", fontSize: 12 }}
+                            tickFormatter={value => formatNumber(Number(value))}
+                        />
                         <Tooltip
                             cursor={{ fill: "var(--ui-form-muted-surface-bg)" }}
                             contentStyle={tooltipStyle}
                             itemStyle={{ color: "var(--text-primary)" }}
+                            formatter={(value: number | string | undefined, name: string | number | undefined) => [
+                                formatNumber(Number(value ?? 0)),
+                                String(name ?? ""),
+                            ]}
                         />
                         <Bar name="Active" dataKey="active" fill="var(--ui-tone-info-progress)" radius={[4, 4, 0, 0]} stackId="a" />
                         <Bar name="Inactive" dataKey="inactive" fill="var(--ui-tone-neutral-progress)" radius={[4, 4, 0, 0]} stackId="a" />
@@ -95,7 +118,12 @@ export function SnapshotFooter({ snapshot, branchId }: { snapshot?: BranchSnapsh
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={paymentData.length > 0 ? paymentData : [{ name: "Loading", paid: 0, due: 0 }]} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
                                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: "var(--ui-table-muted)", fontSize: 12 }} dy={10} />
-                                <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--ui-table-muted)", fontSize: 12 }} />
+                                <YAxis
+                                    axisLine={false}
+                                    tickLine={false}
+                                    tick={{ fill: "var(--ui-table-muted)", fontSize: 12 }}
+                                    tickFormatter={value => formatMoney(Number(value))}
+                                />
                                 <Tooltip
                                     cursor={{ fill: "transparent" }}
                                     contentStyle={tooltipStyle}

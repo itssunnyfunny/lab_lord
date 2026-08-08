@@ -39,6 +39,9 @@ import {
     pageSectionDividerClass,
     pageSubtleTextClass,
 } from "@/components/ui/pageSurface";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
+import type { CapabilityDecision } from "@/types";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 
 type MessageLanguage = "en" | "hi";
 type ReminderTone = "polite" | "friendly" | "firm";
@@ -102,24 +105,6 @@ const toneOptions: { value: ReminderTone; label: string }[] = [
     { value: "friendly", label: "Friendly" },
     { value: "firm", label: "Firm" },
 ];
-
-function formatMoney(amount: number) {
-    return new Intl.NumberFormat("en-IN", {
-        style: "currency",
-        currency: "INR",
-        maximumFractionDigits: 0,
-    }).format(amount);
-}
-
-function formatGeneratedAt(value?: string) {
-    if (!value) return "Not generated";
-    return new Date(value).toLocaleString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-    });
-}
 
 function formatTimeLeft(nextAllowedCallAt?: string) {
     if (!nextAllowedCallAt) return "";
@@ -247,12 +232,30 @@ export default function AIMessagesPage() {
 
     return (
         <BranchAccessGuard branchId={branchId} permission={BRANCH_PAGE_ACCESS.aiMessages} feature="AI_MESSAGES">
-            <AIMessagesContent branchId={branchId} />
+            {access => (
+                <AIMessagesContent
+                    branchId={branchId}
+                    generateDecision={getBranchCapabilityDecision(access, "aiGenerate")}
+                />
+            )}
         </BranchAccessGuard>
     );
 }
 
-function AIMessagesContent({ branchId }: { branchId: string }) {
+function AIMessagesContent({
+    branchId,
+    generateDecision,
+}: {
+    branchId: string;
+    generateDecision: CapabilityDecision;
+}) {
+    const { formatDateTime, formatNumber } = useUserPreferences();
+    const formatMoney = (amount: number) => formatNumber(amount, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
+    const formatGeneratedAt = (value?: string) => value ? formatDateTime(value) : "Not generated";
     const [data, setData] = useState<MessagesResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -386,6 +389,10 @@ function AIMessagesContent({ branchId }: { branchId: string }) {
 
     const regenerate = async (studentIds: string[]) => {
         if (studentIds.length === 0) return;
+        if (!generateDecision.allowed) {
+            setError(generateDecision.reason ?? "Message regeneration is unavailable.");
+            return;
+        }
         setError(null);
         setRegeneratingIds(new Set(studentIds));
 
@@ -441,8 +448,7 @@ function AIMessagesContent({ branchId }: { branchId: string }) {
     };
 
     return (
-        <div className="p-4 md:p-8">
-            <PageShell>
+        <PageShell>
                 <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-start">
                     <PageHeader
                         title="AI Message Drafts"
@@ -462,13 +468,25 @@ function AIMessagesContent({ branchId }: { branchId: string }) {
                             variant="primary"
                             icon={Sparkles}
                             onClick={() => regenerate(Array.from(selectedIds))}
-                            disabled={selectedCount === 0 || cooldownActive}
+                            disabled={!generateDecision.allowed || selectedCount === 0 || cooldownActive}
+                            title={generateDecision.allowed ? undefined : generateDecision.reason ?? undefined}
                             isLoading={regeneratingIds.size > 0}
                         >
                             Regenerate selected
                         </AppButton>
                     </div>
                 </div>
+
+                {!generateDecision.allowed ? (
+                    <div className={cn("px-4 py-3 text-sm", formWarningBannerClass)} role="status">
+                        Message regeneration is disabled. {generateDecision.reason}
+                        {generateDecision.recoveryHref ? (
+                            <a href={generateDecision.recoveryHref} className="ml-2 inline-flex min-h-11 items-center font-semibold underline underline-offset-4">
+                                Review billing
+                            </a>
+                        ) : null}
+                    </div>
+                ) : null}
 
                 <AppPanel
                     title="Draft controls"
@@ -595,8 +613,7 @@ function AIMessagesContent({ branchId }: { branchId: string }) {
                         ))}
                     </div>
                 )}
-            </PageShell>
-        </div>
+        </PageShell>
     );
 }
 

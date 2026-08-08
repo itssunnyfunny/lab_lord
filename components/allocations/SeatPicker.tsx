@@ -321,7 +321,7 @@ export function SeatPicker({
 
             {/* Step 2: Seats (only if at least one shift is selected) */}
             {primaryShiftId && (
-                <div className={cn("space-y-4 pt-2 animate-in fade-in slide-in-from-top-2 duration-200", pickerDividerClass)}>
+                <div className={cn("space-y-4 pt-2 ui-dialog-enter", pickerDividerClass)}>
                     <div className="flex items-center justify-between">
                         <p className={pickerSectionLabelClass}>
                             Select a seat

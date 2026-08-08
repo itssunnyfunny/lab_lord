@@ -1,6 +1,7 @@
 import { apiClient } from "./core";
 import type { Student } from "@/app/generated/prisma/browser";
 import { CreateStudentDto, StudentStatus } from "@/types";
+import type { PagedResult } from "@/types/ui";
 
 export type StudentSeatAllocation = {
     id: string;
@@ -17,15 +18,51 @@ export type StudentListItem = Student & {
     seatAllocations?: StudentSeatAllocation[];
 };
 
+export type StudentListParams = {
+    status?: StudentStatus;
+    shiftId?: string;
+    query?: string;
+    cursor?: string;
+    limit?: number;
+};
+
 export const students = {
     // List students for a branch
-    list: async (branchId: string, shiftId?: string): Promise<StudentListItem[]> => {
+    list: async (
+        branchId: string,
+        params: StudentListParams = {}
+    ): Promise<PagedResult<StudentListItem>> => {
         return apiClient.get(`/branches/${branchId}/students`, {
             params: {
-                shiftId,
+                status: params.status,
+                shiftId: params.shiftId,
+                q: params.query,
+                cursor: params.cursor,
+                limit: params.limit,
                 _t: new Date().getTime() // Prevent caching
             }
         });
+    },
+
+    listAll: async (
+        branchId: string,
+        params: Omit<StudentListParams, "cursor" | "limit"> = {}
+    ): Promise<StudentListItem[]> => {
+        const items: StudentListItem[] = [];
+        const seenCursors = new Set<string>();
+        let cursor: string | undefined;
+
+        do {
+            const page = await students.list(branchId, { ...params, cursor, limit: 100 });
+            items.push(...page.items);
+            cursor = page.nextCursor ?? undefined;
+            if (cursor && seenCursors.has(cursor)) {
+                throw new Error("Student pagination returned a repeated cursor");
+            }
+            if (cursor) seenCursors.add(cursor);
+        } while (cursor);
+
+        return items;
     },
 
     // Create a new student in a branch

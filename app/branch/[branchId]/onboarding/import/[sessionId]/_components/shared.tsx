@@ -1,5 +1,7 @@
 import { CheckCircle2, XCircle } from "lucide-react";
+import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/Badge";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { cn } from "@/lib/utils";
 import {
     pageInsetMetricClass,
@@ -48,9 +50,38 @@ export const previewSummaryLabels: Record<string, string> = {
     warningRows: "Warnings",
 };
 
-export function formatAmount(value: number | null | undefined) {
+export function AccessibleTableScroll({
+    label,
+    children,
+    className,
+}: {
+    label: string;
+    children: ReactNode;
+    className?: string;
+}) {
+    return (
+        <div
+            role="region"
+            aria-label={label}
+            tabIndex={0}
+            className={cn(
+                "overflow-x-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]",
+                className
+            )}
+        >
+            {children}
+        </div>
+    );
+}
+
+function FormattedImportAmount({ value }: { value: number }) {
+    const { formatNumber } = useUserPreferences();
+    return <>Rs {formatNumber(value)}</>;
+}
+
+export function formatAmount(value: number | null | undefined): ReactNode {
     if (value === null || value === undefined) return "-";
-    return `Rs ${value.toLocaleString("en-IN")}`;
+    return <FormattedImportAmount value={value} />;
 }
 
 export function Metric({
@@ -62,13 +93,16 @@ export function Metric({
     value: string | number;
     tone?: ImportWizardTone;
 }) {
+    const { formatNumber } = useUserPreferences();
+    const displayValue = typeof value === "number" ? formatNumber(value) : value;
+
     return (
         <div className={pageInsetMetricClass}>
             <div className="flex items-center justify-between gap-2">
                 <p className={cn("text-xs", pageMutedTextClass)}>{label}</p>
-                <Badge variant={tone}>{String(value)}</Badge>
+                <Badge variant={tone}>{displayValue}</Badge>
             </div>
-            <p className="mt-2 text-lg font-semibold text-[color:var(--text-primary)]">{String(value)}</p>
+            <p className="mt-2 text-lg font-semibold text-[color:var(--text-primary)]">{displayValue}</p>
         </div>
     );
 }

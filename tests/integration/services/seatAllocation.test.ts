@@ -215,8 +215,8 @@ describe("SeatAllocationService Integration", () => {
       });
 
       const results = await SeatAllocationService.listAllocations(user.id, branch.id, { activeOnly: true });
-      expect(results).toHaveLength(1);
-      expect(results[0].student.name).toBe("Active");
+      expect(results.items).toHaveLength(1);
+      expect(results.items[0].student.name).toBe("Active");
     });
 
     it("no filters returns all allocations — active and historical", async () => {
@@ -235,7 +235,30 @@ describe("SeatAllocationService Integration", () => {
       });
 
       const results = await SeatAllocationService.listAllocations(user.id, branch.id);
-      expect(results).toHaveLength(2);
+      expect(results.items).toHaveLength(2);
+    });
+
+    it("paginates with stable startDate and id ordering", async () => {
+      const { user, branch, seat, shift } = await createTestWorld();
+      const student = await createStudent({ branchId: branch.id, name: "Paged" });
+      const startDate = new Date("2026-02-01T00:00:00.000Z");
+      await testPrisma.seatAllocation.createMany({
+        data: [
+          { id: "allocation_a", seatId: seat.id, studentId: student.id, shiftId: shift.id, startDate },
+          { id: "allocation_b", seatId: seat.id, studentId: student.id, shiftId: shift.id, startDate },
+        ],
+      });
+
+      const first = await SeatAllocationService.listAllocations(user.id, branch.id, {}, { limit: 1 });
+      expect(first.items.map(allocation => allocation.id)).toEqual(["allocation_b"]);
+      expect(first.nextCursor).not.toBeNull();
+
+      const { decodeDateIdCursor } = await import("@/lib/cursorPagination");
+      const second = await SeatAllocationService.listAllocations(user.id, branch.id, {}, {
+        limit: 1,
+        cursor: decodeDateIdCursor(first.nextCursor),
+      });
+      expect(second.items.map(allocation => allocation.id)).toEqual(["allocation_a"]);
     });
   });
 });

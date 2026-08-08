@@ -1,14 +1,18 @@
 "use client";
 
 import { use, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, FileSpreadsheet, FileText, TableProperties, UploadCloud } from "lucide-react";
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
-import { AppButton, AppPanel, PageShell } from "@/components/ui";
+import { AppButton, AppPanel, ErrorState, PageShell } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { importSessions } from "@/lib/api/importSessions";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 import { cn } from "@/lib/utils";
 import type { ImportSessionListItem } from "@/importing/contracts/import-session.contract";
+import type { CapabilityDecision } from "@/types";
 import { labelImportStatus, statusTone } from "@/importing/utils/import-wizard-view-model";
 import {
     pageDescriptionClass,
@@ -38,25 +42,54 @@ function downloadSampleTemplate() {
 
 export default function ImportAssistantPage({ params }: { params: Promise<{ branchId: string }> }) {
     const { branchId } = use(params);
+
+    return (
+        <BranchAccessGuard branchId={branchId} permission="students">
+            {access => (
+                <ImportAssistantContent
+                    branchId={branchId}
+                    importDecision={getBranchCapabilityDecision(access, "importStudents")}
+                />
+            )}
+        </BranchAccessGuard>
+    );
+}
+
+function ImportAssistantContent({
+    branchId,
+    importDecision,
+}: {
+    branchId: string;
+    importDecision: CapabilityDecision;
+}) {
     const router = useRouter();
+    const { formatNumber } = useUserPreferences();
     const [file, setFile] = useState<File | null>(null);
     const [pastedTable, setPastedTable] = useState("");
     const [sessions, setSessions] = useState<ImportSessionListItem[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [loadingSessions, setLoadingSessions] = useState(true);
+    const [sessionsError, setSessionsError] = useState<string | null>(null);
+    const [sessionsReloadKey, setSessionsReloadKey] = useState(0);
 
     const canUpload = useMemo(() => Boolean(file || pastedTable.trim()), [file, pastedTable]);
+    const mutationsDisabled = !importDecision.allowed;
+    const mutationBlockReason = importDecision.allowed ? null : importDecision.reason;
 
     useEffect(() => {
         let alive = true;
         setLoadingSessions(true);
+        setSessionsError(null);
+        setSessions([]);
         importSessions.list(branchId)
             .then(value => {
                 if (alive) setSessions(value as ImportSessionListItem[]);
             })
-            .catch(() => {
-                if (alive) setSessions([]);
+            .catch(loadError => {
+                if (alive) {
+                    setSessionsError(loadError instanceof Error ? loadError.message : "Import history could not be loaded.");
+                }
             })
             .finally(() => {
                 if (alive) setLoadingSessions(false);
@@ -65,9 +98,13 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
         return () => {
             alive = false;
         };
-    }, [branchId]);
+    }, [branchId, sessionsReloadKey]);
 
     const upload = async () => {
+        if (!importDecision.allowed) {
+            setError(importDecision.reason);
+            return;
+        }
         if (!canUpload) return;
         setLoading(true);
         setError(null);
@@ -84,8 +121,7 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
     };
 
     return (
-        <BranchAccessGuard branchId={branchId} permission="students">
-            <PageShell>
+        <PageShell>
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                     <div>
                         <p className={pageEyebrowClass}>Data onboarding</p>
@@ -99,8 +135,19 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
                     </AppButton>
                 </div>
 
+                {mutationBlockReason && importDecision.blocker !== "permission" && (
+                    <div id="import-mutation-blocker" className="flex flex-col gap-2 rounded-[8px] border border-amber-400/25 bg-amber-400/10 px-4 py-3 text-sm text-amber-100 sm:flex-row sm:items-center sm:justify-between" role="status">
+                        <span>Import changes are disabled. {mutationBlockReason}</span>
+                        {importDecision.recoveryHref ? (
+                            <Link href={importDecision.recoveryHref} className="shrink-0 font-semibold underline underline-offset-4">
+                                Resolve access
+                            </Link>
+                        ) : null}
+                    </div>
+                )}
+
                 <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(340px,0.65fr)]">
-                    <AppPanel
+                    {importDecision.blocker !== "permission" ? <AppPanel
                         title="Start an import"
                         description="Create a safe review workspace before any student, allocation, or payment record is created."
                     >
@@ -113,6 +160,7 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
                                 onDragOver={(event) => event.preventDefault()}
                                 onDrop={(event) => {
                                     event.preventDefault();
+                                    if (mutationsDisabled) return;
                                     setFile(event.dataTransfer.files?.[0] ?? null);
                                 }}
                             >
@@ -126,11 +174,13 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
                                     <p className={cn("mt-1 text-xs", pageMutedTextClass)}>CSV, XLSX, XLS, or best-effort PDF.</p>
                                 </div>
                                 <div className="flex flex-wrap justify-center gap-2">
-                                    <label className="inline-flex cursor-pointer">
+                                    <label className={cn("inline-flex", mutationsDisabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                                         <input
                                             type="file"
                                             className="sr-only"
                                             accept=".csv,.xlsx,.xls,.pdf"
+                                            disabled={mutationsDisabled}
+                                            aria-describedby={mutationsDisabled ? "import-mutation-blocker" : undefined}
                                             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
                                         />
                                         <span className="rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] bg-[color:var(--ui-button-secondary-bg)] px-3 py-2 text-sm font-semibold text-[color:var(--ui-button-secondary-text)]">
@@ -159,8 +209,10 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
                                         if (event.target.value.trim()) setFile(null);
                                     }}
                                     rows={11}
+                                    disabled={mutationsDisabled}
+                                    aria-describedby={mutationsDisabled ? "import-mutation-blocker" : undefined}
                                     placeholder="Name\tMobile\tSeat No\tShift\tFee\tPaid"
-                                    className="min-h-56 w-full rounded-[8px] border border-[color:var(--ui-form-field-border)] bg-[color:var(--ui-form-field-bg)] p-3 text-sm text-[color:var(--text-primary)] outline-none focus:border-[color:var(--ui-form-field-focus-border)]"
+                                    className="min-h-56 w-full rounded-[8px] border border-[color:var(--ui-form-field-border)] bg-[color:var(--ui-form-field-bg)] p-3 text-sm text-[color:var(--text-primary)] outline-none focus:border-[color:var(--ui-form-field-focus-border)] disabled:cursor-not-allowed disabled:opacity-60"
                                 />
                             </label>
                         </div>
@@ -168,7 +220,14 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
                         {error && <p className="mt-3 text-sm text-red-300">{error}</p>}
 
                         <div className="mt-5 flex flex-wrap gap-3">
-                            <AppButton variant="primary" icon={UploadCloud} onClick={upload} disabled={!canUpload} isLoading={loading}>
+                            <AppButton
+                                variant="primary"
+                                icon={UploadCloud}
+                                onClick={upload}
+                                disabled={!canUpload || mutationsDisabled}
+                                aria-describedby={mutationsDisabled ? "import-mutation-blocker" : undefined}
+                                isLoading={loading}
+                            >
                                 Create review workspace
                             </AppButton>
                             <AppButton variant="secondary" icon={FileSpreadsheet} onClick={downloadSampleTemplate}>
@@ -178,7 +237,7 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
                                 Continue without import
                             </AppButton>
                         </div>
-                    </AppPanel>
+                    </AppPanel> : null}
 
                     <div className="space-y-5">
                         <AppPanel title="Supported inputs" description="PDF is best effort. Spreadsheets and pasted tables are more reliable.">
@@ -200,6 +259,14 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
                         <AppPanel title="Recent imports" description="Resume a previous staging workspace." contentClassName="p-0">
                             {loadingSessions ? (
                                 <p className={cn("p-4 text-sm", pageMutedTextClass)}>Loading sessions...</p>
+                            ) : sessionsError ? (
+                                <ErrorState
+                                    className="m-4 min-h-40"
+                                    title="Import history unavailable"
+                                    description={sessionsError}
+                                    retryLabel="Retry history"
+                                    onRetry={() => setSessionsReloadKey(key => key + 1)}
+                                />
                             ) : sessions.length === 0 ? (
                                 <p className={cn("p-4 text-sm", pageMutedTextClass)}>No import sessions yet.</p>
                             ) : (
@@ -216,7 +283,7 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
                                                     {session.fileName ?? session.sourceType}
                                                 </p>
                                                 <p className={cn("mt-1 text-xs", pageMutedTextClass)}>
-                                                    {(session.summary?.totalRows ?? 0).toLocaleString("en-IN")} rows
+                                                    {formatNumber(session.summary?.totalRows ?? 0)} rows
                                                 </p>
                                             </div>
                                             <Badge variant={statusTone(session.status)}>{labelImportStatus(session.status)}</Badge>
@@ -228,6 +295,5 @@ export default function ImportAssistantPage({ params }: { params: Promise<{ bran
                     </div>
                 </div>
             </PageShell>
-        </BranchAccessGuard>
     );
 }

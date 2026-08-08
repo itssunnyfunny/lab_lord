@@ -6,16 +6,17 @@ import { cn } from "@/lib/utils";
 import { IMPORT_TARGET_FIELDS, type ImportColumnMapping } from "@/importing/contracts/import-session.contract";
 import { aiAssistanceState } from "@/importing/utils/import-wizard-view-model";
 import { pageInsetSurfaceClass, pageMutedTextClass, pageTableBodyDividerClass, pageTableHeadClass, pageTableRowClass } from "@/components/ui/pageSurface";
-import { importOptionClass, importSelectClass, StepNotice } from "./shared";
+import { AccessibleTableScroll, importOptionClass, importSelectClass, StepNotice } from "./shared";
 import type { ImportDetail } from "./types";
 
 type ColumnsStepProps = {
     detail: ImportDetail;
     saving: boolean;
+    mutationsDisabled: boolean;
     onSave: (columnMappings: ImportColumnMapping[]) => Promise<void>;
 };
 
-export function ColumnsStep({ detail, saving, onSave }: ColumnsStepProps) {
+export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: ColumnsStepProps) {
     const mapping = useMemo(() => detail.mapping?.columnMappings ?? [], [detail.mapping?.columnMappings]);
     const [draft, setDraft] = useState<ImportColumnMapping[]>(mapping);
 
@@ -35,6 +36,17 @@ export function ColumnsStep({ detail, saving, onSave }: ColumnsStepProps) {
     });
     const changed = JSON.stringify(draft) !== JSON.stringify(mapping);
     const mappedCount = draft.filter(item => item.targetField !== "ignore").length;
+    const updateTargetField = (index: number, targetField: ImportColumnMapping["targetField"]) => {
+        setDraft(current => current.map((item, itemIndex) => itemIndex === index
+            ? {
+                ...item,
+                targetField,
+                source: "MANUAL",
+                needsReview: false,
+                autoApplied: targetField !== "ignore",
+            }
+            : item));
+    };
 
     return (
         <div className="space-y-5">
@@ -42,7 +54,14 @@ export function ColumnsStep({ detail, saving, onSave }: ColumnsStepProps) {
                 title="Column meanings"
                 description="Confirm how each source column maps into the ERP. AI is only a suggestion layer."
                 action={
-                    <AppButton variant="primary" icon={Save} onClick={() => onSave(draft)} disabled={!changed} isLoading={saving}>
+                    <AppButton
+                        variant="primary"
+                        icon={Save}
+                        onClick={() => onSave(draft)}
+                        disabled={mutationsDisabled || !changed}
+                        aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
+                        isLoading={saving}
+                    >
                         Save columns
                     </AppButton>
                 }
@@ -72,15 +91,84 @@ export function ColumnsStep({ detail, saving, onSave }: ColumnsStepProps) {
                         </div>
                     </div>
 
-                    <div className="overflow-hidden rounded-[8px] border border-[color:var(--ui-table-border)]">
+                    <div role="list" className="space-y-3 md:hidden" aria-label="Column mappings">
+                        {draft.map((item, index) => {
+                            const profile = sourceColumns.get(item.sourceColumn);
+                            const headingId = `column-mapping-${index}-title`;
+                            const selectId = `column-mapping-${index}-field`;
+
+                            return (
+                                <article
+                                    key={item.sourceColumn}
+                                    role="listitem"
+                                    aria-labelledby={headingId}
+                                    className={cn("p-4", pageInsetSurfaceClass)}
+                                >
+                                    <div className="flex items-start justify-between gap-3">
+                                        <h3 id={headingId} className="break-words text-sm font-semibold text-[color:var(--text-primary)]">
+                                            {item.sourceColumn}
+                                        </h3>
+                                        {item.needsReview && <Badge variant="warning">review</Badge>}
+                                    </div>
+
+                                    <label htmlFor={selectId} className="mt-4 block text-xs font-semibold text-[color:var(--text-secondary)]">
+                                        ERP field
+                                    </label>
+                                    <select
+                                        id={selectId}
+                                        value={item.targetField}
+                                        disabled={mutationsDisabled}
+                                        aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
+                                        onChange={event => updateTargetField(index, event.target.value as ImportColumnMapping["targetField"])}
+                                        className={cn("mt-2 w-full", importSelectClass)}
+                                    >
+                                        {IMPORT_TARGET_FIELDS.map(field => (
+                                            <option key={field} value={field} className={importOptionClass}>
+                                                {field}
+                                            </option>
+                                        ))}
+                                    </select>
+
+                                    <dl className="mt-4 grid gap-3 text-xs">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <dt className={pageMutedTextClass}>Confidence</dt>
+                                            <dd>
+                                                <Badge variant={item.confidence >= 85 ? "success" : item.confidence >= 60 ? "warning" : "default"}>
+                                                    {Math.round(item.confidence)}%
+                                                </Badge>
+                                            </dd>
+                                        </div>
+                                        <div>
+                                            <dt className={pageMutedTextClass}>Sample values</dt>
+                                            <dd className="mt-1 break-words leading-5 text-[color:var(--text-primary)]">
+                                                {profile?.sampleValues?.slice(0, 3).join(", ") || "-"}
+                                            </dd>
+                                        </div>
+                                        <div>
+                                            <dt className={pageMutedTextClass}>Mapping reason</dt>
+                                            <dd className="mt-1 break-words leading-5 text-[color:var(--text-primary)]">
+                                                {item.reason || "Manual mapping."}
+                                            </dd>
+                                        </div>
+                                    </dl>
+                                </article>
+                            );
+                        })}
+                    </div>
+
+                    <AccessibleTableScroll
+                        label="Column mappings"
+                        className="hidden rounded-[8px] border border-[color:var(--ui-table-border)] md:block"
+                    >
                         <table className="w-full min-w-[760px] text-left text-sm">
+                            <caption className="sr-only">Source columns mapped to Lab Lords ERP fields</caption>
                             <thead className={pageTableHeadClass}>
                                 <tr className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">
-                                    <th className="p-3">Source column</th>
-                                    <th className="p-3">ERP field</th>
-                                    <th className="p-3">Confidence</th>
-                                    <th className="p-3">Sample</th>
-                                    <th className="p-3">Why</th>
+                                    <th scope="col" className="p-3">Source column</th>
+                                    <th scope="col" className="p-3">ERP field</th>
+                                    <th scope="col" className="p-3">Confidence</th>
+                                    <th scope="col" className="p-3">Sample</th>
+                                    <th scope="col" className="p-3">Why</th>
                                 </tr>
                             </thead>
                             <tbody className={pageTableBodyDividerClass}>
@@ -88,24 +176,17 @@ export function ColumnsStep({ detail, saving, onSave }: ColumnsStepProps) {
                                     const profile = sourceColumns.get(item.sourceColumn);
                                     return (
                                         <tr key={item.sourceColumn} className={pageTableRowClass}>
-                                            <td className="p-3">
+                                            <th scope="row" className="p-3 text-left">
                                                 <div className="font-semibold text-[color:var(--text-primary)]">{item.sourceColumn}</div>
                                                 {item.needsReview && <Badge className="mt-2" variant="warning">review</Badge>}
-                                            </td>
+                                            </th>
                                             <td className="p-3">
                                                 <select
+                                                    aria-label={`ERP field for ${item.sourceColumn}`}
                                                     value={item.targetField}
-                                                    onChange={event => {
-                                                        const next = [...draft];
-                                                        next[index] = {
-                                                            ...item,
-                                                            targetField: event.target.value as ImportColumnMapping["targetField"],
-                                                            source: "MANUAL",
-                                                            needsReview: false,
-                                                            autoApplied: event.target.value !== "ignore",
-                                                        };
-                                                        setDraft(next);
-                                                    }}
+                                                    disabled={mutationsDisabled}
+                                                    aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
+                                                    onChange={event => updateTargetField(index, event.target.value as ImportColumnMapping["targetField"])}
                                                     className={cn("w-full", importSelectClass)}
                                                 >
                                                     {IMPORT_TARGET_FIELDS.map(field => (
@@ -131,7 +212,7 @@ export function ColumnsStep({ detail, saving, onSave }: ColumnsStepProps) {
                                 })}
                             </tbody>
                         </table>
-                    </div>
+                    </AccessibleTableScroll>
                 </div>
             </AppPanel>
 

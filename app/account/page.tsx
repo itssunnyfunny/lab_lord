@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { format } from "date-fns";
 import {
     AlertCircle,
@@ -30,6 +31,11 @@ import {
     SettingsWorkspace,
 } from "@/components/settings/SettingsWorkspace";
 import { AppButton, PageLoadingSkeleton } from "@/components/ui";
+import { focusFirstInvalidField } from "@/components/ui/FormField";
+import {
+    notifyUserPreferencesChanged,
+    type UserDisplayPreferences,
+} from "@/components/settings/UserPreferencesApplier";
 import { useInlineFieldErrors } from "@/components/ui/InlineFieldError";
 import {
     pageErrorIconClass,
@@ -171,6 +177,7 @@ export default function AccountPage() {
             if (saveStatus === "error") {
                 setSaveStatus("idle");
             }
+            window.requestAnimationFrame(() => focusFirstInvalidField());
             return;
         }
         const { nameResult, phoneResult } = result.values;
@@ -198,6 +205,12 @@ export default function AccountPage() {
             };
             setProfile(nextProfile);
             setForm(toForm(nextProfile));
+            notifyUserPreferencesChanged({
+                densityPreference: nextProfile.densityPreference,
+                locale: nextProfile.locale,
+                timezone: nextProfile.timezone,
+                dateFormat: nextProfile.dateFormat as UserDisplayPreferences["dateFormat"],
+            });
             resetFieldErrors();
             setSaveStatus("success");
             setTimeout(() => setSaveStatus("idle"), 3000);
@@ -278,16 +291,6 @@ export default function AccountPage() {
                             <option value="yyyy-MM-dd">yyyy-MM-dd</option>
                         </SettingsSelect>
                     </SettingsField>
-                    <SettingsField label="Theme preference" description="Stored now; global theme wiring remains outside this settings pass.">
-                        <SegmentedControl
-                            value={form.themePreference}
-                            onChange={value => updateForm("themePreference", value)}
-                            options={[
-                                { value: "dark", label: "Dark" },
-                                { value: "system", label: "System" },
-                            ]}
-                        />
-                    </SettingsField>
                     <SettingsField label="Density">
                         <SegmentedControl
                             value={form.densityPreference}
@@ -316,7 +319,7 @@ export default function AccountPage() {
                             value={form.defaultLandingPage}
                             onChange={value => updateForm("defaultLandingPage", value)}
                             options={[
-                                { value: "org", label: "Organizations" },
+                                { value: "org", label: "Last workspace" },
                                 { value: "account", label: "Account" },
                             ]}
                         />
@@ -330,22 +333,26 @@ export default function AccountPage() {
                     <div className="px-5 py-4">
                         <div className="grid gap-2 md:grid-cols-2">
                             {profile.organizations.map(org => (
-                                <SettingsCard key={org.id}>
-                                    <div className="flex items-center gap-2 text-sm font-medium text-[color:var(--text-primary)]">
-                                        <Building2 size={14} className="text-[color:var(--ui-form-accent)]" />
-                                        {org.name}
-                                    </div>
-                                    <SettingsSubtleText className="mt-1">{org.businessType || "Education Business"} / {org.branches.length} branches</SettingsSubtleText>
-                                </SettingsCard>
+                                <Link key={org.id} href={`/org/${org.id}`} aria-label={`Open ${org.name}`}>
+                                    <SettingsCard className="h-full transition-colors hover:border-[color:var(--ui-form-input-focus-border)]">
+                                        <div className="flex items-center gap-2 text-sm font-medium text-[color:var(--text-primary)]">
+                                            <Building2 size={14} className="text-[color:var(--ui-form-accent)]" />
+                                            {org.name}
+                                        </div>
+                                        <SettingsSubtleText className="mt-1">{org.businessType || "Education Business"} / {org.branches.length} branches</SettingsSubtleText>
+                                    </SettingsCard>
+                                </Link>
                             ))}
                             {profile.staff.map(member => (
-                                <SettingsCard key={member.id}>
-                                    <div className="flex items-center gap-2 text-sm font-medium text-[color:var(--text-primary)]">
-                                        <GitBranch size={14} className="text-[color:var(--ui-badge-purple-text)]" />
-                                        {member.branch.name}
-                                    </div>
-                                    <SettingsSubtleText className="mt-1">{member.role}</SettingsSubtleText>
-                                </SettingsCard>
+                                <Link key={member.id} href={`/branch/${member.branch.id}`} aria-label={`Open ${member.branch.name}`}>
+                                    <SettingsCard className="h-full transition-colors hover:border-[color:var(--ui-form-input-focus-border)]">
+                                        <div className="flex items-center gap-2 text-sm font-medium text-[color:var(--text-primary)]">
+                                            <GitBranch size={14} className="text-[color:var(--ui-badge-purple-text)]" />
+                                            {member.branch.name}
+                                        </div>
+                                        <SettingsSubtleText className="mt-1">{member.role}</SettingsSubtleText>
+                                    </SettingsCard>
+                                </Link>
                             ))}
                             {profile.organizations.length === 0 && profile.staff.length === 0 && (
                                 <SettingsEmptyState>No workspace access found.</SettingsEmptyState>

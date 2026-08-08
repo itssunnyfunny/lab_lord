@@ -1,14 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
 import {
     formCheckboxClass,
     formControlClass,
-    formDialogFooterClass,
-    formDialogHeaderClass,
-    formDialogPanelClass,
     formErrorBannerClass,
     formHelpTextClass,
     formLabelClass,
@@ -108,10 +106,18 @@ export function AllocateSeatDialog({
 
     useEffect(() => {
         if (!isOpen || preselectedStudentId) return;
-        fetch(`/api/branches/${branchId}/students?status=ACTIVE`)
-            .then(r => r.json())
-            .then(setStudents)
-            .catch(() => { /* silent */ });
+        fetch(`/api/branches/${branchId}/students?status=ACTIVE&all=true`)
+            .then(async response => {
+                const body = await response.json();
+                if (!response.ok || !Array.isArray(body?.items)) {
+                    throw new Error(body?.error ?? "Failed to load students");
+                }
+                setStudents(body.items);
+            })
+            .catch(error => {
+                setStudents([]);
+                setSubmitError(error instanceof Error ? error.message : "Failed to load students");
+            });
     }, [isOpen, branchId, preselectedStudentId]);
 
     const handleToggleShift = (shift: ShiftCapacity) => {
@@ -241,47 +247,58 @@ export function AllocateSeatDialog({
             : "Confirm";
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-[color:var(--ui-form-overlay-bg)] p-3 backdrop-blur-sm sm:items-center sm:p-4">
-            <div
-                className={cn("flex max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col animate-in zoom-in-95 duration-200 sm:max-h-[90vh]", formDialogPanelClass)}
-                onClick={e => e.stopPropagation()}
-            >
-                {/* Header */}
-                <div className={cn("flex flex-shrink-0 items-center justify-between px-4 py-4 sm:px-6", formDialogHeaderClass)}>
-                    <div>
-                        <h2 className="text-base font-semibold text-[color:var(--ui-dialog-title)]">Allocate Seat</h2>
-                        {effectiveStudentName && (
-                            <p className={cn("mt-0.5 text-xs", formHelpTextClass)}>
-                                for <span className="text-[color:var(--ui-form-label-strong)]">{effectiveStudentName}</span>
-                                {selectedShiftNames.length > 0 && (
-                                    <> / <span className={selectedMultiShiftId ? "text-[color:var(--ui-badge-warning-text)]" : "text-[color:var(--ui-badge-cyan-text)]"}>{selectedShiftNames.join(", ")}</span></>
-                                )}
-                            </p>
-                        )}
-                    </div>
-                    <button type="button" onClick={onClose} className={cn("cursor-pointer transition-colors hover:text-[color:var(--ui-table-text)]", formHelpTextClass)}>
-                        <X size={18} />
-                    </button>
-                </div>
-
-                <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+        <Dialog
+            open={isOpen}
+            onClose={onClose}
+            title="Allocate seat"
+            description={effectiveStudentName
+                ? `Allocate a seat for ${effectiveStudentName}${selectedShiftNames.length > 0 ? ` / ${selectedShiftNames.join(", ")}` : ""}.`
+                : "Select an active student, shifts, and an available seat."}
+            closeLabel="Close allocate seat dialog"
+            closeDisabled={submitting}
+            className="max-w-2xl"
+            footer={(
+                <>
+                    <Button variant="ghost" onClick={onClose} disabled={submitting} className="h-8 px-4 text-sm">
+                        Cancel
+                    </Button>
+                    <Button onClick={handleConfirm} disabled={submitting} className="h-8 px-5 text-sm">
+                        {submitting
+                            ? <><Loader2 size={12} className="mr-1.5 animate-spin" aria-hidden="true" /> Allocating...</>
+                            : confirmLabel
+                        }
+                    </Button>
+                </>
+            )}
+        >
+                <div>
                     {/* Student picker (only when not preselected) */}
                     {!hasStudent && (
-                        <div className="space-y-3 mb-6">
-                            <p className={formLabelClass}>Select an active student:</p>
+                        <div
+                            className="mb-6 space-y-3"
+                            role="group"
+                            aria-labelledby="allocate-seat-student-label"
+                            aria-describedby={studentError ? "allocate-seat-student-error" : undefined}
+                        >
+                            <p id="allocate-seat-student-label" className={formLabelClass}>Select an active student:</p>
+                            <label htmlFor="allocate-seat-student-search" className="sr-only">Search active students</label>
                             <input
+                                id="allocate-seat-student-search"
                                 type="text"
                                 placeholder="Search by name or phone..."
                                 value={studentSearch}
                                 onChange={e => setStudentSearch(e.target.value)}
                                 className={cn(formControlClass, "px-3 py-2 text-sm")}
+                                data-dialog-initial-focus
                             />
-                            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-2">
+                            <div className="max-h-48 space-y-1.5 overflow-y-auto pr-2" role="group" aria-label="Active students">
                                 {filteredStudents.map(s => (
                                     <button
                                         key={s.id}
+                                        type="button"
                                         onClick={() => { markTouched("student"); setStudentId(s.id); setStudentName(s.name); }}
                                         className={cn("w-full cursor-pointer px-3 py-2.5 text-left", formSurfaceClass, formSurfaceHoverClass)}
+                                        aria-pressed={studentId === s.id}
                                     >
                                         <p className="text-sm font-medium text-[color:var(--ui-form-label-strong)]">{s.name}</p>
                                         {s.phone && <p className={cn("text-xs", formHelpTextClass)}>{s.phone}</p>}
@@ -296,7 +313,12 @@ export function AllocateSeatDialog({
                     )}
 
                     {hasStudent && (
-                        <div className="space-y-4">
+                        <div
+                            className="space-y-4"
+                            role="group"
+                            aria-label="Seat and shift selection"
+                            aria-describedby={selectionError ? "allocate-seat-selection-error" : undefined}
+                        >
                             <SeatPicker
                                 branchId={branchId}
                                 studentId={effectiveStudentId}
@@ -323,27 +345,13 @@ export function AllocateSeatDialog({
                             )}
 
                             {submitError && (
-                                <div className={cn("p-3 text-sm", formErrorBannerClass)}>
+                                <div role="alert" className={cn("p-3 text-sm", formErrorBannerClass)}>
                                     {submitError}
                                 </div>
                             )}
                         </div>
                     )}
                 </div>
-
-                {/* Footer */}
-                <div className={cn("flex flex-shrink-0 flex-col-reverse gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-6", formDialogFooterClass)}>
-                    <Button variant="ghost" onClick={onClose} disabled={submitting} className="text-sm h-8 px-4">
-                        Cancel
-                    </Button>
-                    <Button onClick={handleConfirm} disabled={submitting} className="text-sm h-8 px-5">
-                        {submitting
-                            ? <><Loader2 size={12} className="animate-spin mr-1.5" /> Allocating...</>
-                            : confirmLabel
-                        }
-                    </Button>
-                </div>
-            </div>
-        </div>
+        </Dialog>
     );
 }

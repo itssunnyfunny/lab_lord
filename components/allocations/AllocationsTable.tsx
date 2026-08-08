@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { format } from "date-fns";
 import { Badge } from "@/components/ui/Badge";
 import { AppButton } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -20,6 +19,7 @@ import {
     pageTableShellClass,
 } from "@/components/ui/pageSurface";
 import { cn } from "@/lib/utils";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 
 interface Allocation {
     id: string;
@@ -40,6 +40,10 @@ interface AllocationsTableProps {
     onEndAllocation: (allocationIds: string | string[]) => Promise<void>;
     onUpdateAllocation?: (ids: string[], studentId: string, studentName: string, currentSeatId: string, currentFee: number | null, currentShiftIds: string[], currentMultiShiftId: string | null) => void;
     isEndedTab?: boolean;
+    highlightedAllocationId?: string;
+    showActions?: boolean;
+    actionsEnabled?: boolean;
+    actionsDisabledReason?: string;
 }
 
 interface GroupedAllocation {
@@ -58,11 +62,23 @@ interface GroupedAllocation {
     componentShiftNames?: string[]; // for multi
 }
 
-export function AllocationsTable({ allocations, viewMode = "table", onEndAllocation, onUpdateAllocation, isEndedTab = false }: AllocationsTableProps) {
+export function AllocationsTable({
+    allocations,
+    viewMode = "table",
+    onEndAllocation,
+    onUpdateAllocation,
+    isEndedTab = false,
+    highlightedAllocationId,
+    showActions = true,
+    actionsEnabled = true,
+    actionsDisabledReason,
+}: AllocationsTableProps) {
+    const { formatDate } = useUserPreferences();
     const [endingIds, setEndingIds] = useState<string[] | null>(null);
     const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
 
     const handleEndClick = (ids: string[]) => {
+        if (!actionsEnabled) return;
         setConfirmIds(ids);
     };
 
@@ -175,13 +191,13 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
         ) : (
             <div className="flex flex-col items-start gap-1">
                 <Badge variant="default">Ended</Badge>
-                <span className={cn("text-[10px]", pageSubtleTextClass)}>{format(new Date(alloc.endDate), "PP")}</span>
+                <span className={cn("text-[10px]", pageSubtleTextClass)}>{formatDate(alloc.endDate)}</span>
             </div>
         )
     );
 
     const renderAllocationActions = (alloc: GroupedAllocation) => {
-        if (isEndedTab || alloc.endDate) return null;
+        if (isEndedTab || alloc.endDate || !showActions) return null;
 
         return (
             <div className="flex flex-wrap items-center gap-2">
@@ -190,8 +206,9 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                         variant="secondary"
                         size="sm"
                         icon={Pencil}
+                        disabled={!actionsEnabled}
                         onClick={() => onUpdateAllocation(alloc.ids, alloc.studentId, alloc.student.name, alloc.seat.id, alloc.student.monthlyFee ?? null, alloc.shiftIds, alloc.multiShiftId ?? null)}
-                        title="Change seat / shift"
+                        title={actionsEnabled ? "Change seat / shift" : actionsDisabledReason}
                     >
                         Change
                     </AppButton>
@@ -201,6 +218,8 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                     size="sm"
                     onClick={() => handleEndClick(alloc.ids)}
                     isLoading={endingIds?.some(id => alloc.ids.includes(id))}
+                    disabled={!actionsEnabled}
+                    title={actionsEnabled ? undefined : actionsDisabledReason}
                 >
                     End
                 </AppButton>
@@ -216,7 +235,15 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                 return (
                     <div
                         key={alloc.id}
-                        className={cn("relative flex min-h-[228px] flex-col", pageGridCardClass, pageGridCardHoverClass)}
+                        id={alloc.ids.includes(highlightedAllocationId ?? "") ? `allocation-record-${highlightedAllocationId}-card` : undefined}
+                        tabIndex={alloc.ids.includes(highlightedAllocationId ?? "") ? -1 : undefined}
+                        aria-current={alloc.ids.includes(highlightedAllocationId ?? "") ? "true" : undefined}
+                        className={cn(
+                            "relative flex min-h-[228px] flex-col",
+                            pageGridCardClass,
+                            pageGridCardHoverClass,
+                            alloc.ids.includes(highlightedAllocationId ?? "") && "border-cyan-400/50 bg-cyan-400/[0.05] outline outline-2 outline-cyan-300/60"
+                        )}
                     >
                         <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
@@ -233,7 +260,7 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                             </div>
                             <div className={pageInsetMetricClass}>
                                 <div className={cn("text-xs", pageSubtleTextClass)}>Started</div>
-                                <div className={cn("mt-1 truncate", pageMutedTextClass)}>{format(new Date(alloc.startDate), "PP")}</div>
+                                <div className={cn("mt-1 truncate", pageMutedTextClass)}>{formatDate(alloc.startDate)}</div>
                             </div>
                         </div>
 
@@ -285,16 +312,22 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
         <>
             <div className="md:hidden">{allocationCards}</div>
             <div className={cn("hidden md:block", pageTableShellClass)}>
-            <div className="w-full overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+            <div
+                className="w-full overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent"
+                role="region"
+                aria-label="Loaded seat allocations"
+                tabIndex={0}
+            >
             <table className="w-full min-w-[58rem] text-left text-sm">
+                <caption className="sr-only">Loaded seat allocations</caption>
                 <thead className={pageTableHeadClass}>
                     <tr className="text-[color:var(--ui-table-muted)]">
-                        <th className="px-6 py-4 font-medium">Student</th>
-                        <th className="px-6 py-4 font-medium">Seat</th>
-                        <th className="px-6 py-4 font-medium">Shift</th>
-                        <th className="px-6 py-4 font-medium">Start Date</th>
-                        <th className="px-6 py-4 font-medium">Status</th>
-                        {!isEndedTab && <th className="px-6 py-4 font-medium">Actions</th>}
+                        <th scope="col" className="px-6 py-4 font-medium">Student</th>
+                        <th scope="col" className="px-6 py-4 font-medium">Seat</th>
+                        <th scope="col" className="px-6 py-4 font-medium">Shift</th>
+                        <th scope="col" className="px-6 py-4 font-medium">Start Date</th>
+                        <th scope="col" className="px-6 py-4 font-medium">Status</th>
+                        {!isEndedTab && showActions && <th scope="col" className="px-6 py-4 font-medium">Actions</th>}
                     </tr>
                 </thead>
                 <tbody className={pageTableBodyDividerClass}>
@@ -303,10 +336,20 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                         const isMulti = alloc.isMulti;
 
                         return (
-                            <tr key={alloc.id} className={cn("group", pageTableRowClass)}>
-                                <td className="px-6 py-4 font-medium text-[color:var(--ui-table-text)]">
+                            <tr
+                                key={alloc.id}
+                                id={alloc.ids.includes(highlightedAllocationId ?? "") ? `allocation-record-${highlightedAllocationId}-row` : undefined}
+                                tabIndex={alloc.ids.includes(highlightedAllocationId ?? "") ? -1 : undefined}
+                                aria-current={alloc.ids.includes(highlightedAllocationId ?? "") ? "true" : undefined}
+                                className={cn(
+                                    "group",
+                                    pageTableRowClass,
+                                    alloc.ids.includes(highlightedAllocationId ?? "") && "bg-cyan-400/[0.05] outline outline-2 outline-cyan-300/60"
+                                )}
+                            >
+                                <th scope="row" className="px-6 py-4 text-left font-medium text-[color:var(--ui-table-text)]">
                                     {alloc.student.name}
-                                </td>
+                                </th>
                                 <td className="px-6 py-4 text-[color:var(--ui-table-muted)]">
                                     {alloc.seat.label}
                                 </td>
@@ -340,7 +383,7 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                                     )}
                                 </td>
                                 <td className="px-6 py-4 text-[color:var(--ui-table-muted)]">
-                                    {format(new Date(alloc.startDate), "PP")}
+                                    {formatDate(alloc.startDate)}
                                 </td>
                                 <td className="px-6 py-4">
                                     {isActive ? (
@@ -348,11 +391,11 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                                     ) : (
                                         <div className="flex flex-col gap-1">
                                             <Badge variant="default">Ended</Badge>
-                                            <span className="text-[10px] text-[color:var(--ui-table-subtle)]">{alloc.endDate ? format(new Date(alloc.endDate), "PP") : ""}</span>
+                                            <span className="text-[10px] text-[color:var(--ui-table-subtle)]">{alloc.endDate ? formatDate(alloc.endDate) : ""}</span>
                                         </div>
                                     )}
                                 </td>
-                                {!isEndedTab && (
+                                {!isEndedTab && showActions && (
                                     <td className="px-6 py-4">
                                         {isActive && (
                                             <div className="flex items-center gap-2">
@@ -361,8 +404,9 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                                                         variant="secondary"
                                                         size="sm"
                                                         icon={Pencil}
+                                                        disabled={!actionsEnabled}
                                                         onClick={() => onUpdateAllocation(alloc.ids, alloc.studentId, alloc.student.name, alloc.seat.id, alloc.student.monthlyFee ?? null, alloc.shiftIds, alloc.multiShiftId ?? null)}
-                                                        title="Change seat / shift"
+                                                        title={actionsEnabled ? "Change seat / shift" : actionsDisabledReason}
                                                     >
                                                         Change
                                                     </AppButton>
@@ -372,6 +416,8 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                                                     size="sm"
                                                     onClick={() => handleEndClick(alloc.ids)}
                                                     isLoading={endingIds?.some(id => alloc.ids.includes(id))}
+                                                    disabled={!actionsEnabled}
+                                                    title={actionsEnabled ? undefined : actionsDisabledReason}
                                                 >
                                                     End
                                                 </AppButton>
@@ -384,7 +430,7 @@ export function AllocationsTable({ allocations, viewMode = "table", onEndAllocat
                     })}
                     {sorted.length === 0 && (
                         <tr>
-                            <td colSpan={isEndedTab ? 5 : 6} className="px-6 py-8 text-center text-[color:var(--ui-table-subtle)]">
+                            <td colSpan={isEndedTab || !showActions ? 5 : 6} className="px-6 py-8 text-center text-[color:var(--ui-table-subtle)]">
                                 No allocations found.
                             </td>
                         </tr>

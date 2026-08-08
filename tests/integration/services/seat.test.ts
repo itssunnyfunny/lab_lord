@@ -128,7 +128,7 @@ describe("SeatService Integration", () => {
       const student = await createStudent({ branchId: branch.id });
       await createAllocation({ seatId: seat.id, studentId: student.id, shiftId: shift.id });
 
-      const seats = await SeatService.listSeats(user.id, branch.id);
+      const { items: seats } = await SeatService.listSeats(user.id, branch.id);
       const found = seats.find(s => s.id === seat.id);
       expect(found).toBeDefined();
       expect(found!.seatAllocations).toHaveLength(1);
@@ -140,20 +140,36 @@ describe("SeatService Integration", () => {
       await createStaff({ userId: staffUser.id, branchId: branch.id, role: "STAFF" });
       const seat = await createSeat({ branchId: branch.id, label: "S1" });
 
-      const seats = await SeatService.listSeats(staffUser.id, branch.id);
+      const { items: seats } = await SeatService.listSeats(staffUser.id, branch.id);
 
       expect(seats.some(s => s.id === seat.id)).toBe(true);
     });
 
-    it("sorts labels naturally", async () => {
+    it("paginates with stable createdAt and id ordering", async () => {
       const { user, branch } = await createTestWorld();
-      await Promise.all(
-        ["A10", "A2", "A1"].map(label => createSeat({ branchId: branch.id, label }))
-      );
+      await testPrisma.seat.updateMany({
+        where: { branchId: branch.id },
+        data: { createdAt: new Date("2026-01-01T00:00:00.000Z") },
+      });
+      const createdAt = new Date("2026-02-01T00:00:00.000Z");
+      await testPrisma.seat.createMany({
+        data: [
+          { id: "seat_a", branchId: branch.id, label: "A1", createdAt },
+          { id: "seat_b", branchId: branch.id, label: "A2", createdAt },
+        ],
+      });
 
-      const seats = await SeatService.listSeats(user.id, branch.id);
+      const first = await SeatService.listSeats(user.id, branch.id, { limit: 1 });
+      expect(first.items.map(seat => seat.id)).toEqual(["seat_b"]);
+      expect(first.nextCursor).not.toBeNull();
+      expect(first.total).toBe(3);
 
-      expect(seats.map(seat => seat.label).filter(label => label.startsWith("A"))).toEqual(["A1", "A2", "A10"]);
+      const { decodeDateIdCursor } = await import("@/lib/cursorPagination");
+      const second = await SeatService.listSeats(user.id, branch.id, {
+        limit: 1,
+        cursor: decodeDateIdCursor(first.nextCursor),
+      });
+      expect(second.items.map(seat => seat.id)).toEqual(["seat_a"]);
     });
 
     it("excludes ended allocations (endDate ≠ null)", async () => {
@@ -168,7 +184,7 @@ describe("SeatService Integration", () => {
         endDate: new Date("2026-01-01"),
       });
 
-      const seats = await SeatService.listSeats(user.id, branch.id);
+      const { items: seats } = await SeatService.listSeats(user.id, branch.id);
       const found = seats.find(s => s.id === seat.id);
       // Ended allocation must not appear in the active list
       expect(found!.seatAllocations).toHaveLength(0);

@@ -32,7 +32,7 @@ export function PageHeader({
     actionLabel = "Add New",
 }: PageHeaderProps) {
     return (
-        <div className="mb-6 flex flex-col justify-between gap-4 md:mb-8 md:flex-row md:items-end fade-in">
+        <div className="mb-6 flex flex-col justify-between gap-4 md:mb-8 md:flex-row md:items-end">
             <div className="min-w-0">
                 <h1 className={`${pageTitleClass} truncate`}>{title}</h1>
                 {subtitle && <p className={pageDescriptionClass}>{subtitle}</p>}
@@ -45,6 +45,7 @@ export function PageHeader({
                         <input
                             type="text"
                             placeholder="Search..."
+                            aria-label={`Search ${title}`}
                             className={`${formControlClass} h-10 w-full pl-9 pr-4 text-sm md:w-64`}
                             onChange={(e) => onSearch(e.target.value)}
                         />

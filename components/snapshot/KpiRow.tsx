@@ -1,6 +1,7 @@
 "use client";
 
 import { AppPanel } from "@/components/ui";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { AnalyticsPeriod, analytics, BranchSnapshot } from "@/lib/api/analytics";
 import { useEffect, useState } from "react";
 import { Area, AreaChart, ResponsiveContainer } from "recharts";
@@ -12,13 +13,6 @@ interface KpiRowProps {
     trendUp?: boolean;
     data?: number[];
 }
-
-const formatMoney = (amount: number) =>
-    new Intl.NumberFormat("en-IN", {
-        style: "currency",
-        currency: "INR",
-        maximumFractionDigits: 0,
-    }).format(amount);
 
 export function KpiCard({ title, value, trend, trendUp = true, data }: KpiRowProps) {
     const chartData = data ? data.map(v => ({ v })) : [];
@@ -39,9 +33,9 @@ export function KpiCard({ title, value, trend, trendUp = true, data }: KpiRowPro
                 </div>
             </div>
 
-            <div className="relative h-16 w-full">
+            <div aria-hidden="true" className="pointer-events-none relative h-16 w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chartData}>
+                    <AreaChart data={chartData} accessibilityLayer={false}>
                         <defs>
                             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                                 <stop offset="5%" stopColor={color} stopOpacity={0.3} />
@@ -74,6 +68,12 @@ export function KpiRow({
     const [seatTrend, setSeatTrend] = useState<number[] | undefined>();
     const [paymentTrend, setPaymentTrend] = useState<number[] | undefined>();
     const [dueTrend, setDueTrend] = useState<number[] | undefined>();
+    const { formatNumber } = useUserPreferences();
+    const formatMoney = (amount: number) => formatNumber(amount, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
 
     useEffect(() => {
         if (!branchId) return;
@@ -118,7 +118,7 @@ export function KpiRow({
             />
             <KpiCard
                 title="Active Students"
-                value={snapshot.activeStudents.toString()}
+                value={formatNumber(snapshot.activeStudents)}
                 trend="Current active count"
             />
             <KpiCard
@@ -130,10 +130,13 @@ export function KpiRow({
             />
             <KpiCard
                 title="Total Utilization"
-                value={`${snapshot.occupancyRate.toFixed(2)}%`}
+                value={formatNumber(snapshot.occupancyRate / 100, {
+                    style: "percent",
+                    maximumFractionDigits: 2,
+                })}
                 trend={
                     snapshot.seatDetails
-                        ? `${snapshot.seatDetails.totalUsedSlots} / ${snapshot.seatDetails.totalShiftCapacity} slots`
+                        ? `${formatNumber(snapshot.seatDetails.totalUsedSlots)} / ${formatNumber(snapshot.seatDetails.totalShiftCapacity)} slots`
                         : undefined
                 }
                 data={seatTrend}

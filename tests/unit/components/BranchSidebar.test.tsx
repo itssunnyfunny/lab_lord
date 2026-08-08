@@ -5,13 +5,11 @@ import type { BranchAccess } from "@/types";
 
 const mocks = vi.hoisted(() => ({
   access: null as BranchAccess | null,
-  push: vi.fn(),
-  sidebarItems: [] as Array<{ label: string; onClick?: () => void }>,
+  sidebarItems: [] as Array<{ label: string; href?: string }>,
 }));
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/branch/branch_1",
-  useRouter: () => ({ push: mocks.push }),
 }));
 
 vi.mock("@/hooks/useBranchAccess", () => ({
@@ -24,7 +22,7 @@ vi.mock("@/hooks/useBranchAccess", () => ({
 }));
 
 vi.mock("@/components/layout/SidebarItem", () => ({
-  SidebarItem: (props: { label: string; onClick?: () => void }) => {
+  SidebarItem: (props: { label: string; href?: string }) => {
     mocks.sidebarItems.push(props);
     return null;
   },
@@ -45,7 +43,6 @@ const permissions: BranchAccess["permissions"] = {
 
 describe("BranchSidebar", () => {
   beforeEach(() => {
-    mocks.push.mockReset();
     mocks.sidebarItems.length = 0;
   });
 
@@ -71,8 +68,7 @@ describe("BranchSidebar", () => {
     );
 
     expect(organizationItem).toBeDefined();
-    organizationItem?.onClick?.();
-    expect(mocks.push).toHaveBeenCalledWith("/org/org_1");
+    expect(organizationItem?.href).toBe("/org/org_1");
   });
 
   it("hides the organization control from staff", () => {
