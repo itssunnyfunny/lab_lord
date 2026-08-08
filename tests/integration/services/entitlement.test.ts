@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EntitlementService } from "@/services/entitlement.service";
 import { StaffService } from "@/services/staff.service";
 import { createOrg, createUser } from "@/tests/factories";
@@ -12,6 +12,7 @@ async function createSubscription(
   return testPrisma.organizationSubscription.create({
     data: {
       organizationId,
+      providerMode: "TEST",
       plan,
       amount: plan === "BASIC" ? 299 : 499,
       amountSubunits: plan === "BASIC" ? 29900 : 49900,
@@ -34,6 +35,10 @@ describe("subscription entitlements", () => {
 
   beforeEach(async () => {
     await resetDatabase();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("gives organizations without a subscription Basic fallback access", async () => {
@@ -99,5 +104,47 @@ describe("subscription entitlements", () => {
     expect(profile.effectivePlan).toBe("BASIC");
     expect(profile.fallbackAccess).toBe(true);
     expect(profile.limits.maxBranches).toBeNull();
+  });
+
+  it("never grants paid entitlements from a subscription in the other provider mode", async () => {
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    await createSubscription(org.id, "PRO");
+    vi.stubEnv("RAZORPAY_MODE", "LIVE");
+    vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_entitlement_guard");
+
+    const profile = await EntitlementService.getOrganizationProfile(org.id);
+
+    expect(profile).toMatchObject({
+      plan: null,
+      effectivePlan: "BASIC",
+      subscriptionStatus: null,
+      fallbackAccess: true,
+    });
+    expect(profile.entitlements).not.toContain("ADVANCED_ANALYTICS");
+    expect(profile.entitlements).not.toContain("AI_ACCESS");
+  });
+
+  it("holds a V2 workspace read-only when its stored subscription is from another mode", async () => {
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    const subscription = await createSubscription(org.id, "PRO");
+    await testPrisma.organizationSubscription.update({
+      where: { id: subscription.id },
+      data: { paidThrough: new Date(Date.now() + 86_400_000), providerPaymentMethod: "CARD" },
+    });
+    vi.stubEnv("RAZORPAY_MODE", "LIVE");
+    vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_v2_entitlement_guard");
+
+    const profile = await EntitlementService.getOrganizationProfile(org.id);
+
+    expect(profile).toMatchObject({
+      plan: null,
+      effectivePlan: "BASIC",
+      subscriptionStatus: null,
+      accessMode: "READ_ONLY",
+      canWrite: false,
+    });
+    expect(profile.entitlements).not.toContain("AI_ACCESS");
   });
 });

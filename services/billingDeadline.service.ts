@@ -3,9 +3,45 @@ import { BillingMutationService } from "@/services/billingMutation.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BranchService } from "@/services/branch.service";
 import { OwnerTrialService } from "@/services/ownerTrial.service";
+import { areRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
 
 const RECONCILE_AFTER_MS = 6 * 60 * 60 * 1000;
 const MAX_AUTOMATIC_ATTEMPTS = 3;
+
+export async function recoverExpiredBillingMutationLease(
+  organization: { id: string; billingMutationLeaseToken: string | null },
+  now: Date
+) {
+  return prisma.$transaction(async tx => {
+    await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Organization" WHERE "id" = ${organization.id} FOR UPDATE
+    `;
+    const current = await tx.organization.findUnique({
+      where: { id: organization.id },
+      select: { billingMutationLeaseToken: true, billingMutationLeaseUntil: true },
+    });
+    if (!current
+      || current.billingMutationLeaseToken !== organization.billingMutationLeaseToken
+      || !current.billingMutationLeaseUntil
+      || current.billingMutationLeaseUntil > now) {
+      return false;
+    }
+
+    await tx.organizationBillingChange.updateMany({
+      where: { organizationId: organization.id, status: "PROCESSING" },
+      data: { status: "QUEUED", processingStartedAt: null, lastError: "Recovered expired mutation lease" },
+    });
+    const released = await tx.organization.updateMany({
+      where: {
+        id: organization.id,
+        billingMutationLeaseToken: organization.billingMutationLeaseToken,
+        billingMutationLeaseUntil: { lte: now },
+      },
+      data: { billingMutationLeaseToken: null, billingMutationLeaseUntil: null },
+    });
+    return released.count === 1;
+  });
+}
 
 export class BillingDeadlineService {
   static async run(now = new Date()) {
@@ -19,35 +55,56 @@ export class BillingDeadlineService {
       },
       select: { id: true, billingMutationLeaseToken: true },
     });
+    let recoveredLeases = 0;
     for (const organization of staleLeases) {
-      await prisma.$transaction([
-        prisma.organizationBillingChange.updateMany({
-          where: { organizationId: organization.id, status: "PROCESSING" },
-          data: { status: "QUEUED", processingStartedAt: null, lastError: "Recovered expired mutation lease" },
-        }),
-        prisma.organization.update({
-          where: { id: organization.id },
-          data: { billingMutationLeaseToken: null, billingMutationLeaseUntil: null },
-        }),
-      ]);
+      const recovered = await recoverExpiredBillingMutationLease(organization, now);
+      if (recovered) recoveredLeases += 1;
     }
 
     const retryableFailures = await prisma.organizationBillingChange.findMany({
       where: {
         status: "FAILED",
+        type: { not: "SUBSCRIPTION_AUTHORIZATION" },
         attemptCount: { lt: MAX_AUTOMATIC_ATTEMPTS },
         organization: { billingModelVersion: "WORKSPACE_V2" },
       },
       orderBy: [{ organizationId: "asc" }, { sequence: "asc" }],
       distinct: ["organizationId"],
     });
+    let retriedMutations = 0;
     for (const change of retryableFailures) {
+      if (change.type !== "UNSUPPORTED_METHOD_CANCELLATION"
+        && !areRazorpayBillingWritesEnabled(change.organizationId)) {
+        continue;
+      }
       try {
         await BillingMutationService.retry(change.id);
+        retriedMutations += 1;
       } catch (error) {
         errors.push({
           organizationId: change.organizationId,
           message: error instanceof Error ? error.message : "Mutation retry failed",
+        });
+      }
+    }
+
+    const queuedUnsupportedMethodCancellations = await prisma.organizationBillingChange.findMany({
+      where: {
+        type: "UNSUPPORTED_METHOD_CANCELLATION",
+        status: "QUEUED",
+        organization: { billingModelVersion: "WORKSPACE_V2" },
+      },
+      select: { organizationId: true },
+      orderBy: [{ organizationId: "asc" }, { sequence: "asc" }],
+      distinct: ["organizationId"],
+    });
+    for (const { organizationId } of queuedUnsupportedMethodCancellations) {
+      try {
+        await BillingMutationService.processNext(organizationId, now);
+      } catch (error) {
+        errors.push({
+          organizationId,
+          message: error instanceof Error ? error.message : "Unsupported payment-method cancellation failed",
         });
       }
     }
@@ -255,8 +312,9 @@ export class BillingDeadlineService {
 
     return {
       expiredTrials: expiredTrials.count,
-      recoveredLeases: staleLeases.length,
-      retriedMutations: retryableFailures.length,
+      recoveredLeases,
+      retriedMutations,
+      submittedUnsupportedMethodCancellations: queuedUnsupportedMethodCancellations.length,
       submittedCancellations: dueCancellations.length,
       archivedBranches: archivedBranches.archived,
       confirmedCheckouts,

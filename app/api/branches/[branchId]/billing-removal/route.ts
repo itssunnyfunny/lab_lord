@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { BranchService } from "@/services/branch.service";
+import { billingHttpStatus } from "@/lib/billingHttp";
 
 type Context = { params: Promise<{ branchId: string }> };
 
@@ -17,7 +18,7 @@ export async function POST(request: Request, context: Context) {
     return NextResponse.json(result, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to schedule branch removal";
-    return NextResponse.json({ error: message }, { status: /Unauthorized/.test(message) ? 403 : 400 });
+    return NextResponse.json({ error: message }, { status: billingHttpStatus(error) });
   }
 }
 
@@ -29,6 +30,6 @@ export async function DELETE(_request: Request, context: Context) {
     return NextResponse.json(await BranchService.undoBillingRemoval(user.id, branchId));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to undo branch removal";
-    return NextResponse.json({ error: message }, { status: /Unauthorized/.test(message) ? 403 : 400 });
+    return NextResponse.json({ error: message }, { status: billingHttpStatus(error) });
   }
 }

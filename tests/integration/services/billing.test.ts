@@ -1,11 +1,19 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BillingService } from "@/services/billing.service";
-import { hmacSha256Hex, setRazorpayClientForTests, sha256Hex, type RazorpayApiClient } from "@/lib/razorpay";
+import { BillingDeadlineService } from "@/services/billingDeadline.service";
+import { BillingReconciliationService } from "@/services/billingReconciliation.service";
+import {
+  hmacSha256Hex,
+  setRazorpayClientForTests,
+  sha256Hex,
+  type RazorpayApiClient,
+  type RazorpayPlanCatalogApiClient,
+} from "@/lib/razorpay";
 import { createBranch, createOrg, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
 
 function createFakeRazorpayClient() {
-  const client: RazorpayApiClient = {
+  const client: RazorpayPlanCatalogApiClient = {
     createOrder: vi.fn(async () => {
       throw new Error("Orders are not used by SaaS billing tests");
     }),
@@ -41,6 +49,25 @@ function createFakeRazorpayClient() {
         name: input.item.name,
         description: input.item.description,
       },
+    })),
+    fetchPlan: vi.fn(async planId => {
+      const standard = planId.includes("pro") || planId.includes("standard");
+      return {
+        id: planId,
+        entity: "plan" as const,
+        interval: 1,
+        period: "monthly",
+        item: {
+          amount: standard ? 49900 : 29900,
+          currency: "INR",
+          name: standard ? "Lab Lords Standard" : "Lab Lords Basic",
+        },
+      };
+    }),
+    listPlans: vi.fn(async () => ({
+      entity: "collection" as const,
+      count: 0,
+      items: [],
     })),
     createSubscription: vi.fn(async input => ({
       id: `sub_${input.notes.plan.toLowerCase()}`,
@@ -371,6 +398,8 @@ describe("BillingService SaaS subscriptions", () => {
     const legacyOrg = await createOrg({ ownerId: legacyOwner.id, name: "Legacy Lab" });
     await testPrisma.saasRazorpayPlan.create({
       data: {
+        providerMode: "TEST",
+        catalogKey: "razorpay-plan:v1:TEST:BASIC:INR:39900:monthly:1",
         plan: "BASIC",
         amount: 399,
         amountSubunits: 39900,
@@ -383,6 +412,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: legacyOrg.id,
+        providerMode: "TEST",
         plan: "BASIC",
         amount: 399,
         amountSubunits: 39900,
@@ -440,6 +470,60 @@ describe("BillingService SaaS subscriptions", () => {
     })).resolves.toBe(1);
   });
 
+  it("rejects wrong-mode subscriptions in checkout, verification, recovery, and signed webhooks", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    await createBranch({ organizationId: org.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await testPrisma.organizationSubscription.update({
+      where: { organizationId: org.id },
+      data: { providerMode: "LIVE" },
+    });
+
+    await expect(
+      BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" })
+    ).rejects.toThrow("belongs to Razorpay LIVE mode");
+    await expect(BillingService.verifySubscriptionSuccess(user.id, org.id, {
+      changeId: checkout.changeId,
+      razorpay_subscription_id: "sub_basic",
+      razorpay_payment_id: "pay_wrongmode",
+      razorpay_signature: hmacSha256Hex("pay_wrongmode|sub_basic", "secret"),
+    })).rejects.toThrow("belongs to Razorpay LIVE mode");
+
+    await testPrisma.organizationSubscription.update({
+      where: { organizationId: org.id },
+      data: { status: "PENDING" },
+    });
+    await expect(BillingService.getRecoveryCheckout(user.id, org.id))
+      .rejects.toThrow("belongs to Razorpay LIVE mode");
+
+    const rawBody = JSON.stringify({
+      event: "subscription.halted",
+      payload: {
+        subscription: {
+          entity: {
+            id: "sub_basic",
+            entity: "subscription",
+            plan_id: "plan_basic",
+            status: "halted",
+            total_count: 120,
+          },
+        },
+      },
+    });
+    await expect(BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_wrong_provider_mode"
+    )).rejects.toThrow("belongs to Razorpay LIVE mode");
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject({ providerMode: "LIVE", status: "PENDING" });
+    expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(1);
+  });
+
   it("replaces a CREATED checkout when the projected branch quantity changes", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     const createSubscription = vi.mocked(fakeRazorpay.createSubscription);
@@ -460,6 +544,7 @@ describe("BillingService SaaS subscriptions", () => {
     });
     const offer = await testPrisma.billingOffer.create({
       data: {
+        providerMode: "TEST",
         name: "Basic launch offer",
         plan: "BASIC",
         razorpayOfferId: "offer_basic_quantity",
@@ -543,6 +628,7 @@ describe("BillingService SaaS subscriptions", () => {
     });
     const offer = await testPrisma.billingOffer.create({
       data: {
+        providerMode: "TEST",
         name: "Retry-safe Basic offer",
         plan: "BASIC",
         razorpayOfferId: "offer_basic_retry",
@@ -1034,6 +1120,7 @@ describe("BillingService SaaS subscriptions", () => {
     const subscription = await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
+        providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
         amountSubunits: 29900,
@@ -1119,6 +1206,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
+        providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
         amountSubunits: 29900,
@@ -1149,6 +1237,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: organization.id,
+        providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
         amountSubunits: 29900,
@@ -1178,6 +1267,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: organization.id,
+        providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
         amountSubunits: 29900,
@@ -1213,6 +1303,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
+        providerMode: "TEST",
         plan: "PRO",
         amount: 499,
         amountSubunits: 49900,
@@ -1247,7 +1338,8 @@ describe("BillingService SaaS subscriptions", () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
-    const org = await createOrg({ ownerId: user.id });
+    const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    await createBranch({ organizationId: org.id });
     await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
     const rawBody = JSON.stringify({
       event: "subscription.charged",
@@ -1282,6 +1374,7 @@ describe("BillingService SaaS subscriptions", () => {
     const signature = hmacSha256Hex(rawBody, "webhook_secret");
 
     const first = await BillingService.handleRazorpayWebhook(rawBody, signature, "evt_subscription_charged");
+    vi.mocked(fakeRazorpay.fetchSubscription).mockRejectedValueOnce(new Error("provider unavailable"));
     const second = await BillingService.handleRazorpayWebhook(rawBody, signature, "evt_subscription_charged");
 
     expect(first).toMatchObject({
@@ -1292,13 +1385,242 @@ describe("BillingService SaaS subscriptions", () => {
       razorpaySubscriptionId: "sub_basic",
     });
     expect(second).toMatchObject({ ok: true, duplicate: true });
+    expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(1);
     await expect(testPrisma.razorpayWebhookEvent.count()).resolves.toBe(1);
     const stored = await testPrisma.organizationSubscription.findUnique({ where: { organizationId: org.id } });
     expect(stored).toMatchObject({
       status: "ACTIVE",
-      authPaymentId: null,
+      authPaymentId: "pay_webhook",
       razorpayCustomerId: "cust_webhook",
     });
+  });
+
+  it("reconciles invoice-only paid webhooks using the invoice subscription and payment ids", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    await createBranch({ organizationId: org.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+
+    vi.mocked(fakeRazorpay.fetchSubscriptionInvoices).mockResolvedValue({
+      entity: "collection",
+      count: 1,
+      items: [{
+        id: "inv_paid_only",
+        entity: "invoice",
+        subscription_id: "sub_basic",
+        payment_id: "pay_invoice_only",
+        status: "paid",
+        amount: 29900,
+        amount_paid: 29900,
+        amount_due: 0,
+        currency: "INR",
+        issued_at: 1767225600,
+        paid_at: 1767225601,
+      }],
+    });
+    vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
+      id: "pay_invoice_only",
+      entity: "payment",
+      amount: 29900,
+      currency: "INR",
+      status: "captured",
+      order_id: null,
+      invoice_id: "inv_paid_only",
+      subscription_id: "sub_basic",
+      method: "card",
+      captured: true,
+    });
+
+    const rawBody = JSON.stringify({
+      event: "invoice.paid",
+      payload: {
+        invoice: {
+          entity: {
+            id: "inv_paid_only",
+            entity: "invoice",
+            subscription_id: "sub_basic",
+            payment_id: "pay_invoice_only",
+            status: "paid",
+            amount: 29900,
+            amount_paid: 29900,
+            amount_due: 0,
+            currency: "INR",
+          },
+        },
+      },
+    });
+
+    const result = await BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_invoice_paid_only"
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      event: "invoice.paid",
+      organizationId: org.id,
+      razorpaySubscriptionId: "sub_basic",
+      razorpayPaymentId: "pay_invoice_only",
+    });
+    await expect(testPrisma.organizationSubscriptionInvoice.findUnique({
+      where: { razorpayInvoiceId: "inv_paid_only" },
+    })).resolves.toMatchObject({
+      organizationId: org.id,
+      razorpayPaymentId: "pay_invoice_only",
+      status: "paid",
+      paymentMethod: "CARD",
+    });
+  });
+
+  it("does not advance or regress paidThrough from an invoice for an older provider period", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    await createBranch({ organizationId: org.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const existingPaidThrough = new Date("2026-05-01T00:00:00.000Z");
+    await testPrisma.organizationSubscription.update({
+      where: { organizationId: org.id },
+      data: { status: "PENDING", providerPaymentMethod: "CARD", paidThrough: existingPaidThrough },
+    });
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "pending",
+      total_count: 120,
+      quantity: 1,
+      current_start: 1772323200,
+      current_end: 1775001600,
+      payment_method: "card",
+    });
+    vi.mocked(fakeRazorpay.fetchSubscriptionInvoices).mockResolvedValue({
+      entity: "collection",
+      count: 1,
+      items: [{
+        id: "inv_old_period",
+        entity: "invoice",
+        subscription_id: "sub_basic",
+        payment_id: "pay_old_period",
+        status: "paid",
+        amount: 29900,
+        amount_paid: 29900,
+        amount_due: 0,
+        currency: "INR",
+        issued_at: 1767225600,
+        paid_at: 1767225601,
+      }],
+    });
+    vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
+      id: "pay_old_period",
+      entity: "payment",
+      amount: 29900,
+      currency: "INR",
+      status: "captured",
+      order_id: null,
+      invoice_id: "inv_old_period",
+      subscription_id: "sub_basic",
+      method: "card",
+      captured: true,
+    });
+
+    const result = await BillingReconciliationService.reconcileByOrganization(org.id);
+
+    expect(result.confirmedPaidPeriod).toBe(false);
+    expect(result.subscription.paidThrough).toEqual(existingPaidThrough);
+    await expect(testPrisma.organizationSubscriptionHistory.count({
+      where: { organizationId: org.id, event: "provider_paid_period_confirmed" },
+    })).resolves.toBe(0);
+  });
+
+  it("rejects a lost-callback authorization whose provider plan or quantity differs", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    await createBranch({ organizationId: org.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await testPrisma.saasRazorpayPlan.create({
+      data: {
+        providerMode: "TEST",
+        catalogKey: "razorpay-plan:v1:TEST:PRO:INR:49900:monthly:1",
+        plan: "PRO",
+        amount: 499,
+        amountSubunits: 49900,
+        razorpayPlanId: "plan_standard",
+        active: true,
+      },
+    });
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_standard",
+      status: "authenticated",
+      total_count: 120,
+      quantity: 2,
+      payment_method: "card",
+    });
+    vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
+      id: "pay_mismatched_authorization",
+      entity: "payment",
+      amount: 500,
+      currency: "INR",
+      status: "authorized",
+      order_id: null,
+      subscription_id: "sub_basic",
+      method: "card",
+      captured: false,
+    });
+    const rawBody = JSON.stringify({
+      event: "subscription.authenticated",
+      payload: {
+        subscription: {
+          entity: {
+            id: "sub_basic",
+            entity: "subscription",
+            plan_id: "plan_standard",
+            status: "authenticated",
+            total_count: 120,
+            quantity: 2,
+          },
+        },
+        payment: {
+          entity: {
+            id: "pay_mismatched_authorization",
+            entity: "payment",
+            amount: 500,
+            currency: "INR",
+            status: "authorized",
+            order_id: null,
+            subscription_id: "sub_basic",
+            method: "card",
+          },
+        },
+      },
+    });
+
+    await expect(BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_mismatched_authorization"
+    )).rejects.toThrow("does not match the expected plan and branch quantity");
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject({ plan: "BASIC", quantity: 1, paidThrough: null, authPaymentId: null });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: checkout.changeId },
+    })).resolves.not.toMatchObject({ operationStatus: "APPLIED" });
+    await expect(testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_mismatched_authorization" },
+    })).resolves.toMatchObject({ processedAt: null });
   });
 
   it("completes lost-callback card authorization from a signed webhook without inventing paid access", async () => {
@@ -1361,6 +1683,290 @@ describe("BillingService SaaS subscriptions", () => {
     });
   });
 
+  it("rejects lost-callback UPI authorization and cancels it through the durable mutation queue", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "authenticated",
+      total_count: 120,
+      quantity: 1,
+      payment_method: "upi",
+    });
+    vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
+      id: "pay_webhook_upi",
+      entity: "payment",
+      amount: 500,
+      currency: "INR",
+      status: "authorized",
+      order_id: null,
+      subscription_id: "sub_basic",
+      method: "upi",
+      captured: false,
+    });
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    await createBranch({ organizationId: org.id });
+    await testPrisma.saasRazorpayPlan.create({
+      data: {
+        providerMode: "TEST",
+        catalogKey: "razorpay-plan:v1:TEST:BASIC:INR:29900:monthly:1",
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        currency: "INR",
+        period: "monthly",
+        interval: 1,
+        razorpayPlanId: "plan_basic",
+        active: true,
+      },
+    });
+    const subscription = await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: org.id,
+        providerMode: "TEST",
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        razorpaySubscriptionId: "sub_basic",
+        status: "CREATED",
+        createdByUserId: user.id,
+      },
+    });
+    await testPrisma.organization.update({
+      where: { id: org.id },
+      data: { billingMutationSequence: 1 },
+    });
+    const checkout = await testPrisma.organizationBillingChange.create({
+      data: {
+        organizationId: org.id,
+        organizationSubscriptionId: subscription.id,
+        sequence: 1,
+        idempotencyKey: "lost-callback-upi-authorization",
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        status: "AWAITING_PAYMENT",
+        operationStatus: "CHECKOUT_OPEN",
+        toPlan: "BASIC",
+        toQuantity: 1,
+      },
+    });
+    const rawBody = JSON.stringify({
+      event: "subscription.authenticated",
+      payload: {
+        subscription: {
+          entity: {
+            id: "sub_basic",
+            entity: "subscription",
+            plan_id: "plan_basic",
+            status: "authenticated",
+            total_count: 120,
+            quantity: 1,
+            payment_method: "upi",
+          },
+        },
+        payment: {
+          entity: {
+            id: "pay_webhook_upi",
+            entity: "payment",
+            amount: 500,
+            currency: "INR",
+            status: "authorized",
+            order_id: null,
+            subscription_id: "sub_basic",
+            method: "upi",
+          },
+        },
+      },
+    });
+
+    await BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_lost_callback_upi"
+    );
+
+    expect(fakeRazorpay.cancelSubscription).toHaveBeenCalledWith("sub_basic", {
+      cancel_at_cycle_end: false,
+    });
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject({
+      providerPaymentMethod: "UPI",
+      status: "CANCELLED",
+      paidThrough: null,
+    });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: checkout.id },
+    })).resolves.toMatchObject({
+      status: "FAILED",
+      operationStatus: "DECLINED",
+      failureCategory: "UNSUPPORTED_PAYMENT_METHOD",
+      failureCode: "UPI",
+    });
+    await expect(testPrisma.organizationBillingChange.findFirstOrThrow({
+      where: { organizationId: org.id, type: "UNSUPPORTED_METHOD_CANCELLATION" },
+    })).resolves.toMatchObject({
+      status: "APPLIED",
+      operationStatus: "APPLIED",
+      attemptCount: 1,
+    });
+  });
+
+  it("keeps unsupported-method cancellation failures durable and retries them from the deadline job", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "authenticated",
+      total_count: 120,
+      quantity: 1,
+      payment_method: "emandate",
+    });
+    vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
+      id: "pay_webhook_emandate",
+      entity: "payment",
+      amount: 500,
+      currency: "INR",
+      status: "authorized",
+      order_id: null,
+      subscription_id: "sub_basic",
+      method: "emandate",
+      captured: false,
+    });
+    vi.mocked(fakeRazorpay.cancelSubscription)
+      .mockRejectedValueOnce(new Error("temporary cancellation outage"));
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    await createBranch({ organizationId: org.id });
+    await testPrisma.saasRazorpayPlan.create({
+      data: {
+        providerMode: "TEST",
+        catalogKey: "razorpay-plan:v1:TEST:BASIC:INR:29900:monthly:1",
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        currency: "INR",
+        period: "monthly",
+        interval: 1,
+        razorpayPlanId: "plan_basic",
+        active: true,
+      },
+    });
+    const subscription = await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: org.id,
+        providerMode: "TEST",
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        razorpaySubscriptionId: "sub_basic",
+        status: "CREATED",
+        createdByUserId: user.id,
+      },
+    });
+    await testPrisma.organization.update({
+      where: { id: org.id },
+      data: { billingMutationSequence: 1 },
+    });
+    await testPrisma.organizationBillingChange.create({
+      data: {
+        organizationId: org.id,
+        organizationSubscriptionId: subscription.id,
+        sequence: 1,
+        idempotencyKey: "lost-callback-emandate-authorization",
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        status: "AWAITING_PAYMENT",
+        operationStatus: "CHECKOUT_OPEN",
+        toPlan: "BASIC",
+        toQuantity: 1,
+      },
+    });
+    const rawBody = JSON.stringify({
+      event: "subscription.authenticated",
+      payload: {
+        subscription: {
+          entity: {
+            id: "sub_basic",
+            entity: "subscription",
+            plan_id: "plan_basic",
+            status: "authenticated",
+            total_count: 120,
+            quantity: 1,
+            payment_method: "emandate",
+          },
+        },
+        payment: {
+          entity: {
+            id: "pay_webhook_emandate",
+            entity: "payment",
+            amount: 500,
+            currency: "INR",
+            status: "authorized",
+            order_id: null,
+            subscription_id: "sub_basic",
+            method: "emandate",
+          },
+        },
+      },
+    });
+
+    await BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_lost_callback_emandate"
+    );
+
+    const failedCancellation = await testPrisma.organizationBillingChange.findFirstOrThrow({
+      where: { organizationId: org.id, type: "UNSUPPORTED_METHOD_CANCELLATION" },
+    });
+    expect(failedCancellation).toMatchObject({
+      status: "FAILED",
+      operationStatus: "FAILED",
+      attemptCount: 1,
+      lastError: "temporary cancellation outage",
+    });
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject({
+      providerPaymentMethod: "EMANDATE",
+      status: "AUTHENTICATED",
+      paidThrough: null,
+    });
+
+    const result = await BillingDeadlineService.run(new Date());
+
+    expect(result).toMatchObject({ retriedMutations: 1, errors: [] });
+    expect(fakeRazorpay.cancelSubscription).toHaveBeenCalledTimes(2);
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: failedCancellation.id },
+    })).resolves.toMatchObject({
+      status: "APPLIED",
+      operationStatus: "APPLIED",
+      attemptCount: 2,
+    });
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: org.id },
+    })).resolves.toMatchObject({ providerPaymentMethod: "EMANDATE", status: "CANCELLED" });
+  });
+
   it("retries a previously failed webhook event", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);
@@ -1404,6 +2010,69 @@ describe("BillingService SaaS subscriptions", () => {
     });
     expect(event?.processedAt).not.toBeNull();
     expect(event?.processingError).toBeNull();
+  });
+
+  it("keeps a webhook retryable until provider reconciliation succeeds", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({
+      ownerId: user.id,
+      billingModelVersion: "WORKSPACE_V2",
+      selectedPostTrialPlan: "BASIC",
+    });
+    await createBranch({ organizationId: org.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    vi.mocked(fakeRazorpay.fetchSubscription)
+      .mockRejectedValueOnce(new Error("temporary provider outage"));
+
+    const rawBody = JSON.stringify({
+      event: "subscription.activated",
+      payload: {
+        subscription: {
+          entity: {
+            id: "sub_basic",
+            entity: "subscription",
+            plan_id: "plan_basic",
+            status: "active",
+            total_count: 120,
+            quantity: 1,
+          },
+        },
+      },
+    });
+    const signature = hmacSha256Hex(rawBody, "webhook_secret");
+
+    await expect(BillingService.handleRazorpayWebhook(
+      rawBody,
+      signature,
+      "evt_provider_retry"
+    )).rejects.toThrow("temporary provider outage");
+    await expect(testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_provider_retry" },
+    })).resolves.toMatchObject({
+      processedAt: null,
+      processingError: "temporary provider outage",
+    });
+
+    await expect(BillingService.handleRazorpayWebhook(
+      rawBody,
+      signature,
+      "evt_provider_retry"
+    )).resolves.toMatchObject({
+      ok: true,
+      organizationId: org.id,
+      razorpaySubscriptionId: "sub_basic",
+    });
+    const event = await testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_provider_retry" },
+    });
+    expect(event.processedAt).not.toBeNull();
+    expect(event.processingError).toBeNull();
+    expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(2);
+    await expect(testPrisma.organizationSubscriptionHistory.count({
+      where: { organizationId: org.id, event: "subscription.activated" },
+    })).resolves.toBe(1);
   });
 
   it("does not let stale webhooks regress an active or cancelled subscription", async () => {

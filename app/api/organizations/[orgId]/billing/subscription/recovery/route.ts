@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { BillingService } from "@/services/billing.service";
+import { BillingWritesDisabledError } from "@/lib/billingFeature";
+import { RazorpayApiError, RazorpayConfigurationError } from "@/lib/razorpay";
 
 export async function POST(request: Request, context: { params: Promise<{ orgId: string }> }) {
   try {
@@ -11,6 +13,16 @@ export async function POST(request: Request, context: { params: Promise<{ orgId:
     return NextResponse.json(await BillingService.getRecoveryCheckout(user.id, orgId, body.returnPath));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to start payment recovery";
-    return NextResponse.json({ error: message }, { status: /Unauthorized/.test(message) ? 403 : 400 });
+    const status = error instanceof BillingWritesDisabledError || error instanceof RazorpayConfigurationError
+      ? 503
+      : error instanceof RazorpayApiError
+        ? 502
+        : /Unauthorized/.test(message)
+          ? 403
+          : 400;
+    return NextResponse.json(
+      { error: message },
+      { status }
+    );
   }
 }

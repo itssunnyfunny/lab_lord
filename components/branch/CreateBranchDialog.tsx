@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { X, MapPin, Loader2, Phone, Plus, AlertCircle, AlertTriangle } from "lucide-react";
 import {
@@ -86,6 +86,7 @@ export function CreateBranchDialog({
     const [shifts, setShifts] = useState<ShiftDraft[]>(DEFAULT_SHIFTS);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const submitIdempotencyKeyRef = useRef<string | null>(null);
     const {
         markTouched,
         markSubmitted,
@@ -216,9 +217,14 @@ export function CreateBranchDialog({
 
         setLoading(true);
         try {
+            const idempotencyKey = submitIdempotencyKeyRef.current ?? crypto.randomUUID();
+            submitIdempotencyKeyRef.current = idempotencyKey;
             const res = await fetch("/api/branches", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": idempotencyKey,
+                },
                 body: JSON.stringify({
                     organizationId,
                     name: nameResult.value,
@@ -240,6 +246,7 @@ export function CreateBranchDialog({
             // Reset form
             setFormData({ name: "", contactPhone: "", city: "", seatCount: "", seatNumbering: createSimpleSeatNumbering(), defaultFee: "" });
             setShifts(DEFAULT_SHIFTS);
+            submitIdempotencyKeyRef.current = null;
             resetFieldErrors();
             onSuccess(branch);
         } catch (err: unknown) {
@@ -254,6 +261,7 @@ export function CreateBranchDialog({
         setFormData({ name: "", contactPhone: "", city: "", seatCount: "", seatNumbering: createSimpleSeatNumbering(), defaultFee: "" });
         setShifts(DEFAULT_SHIFTS);
         setError(null);
+        submitIdempotencyKeyRef.current = null;
         resetFieldErrors();
         onClose();
     };

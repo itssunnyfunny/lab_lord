@@ -1,12 +1,18 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BillingDeadlineService } from "@/services/billingDeadline.service";
+import {
+  BillingDeadlineService,
+  recoverExpiredBillingMutationLease,
+} from "@/services/billingDeadline.service";
 import { setRazorpayClientForTests, type RazorpayApiClient } from "@/lib/razorpay";
 import { createBranch, createOrg, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
 
 describe("workspace billing deadlines", () => {
   beforeEach(async () => { await resetDatabase(); });
-  afterEach(() => { setRazorpayClientForTests(null); });
+  afterEach(() => {
+    setRazorpayClientForTests(null);
+    vi.unstubAllEnvs();
+  });
   afterAll(async () => { await disconnectDatabase(); });
 
   function checkoutClient(status: "created" | "authenticated", paymentMethod?: "card"): RazorpayApiClient {
@@ -86,6 +92,88 @@ describe("workspace billing deadlines", () => {
       .resolves.toMatchObject({ billingStatus: "ARCHIVED", billingArchivedAt: now });
   });
 
+  it("recovers only the exact expired lease snapshot and never a successor lease", async () => {
+    const now = new Date("2026-09-03T00:00:00.000Z");
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    const change = await testPrisma.organizationBillingChange.create({
+      data: {
+        organizationId: organization.id,
+        sequence: 1,
+        idempotencyKey: "stale-lease-change",
+        type: "QUANTITY_INCREASE",
+        status: "PROCESSING",
+        attemptCount: 1,
+        processingStartedAt: new Date("2026-09-02T23:55:00.000Z"),
+      },
+    });
+    await testPrisma.organization.update({
+      where: { id: organization.id },
+      data: {
+        billingMutationLeaseToken: "stale-lease",
+        billingMutationLeaseUntil: new Date("2026-09-02T23:59:00.000Z"),
+      },
+    });
+    const staleSnapshot = {
+      id: organization.id,
+      billingMutationLeaseToken: "stale-lease",
+    };
+
+    await testPrisma.organization.update({
+      where: { id: organization.id },
+      data: {
+        billingMutationLeaseToken: "successor-lease",
+        billingMutationLeaseUntil: new Date("2026-09-03T00:02:00.000Z"),
+      },
+    });
+
+    await expect(recoverExpiredBillingMutationLease(staleSnapshot, now)).resolves.toBe(false);
+    await expect(testPrisma.organization.findUniqueOrThrow({ where: { id: organization.id } }))
+      .resolves.toMatchObject({ billingMutationLeaseToken: "successor-lease" });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "PROCESSING", attemptCount: 1 });
+
+    await expect(recoverExpiredBillingMutationLease({
+      id: organization.id,
+      billingMutationLeaseToken: "successor-lease",
+    }, new Date("2026-09-03T00:03:00.000Z"))).resolves.toBe(true);
+    await expect(testPrisma.organization.findUniqueOrThrow({ where: { id: organization.id } }))
+      .resolves.toMatchObject({ billingMutationLeaseToken: null, billingMutationLeaseUntil: null });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "QUEUED", attemptCount: 1 });
+  });
+
+  it("does not consume automatic retry attempts while billing writes are held", async () => {
+    const now = new Date("2026-09-03T00:00:00.000Z");
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    const change = await testPrisma.organizationBillingChange.create({
+      data: {
+        organizationId: organization.id,
+        sequence: 1,
+        idempotencyKey: "held-failed-change",
+        type: "QUANTITY_INCREASE",
+        status: "FAILED",
+        operationStatus: "FAILED",
+        attemptCount: 1,
+        failedAt: new Date("2026-09-02T23:55:00.000Z"),
+        lastError: "Previous provider failure",
+      },
+    });
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "false");
+
+    const result = await BillingDeadlineService.run(now);
+
+    expect(result).toMatchObject({ retriedMutations: 0, errors: [] });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        operationStatus: "FAILED",
+        attemptCount: 1,
+        lastError: "Previous provider failure",
+      });
+  });
+
   it("marks an unconfirmed Checkout operation failed after provider reconciliation at its deadline", async () => {
     setRazorpayClientForTests(checkoutClient("created"));
     const now = new Date("2026-09-03T00:00:00.000Z");
@@ -94,6 +182,7 @@ describe("workspace billing deadlines", () => {
     const subscription = await testPrisma.organizationSubscription.create({
       data: {
         organizationId: organization.id,
+        providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
         amountSubunits: 29900,
@@ -137,6 +226,7 @@ describe("workspace billing deadlines", () => {
     const subscription = await testPrisma.organizationSubscription.create({
       data: {
         organizationId: organization.id,
+        providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
         amountSubunits: 29900,

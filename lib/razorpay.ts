@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 const RAZORPAY_API_BASE = "https://api.razorpay.com/v1";
+const RAZORPAY_REQUEST_TIMEOUT_MS = 15_000;
 
 const ZERO_DECIMAL_CURRENCIES = new Set(["JPY"]);
 
@@ -53,8 +54,44 @@ export type RazorpayPlan = {
     name?: string;
     description?: string | null;
   };
+  notes?: Record<string, string> | null;
   created_at?: number;
 };
+
+export type RazorpayPlans = {
+  entity: "collection";
+  count: number;
+  items: RazorpayPlan[];
+};
+
+export type RazorpayModeValue = "TEST" | "LIVE";
+
+export type RazorpayApiErrorKind =
+  | "AUTHENTICATION"
+  | "NOT_FOUND"
+  | "RATE_LIMIT"
+  | "NETWORK"
+  | "REQUEST"
+  | "PROVIDER";
+
+export class RazorpayConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RazorpayConfigurationError";
+  }
+}
+
+export class RazorpayApiError extends Error {
+  readonly status: number | null;
+  readonly kind: RazorpayApiErrorKind;
+
+  constructor(message: string, input: { status?: number | null; kind: RazorpayApiErrorKind }) {
+    super(message);
+    this.name = "RazorpayApiError";
+    this.status = input.status ?? null;
+    this.kind = input.kind;
+  }
+}
 
 export type RazorpaySubscription = {
   id: string;
@@ -155,6 +192,11 @@ export interface RazorpayApiClient {
   ): Promise<RazorpaySubscription>;
 }
 
+export interface RazorpayPlanCatalogApiClient extends RazorpayApiClient {
+  fetchPlan(planId: string): Promise<RazorpayPlan>;
+  listPlans(input?: { count?: number; skip?: number }): Promise<RazorpayPlans>;
+}
+
 let testClient: RazorpayApiClient | null = null;
 
 export function setRazorpayClientForTests(client: RazorpayApiClient | null) {
@@ -169,7 +211,36 @@ function firstConfiguredEnv(names: string[]) {
   return null;
 }
 
+function deployedServerValue(primaryName: string, aliasNames: string[]) {
+  const vercelEnvironment = process.env.VERCEL_ENV?.trim().toLowerCase();
+  if (vercelEnvironment !== "preview" && vercelEnvironment !== "production") {
+    return null;
+  }
+
+  const primaryValue = process.env[primaryName]?.trim();
+  if (!primaryValue) {
+    throw new RazorpayConfigurationError(
+      `${primaryName} must be configured as a server-only variable in Vercel ${vercelEnvironment}`
+    );
+  }
+  const configuredAlias = aliasNames.find(name => process.env[name]?.trim());
+  if (configuredAlias) {
+    throw new RazorpayConfigurationError(
+      `${configuredAlias} is not supported in Vercel ${vercelEnvironment}; use only server-side ${primaryName}`
+    );
+  }
+  return primaryValue;
+}
+
 export function getRazorpayKeyId() {
+  const deployedKeyId = deployedServerValue("RAZORPAY_KEY_ID", [
+    "NEXT_PUBLIC_RAZORPAY_KEY_ID",
+    "RAZORPAY_TEST_KEY_ID",
+    "TEST_API_KEY",
+    "Test_API_Key",
+  ]);
+  if (deployedKeyId) return deployedKeyId;
+
   const keyId = firstConfiguredEnv([
     "RAZORPAY_KEY_ID",
     "NEXT_PUBLIC_RAZORPAY_KEY_ID",
@@ -183,7 +254,62 @@ export function getRazorpayKeyId() {
   return keyId;
 }
 
+export function parseRazorpayKeyMode(keyId: string): RazorpayModeValue {
+  if (keyId.startsWith("rzp_test_")) return "TEST";
+  if (keyId.startsWith("rzp_live_")) return "LIVE";
+  throw new RazorpayConfigurationError(
+    "RAZORPAY_KEY_ID must be a Razorpay Test or Live key (rzp_test_ or rzp_live_)"
+  );
+}
+
+export function resolveRazorpayMode(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): RazorpayModeValue {
+  const configuredMode = env.RAZORPAY_MODE?.trim().toUpperCase();
+  if (configuredMode !== "TEST" && configuredMode !== "LIVE") {
+    throw new RazorpayConfigurationError("RAZORPAY_MODE must be explicitly set to TEST or LIVE");
+  }
+
+  const keyId = env.RAZORPAY_KEY_ID?.trim();
+  if (!keyId) {
+    throw new RazorpayConfigurationError("Razorpay is not configured: RAZORPAY_KEY_ID is missing");
+  }
+
+  const keyMode = parseRazorpayKeyMode(keyId);
+  if (keyMode !== configuredMode) {
+    throw new RazorpayConfigurationError(
+      `RAZORPAY_MODE=${configuredMode} does not match the configured ${keyMode} key`
+    );
+  }
+
+  const vercelEnvironment = env.VERCEL_ENV?.trim().toLowerCase();
+  if (vercelEnvironment === "production" && configuredMode !== "LIVE") {
+    throw new RazorpayConfigurationError("Vercel Production requires RAZORPAY_MODE=LIVE");
+  }
+  if (
+    (vercelEnvironment === "preview" || vercelEnvironment === "development")
+    && configuredMode !== "TEST"
+  ) {
+    throw new RazorpayConfigurationError(
+      `Vercel ${vercelEnvironment} requires RAZORPAY_MODE=TEST`
+    );
+  }
+
+  return configuredMode;
+}
+
+export function isRazorpayNotFoundError(error: unknown): error is RazorpayApiError {
+  return error instanceof RazorpayApiError && error.kind === "NOT_FOUND";
+}
+
 function getRazorpayKeySecret() {
+  const deployedKeySecret = deployedServerValue("RAZORPAY_KEY_SECRET", [
+    "RAZORPAY_TEST_KEY_SECRET",
+    "TEST_KEY_SECRET",
+    "Test_Key_Secret",
+  ]);
+  if (deployedKeySecret) return deployedKeySecret;
+
   const keySecret = firstConfiguredEnv([
     "RAZORPAY_KEY_SECRET",
     "RAZORPAY_TEST_KEY_SECRET",
@@ -197,11 +323,14 @@ function getRazorpayKeySecret() {
 }
 
 export function getRazorpayWebhookSecrets() {
-  const current = firstConfiguredEnv([
-    "RAZORPAY_WEBHOOK_SECRET",
+  const aliasNames = [
     "RAZORPAY_TEST_WEBHOOK_SECRET",
     "TEST_WEBHOOK_SECRET",
     "Test_Webhook_Secret",
+  ];
+  const current = deployedServerValue("RAZORPAY_WEBHOOK_SECRET", aliasNames) ?? firstConfiguredEnv([
+    "RAZORPAY_WEBHOOK_SECRET",
+    ...aliasNames,
   ]);
   if (!current) {
     throw new Error("Razorpay webhook is not configured: RAZORPAY_WEBHOOK_SECRET is missing");
@@ -292,34 +421,48 @@ async function razorpayRequest<T>(path: string, options: RazorpayRequestOptions 
   const keySecret = getRazorpayKeySecret();
   const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
 
-  const response = await fetch(`${RAZORPAY_API_BASE}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/json",
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${RAZORPAY_API_BASE}${path}`, {
+      method: options.method ?? "GET",
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/json",
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      cache: "no-store",
+      signal: AbortSignal.timeout(RAZORPAY_REQUEST_TIMEOUT_MS),
+    });
+  } catch {
+    throw new RazorpayApiError("Unable to reach Razorpay", {
+      kind: "NETWORK",
+      status: null,
+    });
+  }
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    if (response.status === 401) {
-      throw new Error("Razorpay rejected the configured API key/secret. Check that the local test Key ID and Key Secret belong to the same Razorpay test-mode account.");
-    }
-
     const description =
       payload?.error?.description ||
       payload?.error?.reason ||
       payload?.message ||
       `Razorpay API request failed with ${response.status}`;
-    throw new Error(description);
+    const kind: RazorpayApiErrorKind = response.status === 401
+      ? "AUTHENTICATION"
+      : response.status === 404
+        ? "NOT_FOUND"
+        : response.status === 429
+          ? "RATE_LIMIT"
+          : response.status >= 500
+            ? "PROVIDER"
+            : "REQUEST";
+    throw new RazorpayApiError(description, { status: response.status, kind });
   }
 
   return payload as T;
 }
 
-class DefaultRazorpayClient implements RazorpayApiClient {
+class DefaultRazorpayClient implements RazorpayPlanCatalogApiClient {
   createOrder(input: {
     amount: number;
     currency: string;
@@ -363,6 +506,19 @@ class DefaultRazorpayClient implements RazorpayApiClient {
       method: "POST",
       body: input,
     });
+  }
+
+  fetchPlan(planId: string) {
+    return razorpayRequest<RazorpayPlan>(`/plans/${encodeURIComponent(planId)}`);
+  }
+
+  listPlans(input: { count?: number; skip?: number } = {}) {
+    const params = new URLSearchParams();
+    params.set("count", String(Math.min(Math.max(input.count ?? 100, 1), 100)));
+    if (input.skip !== undefined) {
+      params.set("skip", String(Math.max(input.skip, 0)));
+    }
+    return razorpayRequest<RazorpayPlans>(`/plans?${params.toString()}`);
   }
 
   createSubscription(input: {
@@ -427,4 +583,15 @@ const defaultClient = new DefaultRazorpayClient();
 
 export function getRazorpayClient() {
   return testClient ?? defaultClient;
+}
+
+export function getRazorpayPlanCatalogClient(): RazorpayPlanCatalogApiClient {
+  const client = getRazorpayClient();
+  if (!("fetchPlan" in client) || typeof client.fetchPlan !== "function"
+    || !("listPlans" in client) || typeof client.listPlans !== "function") {
+    throw new RazorpayConfigurationError(
+      "The configured Razorpay client does not support plan-catalog verification"
+    );
+  }
+  return client as RazorpayPlanCatalogApiClient;
 }
