@@ -134,14 +134,16 @@ describe("UI theme contract", () => {
     expect(missingDefinitions).toEqual([]);
   });
 
-  it("binds application typography to the optimized Geist fonts", () => {
+  it("binds application typography to the optimized font roles", () => {
     const globals = readFileSync(globalsPath, "utf8");
     const tokens = parseTokens(readFileSync(tokensPath, "utf8"));
 
-    expect(globals).toContain('--font-sans: var(--font-geist-sans)');
-    expect(globals).toContain('--font-display: var(--font-geist-sans)');
+    expect(globals).toContain('--font-sans: var(--font-inter)');
+    expect(globals).toContain('--font-display: var(--font-manrope)');
     expect(globals).toContain('--font-mono: var(--font-geist-mono)');
-    expect(globals.match(/font-family: var\(--font-geist-sans\)/g)).toHaveLength(3);
+    expect(globals.match(/font-family: var\(--font-inter\)/g)).toHaveLength(2);
+    expect(globals.match(/font-family: var\(--font-manrope\)/g)).toHaveLength(2);
+    expect(globals.match(/font-family: var\(--font-geist-mono\)/g)).toHaveLength(1);
     expect(tokens.has("--font-ops")).toBe(false);
   });
 

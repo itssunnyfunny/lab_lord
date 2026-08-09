@@ -3,20 +3,28 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { AnalyticsProvider } from "@/components/analytics/AnalyticsProvider";
 import { getGoogleAnalyticsBootstrapScript } from "@/lib/tracking";
 import { absoluteUrl, siteConfig } from "@/lib/site";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist_Mono, Inter, Manrope } from "next/font/google";
 import Script from "next/script";
 import { Suspense } from "react";
 import { clerkAppAppearance } from "@/components/ui/entrySurface";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
+  display: "swap",
+});
+
+const manrope = Manrope({
+  variable: "--font-manrope",
+  subsets: ["latin"],
+  display: "swap",
 });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -99,7 +107,7 @@ export default function RootLayout({
         )}
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${inter.variable} ${manrope.variable} ${geistMono.variable} antialiased`}
       >
         <ClerkProvider
           appearance={clerkAppAppearance}
