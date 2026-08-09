@@ -868,16 +868,19 @@ test("technical Checkout errors show a non-destructive failure result", async ({
   ]);
 });
 
-test("ambiguous Checkout outcome continues on the reload-safe processing page", async ({ page }) => {
+test("unknown payment.failed metadata resolves to a retryable failure instead of verification", async ({ page }) => {
   const controller = await mockBillingPage(page);
   await gotoBilling(page);
   await startBasicAuthorization(page, "ambiguous");
 
-  await expect(page).toHaveURL(new RegExp(`/org/${ORG_ID}/billing/processing/${CHANGE_ID}`));
-  await expect(page.getByRole("heading", { name: "Verifying with Razorpay" })).toBeVisible();
+  const result = page.getByRole("alertdialog", {
+    name: "Razorpay could not complete the authorization",
+  });
+  await expect(result).toBeVisible();
+  await expect(page).not.toHaveURL(new RegExp(`/org/${ORG_ID}/billing/processing/${CHANGE_ID}`));
   expect(controller.checkoutEvents).toEqual([
     expect.objectContaining({
-      event: "AWAITING_PROVIDER_CONFIRMATION",
+      event: "FAILED",
       failureCategory: "unknown_error",
       paymentId: "pay_unknown_playwright",
     }),

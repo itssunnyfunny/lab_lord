@@ -132,12 +132,17 @@ const DECLINE_REASONS = new Set([
   "transaction_limit_exceeded",
 ]);
 
+const CUSTOMER_CANCEL_REASONS = new Set([
+  "payment_cancelled",
+]);
+
 const TECHNICAL_REASONS = new Set([
   "bank_down",
   "gateway_error",
   "issuer_down",
   "network_error",
   "processing_error",
+  "payment_failed",
   "server_error",
   "timeout",
 ]);
@@ -169,6 +174,12 @@ export function classifyRazorpayFailure(failure: RazorpayFailureDetails): Razorp
   const description = failure.description?.toLowerCase();
   const source = failure.source?.toLowerCase();
 
+  // Razorpay documents payment_cancelled as a customer cancellation/back action.
+  // It is a completed Checkout outcome, not an authorization that needs polling.
+  if (reason && CUSTOMER_CANCEL_REASONS.has(reason)) {
+    return "ABANDONED";
+  }
+
   if (
     (reason && (DECLINE_REASONS.has(reason) || reason.includes("declin")))
     || description?.includes("declin")
@@ -184,7 +195,11 @@ export function classifyRazorpayFailure(failure: RazorpayFailureDetails): Razorp
     return "FAILED";
   }
 
-  return "AWAITING_PROVIDER_CONFIRMATION";
+  // This classifier is called only after Razorpay emitted payment.failed and
+  // the modal closed. Unknown failure metadata must not leave the customer in
+  // an endless verification state. A later provider-confirmed success still
+  // wins through the signed callback/webhook reconciliation paths.
+  return "FAILED";
 }
 
 export function isRazorpayCheckoutPayload(value: unknown): value is RazorpayCheckoutPayloadLike {
