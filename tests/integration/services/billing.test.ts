@@ -890,6 +890,171 @@ describe("BillingService SaaS subscriptions", () => {
     expect(overview.experience.customerState).not.toBe("PAYMENT_DECLINED");
   });
 
+  it("never reopens a terminal Checkout decline during reconciliation", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "DECLINED",
+      reason: "payment_declined",
+      source: "bank",
+      paymentId: "pay_declined",
+    });
+    vi.mocked(fakeRazorpay.fetchSubscription).mockClear();
+    vi.mocked(fakeRazorpay.fetchPayment).mockClear();
+
+    const result = await BillingService.reconcileMutation(user.id, org.id, checkout.changeId);
+
+    expect(result).toMatchObject({ pending: false, operation: { operationStatus: "DECLINED" } });
+    expect(fakeRazorpay.fetchSubscription).not.toHaveBeenCalled();
+    expect(fakeRazorpay.fetchPayment).not.toHaveBeenCalled();
+  });
+
+  it("uses the stored payment id and resolves a provider-reported failed authorization", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "created",
+      total_count: 120,
+      quantity: 1,
+    });
+    vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
+      id: "pay_failed",
+      entity: "payment",
+      amount: 500,
+      currency: "INR",
+      status: "failed",
+      order_id: null,
+      subscription_id: "sub_basic",
+      method: "card",
+      captured: false,
+      error_code: "BAD_REQUEST_ERROR",
+      error_description: "Payment failed",
+      error_source: "bank",
+      error_step: "payment_authorization",
+      error_reason: "payment_failed",
+    });
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "AWAITING_PROVIDER_CONFIRMATION",
+      reason: "result_unknown",
+      paymentId: "pay_failed",
+    });
+
+    const result = await BillingService.reconcileMutation(user.id, org.id, checkout.changeId);
+
+    expect(fakeRazorpay.fetchPayment).toHaveBeenCalledWith("pay_failed");
+    expect(result.operation).toMatchObject({
+      queueStatus: "FAILED",
+      operationStatus: "FAILED",
+      providerPaymentId: "pay_failed",
+      failureCategory: "BANK_OR_ISSUER_ERROR",
+    });
+  });
+
+  it("returns an unconfirmed provider response to awaiting instead of leaving VERIFYING", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "created",
+      total_count: 120,
+      quantity: 1,
+    });
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "AWAITING_PROVIDER_CONFIRMATION",
+      reason: "result_unknown",
+    });
+
+    const result = await BillingService.reconcileMutation(user.id, org.id, checkout.changeId);
+
+    expect(result.operation).toMatchObject({
+      queueStatus: "AWAITING_PAYMENT",
+      operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+    });
+  });
+
+  it("uses a signed payment.failed webhook to resolve an open authorization", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "created",
+      total_count: 120,
+      quantity: 1,
+    });
+    vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
+      id: "pay_webhook_failed",
+      entity: "payment",
+      amount: 500,
+      currency: "INR",
+      status: "failed",
+      order_id: null,
+      subscription_id: "sub_basic",
+      method: "card",
+      captured: false,
+      error_code: "BAD_REQUEST_ERROR",
+      error_source: "customer",
+      error_step: "payment_authentication",
+      error_reason: "payment_cancelled",
+    });
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    await createBranch({ organizationId: org.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const rawBody = JSON.stringify({
+      event: "payment.failed",
+      payload: {
+        payment: {
+          entity: {
+            id: "pay_webhook_failed",
+            entity: "payment",
+            amount: 500,
+            currency: "INR",
+            status: "failed",
+            order_id: null,
+            subscription_id: "sub_basic",
+            method: "card",
+            captured: false,
+            error_code: "BAD_REQUEST_ERROR",
+            error_source: "customer",
+            error_step: "payment_authentication",
+            error_reason: "payment_cancelled",
+          },
+        },
+      },
+    });
+
+    await BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_checkout_cancelled"
+    );
+
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: checkout.changeId },
+    })).resolves.toMatchObject({
+      status: "UNDONE",
+      operationStatus: "ABANDONED",
+      providerPaymentId: "pay_webhook_failed",
+      failureCategory: "CHECKOUT_ABANDONED",
+    });
+  });
+
   it("keeps an ambiguous Checkout result pending instead of claiming a failure", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);
