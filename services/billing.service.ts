@@ -66,6 +66,13 @@ const ACTIVE_AUTHORIZATION_OPERATION_STATUSES = [
   "AWAITING_PROVIDER_CONFIRMATION",
 ] as const;
 const PROVIDER_CONFIRMED_OPERATION_STATUSES = ["APPLIED", "SCHEDULED"] as const;
+const TERMINAL_CHECKOUT_OPERATION_STATUSES = [
+  "APPLIED",
+  "SCHEDULED",
+  "ABANDONED",
+  "DECLINED",
+  "FAILED",
+] as const;
 const CHECKOUT_MUTATION_LEASE_MS = 2 * 60 * 1000;
 const CHECKOUT_MUTATION_WAIT_MS = 15 * 1000;
 const CHECKOUT_MUTATION_POLL_MS = 100;
@@ -282,6 +289,47 @@ function isProviderConfirmedOperationStatus(status: string) {
   return PROVIDER_CONFIRMED_OPERATION_STATUSES.includes(
     status as (typeof PROVIDER_CONFIRMED_OPERATION_STATUSES)[number]
   );
+}
+
+function isTerminalCheckoutOperationStatus(status: string) {
+  return TERMINAL_CHECKOUT_OPERATION_STATUSES.includes(
+    status as (typeof TERMINAL_CHECKOUT_OPERATION_STATUSES)[number]
+  );
+}
+
+async function expireOverdueAuthorizationOperations(organizationId: string, now = new Date()) {
+  return prisma.organizationBillingChange.updateMany({
+    where: {
+      organizationId,
+      type: "SUBSCRIPTION_AUTHORIZATION",
+      operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+      confirmationDeadlineAt: { lte: now },
+    },
+    data: {
+      status: "FAILED",
+      operationStatus: "FAILED",
+      failureCategory: "CONFIRMATION_TIMEOUT",
+      lastError: "Razorpay did not confirm card authorization before the deadline; start authorization again",
+      failedAt: now,
+      resolvedAt: now,
+    },
+  });
+}
+
+function providerFailedCheckoutEvent(payment: RazorpayPayment): "ABANDONED" | "DECLINED" | "FAILED" {
+  const reason = payment.error_reason?.toLowerCase() ?? "";
+  const source = payment.error_source?.toLowerCase() ?? "";
+  if (reason === "payment_cancelled") return "ABANDONED";
+  if (
+    source === "customer"
+    || reason.includes("declin")
+    || reason.includes("incorrect")
+    || reason.includes("insufficient")
+    || reason.includes("not_authorized")
+  ) {
+    return "DECLINED";
+  }
+  return "FAILED";
 }
 
 async function enqueueAuthorizationOperation(input: {
@@ -618,6 +666,7 @@ export class BillingService {
 
   static async listPlansForOrganization(userId: string, organizationId: string) {
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    await expireOverdueAuthorizationOperations(organizationId);
     const providerMode = resolveRazorpayMode();
     const [subscription, history, entitlements, invoices, scheduledChanges, ownerTrialGrant, offerGrant, experience] = await Promise.all([
       prisma.organizationSubscription.findUnique({ where: { organizationId } }),
@@ -690,6 +739,8 @@ export class BillingService {
     assertRazorpayBillingWritesEnabled(organizationId);
     const selectedPlan = getActiveBillingPlan(input.plan);
     const org = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const now = new Date();
+    await expireOverdueAuthorizationOperations(organizationId, now);
     const providerMode = resolveRazorpayMode();
     assertSubscriptionProviderMode(org.subscription, providerMode);
     const workspaceBilling = org.billingModelVersion === "WORKSPACE_V2";
@@ -711,7 +762,6 @@ export class BillingService {
     if (razorpayPlan.providerMode !== providerMode) {
       throw new Error("Razorpay plan catalog mode mismatch");
     }
-    const now = new Date();
     const trialEndsAt = workspaceBilling
       && org.ownerTrialGrant?.status === "ACTIVE"
       && org.ownerTrialGrant.trialEndsAt
@@ -1554,6 +1604,7 @@ export class BillingService {
 
   static async getBillingOperation(userId: string, organizationId: string, changeId: string) {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    await expireOverdueAuthorizationOperations(organizationId);
     const change = await prisma.organizationBillingChange.findFirst({
       where: { id: changeId, organizationId },
       include: { organizationSubscription: true },
@@ -1782,20 +1833,29 @@ export class BillingService {
 
   static async reconcileMutation(userId: string, organizationId: string, changeId: string, paymentId?: string) {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    await expireOverdueAuthorizationOperations(organizationId);
     const change = await prisma.organizationBillingChange.findFirst({
       where: { id: changeId, organizationId },
       include: { organizationSubscription: true },
     });
     if (!change) throw new Error("Billing change not found");
     assertSubscriptionProviderMode(change.organizationSubscription, resolveRazorpayMode());
-    if (!["APPLIED", "SCHEDULED", "ABANDONED"].includes(change.operationStatus)) {
+    if (isTerminalCheckoutOperationStatus(change.operationStatus)) {
+      return {
+        reconciliation: null,
+        pending: false,
+        operation: serializeBillingOperation(change),
+      };
+    }
+
+    {
       const verificationStartedAt = new Date();
       const providerCooldownBefore = new Date(verificationStartedAt.getTime() - 8_000);
       const reconciliationClaim = await prisma.organizationBillingChange.updateMany({
         where: {
           id: change.id,
           operationStatus: {
-            notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES, "ABANDONED"],
+            notIn: [...TERMINAL_CHECKOUT_OPERATION_STATUSES],
           },
           OR: [
             {
@@ -1824,14 +1884,24 @@ export class BillingService {
     }
     let reconciliation: Awaited<ReturnType<typeof BillingReconciliationService.reconcileByOrganization>>;
     try {
-      reconciliation = await BillingReconciliationService.reconcileByOrganization(organizationId, { paymentId });
+      reconciliation = await BillingReconciliationService.reconcileByOrganization(organizationId, {
+        paymentId: paymentId ?? change.providerPaymentId,
+      });
       if (change.type === "SUBSCRIPTION_AUTHORIZATION") {
-        await this.applyProviderConfirmedAuthorization(
-          organizationId,
-          reconciliation.subscription,
-          reconciliation.payment,
-          reconciliation.confirmedPaidPeriod
-        );
+        if (reconciliation.payment?.status === "failed") {
+          await this.applyProviderFailedAuthorization(
+            organizationId,
+            reconciliation.subscription,
+            reconciliation.payment
+          );
+        } else {
+          await this.applyProviderConfirmedAuthorization(
+            organizationId,
+            reconciliation.subscription,
+            reconciliation.payment,
+            reconciliation.confirmedPaidPeriod
+          );
+        }
       }
     } catch {
       await prisma.organizationBillingChange.updateMany({
@@ -1851,6 +1921,20 @@ export class BillingService {
         operation: pendingOperation ? serializeBillingOperation(pendingOperation) : null,
       };
     }
+
+    // A normal provider response can still say that authorization has not
+    // happened yet. Never strand the operation in the transient VERIFYING
+    // state; only a subsequent callback/webhook/provider result can advance it.
+    await prisma.organizationBillingChange.updateMany({
+      where: { id: change.id, operationStatus: "VERIFYING" },
+      data: {
+        status: "AWAITING_PAYMENT",
+        operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+        failureCategory: "PROVIDER_CONFIRMATION_PENDING",
+        lastError: "Razorpay has not confirmed card authorization yet; the confirmed billing state is unchanged",
+        resolvedAt: null,
+      },
+    });
     const updated = await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
     return {
       reconciliation,
@@ -1933,6 +2017,59 @@ export class BillingService {
         },
       }),
     ]);
+  }
+
+  private static async applyProviderFailedAuthorization(
+    organizationId: string,
+    subscription: OrganizationSubscription,
+    payment: RazorpayPayment
+  ) {
+    if (payment.status !== "failed") return;
+    const change = await prisma.organizationBillingChange.findFirst({
+      where: {
+        organizationId,
+        organizationSubscriptionId: subscription.id,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+      },
+      orderBy: { sequence: "desc" },
+    });
+    if (!change) return;
+
+    const event = providerFailedCheckoutEvent(payment);
+    const now = new Date();
+    const failureInput: CheckoutEventInput = {
+      event,
+      failureCategory: payment.error_reason ?? undefined,
+      failureCode: payment.error_code ?? undefined,
+      reason: payment.error_reason ?? undefined,
+      source: payment.error_source ?? undefined,
+      step: payment.error_step ?? undefined,
+      paymentId: payment.id,
+    };
+    await prisma.organizationBillingChange.updateMany({
+      where: {
+        id: change.id,
+        operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+      },
+      data: {
+        status: event === "ABANDONED" ? "UNDONE" : "FAILED",
+        operationStatus: event,
+        providerPaymentId: payment.id,
+        failureCategory: normalizedFailureCategory(failureInput, event),
+        failureCode: normalizedFailureCode(failureInput),
+        lastError: event === "ABANDONED"
+          ? "Checkout was cancelled before card authorization"
+          : event === "DECLINED"
+            ? "Card authorization was declined; the confirmed billing state is unchanged"
+            : "Razorpay reported that card authorization failed; the confirmed billing state is unchanged",
+        declinedAt: event === "DECLINED" ? now : null,
+        abandonedAt: event === "ABANDONED" ? now : null,
+        failedAt: event === "DECLINED" || event === "FAILED" ? now : null,
+        undoneAt: event === "ABANDONED" ? now : null,
+        resolvedAt: now,
+      },
+    });
   }
 
   static async handleRazorpayWebhook(rawBody: string, signature: string | null, eventId: string | null) {
@@ -2021,12 +2158,20 @@ export class BillingService {
             processed.razorpaySubscriptionId,
             { paymentId: processed.razorpayPaymentId }
           );
-          await this.applyProviderConfirmedAuthorization(
-            processed.organizationId,
-            reconciliation.subscription,
-            reconciliation.payment,
-            reconciliation.confirmedPaidPeriod
-          );
+          if (reconciliation.payment?.status === "failed") {
+            await this.applyProviderFailedAuthorization(
+              processed.organizationId,
+              reconciliation.subscription,
+              reconciliation.payment
+            );
+          } else {
+            await this.applyProviderConfirmedAuthorization(
+              processed.organizationId,
+              reconciliation.subscription,
+              reconciliation.payment,
+              reconciliation.confirmedPaidPeriod
+            );
+          }
         }
       }
 

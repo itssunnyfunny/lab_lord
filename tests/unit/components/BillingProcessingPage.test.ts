@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  isBillingOperationTerminal,
   preferProviderConfirmedOperation,
   reconcileWithCooldown,
   type ProcessingReconcileGate,
@@ -38,6 +39,22 @@ describe("billing processing reconciliation", () => {
 
     expect(preferProviderConfirmedOperation(failed, applied)).toBe(applied);
     expect(preferProviderConfirmedOperation(applied, failed)).toBe(applied);
+  });
+
+  it("treats all success and failure outcomes as terminal", () => {
+    expect(["APPLIED", "SCHEDULED", "ABANDONED", "DECLINED", "FAILED"]
+      .every(status => isBillingOperationTerminal(status as BillingOperationDto["operationStatus"])))
+      .toBe(true);
+    expect(isBillingOperationTerminal("VERIFYING")).toBe(false);
+    expect(isBillingOperationTerminal("AWAITING_PROVIDER_CONFIRMATION")).toBe(false);
+  });
+
+  it("does not let a stale verifying response replace a terminal decline", () => {
+    const declined = operation("DECLINED");
+    const verifying = operation("VERIFYING");
+
+    expect(preferProviderConfirmedOperation(declined, verifying)).toBe(declined);
+    expect(preferProviderConfirmedOperation(declined, operation("APPLIED")).operationStatus).toBe("APPLIED");
   });
 
   it("limits reconciliation to one request per ten-second window", async () => {
