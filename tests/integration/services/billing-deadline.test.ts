@@ -218,6 +218,58 @@ describe("workspace billing deadlines", () => {
       });
   });
 
+  it("stops waiting after the deadline even when provider reconciliation is unavailable", async () => {
+    const client = checkoutClient("created");
+    vi.mocked(client.fetchSubscription).mockRejectedValue(new Error("provider unavailable"));
+    setRazorpayClientForTests(client);
+    const now = new Date("2026-09-03T00:00:00.000Z");
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    const subscription = await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        providerMode: "TEST",
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        razorpaySubscriptionId: "sub_deadline_unavailable",
+        status: "CREATED",
+        providerStartAt: new Date("2026-09-10T00:00:00.000Z"),
+      },
+    });
+    const change = await testPrisma.organizationBillingChange.create({
+      data: {
+        organizationId: organization.id,
+        organizationSubscriptionId: subscription.id,
+        sequence: 1,
+        idempotencyKey: "checkout-timeout-provider-unavailable",
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        status: "AWAITING_PAYMENT",
+        operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+        confirmationDeadlineAt: new Date("2026-09-02T23:45:00.000Z"),
+      },
+    });
+
+    const result = await BillingDeadlineService.run(now);
+
+    expect(result.timedOutCheckouts).toBe(1);
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        organizationId: organization.id,
+        message: "provider unavailable",
+      }),
+    ]);
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        operationStatus: "FAILED",
+        failureCategory: "CONFIRMATION_TIMEOUT",
+      });
+  });
+
   it("applies provider-confirmed card authorization at the confirmation deadline without paidThrough", async () => {
     setRazorpayClientForTests(checkoutClient("authenticated", "card"));
     const now = new Date("2026-09-03T00:00:00.000Z");

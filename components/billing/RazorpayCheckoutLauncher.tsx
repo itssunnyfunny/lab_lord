@@ -129,6 +129,7 @@ const DECLINE_REASONS = new Set([
   "payment_declined",
   "payment_not_authorized",
   "card_not_supported",
+  "card_mandate_card_not_supported",
   "transaction_limit_exceeded",
 ]);
 

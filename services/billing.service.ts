@@ -297,6 +297,25 @@ function isTerminalCheckoutOperationStatus(status: string) {
   );
 }
 
+async function expireOverdueAuthorizationOperations(organizationId: string, now = new Date()) {
+  return prisma.organizationBillingChange.updateMany({
+    where: {
+      organizationId,
+      type: "SUBSCRIPTION_AUTHORIZATION",
+      operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+      confirmationDeadlineAt: { lte: now },
+    },
+    data: {
+      status: "FAILED",
+      operationStatus: "FAILED",
+      failureCategory: "CONFIRMATION_TIMEOUT",
+      lastError: "Razorpay did not confirm card authorization before the deadline; start authorization again",
+      failedAt: now,
+      resolvedAt: now,
+    },
+  });
+}
+
 function providerFailedCheckoutEvent(payment: RazorpayPayment): "ABANDONED" | "DECLINED" | "FAILED" {
   const reason = payment.error_reason?.toLowerCase() ?? "";
   const source = payment.error_source?.toLowerCase() ?? "";
@@ -647,6 +666,7 @@ export class BillingService {
 
   static async listPlansForOrganization(userId: string, organizationId: string) {
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    await expireOverdueAuthorizationOperations(organizationId);
     const providerMode = resolveRazorpayMode();
     const [subscription, history, entitlements, invoices, scheduledChanges, ownerTrialGrant, offerGrant, experience] = await Promise.all([
       prisma.organizationSubscription.findUnique({ where: { organizationId } }),
@@ -719,6 +739,8 @@ export class BillingService {
     assertRazorpayBillingWritesEnabled(organizationId);
     const selectedPlan = getActiveBillingPlan(input.plan);
     const org = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    const now = new Date();
+    await expireOverdueAuthorizationOperations(organizationId, now);
     const providerMode = resolveRazorpayMode();
     assertSubscriptionProviderMode(org.subscription, providerMode);
     const workspaceBilling = org.billingModelVersion === "WORKSPACE_V2";
@@ -740,7 +762,6 @@ export class BillingService {
     if (razorpayPlan.providerMode !== providerMode) {
       throw new Error("Razorpay plan catalog mode mismatch");
     }
-    const now = new Date();
     const trialEndsAt = workspaceBilling
       && org.ownerTrialGrant?.status === "ACTIVE"
       && org.ownerTrialGrant.trialEndsAt
@@ -1583,6 +1604,7 @@ export class BillingService {
 
   static async getBillingOperation(userId: string, organizationId: string, changeId: string) {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    await expireOverdueAuthorizationOperations(organizationId);
     const change = await prisma.organizationBillingChange.findFirst({
       where: { id: changeId, organizationId },
       include: { organizationSubscription: true },
@@ -1811,6 +1833,7 @@ export class BillingService {
 
   static async reconcileMutation(userId: string, organizationId: string, changeId: string, paymentId?: string) {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    await expireOverdueAuthorizationOperations(organizationId);
     const change = await prisma.organizationBillingChange.findFirst({
       where: { id: changeId, organizationId },
       include: { organizationSubscription: true },

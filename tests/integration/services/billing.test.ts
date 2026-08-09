@@ -986,6 +986,50 @@ describe("BillingService SaaS subscriptions", () => {
     });
   });
 
+  it("expires a stale unsupported-card authorization instead of polling it again", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "PRO" });
+    await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+      event: "AWAITING_PROVIDER_CONFIRMATION",
+      failureCode: "BAD_REQUEST_ERROR",
+      source: "customer",
+      step: "payment_initiation",
+      reason: "card_mandate_card_not_supported",
+    });
+    await testPrisma.organizationBillingChange.update({
+      where: { id: checkout.changeId },
+      data: { confirmationDeadlineAt: new Date(Date.now() - 60_000) },
+    });
+    vi.mocked(fakeRazorpay.fetchSubscription).mockClear();
+
+    const result = await BillingService.reconcileMutation(user.id, org.id, checkout.changeId);
+
+    expect(fakeRazorpay.fetchSubscription).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      pending: false,
+      operation: {
+        queueStatus: "FAILED",
+        operationStatus: "FAILED",
+        failureCategory: "CONFIRMATION_TIMEOUT",
+        failureCode: "BAD_REQUEST_ERROR|customer|payment_initiation|card_mandate_card_not_supported",
+      },
+    });
+    const overview = await BillingService.listPlansForOrganization(user.id, org.id);
+    expect(overview.experience).toMatchObject({
+      customerState: "PAYMENT_FAILED",
+      paymentAction: "RETRY_AUTHORIZATION",
+      activeOperation: null,
+      latestOperation: {
+        id: checkout.changeId,
+        status: "FAILED",
+        failureCategory: "CONFIRMATION_TIMEOUT",
+      },
+    });
+  });
+
   it("uses a signed payment.failed webhook to resolve an open authorization", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
