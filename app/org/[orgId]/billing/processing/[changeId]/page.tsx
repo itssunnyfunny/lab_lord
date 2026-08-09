@@ -16,6 +16,13 @@ import { AppButton, PageShell } from "@/components/ui";
 import { Card } from "@/components/ui/Card";
 
 const PROVIDER_CONFIRMED = new Set<BillingOperationDto["operationStatus"]>(["APPLIED", "SCHEDULED"]);
+const TERMINAL_OPERATION_STATUSES = new Set<BillingOperationDto["operationStatus"]>([
+  "APPLIED",
+  "SCHEDULED",
+  "ABANDONED",
+  "DECLINED",
+  "FAILED",
+]);
 const POLL_INTERVAL_MS = 2_000;
 const RECONCILE_INTERVAL_MS = 10_000;
 const MAX_POLL_ATTEMPTS = 30;
@@ -56,7 +63,17 @@ export function preferProviderConfirmedOperation(
   if (PROVIDER_CONFIRMED.has(current.operationStatus) && !PROVIDER_CONFIRMED.has(incoming.operationStatus)) {
     return current;
   }
+  if (
+    TERMINAL_OPERATION_STATUSES.has(current.operationStatus)
+    && !TERMINAL_OPERATION_STATUSES.has(incoming.operationStatus)
+  ) {
+    return current;
+  }
   return incoming;
+}
+
+export function isBillingOperationTerminal(status: BillingOperationDto["operationStatus"]) {
+  return TERMINAL_OPERATION_STATUSES.has(status);
 }
 
 function copyFor(operation: BillingOperationDto | null, timedOut: boolean) {
@@ -110,6 +127,27 @@ export default function BillingProcessingPage({ params }: { params: Promise<{ or
     let timer: number | undefined;
 
     const check = async () => {
+      let preferred: BillingOperationDto;
+      try {
+        const current = await billing.getOperation(orgId, changeId);
+        if (stopped) return;
+        preferred = applyOperation(current.operation);
+        if (isBillingOperationTerminal(preferred.operationStatus)) {
+          setError("");
+          return;
+        }
+      } catch (requestError) {
+        if (stopped) return;
+        setError(requestError instanceof Error ? requestError.message : "Unable to check billing status");
+        attempts += 1;
+        if (attempts >= MAX_POLL_ATTEMPTS) {
+          setTimedOut(true);
+          return;
+        }
+        timer = window.setTimeout(check, POLL_INTERVAL_MS);
+        return;
+      }
+
       let reconciliationError = "";
       try {
         await reconcileIfDue();
@@ -124,10 +162,10 @@ export default function BillingProcessingPage({ params }: { params: Promise<{ or
       try {
         const result = await billing.getOperation(orgId, changeId);
         if (stopped) return;
-        const preferred = applyOperation(result.operation);
+        preferred = applyOperation(result.operation);
         setError(reconciliationError);
         attempts += 1;
-        if (PROVIDER_CONFIRMED.has(preferred.operationStatus)) return;
+        if (isBillingOperationTerminal(preferred.operationStatus)) return;
         if (attempts >= MAX_POLL_ATTEMPTS) {
           setTimedOut(true);
           return;

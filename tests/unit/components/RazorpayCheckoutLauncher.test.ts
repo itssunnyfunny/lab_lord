@@ -177,7 +177,7 @@ describe("RazorpayCheckoutLauncher", () => {
     });
   });
 
-  it("routes an ambiguous closed Checkout to reload-safe processing", async () => {
+  it("shows an unknown provider-reported payment failure as terminal after Checkout closes", async () => {
     const onStateChange = vi.fn();
     const { harness, recordEvent, navigate } = openWithHarness({ onStateChange });
     harness.failureHandler({
@@ -192,14 +192,30 @@ describe("RazorpayCheckoutLauncher", () => {
 
     await harness.options.modal.ondismiss();
 
-    expect(recordEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "AWAITING_PROVIDER_CONFIRMATION",
-    }));
+    expect(recordEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "FAILED" }));
     expect(onStateChange).toHaveBeenCalledWith(
-      "AWAITING_PROVIDER_CONFIRMATION",
+      "FAILED",
       expect.objectContaining({ paymentId: "pay_unknown" })
     );
-    expect(navigate).toHaveBeenCalledWith(payload.processingUrl);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("treats Razorpay's documented payment_cancelled result as an abandoned Checkout", async () => {
+    const { harness, recordEvent, navigate } = openWithHarness();
+    harness.failureHandler({
+      error: {
+        code: "BAD_REQUEST_ERROR",
+        reason: "payment_cancelled",
+        description: "Customer cancelled the transaction",
+        source: "customer",
+        metadata: { payment_id: "pay_cancelled" },
+      },
+    });
+
+    await harness.options.modal.ondismiss();
+
+    expect(recordEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "ABANDONED" }));
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("sends interrupted verification to the processing fallback", async () => {
@@ -225,7 +241,9 @@ describe("Razorpay failure normalization", () => {
     expect(classifyRazorpayFailure({ reason: "insufficient_funds", source: "bank" })).toBe("DECLINED");
     expect(classifyRazorpayFailure({ failureCategory: "network_error" })).toBe("FAILED");
     expect(classifyRazorpayFailure({ source: "gateway" })).toBe("FAILED");
-    expect(classifyRazorpayFailure({ failureCategory: "payment_failed" })).toBe("AWAITING_PROVIDER_CONFIRMATION");
+    expect(classifyRazorpayFailure({ failureCategory: "payment_failed" })).toBe("FAILED");
+    expect(classifyRazorpayFailure({ failureCategory: "payment_cancelled" })).toBe("ABANDONED");
+    expect(classifyRazorpayFailure({ failureCategory: "unexpected_provider_failure" })).toBe("FAILED");
   });
 
   it("sanitizes unknown response fields", () => {
