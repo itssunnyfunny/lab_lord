@@ -240,6 +240,22 @@ export class BillingDeadlineService {
           timedOutCheckouts += resolved.count;
         }
       } catch (error) {
+        const failed = await prisma.organizationBillingChange.updateMany({
+          where: {
+            id: change.id,
+            operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
+            confirmationDeadlineAt: { lte: now },
+          },
+          data: {
+            status: "FAILED",
+            operationStatus: "FAILED",
+            failureCategory: "CONFIRMATION_TIMEOUT",
+            lastError: "Razorpay confirmation could not be completed before the deadline; start authorization again",
+            failedAt: now,
+            resolvedAt: now,
+          },
+        });
+        timedOutCheckouts += failed.count;
         errors.push({
           organizationId: change.organizationId,
           message: error instanceof Error ? error.message : "Checkout deadline reconciliation failed",

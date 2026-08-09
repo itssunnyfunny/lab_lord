@@ -243,6 +243,10 @@ describe("Razorpay failure normalization", () => {
     expect(classifyRazorpayFailure({ source: "gateway" })).toBe("FAILED");
     expect(classifyRazorpayFailure({ failureCategory: "payment_failed" })).toBe("FAILED");
     expect(classifyRazorpayFailure({ failureCategory: "payment_cancelled" })).toBe("ABANDONED");
+    expect(classifyRazorpayFailure({
+      reason: "card_mandate_card_not_supported",
+      source: "customer",
+    })).toBe("DECLINED");
     expect(classifyRazorpayFailure({ failureCategory: "unexpected_provider_failure" })).toBe("FAILED");
   });
 
