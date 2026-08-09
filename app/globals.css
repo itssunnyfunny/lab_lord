@@ -8,9 +8,9 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
-  --font-sans: var(--font-ops);
-  --font-mono: var(--font-ops-mono);
-  --font-display: var(--font-ops-display);
+  --font-sans: var(--font-geist-sans), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: var(--font-geist-mono), "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --font-display: var(--font-geist-sans), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 
   --color-app: var(--bg-app);
   --color-surface: var(--bg-surface);
@@ -66,19 +66,19 @@ html,
 body {
   background: var(--bg-app);
   color: var(--text-primary);
-  font-family: var(--font-ops);
+  font-family: var(--font-geist-sans), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 .font-sans {
-  font-family: var(--font-ops);
+  font-family: var(--font-geist-sans), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 h1,
 h2,
 h3,
 .font-display {
-  font-family: var(--font-ops-display);
+  font-family: var(--font-geist-sans), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 button,

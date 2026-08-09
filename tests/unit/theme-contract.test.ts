@@ -135,11 +135,14 @@ describe("UI theme contract", () => {
   });
 
   it("binds application typography to the optimized Geist fonts", () => {
+    const globals = readFileSync(globalsPath, "utf8");
     const tokens = parseTokens(readFileSync(tokensPath, "utf8"));
 
-    expect(tokens.get("--font-ops")).toContain("var(--font-geist-sans)");
-    expect(tokens.get("--font-ops-display")).toContain("var(--font-geist-sans)");
-    expect(tokens.get("--font-ops-mono")).toContain("var(--font-geist-mono)");
+    expect(globals).toContain('--font-sans: var(--font-geist-sans)');
+    expect(globals).toContain('--font-display: var(--font-geist-sans)');
+    expect(globals).toContain('--font-mono: var(--font-geist-mono)');
+    expect(globals.match(/font-family: var\(--font-geist-sans\)/g)).toHaveLength(3);
+    expect(tokens.has("--font-ops")).toBe(false);
   });
 
   it("keeps normal muted text at WCAG AA contrast on core dark surfaces", () => {

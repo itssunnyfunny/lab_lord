@@ -1,9 +1,5 @@
 :root {
     /* === TYPOGRAPHY === */
-    --font-ops: var(--font-geist-sans), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-ops-display: var(--font-geist-sans), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-ops-mono: var(--font-geist-mono), "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-
     /* === COLORS === */
     /* Main Background: Deep Cosmic Blue/Black */
     --bg-app: #050508;
