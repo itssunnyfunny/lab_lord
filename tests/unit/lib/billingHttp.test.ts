@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { BillingWritesDisabledError } from "@/lib/billingFeature";
 import { billingHttpStatus } from "@/lib/billingHttp";
+import { BillingChangeInProgressError } from "@/lib/billingErrors";
 import { RazorpayApiError, RazorpayConfigurationError } from "@/lib/razorpay";
 
 describe("billingHttpStatus", () => {
+  it("returns conflict while another replacement is open", () => {
+    expect(billingHttpStatus(new BillingChangeInProgressError("change_existing"))).toBe(409);
+  });
+
   it("maps held and misconfigured billing to a retryable service response", () => {
     expect(billingHttpStatus(new BillingWritesDisabledError())).toBe(503);
     expect(billingHttpStatus(new RazorpayConfigurationError("mode mismatch"))).toBe(503);

@@ -2,11 +2,14 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { getRazorpayClient, resolveRazorpayMode } from "@/lib/razorpay";
 import {
+  areRazorpayMultiMethodSubscriptionsEnabled,
   areRazorpayBillingWritesEnabled,
   assertRazorpayBillingWritesEnabled,
 } from "@/lib/billingFeature";
 import { getBillingPlan } from "@/lib/billingPlans";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
+import { BillingReplacementService } from "@/services/billingReplacement.service";
+import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
 import type {
   BillingChangeType,
   OrganizationBillingChange,
@@ -56,7 +59,7 @@ function timestamp(value: Date | null | undefined) {
 
 function providerStatus(status: string) {
   const normalized = status.toUpperCase();
-  return ["CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "CANCELLED", "COMPLETED", "EXPIRED"]
+  return ["CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "PAUSED", "HALTED", "CANCELLED", "COMPLETED", "EXPIRED"]
     .includes(normalized) ? normalized : "PENDING";
 }
 
@@ -96,6 +99,11 @@ export class BillingMutationService {
           throw new Error("Idempotency key was already used for another billing operation");
         }
         return duplicate;
+      }
+
+      if (input.type !== "SUBSCRIPTION_AUTHORIZATION"
+        && input.type !== "UNSUPPORTED_METHOD_CANCELLATION") {
+        await BillingReplacementService.assertNoOpenReplacement(tx, input.organizationId);
       }
 
       const organization = await tx.organization.update({
@@ -234,6 +242,23 @@ export class BillingMutationService {
     if (!claimed) return null;
 
     try {
+      const source = await prisma.organizationSubscription.findUnique({
+        where: { currentOrganizationId: organizationId },
+        select: { providerPaymentMethod: true },
+      });
+      if (source
+        && areRazorpayMultiMethodSubscriptionsEnabled()
+        && isReplacementMutationEligible({
+          sourcePaymentMethod: source.providerPaymentMethod,
+          mutationType: claimed.type,
+        })) {
+        const replacement = await BillingReplacementService.provisionClaimedChange(
+          claimed.id,
+          leaseToken,
+          now
+        );
+        return replacement.change;
+      }
       const result = await this.executeProviderMutation(claimed, leaseToken);
       return await prisma.$transaction(async tx => {
         await tx.$queryRaw<Array<{ id: string }>>`
@@ -366,6 +391,10 @@ export class BillingMutationService {
     if (!snapshot || snapshot.status !== "SCHEDULED") {
       throw new Error("Scheduled billing change not found");
     }
+    if (snapshot.replacementSubscriptionId) {
+      const change = await BillingReplacementService.undoReplacement(changeId, now);
+      return { change, replayed: null };
+    }
     const subscription = snapshot.organizationSubscription;
     if (!subscription) throw new Error("Subscription not found for scheduled billing change");
     assertRazorpayBillingWritesEnabled(snapshot.organizationId);
@@ -375,8 +404,8 @@ export class BillingMutationService {
         `Subscription provider mode ${subscription.providerMode} cannot be mutated in ${providerMode} mode`
       );
     }
-    if (subscription.providerPaymentMethod !== "CARD") {
-      throw new Error("V1 subscription changes require a card-authorized subscription");
+    if (snapshot.type !== "CANCELLATION" && subscription.providerPaymentMethod !== "CARD") {
+      throw new Error("UPI AutoPay and eMandate billing changes require a replacement mandate");
     }
 
     const leaseToken = crypto.randomUUID();
@@ -525,16 +554,15 @@ export class BillingMutationService {
         cancel_at_cycle_end: false,
       });
     }
-    if (subscription.providerPaymentMethod !== "CARD") {
-      throw new Error("V1 subscription changes require a card-authorized subscription");
-    }
-
     if (change.type === "CANCELLATION") {
       const immediate = subscription.status === "CREATED" || subscription.status === "AUTHENTICATED";
       await this.renewLeaseForProviderMutation(change.organizationId, leaseToken);
       return razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
         cancel_at_cycle_end: !immediate,
       });
+    }
+    if (subscription.providerPaymentMethod !== "CARD") {
+      throw new Error("UPI AutoPay and eMandate billing changes require a replacement mandate");
     }
 
     let mapping = null;

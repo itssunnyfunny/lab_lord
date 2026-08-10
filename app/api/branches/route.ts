@@ -13,6 +13,8 @@ import {
 import { generateSeatLabelsForSeatCount, validateSeatNumberingConfig } from "@/lib/seatNumbering";
 import { BillingReadOnlyError, SubscriptionEntitlementError } from "@/services/entitlement.service";
 import { BillingWritesDisabledError } from "@/lib/billingFeature";
+import { BillingChangeInProgressError } from "@/lib/billingErrors";
+import { BillingService } from "@/services/billing.service";
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Internal Server Error";
@@ -73,8 +75,18 @@ export async function POST(req: Request) {
             shifts: shiftsResult.value,
             idempotencyKey,
         });
+        const checkout = branch.action === "CHECKOUT_REQUIRED" && branch.billingChangeId
+            ? (await BillingService.getBillingOperation(
+                user.id,
+                organizationId,
+                branch.billingChangeId
+            )).checkout
+            : undefined;
 
-        return NextResponse.json(branch, { status: branch.billingStatus === "PENDING_ACTIVATION" ? 202 : 201 });
+        return NextResponse.json(
+            { ...branch, ...(checkout ? { checkout } : {}) },
+            { status: branch.billingStatus === "PENDING_ACTIVATION" ? 202 : 201 }
+        );
     } catch (error: unknown) {
         const message = getErrorMessage(error);
         console.error("Error creating branch:", error);
@@ -83,6 +95,12 @@ export async function POST(req: Request) {
         }
         if (error instanceof BillingWritesDisabledError) {
             return NextResponse.json({ error: message, code: error.code }, { status: 503 });
+        }
+        if (error instanceof BillingChangeInProgressError) {
+            return NextResponse.json(
+                { error: message, code: error.code, existingChangeId: error.existingChangeId },
+                { status: 409 }
+            );
         }
         return NextResponse.json(
             { error: message },

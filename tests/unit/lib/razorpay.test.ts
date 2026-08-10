@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   getRazorpayKeyId,
+  getRazorpayClient,
   getRazorpayPlanCatalogClient,
   hmacSha256Hex,
   parseRazorpayKeyMode,
@@ -125,6 +126,25 @@ describe("razorpay security helpers", () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
     await expect(getRazorpayPlanCatalogClient().fetchPlan("plan_network"))
       .rejects.toMatchObject({ kind: "NETWORK", status: null });
+  });
+
+  it("lists recent subscriptions for response-loss recovery", async () => {
+    vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_example");
+    vi.stubEnv("RAZORPAY_KEY_SECRET", "secret");
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      entity: "collection",
+      count: 1,
+      items: [{ id: "sub_candidate", entity: "subscription", plan_id: "plan_pro", status: "created", total_count: 120 }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const subscriptions = await getRazorpayClient().listSubscriptions?.({ count: 25, skip: 5 });
+
+    expect(subscriptions?.items[0]?.id).toBe("sub_candidate");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.razorpay.com/v1/subscriptions?count=25&skip=5",
+      expect.objectContaining({ method: "GET", cache: "no-store" })
+    );
   });
 
   it("verifies order checkout signatures with orderId|paymentId", () => {

@@ -5,6 +5,8 @@ import { OrganizationService } from "@/services/organization.service";
 import { validateRequiredPhone, validateRequiredText } from "@/lib/formValidation";
 import { BillingReadOnlyError, SubscriptionEntitlementError } from "@/services/entitlement.service";
 import { BillingWritesDisabledError } from "@/lib/billingFeature";
+import { BillingChangeInProgressError } from "@/lib/billingErrors";
+import { BillingService } from "@/services/billing.service";
 
 // Correctly type the params as a Promise for Next.js 15+
 interface Params {
@@ -82,8 +84,11 @@ export async function POST(req: Request, { params }: Params) {
             contactPhone: contactPhoneResult.value,
             idempotencyKey,
         });
+        const checkout = branch.action === "CHECKOUT_REQUIRED" && branch.billingChangeId
+            ? (await BillingService.getBillingOperation(user.id, orgId, branch.billingChangeId)).checkout
+            : undefined;
 
-        return NextResponse.json(branch, {
+        return NextResponse.json({ ...branch, ...(checkout ? { checkout } : {}) }, {
             status: branch.billingStatus === "PENDING_ACTIVATION" ? 202 : 201,
         });
     } catch (error) {
@@ -92,6 +97,12 @@ export async function POST(req: Request, { params }: Params) {
         }
         if (error instanceof BillingWritesDisabledError) {
             return NextResponse.json({ error: error.message, code: error.code }, { status: 503 });
+        }
+        if (error instanceof BillingChangeInProgressError) {
+            return NextResponse.json(
+                { error: error.message, code: error.code, existingChangeId: error.existingChangeId },
+                { status: 409 }
+            );
         }
         console.error("Error creating branch:", error);
         return NextResponse.json(

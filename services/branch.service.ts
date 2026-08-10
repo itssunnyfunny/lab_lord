@@ -27,6 +27,7 @@ import {
 import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 import { EntitlementService } from "@/services/entitlement.service";
 import { BillingMutationService } from "@/services/billingMutation.service";
+import { BillingReplacementService } from "@/services/billingReplacement.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { assertRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
 import { resolveRazorpayMode } from "@/lib/razorpay";
@@ -158,6 +159,11 @@ async function createAtomicBranchChange(
     tx: Prisma.TransactionClient,
     input: AtomicBranchChangeInput
 ) {
+    if (input.organizationSubscriptionId) {
+        // The idempotent replay check happens before this helper. Any remaining
+        // pending candidate therefore belongs to a different billable intent.
+        await BillingReplacementService.assertNoOpenReplacement(tx, input.organizationId);
+    }
     const organization = await tx.organization.update({
         where: { id: input.organizationId },
         data: { billingMutationSequence: { increment: 1 } },
@@ -186,18 +192,26 @@ async function createAtomicBranchChange(
 }
 
 async function resumeQueuedBranchMutation(replay: BranchMutationReplay) {
-    if (replay.change.status !== "QUEUED" || !replay.change.organizationSubscriptionId) return;
+    if (replay.change.status !== "QUEUED" || !replay.change.organizationSubscriptionId) return replay;
     try {
-        await BillingMutationService.processNext(replay.change.organizationId);
+        const processed = await BillingMutationService.processNext(replay.change.organizationId);
+        return processed ? { ...replay, change: processed } : replay;
     } catch {
         // The durable operation remains available to the normal retry/deadline flow.
+        return replay;
     }
 }
 
 function branchCreationResult(replay: BranchMutationReplay) {
     const providerOperation = replay.change.organizationSubscriptionId != null;
+    const action = !providerOperation
+        ? "NONE" as const
+        : replay.change.replacementSubscriptionId
+          ? "CHECKOUT_REQUIRED" as const
+          : "PROCESSING" as const;
     return {
         ...replay.branch,
+        action,
         billingChangeId: replay.change.id,
         processingUrl: providerOperation
             ? `/org/${encodeURIComponent(replay.change.organizationId)}/billing/processing/${encodeURIComponent(replay.change.id)}`
@@ -275,8 +289,8 @@ export class BranchService {
             expectedBranch,
         });
         if (existingReplay) {
-            await resumeQueuedBranchMutation(existingReplay);
-            return branchCreationResult(existingReplay);
+            const resumed = await resumeQueuedBranchMutation(existingReplay);
+            return branchCreationResult(resumed);
         }
 
         await EntitlementService.assertCanCreateBranch(organizationId);
@@ -395,8 +409,8 @@ export class BranchService {
             return { branch, change };
         });
 
-        await resumeQueuedBranchMutation(created);
-        return branchCreationResult(created);
+        const resumed = await resumeQueuedBranchMutation(created);
+        return branchCreationResult(resumed);
     }
 
     static async getBranchesByOrganizationId(organizationId: string) {
@@ -561,13 +575,21 @@ export class BranchService {
             where: {
                 branchId,
                 type: { in: ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"] },
-                status: "FAILED",
+                status: { in: ["FAILED", "AWAITING_PAYMENT"] },
             },
             orderBy: { sequence: "desc" },
         });
         if (!change) throw new Error("Failed branch activation operation not found");
+        if (change.replacementSubscriptionId) {
+            return {
+                action: "CHECKOUT_REQUIRED" as const,
+                change,
+                processingUrl: `/org/${encodeURIComponent(branch.organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+            };
+        }
         const retried = await BillingMutationService.retry(change.id);
         return {
+            action: "PROCESSING" as const,
             change: retried ?? change,
             processingUrl: `/org/${encodeURIComponent(branch.organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
         };
@@ -591,12 +613,20 @@ export class BranchService {
             where: {
                 branchId,
                 type: { in: ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"] },
-                status: { in: ["QUEUED", "FAILED"] },
+                status: { in: ["QUEUED", "PROCESSING", "AWAITING_PAYMENT", "SCHEDULED", "FAILED"] },
             },
             orderBy: { sequence: "desc" },
         });
         if (!change) throw new Error("Branch activation is still awaiting provider confirmation");
         const now = new Date();
+        if (change.replacementSubscriptionId) {
+            await BillingReplacementService.undoReplacement(change.id, now);
+            await prisma.branch.update({
+                where: { id: branchId },
+                data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
+            });
+            return { archived: true };
+        }
         await prisma.$transaction([
             prisma.organizationBillingChange.update({
                 where: { id: change.id },
@@ -633,9 +663,10 @@ export class BranchService {
             branchId,
         });
         if (existingReplay) {
-            await resumeQueuedBranchMutation(existingReplay);
+            const resumed = await resumeQueuedBranchMutation(existingReplay);
             return {
-                change: existingReplay.change,
+                action: resumed.change.replacementSubscriptionId ? "CHECKOUT_REQUIRED" as const : "PROCESSING" as const,
+                change: resumed.change,
                 processingUrl: `/org/${encodeURIComponent(branch.organizationId)}/billing/processing/${encodeURIComponent(existingReplay.change.id)}`,
             };
         }
@@ -644,7 +675,7 @@ export class BranchService {
         assertRazorpayBillingWritesEnabled(branch.organizationId);
         await EntitlementService.assertOrganizationWritable(branch.organizationId);
         const subscription = branch.organization.subscription;
-        if (!subscription) throw new Error("A card-authorized subscription is required to reactivate this branch");
+        if (!subscription) throw new Error("An authorized recurring subscription is required to reactivate this branch");
         assertCurrentRazorpayMode(subscription);
 
         const reactivation = await prisma.$transaction(async tx => {
@@ -668,7 +699,7 @@ export class BranchService {
             }
             const currentSubscription = current.organization.subscription;
             if (!currentSubscription) {
-                throw new Error("A card-authorized subscription is required to reactivate this branch");
+                throw new Error("An authorized recurring subscription is required to reactivate this branch");
             }
             const updated = await tx.branch.update({
                 where: { id: branchId },
@@ -690,9 +721,10 @@ export class BranchService {
             });
             return { branch: updated, change };
         });
-        await resumeQueuedBranchMutation(reactivation);
+        const resumed = await resumeQueuedBranchMutation(reactivation);
         return {
-            change: reactivation.change,
+            action: resumed.change.replacementSubscriptionId ? "CHECKOUT_REQUIRED" as const : "PROCESSING" as const,
+            change: resumed.change,
             processingUrl: `/org/${encodeURIComponent(branch.organizationId)}/billing/processing/${encodeURIComponent(reactivation.change.id)}`,
         };
     }
@@ -718,8 +750,12 @@ export class BranchService {
             branchId,
         });
         if (existingReplay) {
-            await resumeQueuedBranchMutation(existingReplay);
-            return { branch: existingReplay.branch, change: existingReplay.change };
+            const resumed = await resumeQueuedBranchMutation(existingReplay);
+            return {
+                action: resumed.change.replacementSubscriptionId ? "CHECKOUT_REQUIRED" as const : "PROCESSING" as const,
+                branch: resumed.branch,
+                change: resumed.change,
+            };
         }
 
         await EntitlementService.assertBranchWritable(branchId);
@@ -788,8 +824,15 @@ export class BranchService {
             });
             return { branch: updated, change };
         });
-        await resumeQueuedBranchMutation(removal);
-        return removal;
+        const resumed = await resumeQueuedBranchMutation(removal);
+        return {
+            ...resumed,
+            action: resumed.change.organizationSubscriptionId == null
+                ? "NONE" as const
+                : resumed.change.replacementSubscriptionId
+                  ? "CHECKOUT_REQUIRED" as const
+                  : "PROCESSING" as const,
+        };
     }
 
     static async undoBillingRemoval(userId: string, branchId: string) {
@@ -803,11 +846,19 @@ export class BranchService {
             where: {
                 branchId,
                 type: "BRANCH_REMOVAL",
-                status: { in: ["QUEUED", "PROCESSING", "SCHEDULED", "FAILED"] },
+                status: { in: ["QUEUED", "PROCESSING", "AWAITING_PAYMENT", "SCHEDULED", "FAILED"] },
             },
             orderBy: { sequence: "desc" },
         });
         if (!change) throw new Error("Scheduled branch removal not found");
+        if (change.replacementSubscriptionId) {
+            await BillingReplacementService.undoReplacement(change.id);
+            await prisma.branch.update({
+                where: { id: branchId },
+                data: { billingStatus: "ACTIVE" },
+            });
+            return { undone: true };
+        }
         if (change.effectiveAt && change.effectiveAt <= new Date()) {
             throw new Error("The branch removal can no longer be undone");
         }

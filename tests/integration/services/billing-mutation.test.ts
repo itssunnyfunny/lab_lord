@@ -11,13 +11,15 @@ function fakeRazorpay(options: {
   providerStatus?: "active" | "authenticated";
   providerQuantity?: number;
   includePaidInvoice?: boolean;
+  providerMethod?: "card" | "upi" | "emandate";
+  adoptReplacement?: boolean;
 } = {}): RazorpayPlanCatalogApiClient {
   const periodStart = Math.floor(Date.now() / 1000) - 60;
   const periodEnd = periodStart + 30 * 24 * 60 * 60;
   const providerStatus = options.providerStatus ?? "active";
   const providerQuantity = options.providerQuantity ?? 2;
   const paidAt = options.paidAt ?? Math.floor(Date.now() / 1000);
-  return {
+  const client: RazorpayPlanCatalogApiClient = {
     createOrder: vi.fn(async () => { throw new Error("unused"); }),
     fetchPayment: vi.fn(async paymentId => ({
       id: paymentId,
@@ -53,7 +55,17 @@ function fakeRazorpay(options: {
       },
     })),
     listPlans: vi.fn(async () => ({ entity: "collection" as const, count: 0, items: [] })),
-    createSubscription: vi.fn(async () => { throw new Error("unused"); }),
+    createSubscription: vi.fn(async input => ({
+      id: "sub_candidate",
+      entity: "subscription" as const,
+      plan_id: input.plan_id,
+      status: "created",
+      total_count: input.total_count,
+      quantity: input.quantity,
+      start_at: input.start_at,
+      expire_by: input.expire_by,
+      notes: input.notes,
+    })),
     fetchSubscription: vi.fn(async () => ({
       id: "sub_workspace",
       entity: "subscription" as const,
@@ -64,7 +76,7 @@ function fakeRazorpay(options: {
       current_start: periodStart,
       current_end: periodEnd,
       charge_at: periodEnd,
-      payment_method: "card",
+      payment_method: options.providerMethod ?? "card",
     })),
     updateSubscription: vi.fn(async (_id, input) => ({
       id: "sub_workspace",
@@ -112,6 +124,31 @@ function fakeRazorpay(options: {
       quantity: 1,
     })),
   };
+  client.listSubscriptions = vi.fn(async () => ({
+    entity: "collection" as const,
+    count: options.adoptReplacement ? 1 : 0,
+    items: options.adoptReplacement ? [{
+      id: "sub_candidate",
+      entity: "subscription" as const,
+      plan_id: "plan_standard",
+      status: "created",
+      total_count: 120,
+      quantity: 2,
+      start_at: periodEnd,
+      expire_by: periodEnd - 72 * 60 * 60,
+      created_at: periodStart,
+      notes: {
+        app: "lab_lords",
+        billing_type: "saas_subscription_replacement",
+        organization_id: "filled-by-test",
+        provider_mode: "TEST",
+        billing_change_id: "filled-by-test",
+        replacement_source_subscription_id: "sub_workspace",
+        plan: "PRO",
+      },
+    }] : [],
+  }));
+  return client;
 }
 
 describe("serialized workspace billing mutations", () => {
@@ -122,7 +159,7 @@ describe("serialized workspace billing mutations", () => {
   });
   afterAll(async () => { await disconnectDatabase(); });
 
-  async function setup() {
+  async function setup(options: { paymentMethod?: "CARD" | "UPI" | "EMANDATE" } = {}) {
     const owner = await createUser();
     const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
     const first = await createBranch({ organizationId: organization.id });
@@ -146,11 +183,148 @@ describe("serialized workspace billing mutations", () => {
         currentOrganizationId: organization.id,
         razorpaySubscriptionId: "sub_workspace",
         status: "ACTIVE",
-        providerPaymentMethod: "CARD",
+        providerPaymentMethod: options.paymentMethod ?? "CARD",
       },
     });
     return { owner, organization, first, subscription };
   }
+
+  it("provisions one checkout-backed candidate for a UPI quantity increase", async () => {
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    const razorpay = fakeRazorpay({ providerMethod: "upi" });
+    setRazorpayClientForTests(razorpay);
+    const { owner, organization, subscription } = await setup({ paymentMethod: "UPI" });
+    const secondBranch = await testPrisma.branch.create({
+      data: {
+        organizationId: organization.id,
+        name: "Second",
+        billingStatus: "PENDING_ACTIVATION",
+      },
+    });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      branchId: secondBranch.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "upi-add-second",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    const processed = await BillingMutationService.processNext(organization.id);
+    const [source, candidate, storedChange] = await Promise.all([
+      testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      testPrisma.organizationSubscription.findUniqueOrThrow({
+        where: { pendingReplacementOrganizationId: organization.id },
+      }),
+      testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
+    ]);
+
+    expect(processed).toMatchObject({ status: "AWAITING_PAYMENT", operationStatus: "CHECKOUT_OPEN" });
+    expect(source.currentOrganizationId).toBe(organization.id);
+    expect(source.quantity).toBe(1);
+    expect(candidate).toMatchObject({
+      replacesSubscriptionId: source.id,
+      quantity: 2,
+      razorpaySubscriptionId: "sub_candidate",
+    });
+    expect(storedChange.replacementSubscriptionId).toBe(candidate.id);
+    expect(storedChange.undoCutoffAt?.getTime()).toBe(
+      storedChange.effectiveAt!.getTime() - 72 * 60 * 60 * 1000
+    );
+    expect(razorpay.updateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 semantics for a second unrelated billable intent while a candidate is open", async () => {
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    setRazorpayClientForTests(fakeRazorpay({ providerMethod: "upi" }));
+    const { owner, organization, subscription } = await setup({ paymentMethod: "UPI" });
+    const firstChange = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "PLAN_DOWNGRADE",
+      idempotencyKey: "first-replacement",
+      fromPlan: "PRO",
+      toPlan: "BASIC",
+      fromQuantity: 1,
+      toQuantity: 1,
+      createdByUserId: owner.id,
+    });
+    await BillingMutationService.processNext(organization.id);
+
+    await expect(BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "second-replacement",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    })).rejects.toMatchObject({
+      code: "BILLING_CHANGE_IN_PROGRESS",
+      existingChangeId: firstChange.id,
+    });
+    await expect(BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "PLAN_DOWNGRADE",
+      idempotencyKey: "first-replacement",
+      fromPlan: "PRO",
+      toPlan: "BASIC",
+      fromQuantity: 1,
+      toQuantity: 1,
+      createdByUserId: owner.id,
+    })).resolves.toMatchObject({ id: firstChange.id });
+  });
+
+  it("adopts a response-lost provider candidate by exact durable notes", async () => {
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    const razorpay = fakeRazorpay({ providerMethod: "emandate" });
+    setRazorpayClientForTests(razorpay);
+    const { owner, organization, subscription } = await setup({ paymentMethod: "EMANDATE" });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "adopt-response-lost",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+    vi.mocked(razorpay.listSubscriptions!).mockResolvedValueOnce({
+      entity: "collection",
+      count: 1,
+      items: [{
+        id: "sub_adopted",
+        entity: "subscription",
+        plan_id: "plan_standard",
+        status: "created",
+        total_count: 120,
+        quantity: 2,
+        created_at: Math.floor(Date.now() / 1000),
+        notes: {
+          app: "lab_lords",
+          billing_type: "saas_subscription_replacement",
+          organization_id: organization.id,
+          provider_mode: "TEST",
+          billing_change_id: change.id,
+          replacement_source_subscription_id: subscription.razorpaySubscriptionId,
+          plan: "PRO",
+        },
+      }],
+    });
+
+    await BillingMutationService.processNext(organization.id);
+
+    expect(razorpay.createSubscription).not.toHaveBeenCalled();
+    await expect(testPrisma.organizationSubscription.findUnique({
+      where: { razorpaySubscriptionId: "sub_adopted" },
+    })).resolves.toMatchObject({ pendingReplacementOrganizationId: organization.id });
+  });
 
   it("assigns distinct FIFO targets to concurrent branch additions", async () => {
     const { owner, organization, subscription } = await setup();
