@@ -93,6 +93,7 @@ export type OrganizationEntitlementProfileDto = {
 export type BillingOverview = {
   experience: BillingExperience;
   razorpayTestMode: boolean;
+  multiMethodSubscriptionsEnabled?: boolean;
   plans: BillingPlanDto[];
   current: OrganizationSubscriptionDto | null;
   pendingReplacement: OrganizationSubscriptionDto | null;
@@ -128,6 +129,10 @@ export type BillingOverview = {
     toPlan: BillingPlanId | null;
     toQuantity: number | null;
     lastError: string | null;
+    replacementSubscriptionId?: string | null;
+    accessGrantedAt?: string | null;
+    accessRevokedAt?: string | null;
+    accessGraceEndsAt?: string | null;
   }>;
 };
 
@@ -214,12 +219,22 @@ export type BillingCancellationResult = {
   subscription: OrganizationSubscriptionDto;
 };
 
+export type BillingPlanChangeProcessingResult = {
+  unchanged?: true;
+  subscription?: OrganizationSubscriptionDto;
+  operation?: BillingOperationDto;
+  processingUrl?: string;
+};
+
+export type BillingPlanChangeResult = BillingCheckoutPayload | BillingPlanChangeProcessingResult;
+
 export type BillingRecoveryPayload = {
   purpose: "RECOVERY";
   keyId: string;
   testMode: boolean;
   subscriptionId: string;
-  subscription_card_change: true;
+  subscription_card_change?: true;
+  hostedRecoveryUrl?: string;
   config?: RazorpayCheckoutConfig;
   changeId: string;
   processingUrl: string;
@@ -267,8 +282,18 @@ export const billing = {
     return apiClient.post(`/organizations/${orgId}/billing/trial/claim`);
   },
 
-  changePlan(orgId: string, plan: CheckoutBillingPlanId, returnPath?: string) {
+  changePlan(
+    orgId: string,
+    plan: CheckoutBillingPlanId,
+    returnPath?: string
+  ): Promise<BillingPlanChangeResult> {
     return apiClient.patch(`/organizations/${orgId}/billing/subscription`, { plan, returnPath }, {
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    });
+  },
+
+  changePaymentMethod(orgId: string, returnPath?: string): Promise<BillingPlanChangeResult> {
+    return apiClient.post(`/organizations/${orgId}/billing/subscription/payment-method`, { returnPath }, {
       headers: { "Idempotency-Key": crypto.randomUUID() },
     });
   },
@@ -305,7 +330,10 @@ export const billing = {
     return apiClient.post(`/organizations/${orgId}/billing/mutations/${changeId}/checkout-event`, { event, ...details });
   },
 
-  createRecovery(orgId: string, returnPath?: string): Promise<BillingRecoveryPayload> {
+  createRecovery(
+    orgId: string,
+    returnPath?: string
+  ): Promise<BillingRecoveryPayload | BillingCheckoutPayload> {
     return apiClient.post(`/organizations/${orgId}/billing/subscription/recovery`, { returnPath });
   },
 };

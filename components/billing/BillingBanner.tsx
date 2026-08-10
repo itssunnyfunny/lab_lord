@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useSyncExternalStore } from "react";
-import { AlertTriangle, Clock3, CreditCard, X } from "lucide-react";
-import type { BillingExperience } from "@/types/billingExperience";
+import { AlertTriangle, Clock3, WalletCards, X } from "lucide-react";
+import { BILLING_PAYMENT_ACTION, type BillingExperience } from "@/types/billingExperience";
 
 const dismissalListeners = new Set<() => void>();
 const inMemoryDismissals = new Set<string>();
@@ -37,6 +37,19 @@ function writeDismissal(key: string) {
   dismissalListeners.forEach(listener => listener());
 }
 
+export function getBillingBannerActionLabel(
+  experience: Pick<BillingExperience, "paymentAction" | "selectedPostTrialPlan">
+) {
+  const authorizationAction = experience.paymentAction === BILLING_PAYMENT_ACTION.AUTHORIZE_PAYMENT_METHOD;
+  if (authorizationAction && experience.selectedPostTrialPlan) {
+    return `Authorize ${experience.selectedPostTrialPlan === "STANDARD" ? "Standard" : "Basic"}`;
+  }
+  if (experience.paymentAction === BILLING_PAYMENT_ACTION.UPDATE_PAYMENT_METHOD) {
+    return "Update payment method";
+  }
+  return experience.paymentAction === "CHOOSE_PLAN" ? "Choose plan" : "Manage billing";
+}
+
 export function BillingBanner({ experience }: { experience: BillingExperience }) {
   const dismissible = experience.customerState === "TRIAL_ACTIVE"
     && experience.accessMode === "FULL"
@@ -54,13 +67,9 @@ export function BillingBanner({ experience }: { experience: BillingExperience })
   if (!show) return null;
   if (dismissible && dismissed) return null;
 
-  const Icon = experience.accessMode === "WARNING" ? AlertTriangle : experience.activeOperation ? CreditCard : Clock3;
+  const Icon = experience.accessMode === "WARNING" ? AlertTriangle : experience.activeOperation ? WalletCards : Clock3;
   const billingHref = `/org/${encodeURIComponent(experience.organizationId)}/settings#billing`;
-  const actionLabel = experience.paymentAction === "AUTHORIZE_CARD" && experience.selectedPostTrialPlan
-    ? `Authorize ${experience.selectedPostTrialPlan === "STANDARD" ? "Standard" : "Basic"}`
-      : experience.paymentAction === "CHOOSE_PLAN"
-      ? "Choose plan"
-      : "Manage billing";
+  const actionLabel = getBillingBannerActionLabel(experience);
 
   const dismiss = () => {
     writeDismissal(dismissalKey);
@@ -69,7 +78,7 @@ export function BillingBanner({ experience }: { experience: BillingExperience })
   return (
     <div className="relative mb-4 flex flex-col gap-3 rounded-[var(--ui-radius-control)] border border-amber-500/30 bg-amber-500/10 px-4 py-3 pr-11 text-sm sm:flex-row sm:items-center sm:justify-between sm:pr-12" role="status">
       <div className="flex min-w-0 items-start gap-3">
-        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
         <div>
           <p className="font-semibold text-[color:var(--ui-text)]">{experience.customerMessage}</p>
           {experience.trialEndsAt && <p className="mt-0.5 text-xs text-[color:var(--ui-text-muted)]">Standard trial ends {new Date(experience.trialEndsAt).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}.</p>}

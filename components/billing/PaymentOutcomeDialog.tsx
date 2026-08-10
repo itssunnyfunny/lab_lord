@@ -26,9 +26,9 @@ const OUTCOME_COPY: Record<PaymentOutcome["status"], { title: string; body: stri
     retryLabel: "Retry authorization",
   },
   DECLINED: {
-    title: "The card authorization was declined",
-    body: "Check the card details or try another supported card. Your trial or current confirmed plan remains unchanged.",
-    retryLabel: "Try another card",
+    title: "The payment authorization was declined",
+    body: "Check your payment details or try another supported recurring payment method. Your trial or current confirmed plan remains unchanged.",
+    retryLabel: "Try another payment method",
   },
   FAILED: {
     title: "Razorpay could not complete the authorization",
@@ -44,26 +44,33 @@ const OUTCOME_COPY: Record<PaymentOutcome["status"], { title: string; body: stri
 
 const RECOVERY_OUTCOME_COPY: typeof OUTCOME_COPY = {
   ABANDONED: {
-    title: "Card update was not completed",
-    body: "Your current confirmed access remains unchanged. You can update the payment card whenever you are ready.",
-    retryLabel: "Update card",
+    title: "Payment method update was not completed",
+    body: "Your current confirmed access remains unchanged. You can reauthorize the recurring payment mandate whenever you are ready.",
+    retryLabel: "Update payment method",
   },
   DECLINED: {
-    title: "The card update was declined",
-    body: "Check the card details or try another supported card. Access is restored only after Razorpay confirms the renewal payment.",
-    retryLabel: "Try another card",
+    title: "The payment method update was declined",
+    body: "Check your payment details or try another supported recurring payment method. Access is restored only after Razorpay confirms the renewal payment.",
+    retryLabel: "Try another payment method",
   },
   FAILED: {
-    title: "Razorpay could not update the card",
+    title: "Razorpay could not update the payment method",
     body: "A bank, network, or provider error interrupted recovery. No unconfirmed access change was applied.",
-    retryLabel: "Retry card update",
+    retryLabel: "Retry payment method update",
   },
   AWAITING_PROVIDER_CONFIRMATION: {
     title: "Recovery confirmation is taking longer than usual",
-    body: "We are checking Razorpay for the card update and renewal payment before restoring access.",
+    body: "We are checking Razorpay for the mandate update and renewal payment before restoring access.",
     retryLabel: "Check confirmation",
   },
 };
+
+export function getPaymentOutcomeCopy(
+  status: PaymentOutcome["status"],
+  mode: RazorpayCheckoutMode = "AUTHORIZATION"
+) {
+  return (mode === "RECOVERY" ? RECOVERY_OUTCOME_COPY : OUTCOME_COPY)[status];
+}
 
 export function PaymentOutcomeDialog({ outcome, mode = "AUTHORIZATION", retrying, onRetry, onClose }: PaymentOutcomeDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -116,7 +123,7 @@ export function PaymentOutcomeDialog({ outcome, mode = "AUTHORIZATION", retrying
   }, [closeAndRestoreFocus, outcome, retrying]);
 
   if (!outcome || typeof document === "undefined") return null;
-  const copy = (mode === "RECOVERY" ? RECOVERY_OUTCOME_COPY : OUTCOME_COPY)[outcome.status];
+  const copy = getPaymentOutcomeCopy(outcome.status, mode);
   const Icon = outcome.status === "AWAITING_PROVIDER_CONFIRMATION" ? Clock3 : AlertCircle;
 
   return createPortal(

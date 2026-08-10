@@ -1,4 +1,5 @@
 import type { OrganizationSubscriptionDto } from "@/lib/api/billing";
+import { getProviderPaymentMethodLabel } from "@/lib/billingPaymentMethods";
 import type { BillingExperience } from "@/types/billingExperience";
 
 type BillingPriceSummaryProps = {
@@ -48,7 +49,8 @@ export function BillingPriceSummary({ experience, current }: BillingPriceSummary
       ? "Authorized — Razorpay charge date pending"
       : experience.authorizationStatus === "VERIFYING"
         ? "Waiting for Razorpay confirmation"
-        : "Not scheduled — authorize a card first";
+        : "Not scheduled — authorize a payment method first";
+  const paymentMethodLabel = getProviderPaymentMethodLabel(current?.providerPaymentMethod);
 
   if (paidPlanActive) {
     const currentPlanName = experience.effectivePlan === "STANDARD" ? "Standard" : "Basic";
@@ -68,8 +70,8 @@ export function BillingPriceSummary({ experience, current }: BillingPriceSummary
           <SummaryRow label="Paid through" value={experience.paidThrough ? formatDate(experience.paidThrough) : "Awaiting paid invoice"} />
           <SummaryRow label="Next charge" value={experience.nextChargeAt ? formatDate(experience.nextChargeAt) : "Not scheduled"} />
         </dl>
-        {current?.providerPaymentMethod === "CARD" ? (
-          <p className="text-xs text-[color:var(--text-secondary)]">Recurring payment method: Card</p>
+        {current ? (
+          <p className="text-xs text-[color:var(--text-secondary)]">Recurring payment method: {paymentMethodLabel}</p>
         ) : null}
       </section>
     );
@@ -105,7 +107,11 @@ export function BillingPriceSummary({ experience, current }: BillingPriceSummary
         </h3>
         <dl className="mt-3 grid gap-3 sm:grid-cols-2">
           <SummaryRow label="Selected plan" value={selectedPlanName ?? "Choose a plan"} />
-          <SummaryRow label="Card authorization" value={authorizationLabel} />
+          <SummaryRow
+            label="Payment mandate"
+            value={authorizationLabel}
+            detail={current ? `Recurring method: ${paymentMethodLabel}` : undefined}
+          />
           <SummaryRow
             label="Estimated monthly total"
             value={selectedPlanName ? `${formatInr(experience.projectedMonthlyTotal)}/month` : "Choose a plan"}
@@ -117,7 +123,7 @@ export function BillingPriceSummary({ experience, current }: BillingPriceSummary
         </dl>
         {trialActive ? (
           <p className="mt-3 text-xs text-[color:var(--text-secondary)]">
-            No plan fee is charged during the Standard trial. Razorpay may make a temporary ₹5 card-verification payment and automatically refund it.
+            No plan fee is charged during the Standard trial. If you choose a card, Razorpay may make a temporary ₹5 verification payment and automatically refund it.
           </p>
         ) : (
           <p className="mt-3 text-xs text-[color:var(--text-secondary)]">

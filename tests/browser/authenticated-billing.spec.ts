@@ -285,6 +285,46 @@ function makeCheckoutPayload(): BillingCheckoutPayload {
   };
 }
 
+function makeReplacementCheckoutPayload(): BillingCheckoutPayload {
+  const checkout = makeCheckoutPayload();
+  const subscription = makeSubscription({
+    id: "subscription-replacement-1",
+    position: "PENDING_REPLACEMENT",
+    replacesSubscriptionId: "subscription-local-1",
+    plan: "PRO",
+    planName: "Lab Lords Standard",
+    shortName: "Standard",
+    amount: 499,
+    amountSubunits: 49_900,
+    unitAmount: 499,
+    monthlyTotal: 998,
+    status: "CREATED",
+    razorpaySubscriptionId: "sub_playwright_replacement",
+    providerPaymentMethod: "UNKNOWN",
+  });
+  return {
+    ...checkout,
+    purpose: "REPLACEMENT",
+    subscriptionId: subscription.razorpaySubscriptionId,
+    subscription,
+    config: undefined,
+    plan: {
+      ...checkout.plan,
+      id: "PRO",
+      name: "Lab Lords Standard",
+      shortName: "Standard",
+      amount: 499,
+    },
+    summary: {
+      ...checkout.summary,
+      plan: "PRO",
+      unitAmount: 499,
+      estimatedMonthlyTotal: 998,
+      planFeeDueToday: 0,
+    },
+  };
+}
+
 const ORGANIZATION_RESPONSE = {
   id: ORG_ID,
   name: "Playwright Labs",
@@ -606,8 +646,8 @@ test("shows exact current-trial and post-trial pricing without inventing a charg
   await expect(summary.getByText("Not authorized", { exact: true })).toBeVisible();
   await expect(summary.getByText("₹598/month", { exact: true })).toBeVisible();
   await expect(summary.getByText(/2 branches × ₹299/)).toBeVisible();
-  await expect(summary.getByText("Not scheduled — authorize a card first", { exact: true })).toBeVisible();
-  await expect(summary.getByText(/temporary ₹5 card-verification payment/i)).toBeVisible();
+  await expect(summary.getByText("Not scheduled — authorize a payment method first", { exact: true })).toBeVisible();
+  await expect(summary.getByText(/temporary ₹5 verification payment/i)).toBeVisible();
 
   await expect(page.getByRole("button", { name: "Authorize Basic", exact: true })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Authorize Standard", exact: true })).toBeEnabled();
@@ -621,7 +661,7 @@ test("shows exact current-trial and post-trial pricing without inventing a charg
   }));
   await page.reload();
   await expect(page.getByText("Choose a plan", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("Not scheduled — authorize a card first", { exact: true })).toBeVisible();
+  await expect(page.getByText("Not scheduled — authorize a payment method first", { exact: true })).toBeVisible();
 });
 
 test("labels future authorization separately from a provider-confirmed current plan", async ({ page }) => {
@@ -702,12 +742,12 @@ test("billingPlan query opens review first and passes editable payer defaults to
   await expect(confirmation.getByText("₹0", { exact: true })).toBeVisible();
   await expect(confirmation.getByText("₹998/month", { exact: true })).toBeVisible();
   await expect(confirmation.getByText(/2 branches × ₹499 per branch/)).toBeVisible();
-  await expect(confirmation.getByText(/If card authorization succeeds.*5 September 2026/i)).toBeVisible();
-  await expect(confirmation.getByText(/temporary ₹5 card-verification payment/i)).toBeVisible();
-  await expect(confirmation.getByText(/editable phone and email are billing-contact defaults.*do not tell Lab Lords which mobile number is registered with your card/i)).toBeVisible();
-  await expect(confirmation.getByText(/bank or 3-D Secure OTP is controlled by your card issuer.*mobile number, email, or device registered with that issuer/i)).toBeVisible();
-  await expect(confirmation.getByText(/does not ask Razorpay to remember your card for one-click payments/i)).toBeVisible();
-  await expect(confirmation.getByText(/Test Mode simulates the bank authentication step.*No real OTP, SMS, or email is sent/i)).toBeVisible();
+  await expect(confirmation.getByText(/payment mandate authorization succeeds.*5 September 2026/i)).toBeVisible();
+  await expect(confirmation.getByText(/temporary ₹5 verification payment/i)).toBeVisible();
+  await expect(confirmation.getByText(/editable phone and email are billing-contact defaults.*do not determine the account, app, number, or device/i)).toBeVisible();
+  await expect(confirmation.getByText(/bank or 3-D Secure OTP is controlled by the card issuer.*mobile number, email, or device registered with that issuer/i)).toBeVisible();
+  await expect(confirmation.getByText(/does not ask Razorpay to remember it for one-click payments/i)).toBeVisible();
+  await expect(confirmation.getByText(/Test Mode simulates bank authentication.*No real card OTP, SMS, or email is sent/i)).toBeVisible();
 
   await confirmation.getByRole("button", { name: "Continue to Razorpay" }).click();
   await expect.poll(async () => (await getCheckoutHarness(page)).opens).toBe(1);
@@ -816,9 +856,9 @@ test("a declined attempt can be retried successfully without preserving the old 
   await gotoBilling(page);
   await startBasicAuthorization(page, "decline");
 
-  const result = page.getByRole("alertdialog", { name: "The card authorization was declined" });
+  const result = page.getByRole("alertdialog", { name: "The payment authorization was declined" });
   await expect(result).toBeVisible();
-  await expect(result.getByText(/try another supported card/i)).toBeVisible();
+  await expect(result.getByText(/try another supported recurring payment method/i)).toBeVisible();
   await expect(result.getByText(/current confirmed plan remains unchanged/i)).toBeVisible();
   expect(controller.checkoutEvents).toEqual([
     expect.objectContaining({
@@ -833,7 +873,7 @@ test("a declined attempt can be retried successfully without preserving the old 
   ]);
 
   await setCheckoutScenario(page, "success");
-  await result.getByRole("button", { name: "Try another card" }).click();
+  await result.getByRole("button", { name: "Try another payment method" }).click();
 
   await expect.poll(async () => (await getCheckoutHarness(page)).opens).toBe(2);
   await expect(page).toHaveURL(new RegExp(`/org/${ORG_ID}/billing/processing/${CHANGE_ID}`));
@@ -932,4 +972,111 @@ test("processing retry reopens Razorpay only after the explicit retry click", as
     readonly: { name: false, email: false, contact: false },
     subscriptionId: "sub_playwright_1",
   }));
+});
+
+test("UPI plan replacement opens provider-managed Checkout", async ({ page }) => {
+    const current = makeSubscription({
+      status: "ACTIVE",
+      providerPaymentMethod: "UPI",
+      paidThrough: "2026-09-05T12:00:00.000Z",
+      currentEnd: "2026-09-05T12:00:00.000Z",
+      chargeAt: "2026-09-05T12:00:00.000Z",
+    });
+    const controller = await mockBillingPage(
+      page,
+      makeOverview(
+        makeExperience({
+          effectivePlan: "BASIC",
+          selectedPostTrialPlan: "BASIC",
+          providerStatus: "ACTIVE",
+          customerState: "BASIC_ACTIVE",
+          customerMessage: "Basic is active.",
+          trialEndsAt: null,
+          trialDaysRemaining: null,
+          paidThrough: current.paidThrough,
+          currentUnitAmount: 299,
+          currentMonthlyTotal: 598,
+          projectedUnitAmount: 299,
+          projectedMonthlyTotal: 598,
+          authorizationStatus: "AUTHORIZED",
+          nextChargeAt: current.chargeAt,
+          paymentAction: "NONE",
+        }),
+        current
+      )
+    );
+    controller.overview.multiMethodSubscriptionsEnabled = true;
+    const replacement = makeReplacementCheckoutPayload();
+    const replacementRequests: Array<Record<string, unknown>> = [];
+    await page.route(`**/api/organizations/${ORG_ID}/billing/subscription`, route => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      replacementRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+      return json(route, replacement, 202);
+    });
+
+    await gotoBilling(page);
+    await expect(page.getByText("UPI AutoPay", { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Change payment method" })).toBeVisible();
+    await setCheckoutScenario(page, "hold");
+    await page.getByRole("button", { name: "Upgrade to Standard" }).click();
+    const confirmation = page.getByRole("dialog").filter({ hasText: "Standard" });
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation.getByText(/UPI AutoPay authorization opens a supported UPI app.*Razorpay QR flow/i)).toBeVisible();
+    await expect(confirmation.getByText(/replacement mandate now.*no extra charge for the current cycle/i)).toBeVisible();
+    await confirmation.getByRole("button", { name: /Continue to Razorpay|Confirm plan change/ }).click();
+
+    await expect.poll(async () => (await getCheckoutHarness(page)).opens).toBe(1);
+    expect(replacementRequests).toEqual([expect.objectContaining({ plan: "PRO" })]);
+    const harness = await getCheckoutHarness(page);
+    expect(harness.lastOptions?.subscriptionId).toBe("sub_playwright_replacement");
+    expect(harness.lastOptions?.config).toBeUndefined();
+});
+
+test("shows pending eMandate cutover and complimentary access without replacing canonical billing", async ({ page }) => {
+  const current = makeSubscription({
+    status: "ACTIVE",
+    providerPaymentMethod: "UPI",
+    paidThrough: "2026-09-05T12:00:00.000Z",
+    currentEnd: "2026-09-05T12:00:00.000Z",
+  });
+  const pending = makeReplacementCheckoutPayload().subscription;
+  pending.status = "AUTHENTICATED";
+  pending.providerPaymentMethod = "EMANDATE";
+  pending.providerStartAt = "2026-09-12T12:00:00.000Z";
+  const overview = makeOverview(
+    makeExperience({
+      effectivePlan: "STANDARD",
+      selectedPostTrialPlan: "STANDARD",
+      providerStatus: "ACTIVE",
+      customerState: "STANDARD_ACTIVE",
+      customerMessage: "Standard access is active while current billing continues.",
+      trialEndsAt: null,
+      trialDaysRemaining: null,
+      paidThrough: current.paidThrough,
+      authorizationStatus: "AUTHORIZED",
+      paymentAction: "NONE",
+    }),
+    current
+  );
+  overview.pendingReplacement = pending;
+  overview.scheduledChanges = [{
+    id: "change-replacement-pending",
+    type: "PLAN_UPGRADE",
+    status: "SCHEDULED",
+    effectiveAt: "2026-09-12T12:00:00.000Z",
+    undoCutoffAt: "2099-09-09T12:00:00.000Z",
+    toPlan: "PRO",
+    toQuantity: 2,
+    lastError: null,
+    accessGrantedAt: "2026-08-10T12:00:00.000Z",
+  }];
+  await mockBillingPage(page, overview);
+
+  await gotoBilling(page);
+  const replacement = page.getByRole("region", { name: "Pending subscription replacement" });
+  await expect(replacement.getByText("Standard replacement mandate")).toBeVisible();
+  await expect(replacement.getByText(/eMandate.*planned for 12 September 2026/)).toBeVisible();
+  await expect(replacement.getByText(/Complimentary upgrade access is active/)).toBeVisible();
+  await expect(replacement.getByRole("button", { name: "Undo" })).toBeVisible();
+  await expect(page.getByText(/Current billing, invoices, and paid-through dates remain/)).toBeVisible();
 });
