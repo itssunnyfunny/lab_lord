@@ -7,6 +7,7 @@ import {
 import type { OrganizationSubscription } from "@/app/generated/prisma/client";
 import { deriveWorkspaceBillingState, type BillingAccessMode } from "@/lib/billingState";
 import { resolveRazorpayMode } from "@/lib/razorpay";
+import { deriveAuthorizedReplacementOverride } from "@/services/billingReplacement.service";
 
 const PREMIUM_ACCESS_STATUSES = new Set(["AUTHENTICATED", "ACTIVE"]);
 const GRACE_ACCESS_STATUSES = new Set(["PENDING", "HALTED"]);
@@ -58,6 +59,26 @@ export class EntitlementService {
         id: true,
         billingModelVersion: true,
         subscription: true,
+        pendingSubscriptionReplacement: {
+          select: {
+            id: true,
+            providerMode: true,
+            plan: true,
+            quantity: true,
+            status: true,
+            providerPaymentMethod: true,
+            replacementBillingChange: {
+              select: {
+                type: true,
+                organizationSubscriptionId: true,
+                replacementSubscriptionId: true,
+                accessGrantedAt: true,
+                accessRevokedAt: true,
+                accessGraceEndsAt: true,
+              },
+            },
+          },
+        },
         ownerTrialGrant: {
           select: { status: true, trialEndsAt: true },
         },
@@ -72,6 +93,33 @@ export class EntitlementService {
     const subscription = organization.subscription
       && organization.subscription.providerMode === resolveRazorpayMode()
       ? organization.subscription
+      : null;
+    const pendingReplacement = organization.pendingSubscriptionReplacement
+      && organization.pendingSubscriptionReplacement.providerMode === resolveRazorpayMode()
+      ? organization.pendingSubscriptionReplacement
+      : null;
+    const replacementChange = pendingReplacement?.replacementBillingChange;
+    const replacementOverride = subscription && pendingReplacement && replacementChange
+      ? deriveAuthorizedReplacementOverride({
+          changeType: replacementChange.type,
+          sourceSubscriptionId: subscription.id,
+          changeSourceSubscriptionId: replacementChange.organizationSubscriptionId,
+          candidateSubscriptionId: pendingReplacement.id,
+          changeCandidateSubscriptionId: replacementChange.replacementSubscriptionId,
+          sourcePlan: subscription.plan,
+          sourceQuantity: subscription.quantity,
+          candidatePlan: pendingReplacement.plan,
+          candidateQuantity: pendingReplacement.quantity,
+          candidateStatus: pendingReplacement.status,
+          candidatePaymentMethod: pendingReplacement.providerPaymentMethod,
+          accessGrantedAt: replacementChange.accessGrantedAt,
+          accessRevokedAt: replacementChange.accessRevokedAt,
+          accessGraceEndsAt: replacementChange.accessGraceEndsAt,
+        })
+      : null;
+    const authorizedReplacement = replacementOverride
+      && getBillingPlan(replacementOverride.plan as BillingPlanId)
+      ? { ...replacementOverride, plan: replacementOverride.plan as BillingPlanId }
       : null;
 
     if (organization.billingModelVersion === "WORKSPACE_V2") {
@@ -90,6 +138,7 @@ export class EntitlementService {
               paidThrough: subscription.paidThrough,
             }
           : null,
+        authorizedReplacement,
       });
       const selectedPlan = state.effectivePlan ? getBillingPlan(state.effectivePlan) : null;
 

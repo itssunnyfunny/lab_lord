@@ -3,6 +3,14 @@ import type { BillingEntitlement } from "@/lib/billingPlans";
 export type BillingExperiencePlan = "BASIC" | "STANDARD" | "STANDARD_TRIAL" | "NONE";
 export type SelectedPostTrialPlan = "BASIC" | "STANDARD" | null;
 export type BillingExperienceAccessMode = "FULL" | "WARNING" | "READ_ONLY";
+
+// Neutral UI names temporarily alias the legacy wire values. The values can
+// move with backend emitters and exhaustive consumers in a later migration.
+export const BILLING_PAYMENT_ACTION = {
+  UPDATE_PAYMENT_METHOD: "UPDATE_CARD",
+  AUTHORIZE_PAYMENT_METHOD: "AUTHORIZE_CARD",
+} as const;
+
 export type BillingPaymentAction =
   | "NONE"
   | "CHOOSE_PLAN"
