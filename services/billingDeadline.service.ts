@@ -4,6 +4,7 @@ import { BillingReconciliationService } from "@/services/billingReconciliation.s
 import { BranchService } from "@/services/branch.service";
 import { OwnerTrialService } from "@/services/ownerTrial.service";
 import { areRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
+import { isSupportedProviderPaymentMethod } from "@/services/billingPaymentMethod.service";
 
 const RECONCILE_AFTER_MS = 6 * 60 * 60 * 1000;
 const MAX_AUTOMATIC_ATTEMPTS = 3;
@@ -64,7 +65,7 @@ export class BillingDeadlineService {
     const retryableFailures = await prisma.organizationBillingChange.findMany({
       where: {
         status: "FAILED",
-        type: { not: "SUBSCRIPTION_AUTHORIZATION" },
+        type: { notIn: ["SUBSCRIPTION_AUTHORIZATION", "UNSUPPORTED_METHOD_CANCELLATION"] },
         attemptCount: { lt: MAX_AUTOMATIC_ATTEMPTS },
         organization: { billingModelVersion: "WORKSPACE_V2" },
       },
@@ -73,8 +74,7 @@ export class BillingDeadlineService {
     });
     let retriedMutations = 0;
     for (const change of retryableFailures) {
-      if (change.type !== "UNSUPPORTED_METHOD_CANCELLATION"
-        && !areRazorpayBillingWritesEnabled(change.organizationId)) {
+      if (!areRazorpayBillingWritesEnabled(change.organizationId)) {
         continue;
       }
       try {
@@ -84,27 +84,6 @@ export class BillingDeadlineService {
         errors.push({
           organizationId: change.organizationId,
           message: error instanceof Error ? error.message : "Mutation retry failed",
-        });
-      }
-    }
-
-    const queuedUnsupportedMethodCancellations = await prisma.organizationBillingChange.findMany({
-      where: {
-        type: "UNSUPPORTED_METHOD_CANCELLATION",
-        status: "QUEUED",
-        organization: { billingModelVersion: "WORKSPACE_V2" },
-      },
-      select: { organizationId: true },
-      orderBy: [{ organizationId: "asc" }, { sequence: "asc" }],
-      distinct: ["organizationId"],
-    });
-    for (const { organizationId } of queuedUnsupportedMethodCancellations) {
-      try {
-        await BillingMutationService.processNext(organizationId, now);
-      } catch (error) {
-        errors.push({
-          organizationId,
-          message: error instanceof Error ? error.message : "Unsupported payment-method cancellation failed",
         });
       }
     }
@@ -192,14 +171,16 @@ export class BillingDeadlineService {
         );
         const paymentConfirmed = !reconciliation.payment
           || ["authorized", "captured"].includes(reconciliation.payment.status);
-        const cardAuthorizationConfirmed = reconciliation.subscription.providerPaymentMethod === "CARD"
+        const authorizationConfirmed = isSupportedProviderPaymentMethod(
+          reconciliation.subscription.providerPaymentMethod
+        )
           && ["AUTHENTICATED", "ACTIVE"].includes(reconciliation.subscription.status)
           && paymentConfirmed;
         const recoveryConfirmation = ["PENDING", "HALTED"].includes(subscription.status);
         const paidPeriodAdvanced = reconciliation.confirmedPaidPeriod
           && Boolean(reconciliation.subscription.paidThrough)
           && (!subscription.paidThrough || reconciliation.subscription.paidThrough! > subscription.paidThrough);
-        const providerConfirmed = recoveryConfirmation ? paidPeriodAdvanced : cardAuthorizationConfirmed;
+        const providerConfirmed = recoveryConfirmation ? paidPeriodAdvanced : authorizationConfirmed;
 
         const resolved = await prisma.organizationBillingChange.updateMany({
           where: {
@@ -223,7 +204,7 @@ export class BillingDeadlineService {
                 operationStatus: "FAILED",
                 failureCategory: "CONFIRMATION_TIMEOUT",
                 failureCode: null,
-                lastError: "Razorpay did not confirm card authorization before the deadline; start authorization again",
+                lastError: "Razorpay did not confirm authorization before the deadline; start authorization again",
                 failedAt: now,
                 resolvedAt: now,
               },
@@ -273,6 +254,13 @@ export class BillingDeadlineService {
           { authorizationExpiresAt: { lte: now } },
           { providerStartAt: { lte: now } },
         ],
+        billingChanges: {
+          none: {
+            type: "SUBSCRIPTION_AUTHORIZATION",
+            operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
+            confirmationDeadlineAt: { gt: now },
+          },
+        },
       },
       select: { id: true, organizationId: true, status: true },
     });
@@ -308,7 +296,7 @@ export class BillingDeadlineService {
       where: {
         currentOrganizationId: { not: null },
         organization: { billingModelVersion: "WORKSPACE_V2" },
-        status: { in: ["ACTIVE", "PENDING", "HALTED", "CANCELLED", "COMPLETED"] },
+        status: { in: ["ACTIVE", "PENDING", "HALTED", "PAUSED", "CANCELLED", "COMPLETED"] },
         OR: [{ lastReconciledAt: null }, { lastReconciledAt: { lt: staleBefore } }],
         id: { notIn: deadlineSubscriptions.map(subscription => subscription.id) },
       },
@@ -332,7 +320,6 @@ export class BillingDeadlineService {
       expiredTrials: expiredTrials.count,
       recoveredLeases,
       retriedMutations,
-      submittedUnsupportedMethodCancellations: queuedUnsupportedMethodCancellations.length,
       submittedCancellations: dueCancellations.length,
       archivedBranches: archivedBranches.archived,
       confirmedCheckouts,

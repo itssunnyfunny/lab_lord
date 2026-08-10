@@ -7,13 +7,14 @@ import {
   type RazorpaySubscription,
 } from "@/lib/razorpay";
 import {
-  BillingPaymentMethodService,
+  isSupportedProviderPaymentMethod,
   normalizeProviderPaymentMethod,
 } from "@/services/billingPaymentMethod.service";
 import type { SaasSubscriptionStatus } from "@/app/generated/prisma/client";
 
 const SUBSCRIPTION_STATUSES = new Set([
-  "CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "CANCELLED", "COMPLETED", "EXPIRED",
+  "CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "PAUSED",
+  "CANCELLED", "COMPLETED", "EXPIRED",
 ]);
 
 function status(value: string): SaasSubscriptionStatus {
@@ -109,12 +110,16 @@ export class BillingReconciliationService {
     const confirmedPayment = explicitPayment
       ?? (paidInvoice?.payment_id ? await razorpay.fetchPayment(paidInvoice.payment_id) : null);
     const confirmedMethod = normalizeProviderPaymentMethod(confirmedPayment?.method);
-    const confirmedPaidPeriod = confirmedMethod === "CARD" && hasConfirmedPaidPeriod(
+    const providerSubscriptionMethod = normalizeProviderPaymentMethod(
+      providerSubscription.payment_method
+    );
+    const confirmedPaidPeriod = isSupportedProviderPaymentMethod(confirmedMethod)
+      && hasConfirmedPaidPeriod(
       providerSubscription,
       confirmedPayment,
       paidInvoice,
       now
-    );
+      );
 
     const reconciliation = await prisma.$transaction(async tx => {
       const local = await tx.organizationSubscription.findUnique({
@@ -248,11 +253,11 @@ export class BillingReconciliationService {
           quantity: confirmedQuantity,
           providerStartAt: date(providerSubscription.start_at),
           authorizationExpiresAt: date(providerSubscription.expire_by),
-          providerPaymentMethod: confirmedPayment
-            ? normalizeProviderPaymentMethod(confirmedPayment.method)
-            : normalizeProviderPaymentMethod(providerSubscription.payment_method) === "UNKNOWN"
-              ? local.providerPaymentMethod
-              : normalizeProviderPaymentMethod(providerSubscription.payment_method),
+          providerPaymentMethod: isSupportedProviderPaymentMethod(confirmedMethod)
+            ? confirmedMethod
+            : isSupportedProviderPaymentMethod(providerSubscriptionMethod)
+              ? providerSubscriptionMethod
+              : local.providerPaymentMethod,
           currentStart: date(providerSubscription.current_start),
           currentEnd: date(providerSubscription.current_end),
           chargeAt: date(providerSubscription.charge_at),
@@ -335,19 +340,6 @@ export class BillingReconciliationService {
       return { subscription: stored, confirmedPaidPeriod, payment: confirmedPayment, invoices };
     });
 
-    const cardOnly = await BillingPaymentMethodService.enforceCardOnly({
-      organizationId: reconciliation.subscription.organizationId,
-      organizationSubscriptionId: reconciliation.subscription.id,
-      razorpaySubscriptionId: reconciliation.subscription.razorpaySubscriptionId,
-      paymentMethod: reconciliation.subscription.providerPaymentMethod,
-      paymentId: reconciliation.payment?.id,
-      now,
-    });
-    if (!cardOnly.enforced) return reconciliation;
-
-    const subscription = await prisma.organizationSubscription.findUniqueOrThrow({
-      where: { id: reconciliation.subscription.id },
-    });
-    return { ...reconciliation, subscription };
+    return reconciliation;
   }
 }

@@ -20,7 +20,7 @@ import { BillingMutationService } from "@/services/billingMutation.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
 import {
-  BillingPaymentMethodService,
+  isSupportedProviderPaymentMethod,
   normalizeProviderPaymentMethod,
 } from "@/services/billingPaymentMethod.service";
 import { assertRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
@@ -76,12 +76,14 @@ const TERMINAL_CHECKOUT_OPERATION_STATUSES = [
 const CHECKOUT_MUTATION_LEASE_MS = 2 * 60 * 1000;
 const CHECKOUT_MUTATION_WAIT_MS = 15 * 1000;
 const CHECKOUT_MUTATION_POLL_MS = 100;
+const EMANDATE_AUTHORIZATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const VALID_STATUSES = new Set<SaasSubscriptionStatus>([
   "CREATED",
   "AUTHENTICATED",
   "ACTIVE",
   "PENDING",
   "HALTED",
+  "PAUSED",
   "CANCELLED",
   "COMPLETED",
   "EXPIRED",
@@ -309,7 +311,7 @@ async function expireOverdueAuthorizationOperations(organizationId: string, now 
       status: "FAILED",
       operationStatus: "FAILED",
       failureCategory: "CONFIRMATION_TIMEOUT",
-      lastError: "Razorpay did not confirm card authorization before the deadline; start authorization again",
+      lastError: "Razorpay did not confirm payment authorization before the deadline; start authorization again",
       failedAt: now,
       resolvedAt: now,
     },
@@ -460,7 +462,7 @@ function resolveWebhookStatus(
   if (TERMINAL_STATUSES.has(incoming)) return incoming;
   if (incoming === "CREATED") return current;
   if (incoming === "AUTHENTICATED" && current !== "CREATED") return current;
-  if (current === "HALTED" && incoming === "PENDING") return current;
+  if (["HALTED", "PAUSED"].includes(current) && incoming === "PENDING") return current;
   return incoming;
 }
 
@@ -1166,6 +1168,7 @@ export class BillingService {
       signature: input.razorpay_signature,
     });
     if (!isVerified) throw new Error("Invalid Razorpay signature");
+    const verifiedCallbackAt = new Date();
 
     const subscription = await prisma.organizationSubscription.findFirst({
       where: { organizationId, razorpaySubscriptionId: subscriptionId },
@@ -1192,7 +1195,7 @@ export class BillingService {
       },
       data: {
         operationStatus: "VERIFYING",
-        verificationStartedAt: new Date(),
+        verificationStartedAt: verifiedCallbackAt,
         failureCategory: null,
         failureCode: null,
         lastError: null,
@@ -1256,19 +1259,46 @@ export class BillingService {
     if (!isSuccessfulPayment(gatewayPayment)) {
       throw new Error("Razorpay payment has not been authorized");
     }
-    if (normalizeProviderPaymentMethod(gatewayPayment.method) !== "CARD") {
-      await BillingPaymentMethodService.enforceCardOnly({
-        organizationId,
-        organizationSubscriptionId: subscription.id,
-        razorpaySubscriptionId: subscriptionId,
-        paymentMethod: gatewayPayment.method,
-        paymentId,
-      });
-      throw new Error("V1 recurring subscriptions require card authorization");
+    const paymentMethod = normalizeProviderPaymentMethod(gatewayPayment.method);
+    if (!isSupportedProviderPaymentMethod(paymentMethod)) {
+      await prisma.$transaction([
+        prisma.organizationSubscription.update({
+          where: { id: subscription.id },
+          data: {
+            providerPaymentMethod: "UNKNOWN",
+            lastReconciledAt: verifiedCallbackAt,
+          },
+        }),
+        prisma.organizationBillingChange.updateMany({
+          where: { id: change.id, operationStatus: "VERIFYING" },
+          data: {
+            status: "AWAITING_PAYMENT",
+            operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+            providerPaymentId: paymentId,
+            failureCategory: "UNKNOWN_PAYMENT_METHOD",
+            failureCode: "UNKNOWN",
+            lastError: "Razorpay returned an unrecognized recurring payment method; access remains unchanged",
+            resolvedAt: null,
+          },
+        }),
+      ]);
+      const [pendingOperation, currentSubscription] = await Promise.all([
+        prisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
+        prisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      ]);
+      return {
+        verified: true as const,
+        pending: true as const,
+        operation: serializeBillingOperation(pendingOperation),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(currentSubscription),
+      };
     }
 
     const snapshot = subscriptionSnapshotData(gatewaySubscription);
-    if (snapshot.status === "CREATED") {
+    const delayedEMandateAuthorization = paymentMethod === "EMANDATE"
+      && snapshot.status === "CREATED";
+    if (snapshot.status === "CREATED" && !delayedEMandateAuthorization) {
       snapshot.status = "AUTHENTICATED";
     }
 
@@ -1278,8 +1308,8 @@ export class BillingService {
         data: {
           ...snapshot,
           authPaymentId: paymentId,
-          providerPaymentMethod: "CARD",
-          lastReconciledAt: new Date(),
+          providerPaymentMethod: paymentMethod,
+          lastReconciledAt: verifiedCallbackAt,
         },
       });
       await recordSubscriptionHistory(tx, stored, {
@@ -1289,6 +1319,37 @@ export class BillingService {
       });
       return stored;
     });
+
+    if (delayedEMandateAuthorization) {
+      const existingDeadline = change.failureCode === "EMANDATE_AUTHORIZATION_PENDING"
+        ? change.confirmationDeadlineAt
+        : null;
+      const confirmationDeadlineAt = existingDeadline
+        ?? new Date(verifiedCallbackAt.getTime() + EMANDATE_AUTHORIZATION_WINDOW_MS);
+      await prisma.organizationBillingChange.updateMany({
+        where: { id: change.id, operationStatus: "VERIFYING" },
+        data: {
+          status: "AWAITING_PAYMENT",
+          operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+          providerPaymentId: paymentId,
+          confirmationDeadlineAt,
+          failureCategory: "PROVIDER_CONFIRMATION_PENDING",
+          failureCode: "EMANDATE_AUTHORIZATION_PENDING",
+          lastError: "eMandate registration is still being confirmed by Razorpay; access remains unchanged",
+          resolvedAt: null,
+        },
+      });
+      const pendingOperation = await prisma.organizationBillingChange.findUniqueOrThrow({
+        where: { id: change.id },
+      });
+      return {
+        verified: true as const,
+        pending: true as const,
+        operation: serializeBillingOperation(pendingOperation),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(updated),
+      };
+    }
 
     if (gatewayPayment.status === "captured" && gatewayPayment.invoice_id) {
       await BillingReconciliationService.reconcileProviderSubscription(subscriptionId, { paymentId });
@@ -1307,7 +1368,7 @@ export class BillingService {
           status: "AWAITING_PAYMENT",
           operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
           providerPaymentId: paymentId,
-          lastError: "Card update confirmed; awaiting captured renewal payment and paid-period confirmation",
+          lastError: "Payment authorization confirmed; awaiting captured renewal payment and paid-period confirmation",
         },
       });
       const awaitingOperation = await prisma.organizationBillingChange.findUniqueOrThrow({
@@ -1674,9 +1735,9 @@ export class BillingService {
         failureCode: normalizedFailureCode(input),
         providerPaymentId: checkoutPaymentId(input.paymentId),
         lastError: event === "DECLINED"
-          ? "Card authorization was declined; the confirmed billing state is unchanged"
+          ? "Payment authorization was declined; the confirmed billing state is unchanged"
           : event === "FAILED"
-            ? "Checkout could not confirm card authorization; the confirmed billing state is unchanged"
+            ? "Checkout could not confirm payment authorization; the confirmed billing state is unchanged"
             : event === "ABANDONED"
               ? "Checkout was closed before confirmation"
               : "Checkout outcome is awaiting provider confirmation",
@@ -1758,9 +1819,11 @@ export class BillingService {
         };
       }
       const recoveryConfirmation = ["PENDING", "HALTED"].includes(subscription.status);
-      const gatewayCardAuthorized = ["authenticated", "active"].includes(gateway.status.toLowerCase())
-        && (subscription.providerPaymentMethod === "CARD" || gateway.payment_method?.toLowerCase() === "card");
-      let confirmed = gatewayCardAuthorized;
+      const gatewayPaymentMethod = normalizeProviderPaymentMethod(gateway.payment_method);
+      const gatewayAuthorizationConfirmed = ["authenticated", "active"].includes(
+        gateway.status.toLowerCase()
+      ) && isSupportedProviderPaymentMethod(gatewayPaymentMethod);
+      let confirmed = gatewayAuthorizationConfirmed;
       if (recoveryConfirmation && gateway.status.toLowerCase() === "active") {
         const reconciliation = await BillingReconciliationService.reconcileByOrganization(organizationId);
         confirmed = reconciliation.confirmedPaidPeriod
@@ -1773,7 +1836,7 @@ export class BillingService {
           prisma.organizationSubscription.update({
             where: { id: subscription.id },
             data: {
-              providerPaymentMethod: "CARD",
+              providerPaymentMethod: gatewayPaymentMethod,
               ...subscriptionSnapshotData(gateway),
               lastReconciledAt: now,
             },
@@ -1941,7 +2004,7 @@ export class BillingService {
         status: "AWAITING_PAYMENT",
         operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
         failureCategory: "PROVIDER_CONFIRMATION_PENDING",
-        lastError: "Razorpay has not confirmed card authorization yet; the confirmed billing state is unchanged",
+        lastError: "Razorpay has not confirmed payment authorization yet; the confirmed billing state is unchanged",
         resolvedAt: null,
       },
     });
@@ -1987,7 +2050,7 @@ export class BillingService {
     payment: RazorpayPayment | null,
     confirmedPaidPeriod: boolean
   ) {
-    if (subscription.providerPaymentMethod !== "CARD") return;
+    if (!isSupportedProviderPaymentMethod(subscription.providerPaymentMethod)) return;
     const providerAuthorizationConfirmed = ["AUTHENTICATED", "ACTIVE"].includes(subscription.status)
       && (!payment || ["authorized", "captured"].includes(payment.status));
     if (!providerAuthorizationConfirmed && !confirmedPaidPeriod) return;
@@ -2069,10 +2132,10 @@ export class BillingService {
         failureCategory: normalizedFailureCategory(failureInput, event),
         failureCode: normalizedFailureCode(failureInput),
         lastError: event === "ABANDONED"
-          ? "Checkout was cancelled before card authorization"
+          ? "Checkout was cancelled before payment authorization"
           : event === "DECLINED"
-            ? "Card authorization was declined; the confirmed billing state is unchanged"
-            : "Razorpay reported that card authorization failed; the confirmed billing state is unchanged",
+            ? "Payment authorization was declined; the confirmed billing state is unchanged"
+            : "Razorpay reported that payment authorization failed; the confirmed billing state is unchanged",
         declinedAt: event === "DECLINED" ? now : null,
         abandonedAt: event === "ABANDONED" ? now : null,
         failedAt: event === "DECLINED" || event === "FAILED" ? now : null,
@@ -2247,7 +2310,7 @@ export class BillingService {
       && org.ownerTrialGrant.trialEndsAt > now
         ? org.ownerTrialGrant.trialEndsAt
         : null;
-    const authorized = subscription.providerPaymentMethod === "CARD"
+    const authorized = isSupportedProviderPaymentMethod(subscription.providerPaymentMethod)
       && !["CREATED", "CANCELLED", "COMPLETED", "EXPIRED"].includes(subscription.status);
     const unitAmount = plan.amount ?? 0;
     const estimatedMonthlyTotal = unitAmount * subscription.quantity;

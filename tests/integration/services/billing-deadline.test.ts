@@ -15,7 +15,10 @@ describe("workspace billing deadlines", () => {
   });
   afterAll(async () => { await disconnectDatabase(); });
 
-  function checkoutClient(status: "created" | "authenticated", paymentMethod?: "card"): RazorpayApiClient {
+  function checkoutClient(
+    status: "created" | "authenticated",
+    paymentMethod?: "card" | "upi" | "emandate"
+  ): RazorpayApiClient {
     return {
       createOrder: vi.fn(async () => { throw new Error("unused"); }),
       fetchPayment: vi.fn(async paymentId => ({
@@ -272,8 +275,15 @@ describe("workspace billing deadlines", () => {
       });
   });
 
-  it("applies provider-confirmed card authorization at the confirmation deadline without paidThrough", async () => {
-    setRazorpayClientForTests(checkoutClient("authenticated", "card"));
+  it.each([
+    ["card", "CARD"],
+    ["upi", "UPI"],
+    ["emandate", "EMANDATE"],
+  ] as const)("applies provider-confirmed %s authorization at the confirmation deadline without paidThrough", async (
+    providerMethod,
+    storedMethod
+  ) => {
+    setRazorpayClientForTests(checkoutClient("authenticated", providerMethod));
     const now = new Date("2026-09-03T00:00:00.000Z");
     const owner = await createUser();
     const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
@@ -313,6 +323,55 @@ describe("workspace billing deadlines", () => {
     await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
       .resolves.toMatchObject({ status: "APPLIED", operationStatus: "APPLIED" });
     await expect(testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }))
-      .resolves.toMatchObject({ providerPaymentMethod: "CARD", paidThrough: null });
+      .resolves.toMatchObject({ providerPaymentMethod: storedMethod, paidThrough: null });
+  });
+
+  it("does not lapse a CREATED eMandate while its seven-day confirmation window is open", async () => {
+    const client = checkoutClient("created", "emandate");
+    setRazorpayClientForTests(client);
+    const now = new Date("2026-09-03T00:00:00.000Z");
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    const subscription = await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        providerMode: "TEST",
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        currentOrganizationId: organization.id,
+        razorpaySubscriptionId: "sub_deadline",
+        status: "CREATED",
+        providerPaymentMethod: "EMANDATE",
+        providerStartAt: new Date("2026-09-02T00:00:00.000Z"),
+      },
+    });
+    const change = await testPrisma.organizationBillingChange.create({
+      data: {
+        organizationId: organization.id,
+        organizationSubscriptionId: subscription.id,
+        sequence: 1,
+        idempotencyKey: "emandate-confirmation-window",
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        status: "AWAITING_PAYMENT",
+        operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+        providerPaymentId: "pay_deadline_auth",
+        confirmationDeadlineAt: new Date("2026-09-09T00:00:00.000Z"),
+        failureCategory: "PROVIDER_CONFIRMATION_PENDING",
+        failureCode: "EMANDATE_AUTHORIZATION_PENDING",
+      },
+    });
+
+    const result = await BillingDeadlineService.run(now);
+
+    expect(result).toMatchObject({ lapsedAuthorizations: 0, timedOutCheckouts: 0, errors: [] });
+    expect(client.fetchSubscription).not.toHaveBeenCalled();
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }))
+      .resolves.toMatchObject({ status: "CREATED", paidThrough: null, authorizationLapsedAt: null });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ operationStatus: "AWAITING_PROVIDER_CONFIRMATION" });
   });
 });
