@@ -50,7 +50,9 @@ model Organization {
   billingMutationLeaseUntil DateTime?
   createdAt             DateTime                  @default(now())
   branches              Branch[]
-  subscription          OrganizationSubscription?
+  subscription          OrganizationSubscription? @relation("OrganizationSubscriptionLegacyOwner")
+  currentSubscriptionSlot OrganizationSubscription? @relation("OrganizationCurrentSubscription")
+  pendingSubscriptionReplacement OrganizationSubscription? @relation("OrganizationPendingSubscriptionReplacement")
   subscriptionHistory   OrganizationSubscriptionHistory[]
   razorpayWebhookEvents RazorpayWebhookEvent[]
   ownerTrialGrant       OwnerTrialGrant?
@@ -482,6 +484,7 @@ enum SaasSubscriptionStatus {
   AUTHENTICATED
   ACTIVE
   PENDING
+  PAUSED
   HALTED
   CANCELLED
   COMPLETED
@@ -541,6 +544,7 @@ enum RazorpayPlanProvisioningStatus {
 
 enum BillingChangeType {
   SUBSCRIPTION_AUTHORIZATION
+  PAYMENT_METHOD_REPLACEMENT
   UNSUPPORTED_METHOD_CANCELLATION
   TRIAL_SUBSCRIPTION_UPDATE
   PLAN_UPGRADE
@@ -710,6 +714,9 @@ model OrganizationOfferGrant {
 model OrganizationSubscription {
   id                     String                 @id @default(cuid())
   organizationId         String                 @unique
+  currentOrganizationId  String?                @unique
+  pendingReplacementOrganizationId String?       @unique
+  replacesSubscriptionId String?
   providerMode           RazorpayMode
   plan                   SaasPlan
   amount                 Int
@@ -745,22 +752,30 @@ model OrganizationSubscription {
   createdByUserId        String?
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
-  organization           Organization           @relation(fields: [organizationId], references: [id])
+  organization           Organization           @relation("OrganizationSubscriptionLegacyOwner", fields: [organizationId], references: [id])
+  currentForOrganization Organization?          @relation("OrganizationCurrentSubscription", fields: [currentOrganizationId], references: [id], onDelete: SetNull)
+  pendingReplacementForOrganization Organization? @relation("OrganizationPendingSubscriptionReplacement", fields: [pendingReplacementOrganizationId], references: [id], onDelete: SetNull)
+  replacesSubscription   OrganizationSubscription? @relation("OrganizationSubscriptionReplacementLineage", fields: [replacesSubscriptionId], references: [id], onDelete: SetNull)
+  replacementSubscriptions OrganizationSubscription[] @relation("OrganizationSubscriptionReplacementLineage")
   billingOffer           BillingOffer?           @relation(fields: [billingOfferId], references: [id])
   webhookEvents          RazorpayWebhookEvent[]
   history                OrganizationSubscriptionHistory[]
-  billingChanges         OrganizationBillingChange[]
+  billingChanges         OrganizationBillingChange[] @relation("BillingChangeSourceSubscription")
+  replacementBillingChange OrganizationBillingChange? @relation("BillingChangeReplacementSubscription")
   invoices               OrganizationSubscriptionInvoice[]
 
   @@index([providerMode, status])
   @@index([providerMode, plan])
   @@index([providerMode, razorpaySubscriptionId])
+  @@index([organizationId, createdAt])
+  @@index([replacesSubscriptionId])
 }
 
 model OrganizationBillingChange {
   id                         String                   @id @default(cuid())
   organizationId             String
   organizationSubscriptionId String?
+  replacementSubscriptionId  String?                  @unique
   branchId                   String?
   sequence                   Int
   idempotencyKey             String                   @unique
@@ -788,6 +803,9 @@ model OrganizationBillingChange {
   checkoutOpenedAt           DateTime?
   verificationStartedAt      DateTime?
   providerConfirmedAt        DateTime?
+  accessGrantedAt            DateTime?
+  accessRevokedAt            DateTime?
+  accessGraceEndsAt          DateTime?
   abandonedAt                DateTime?
   declinedAt                 DateTime?
   resolvedAt                 DateTime?
@@ -795,7 +813,8 @@ model OrganizationBillingChange {
   createdAt                  DateTime                 @default(now())
   updatedAt                  DateTime                 @updatedAt
   organization               Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  organizationSubscription   OrganizationSubscription? @relation(fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
+  organizationSubscription   OrganizationSubscription? @relation("BillingChangeSourceSubscription", fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
+  replacementSubscription    OrganizationSubscription? @relation("BillingChangeReplacementSubscription", fields: [replacementSubscriptionId], references: [id], onDelete: SetNull)
   branch                     Branch?                  @relation(fields: [branchId], references: [id], onDelete: SetNull)
 
   @@unique([organizationId, sequence])

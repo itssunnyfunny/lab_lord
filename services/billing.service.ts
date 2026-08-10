@@ -988,6 +988,7 @@ export class BillingService {
 
         const recordData = {
           organizationId,
+          currentOrganizationId: organizationId,
           providerMode,
           plan: selectedPlan.id as SaasPlan,
           amount: selectedPlan.amount ?? 0,
