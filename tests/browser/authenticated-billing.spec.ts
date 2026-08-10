@@ -231,6 +231,7 @@ function makeCheckoutPayload(): BillingCheckoutPayload {
   const subscription = makeSubscription();
   const operation = makeOperation();
   return {
+    purpose: "INITIAL",
     changeId: CHANGE_ID,
     processingUrl: `/org/${ORG_ID}/billing/processing/${CHANGE_ID}`,
     keyId: "rzp_test_playwright",

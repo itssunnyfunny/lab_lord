@@ -97,6 +97,13 @@ describe("RazorpayCheckoutLauncher", () => {
     expect(harness.open).toHaveBeenCalledOnce();
   });
 
+  it("lets provider-managed Checkout choose eligible methods when config is omitted", () => {
+    const { harness } = openWithHarness({ payload: { ...payload, config: undefined } });
+
+    expect(harness.options.config).toBeUndefined();
+    expect(harness.options.method).toBeUndefined();
+  });
+
   it("marks recovery Checkout as a card-change flow", () => {
     const { harness } = openWithHarness({ mode: "RECOVERY" });
 

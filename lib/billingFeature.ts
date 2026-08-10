@@ -1,5 +1,6 @@
 export const WORKSPACE_BILLING_FLAG = "WORKSPACE_BRANCH_BILLING_V2_ENABLED" as const;
 export const RAZORPAY_BILLING_WRITES_FLAG = "RAZORPAY_BILLING_WRITES_ENABLED" as const;
+export const RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG = "RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED" as const;
 
 export class BillingWritesDisabledError extends Error {
   readonly code = "BILLING_WRITES_DISABLED";
@@ -12,6 +13,10 @@ export class BillingWritesDisabledError extends Error {
 
 export function isWorkspaceBillingEnabled() {
   return process.env[WORKSPACE_BILLING_FLAG]?.trim().toLowerCase() === "true";
+}
+
+export function areRazorpayMultiMethodSubscriptionsEnabled() {
+  return process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG]?.trim().toLowerCase() === "true";
 }
 
 export function isWorkspaceBillingEnabledFor(

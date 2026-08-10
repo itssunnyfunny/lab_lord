@@ -174,6 +174,7 @@ describe("BillingService SaaS subscriptions", () => {
     expect(checkout.subscriptionId).toBe("sub_basic");
     expect(checkout.amount).toBe(29900);
     expect(checkout).toMatchObject({
+      purpose: "INITIAL",
       testMode: true,
       description: "Basic: 1 branch x Rs.299 = Rs.299/month",
       prefill: { contact: "+919876543210" },

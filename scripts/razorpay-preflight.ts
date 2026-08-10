@@ -82,6 +82,7 @@ const PREFLIGHT_ISOLATED_ENVIRONMENT_VARIABLES = [
   "RAZORPAY_WEBHOOK_SECRET",
   "RAZORPAY_WEBHOOK_OLD_SECRETS",
   "RAZORPAY_BILLING_WRITES_ENABLED",
+  "RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED",
   "RAZORPAY_LIVE_CANARY_ORG_IDS",
   "WORKSPACE_BRANCH_BILLING_V2_ENABLED",
   "NEXT_PUBLIC_RAZORPAY_KEY_ID",
@@ -618,6 +619,7 @@ async function runPreflight(arguments_: PreflightArguments) {
       databaseFingerprint: fingerprint,
       switches: {
         billingWrites: process.env.RAZORPAY_BILLING_WRITES_ENABLED,
+        multiMethodSubscriptions: process.env.RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED,
         workspaceBillingV2: process.env.WORKSPACE_BRANCH_BILLING_V2_ENABLED,
         liveCanary: {
           count: configuredCanaryOrganizations(process.env).length,

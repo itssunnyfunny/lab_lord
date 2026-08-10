@@ -140,6 +140,19 @@ describe("preflight environment loading", () => {
     });
   });
 
+  it("never inherits an ambient multi-method rollout switch", () => {
+    expect(buildIsolatedPreflightEnvironment(
+      { DATABASE_URL: "postgresql://preview.example.test/lablords" },
+      {
+        VERCEL_ENV: "preview",
+        RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED: "true",
+      }
+    )).toEqual({
+      DATABASE_URL: "postgresql://preview.example.test/lablords",
+      VERCEL_ENV: "preview",
+    });
+  });
+
   it("fails when the requested environment file cannot be loaded", () => {
     expect(() => loadPreflightEnvironment(
       "__missing_preflight_environment__/does-not-exist.env",

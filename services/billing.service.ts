@@ -2228,7 +2228,7 @@ export class BillingService {
       createdAt: Date;
       updatedAt: Date;
     },
-    options: { recovery?: boolean } = {}
+    options: { recovery?: boolean; purpose?: "INITIAL" | "REPLACEMENT" } = {}
   ) {
     const now = new Date();
     const activeTrialEndsAt = org.ownerTrialGrant?.status === "ACTIVE"
@@ -2246,6 +2246,9 @@ export class BillingService {
       + ` x Rs.${unitAmount} = Rs.${estimatedMonthlyTotal}/month`
       + (activeTrialEndsAt ? `; starts ${formatCheckoutDate(activeTrialEndsAt)}` : "");
     return {
+      purpose: options.recovery
+        ? "RECOVERY" as const
+        : options.purpose ?? "INITIAL" as const,
       keyId,
       testMode: keyId.startsWith("rzp_test_"),
       type: "subscription" as const,

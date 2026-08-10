@@ -6,6 +6,7 @@ import type {
   CheckoutBillingPlanId,
 } from "@/lib/billingPlans";
 import type { BillingExperience } from "@/types/billingExperience";
+import type { ProviderPaymentMethodValue } from "@/lib/billingPaymentMethods";
 
 export type BillingPlanDto = {
   id: CheckoutBillingPlanId;
@@ -48,7 +49,7 @@ export type OrganizationSubscriptionDto = {
   endedAt: string | null;
   providerStartAt: string | null;
   authorizationExpiresAt: string | null;
-  providerPaymentMethod: string;
+  providerPaymentMethod: ProviderPaymentMethodValue;
   paidThrough: string | null;
   cancelAtCycleEnd: boolean;
   cancellationRequestedAt: string | null;
@@ -107,7 +108,7 @@ export type BillingOverview = {
     claimable: boolean;
     boundOrganizationId: string | null;
   } | null;
-  paymentMethod: string | null;
+  paymentMethod: ProviderPaymentMethodValue | null;
   invoices: Array<{
     id: string;
     status: string;
@@ -144,7 +145,7 @@ export type BillingOperationDto = {
   updatedAt: string;
 };
 
-export type RazorpayCardOnlyConfig = {
+export type RazorpayCheckoutConfig = {
   display: {
     blocks: {
       cards: {
@@ -157,7 +158,13 @@ export type RazorpayCardOnlyConfig = {
   };
 };
 
+/** @deprecated Use RazorpayCheckoutConfig. Kept while older callers migrate. */
+export type RazorpayCardOnlyConfig = RazorpayCheckoutConfig;
+
+export type BillingCheckoutPurpose = "INITIAL" | "REPLACEMENT";
+
 export type BillingCheckoutPayload = {
+  purpose: BillingCheckoutPurpose;
   changeId: string;
   processingUrl: string;
   keyId: string;
@@ -169,7 +176,7 @@ export type BillingCheckoutPayload = {
   currency: string;
   name: string;
   description: string;
-  config: RazorpayCardOnlyConfig;
+  config?: RazorpayCheckoutConfig;
   plan: Pick<BillingPlanDto, "id" | "name" | "shortName" | "amount" | "currency" | "period">;
   prefill: {
     name?: string;
@@ -205,11 +212,12 @@ export type BillingCancellationResult = {
 };
 
 export type BillingRecoveryPayload = {
+  purpose: "RECOVERY";
   keyId: string;
   testMode: boolean;
   subscriptionId: string;
   subscription_card_change: true;
-  config: RazorpayCardOnlyConfig;
+  config?: RazorpayCheckoutConfig;
   changeId: string;
   processingUrl: string;
   operation: BillingOperationDto;
