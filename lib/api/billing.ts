@@ -29,6 +29,8 @@ export type BillingPlanDto = {
 export type OrganizationSubscriptionDto = {
   id: string;
   organizationId: string;
+  position: "CURRENT" | "PENDING_REPLACEMENT" | "ARCHIVED";
+  replacesSubscriptionId: string | null;
   plan: BillingPlanId;
   planName: string;
   shortName: string;
@@ -93,6 +95,7 @@ export type BillingOverview = {
   razorpayTestMode: boolean;
   plans: BillingPlanDto[];
   current: OrganizationSubscriptionDto | null;
+  pendingReplacement: OrganizationSubscriptionDto | null;
   history: OrganizationSubscriptionHistoryDto[];
   entitlements: OrganizationEntitlementProfileDto;
   billingModelVersion: "LEGACY" | "WORKSPACE_V2";

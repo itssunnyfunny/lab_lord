@@ -143,6 +143,7 @@ describe("serialized workspace billing mutations", () => {
         totalCount: 120,
         quantity: 1,
         razorpayPlanId: "plan_standard",
+        currentOrganizationId: organization.id,
         razorpaySubscriptionId: "sub_workspace",
         status: "ACTIVE",
         providerPaymentMethod: "CARD",

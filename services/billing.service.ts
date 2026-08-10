@@ -523,6 +523,12 @@ function serializeSubscription(subscription: OrganizationSubscription | null | u
   return {
     id: subscription.id,
     organizationId: subscription.organizationId,
+    position: subscription.currentOrganizationId
+      ? "CURRENT" as const
+      : subscription.pendingReplacementOrganizationId
+        ? "PENDING_REPLACEMENT" as const
+        : "ARCHIVED" as const,
+    replacesSubscriptionId: subscription.replacesSubscriptionId,
     plan: subscription.plan,
     planName: plan?.name ?? subscription.plan,
     shortName: plan?.shortName ?? subscription.plan,
@@ -668,8 +674,9 @@ export class BillingService {
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     await expireOverdueAuthorizationOperations(organizationId);
     const providerMode = resolveRazorpayMode();
-    const [subscription, history, entitlements, invoices, scheduledChanges, ownerTrialGrant, offerGrant, experience] = await Promise.all([
-      prisma.organizationSubscription.findUnique({ where: { organizationId } }),
+    const [subscription, pendingReplacement, history, entitlements, invoices, scheduledChanges, ownerTrialGrant, offerGrant, experience] = await Promise.all([
+      prisma.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } }),
+      prisma.organizationSubscription.findUnique({ where: { pendingReplacementOrganizationId: organizationId } }),
       prisma.organizationSubscriptionHistory.findMany({
         where: { organizationId },
         orderBy: { createdAt: "desc" },
@@ -698,6 +705,7 @@ export class BillingService {
       BillingExperienceService.getBillingExperience(organizationId, userId),
     ]);
     assertSubscriptionProviderMode(subscription, providerMode);
+    assertSubscriptionProviderMode(pendingReplacement, providerMode);
 
     const organizationTrial = organization.ownerTrialGrant;
     const ownerTrialClaimable = ownerTrialGrant?.status === "AVAILABLE"
@@ -709,6 +717,7 @@ export class BillingService {
       razorpayTestMode: razorpayTestMode(),
       plans: publicBillingPlans(),
       current: serializeSubscription(subscription),
+      pendingReplacement: serializeSubscription(pendingReplacement),
       history: history.map(serializeHistoryEntry),
       entitlements,
       trial: organizationTrial
@@ -800,7 +809,7 @@ export class BillingService {
     let persistedGatewaySubscription = false;
 
     try {
-      const existing = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
+      const existing = await prisma.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } });
       assertSubscriptionProviderMode(existing, providerMode);
 
       const authorization = await prisma.organizationBillingChange.findFirst({
@@ -944,7 +953,7 @@ export class BillingService {
           where: { id: organizationId },
           data: { selectedPostTrialPlan: selectedPlan.id as SaasPlan },
         });
-        const current = await tx.organizationSubscription.findUnique({ where: { organizationId } });
+        const current = await tx.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } });
         if ((current?.id ?? null) !== (existing?.id ?? null)
           || (current?.razorpaySubscriptionId ?? null) !== (existing?.razorpaySubscriptionId ?? null)) {
           throw new Error("Subscription changed while checkout was being created");
@@ -1135,7 +1144,7 @@ export class BillingService {
     });
     if (!change) throw new Error("Billing operation not found");
     if (isProviderConfirmedOperationStatus(change.operationStatus)) {
-      const current = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
+      const current = await prisma.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } });
       if (!current) throw new Error("Subscription not found");
       assertSubscriptionProviderMode(current, providerMode);
       return {
@@ -1352,7 +1361,7 @@ export class BillingService {
     const razorpay = getRazorpayClient();
     let providerCancellationSubmitted = false;
     try {
-      const subscription = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
+      const subscription = await prisma.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } });
       if (!subscription) throw new Error("Subscription not found");
       assertSubscriptionProviderMode(subscription, providerMode);
       if (TERMINAL_STATUSES.has(subscription.status)) {
@@ -1384,7 +1393,7 @@ export class BillingService {
           select: { id: true },
         });
         if (!leaseOwner) throw new Error("Billing mutation lease expired before cancellation could be saved");
-        const current = await tx.organizationSubscription.findUnique({ where: { organizationId } });
+        const current = await tx.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } });
         if (!current || current.id !== subscription.id
           || current.razorpaySubscriptionId !== subscription.razorpaySubscriptionId) {
           throw new Error("Subscription changed while cancellation was being submitted");
@@ -1423,7 +1432,7 @@ export class BillingService {
     } catch (error) {
       if (providerCancellationSubmitted) {
         try {
-          const current = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
+          const current = await prisma.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } });
           if (current && current.providerMode === providerMode && !current.cancelAtCycleEnd) {
             await razorpay.cancelScheduledChanges(current.razorpaySubscriptionId);
           }

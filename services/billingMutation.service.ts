@@ -276,7 +276,7 @@ export class BillingMutationService {
             })
           : null;
         await tx.organizationSubscription.update({
-          where: { organizationId },
+          where: { currentOrganizationId: organizationId },
           data: {
             plan: providerPlan?.plan,
             amount: providerPlan?.amount,
@@ -506,7 +506,7 @@ export class BillingMutationService {
     leaseToken: string
   ) {
     const subscription = await prisma.organizationSubscription.findUnique({
-      where: { organizationId: change.organizationId },
+      where: { currentOrganizationId: change.organizationId },
     });
     if (!subscription) throw new Error("Subscription not found");
     const providerMode = resolveRazorpayMode();

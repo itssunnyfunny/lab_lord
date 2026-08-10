@@ -204,7 +204,9 @@ describe("BillingService SaaS subscriptions", () => {
       notes: expect.objectContaining({ organization_id: org.id, billing_type: "saas_subscription" }),
     }));
 
-    const stored = await testPrisma.organizationSubscription.findUnique({ where: { organizationId: org.id } });
+    const stored = await testPrisma.organizationSubscription.findUnique({
+      where: { currentOrganizationId: org.id },
+    });
     expect(stored).toMatchObject({
       plan: "BASIC",
       amount: 299,
@@ -413,6 +415,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: legacyOrg.id,
+        currentOrganizationId: legacyOrg.id,
         providerMode: "TEST",
         plan: "BASIC",
         amount: 399,
@@ -437,7 +440,9 @@ describe("BillingService SaaS subscriptions", () => {
       amountSubunits: 29900,
       razorpayPlanId: "plan_basic_299",
     });
-    await expect(testPrisma.organizationSubscription.findUnique({ where: { organizationId: legacyOrg.id } })).resolves.toMatchObject({
+    await expect(testPrisma.organizationSubscription.findUnique({
+      where: { currentOrganizationId: legacyOrg.id },
+    })).resolves.toMatchObject({
       amount: 399,
       amountSubunits: 39900,
       razorpayPlanId: "plan_basic_399",
@@ -479,7 +484,7 @@ describe("BillingService SaaS subscriptions", () => {
     await createBranch({ organizationId: org.id });
     const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
     await testPrisma.organizationSubscription.update({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
       data: { providerMode: "LIVE" },
     });
 
@@ -494,7 +499,7 @@ describe("BillingService SaaS subscriptions", () => {
     })).rejects.toThrow("belongs to Razorpay LIVE mode");
 
     await testPrisma.organizationSubscription.update({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
       data: { status: "PENDING" },
     });
     await expect(BillingService.getRecoveryCheckout(user.id, org.id))
@@ -520,7 +525,7 @@ describe("BillingService SaaS subscriptions", () => {
       "evt_wrong_provider_mode"
     )).rejects.toThrow("belongs to Razorpay LIVE mode");
     await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({ providerMode: "LIVE", status: "PENDING" });
     expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(1);
   });
@@ -590,7 +595,7 @@ describe("BillingService SaaS subscriptions", () => {
       },
     })).resolves.toBe(1);
     await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({
       razorpaySubscriptionId: "sub_basic_quantity_2",
       quantity: 2,
@@ -653,7 +658,7 @@ describe("BillingService SaaS subscriptions", () => {
     await expect(BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" }))
       .rejects.toThrow("Razorpay replacement unavailable");
     await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({
       razorpaySubscriptionId: "sub_basic_offer_retry_1",
       status: "CANCELLED",
@@ -704,7 +709,7 @@ describe("BillingService SaaS subscriptions", () => {
     });
     expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(2);
     await expect(testPrisma.organizationSubscription.findUnique({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({
       plan: "PRO",
       razorpaySubscriptionId: "sub_pro",
@@ -744,7 +749,7 @@ describe("BillingService SaaS subscriptions", () => {
     ]);
 
     const subscription = await testPrisma.organizationSubscription.findUniqueOrThrow({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     });
     const operations = await testPrisma.organizationBillingChange.findMany({
       where: { organizationId: org.id, type: "SUBSCRIPTION_AUTHORIZATION" },
@@ -788,7 +793,7 @@ describe("BillingService SaaS subscriptions", () => {
       cancel_at_cycle_end: false,
     });
     await expect(testPrisma.organizationSubscription.findUnique({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toBeNull();
   });
 
@@ -809,7 +814,9 @@ describe("BillingService SaaS subscriptions", () => {
     expect(result.verified).toBe(true);
     expect(result.operation).toMatchObject({ operationStatus: "APPLIED", returnPath: `/org/${org.id}/analytics` });
     expect(result.subscription?.status).toBe("ACTIVE");
-    const stored = await testPrisma.organizationSubscription.findUnique({ where: { organizationId: org.id } });
+    const stored = await testPrisma.organizationSubscription.findUnique({
+      where: { currentOrganizationId: org.id },
+    });
     expect(stored?.authPaymentId).toBe("pay_auth");
     expect(stored?.currentEnd?.toISOString()).toBe("2026-02-01T00:00:00.000Z");
     const history = await testPrisma.organizationSubscriptionHistory.findMany({
@@ -1330,6 +1337,7 @@ describe("BillingService SaaS subscriptions", () => {
     const subscription = await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
+        currentOrganizationId: org.id,
         providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
@@ -1416,6 +1424,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
+        currentOrganizationId: org.id,
         providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
@@ -1447,6 +1456,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: organization.id,
+        currentOrganizationId: organization.id,
         providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
@@ -1477,6 +1487,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: organization.id,
+        currentOrganizationId: organization.id,
         providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
@@ -1513,6 +1524,7 @@ describe("BillingService SaaS subscriptions", () => {
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
+        currentOrganizationId: org.id,
         providerMode: "TEST",
         plan: "PRO",
         amount: 499,
@@ -1597,7 +1609,9 @@ describe("BillingService SaaS subscriptions", () => {
     expect(second).toMatchObject({ ok: true, duplicate: true });
     expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(1);
     await expect(testPrisma.razorpayWebhookEvent.count()).resolves.toBe(1);
-    const stored = await testPrisma.organizationSubscription.findUnique({ where: { organizationId: org.id } });
+    const stored = await testPrisma.organizationSubscription.findUnique({
+      where: { currentOrganizationId: org.id },
+    });
     expect(stored).toMatchObject({
       status: "ACTIVE",
       authPaymentId: "pay_webhook",
@@ -1694,7 +1708,7 @@ describe("BillingService SaaS subscriptions", () => {
     await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
     const existingPaidThrough = new Date("2026-05-01T00:00:00.000Z");
     await testPrisma.organizationSubscription.update({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
       data: { status: "PENDING", providerPaymentMethod: "CARD", paidThrough: existingPaidThrough },
     });
     vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
@@ -1823,7 +1837,7 @@ describe("BillingService SaaS subscriptions", () => {
       "evt_mismatched_authorization"
     )).rejects.toThrow("does not match the expected plan and branch quantity");
     await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({ plan: "BASIC", quantity: 1, paidThrough: null, authPaymentId: null });
     await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({
       where: { id: checkout.changeId },
@@ -1879,7 +1893,9 @@ describe("BillingService SaaS subscriptions", () => {
     );
 
     const [subscription, operation] = await Promise.all([
-      testPrisma.organizationSubscription.findUniqueOrThrow({ where: { organizationId: org.id } }),
+      testPrisma.organizationSubscription.findUniqueOrThrow({
+        where: { currentOrganizationId: org.id },
+      }),
       testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: checkout.changeId } }),
     ]);
     expect(subscription).toMatchObject({
@@ -1940,6 +1956,7 @@ describe("BillingService SaaS subscriptions", () => {
     const subscription = await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
+        currentOrganizationId: org.id,
         providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
@@ -2008,7 +2025,7 @@ describe("BillingService SaaS subscriptions", () => {
       cancel_at_cycle_end: false,
     });
     await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({
       providerPaymentMethod: "UPI",
       status: "CANCELLED",
@@ -2080,6 +2097,7 @@ describe("BillingService SaaS subscriptions", () => {
     const subscription = await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
+        currentOrganizationId: org.id,
         providerMode: "TEST",
         plan: "BASIC",
         amount: 299,
@@ -2154,7 +2172,7 @@ describe("BillingService SaaS subscriptions", () => {
       lastError: "temporary cancellation outage",
     });
     await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({
       providerPaymentMethod: "EMANDATE",
       status: "AUTHENTICATED",
@@ -2173,7 +2191,7 @@ describe("BillingService SaaS subscriptions", () => {
       attemptCount: 2,
     });
     await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({ providerPaymentMethod: "EMANDATE", status: "CANCELLED" });
   });
 
@@ -2317,13 +2335,13 @@ describe("BillingService SaaS subscriptions", () => {
     await sendStatus("active", "evt_active");
     await sendStatus("authenticated", "evt_stale_authenticated");
     await expect(testPrisma.organizationSubscription.findUnique({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({ status: "ACTIVE" });
 
     await sendStatus("cancelled", "evt_cancelled");
     await sendStatus("active", "evt_stale_active");
     await expect(testPrisma.organizationSubscription.findUnique({
-      where: { organizationId: org.id },
+      where: { currentOrganizationId: org.id },
     })).resolves.toMatchObject({ status: "CANCELLED" });
   });
 });

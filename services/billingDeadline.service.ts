@@ -265,6 +265,7 @@ export class BillingDeadlineService {
 
     const deadlineSubscriptions = await prisma.organizationSubscription.findMany({
       where: {
+        currentOrganizationId: { not: null },
         organization: { billingModelVersion: "WORKSPACE_V2" },
         paidThrough: null,
         status: { in: ["CREATED", "AUTHENTICATED", "ACTIVE"] },
@@ -305,6 +306,7 @@ export class BillingDeadlineService {
     const staleBefore = new Date(now.getTime() - RECONCILE_AFTER_MS);
     const staleSubscriptions = await prisma.organizationSubscription.findMany({
       where: {
+        currentOrganizationId: { not: null },
         organization: { billingModelVersion: "WORKSPACE_V2" },
         status: { in: ["ACTIVE", "PENDING", "HALTED", "CANCELLED", "COMPLETED"] },
         OR: [{ lastReconciledAt: null }, { lastReconciledAt: { lt: staleBefore } }],

@@ -50,9 +50,9 @@ model Organization {
   billingMutationLeaseUntil DateTime?
   createdAt             DateTime                  @default(now())
   branches              Branch[]
-  subscription          OrganizationSubscription? @relation("OrganizationSubscriptionLegacyOwner")
-  currentSubscriptionSlot OrganizationSubscription? @relation("OrganizationCurrentSubscription")
+  subscription          OrganizationSubscription? @relation("OrganizationCurrentSubscription")
   pendingSubscriptionReplacement OrganizationSubscription? @relation("OrganizationPendingSubscriptionReplacement")
+  subscriptions         OrganizationSubscription[] @relation("OrganizationSubscriptionOwner")
   subscriptionHistory   OrganizationSubscriptionHistory[]
   razorpayWebhookEvents RazorpayWebhookEvent[]
   ownerTrialGrant       OwnerTrialGrant?
@@ -713,7 +713,7 @@ model OrganizationOfferGrant {
 
 model OrganizationSubscription {
   id                     String                 @id @default(cuid())
-  organizationId         String                 @unique
+  organizationId         String
   currentOrganizationId  String?                @unique
   pendingReplacementOrganizationId String?       @unique
   replacesSubscriptionId String?
@@ -752,7 +752,7 @@ model OrganizationSubscription {
   createdByUserId        String?
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
-  organization           Organization           @relation("OrganizationSubscriptionLegacyOwner", fields: [organizationId], references: [id])
+  organization           Organization           @relation("OrganizationSubscriptionOwner", fields: [organizationId], references: [id])
   currentForOrganization Organization?          @relation("OrganizationCurrentSubscription", fields: [currentOrganizationId], references: [id], onDelete: SetNull)
   pendingReplacementForOrganization Organization? @relation("OrganizationPendingSubscriptionReplacement", fields: [pendingReplacementOrganizationId], references: [id], onDelete: SetNull)
   replacesSubscription   OrganizationSubscription? @relation("OrganizationSubscriptionReplacementLineage", fields: [replacesSubscriptionId], references: [id], onDelete: SetNull)

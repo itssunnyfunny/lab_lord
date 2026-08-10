@@ -125,6 +125,8 @@ function makeSubscription(
   return {
     id: "subscription-local-1",
     organizationId: ORG_ID,
+    position: "CURRENT",
+    replacesSubscriptionId: null,
     plan: "BASIC",
     planName: "Lab Lords Basic",
     shortName: "Basic",
@@ -189,6 +191,7 @@ function makeOverview(
     razorpayTestMode: true,
     plans: PLANS,
     current,
+    pendingReplacement: null,
     history: [],
     entitlements: {
       organizationId: ORG_ID,

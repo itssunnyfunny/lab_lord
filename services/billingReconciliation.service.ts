@@ -61,7 +61,9 @@ export class BillingReconciliationService {
     organizationId: string,
     options: { paymentId?: string | null; now?: Date } = {}
   ) {
-    const local = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
+    const local = await prisma.organizationSubscription.findUnique({
+      where: { currentOrganizationId: organizationId },
+    });
     if (!local) throw new Error("Subscription not found");
     return this.reconcileProviderSubscription(local.razorpaySubscriptionId, options);
   }
