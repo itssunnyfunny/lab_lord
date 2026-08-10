@@ -99,7 +99,11 @@ describe("deriveWorkspaceBillingState", () => {
   it("makes halted and unconverted organizations read-only", () => {
     expect(deriveWorkspaceBillingState({
       now,
-      subscription: { status: "HALTED", plan: "PRO", paidThrough: null },
+      subscription: {
+        status: "HALTED",
+        plan: "PRO",
+        paidThrough: new Date("2026-08-20T00:00:00.000Z"),
+      },
     }).accessMode).toBe("READ_ONLY");
     expect(deriveWorkspaceBillingState({ now, subscription: null }).accessMode).toBe("READ_ONLY");
   });

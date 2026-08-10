@@ -143,6 +143,12 @@ describe("workspace branch billing lifecycle", () => {
       },
     });
 
+    await expect(EntitlementService.assertBranchWritable(branch.id))
+      .rejects.toThrow("paid access period has ended");
+    await testPrisma.organizationSubscription.update({
+      where: { id: subscription.id },
+      data: { paidThrough: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+    });
     await expect(EntitlementService.assertBranchWritable(branch.id)).resolves.toBeDefined();
     await testPrisma.organizationSubscription.update({
       where: { id: subscription.id },

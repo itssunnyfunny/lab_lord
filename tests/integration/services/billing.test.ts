@@ -837,7 +837,7 @@ describe("BillingService SaaS subscriptions", () => {
       payment_method: "emandate",
     });
     vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
-      id: "pay_emandate_auth",
+      id: "pay_emandateauth",
       entity: "payment",
       amount: 29900,
       currency: "INR",
@@ -855,8 +855,8 @@ describe("BillingService SaaS subscriptions", () => {
     const result = await BillingService.verifySubscriptionSuccess(user.id, org.id, {
       changeId: checkout.changeId,
       razorpay_subscription_id: "sub_basic",
-      razorpay_payment_id: "pay_emandate_auth",
-      razorpay_signature: hmacSha256Hex("pay_emandate_auth|sub_basic", "secret"),
+      razorpay_payment_id: "pay_emandateauth",
+      razorpay_signature: hmacSha256Hex("pay_emandateauth|sub_basic", "secret"),
     });
 
     expect(result).toMatchObject({ verified: true, pending: true });
@@ -882,7 +882,7 @@ describe("BillingService SaaS subscriptions", () => {
   it("fails closed when a verified callback reports an unknown recurring payment method", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
-      id: "pay_wallet_auth",
+      id: "pay_walletauth",
       entity: "payment",
       amount: 29900,
       currency: "INR",
@@ -900,8 +900,8 @@ describe("BillingService SaaS subscriptions", () => {
     const result = await BillingService.verifySubscriptionSuccess(user.id, org.id, {
       changeId: checkout.changeId,
       razorpay_subscription_id: "sub_basic",
-      razorpay_payment_id: "pay_wallet_auth",
-      razorpay_signature: hmacSha256Hex("pay_wallet_auth|sub_basic", "secret"),
+      razorpay_payment_id: "pay_walletauth",
+      razorpay_signature: hmacSha256Hex("pay_walletauth|sub_basic", "secret"),
     });
 
     expect(result).toMatchObject({ verified: true, pending: true });

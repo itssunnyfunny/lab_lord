@@ -85,6 +85,16 @@ export function deriveWorkspaceBillingState(input: BillingStateInput): BillingSt
   const paidPeriodActive = subscription.paidThrough != null
     && subscription.paidThrough > input.now;
 
+  if (subscription.status === "HALTED") {
+    return applyAuthorizedReplacement({
+      accessMode: "READ_ONLY",
+      canWrite: false,
+      effectivePlan: subscription.plan,
+      source: "NONE",
+      reason: "Payment retries are exhausted",
+    }, input.authorizedReplacement, input.now);
+  }
+
   if ((subscription.status === "PENDING" || subscription.status === "PAUSED")
     && paidPeriodActive) {
     return applyAuthorizedReplacement({
@@ -108,9 +118,7 @@ export function deriveWorkspaceBillingState(input: BillingStateInput): BillingSt
     }, input.authorizedReplacement, input.now);
   }
 
-  const reason = subscription.status === "HALTED"
-    ? "Payment retries are exhausted"
-    : subscription.status === "ACTIVE"
+  const reason = subscription.status === "ACTIVE"
       ? "Payment confirmation is still required"
       : "The paid access period has ended";
 

@@ -2,6 +2,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { BillingMutationService } from "@/services/billingMutation.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
+import {
+  getReplacementUndoCutoffAt,
+  getSafeReplacementCycleBoundary,
+} from "@/services/billingReplacementPolicy";
 import { setRazorpayClientForTests, type RazorpayPlanCatalogApiClient } from "@/lib/razorpay";
 import { createBranch, createOrg, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
@@ -295,6 +299,14 @@ describe("serialized workspace billing mutations", () => {
       toQuantity: 2,
       createdByUserId: owner.id,
     });
+    const now = new Date();
+    const providerSource = await razorpay.fetchSubscription(subscription.razorpaySubscriptionId);
+    const effectiveAt = getSafeReplacementCycleBoundary({
+      now,
+      currentCycleEnd: new Date(providerSource.current_end! * 1000),
+      intervalMonths: 1,
+    });
+    const undoCutoffAt = getReplacementUndoCutoffAt(effectiveAt);
     vi.mocked(razorpay.listSubscriptions!).mockResolvedValueOnce({
       entity: "collection",
       count: 1,
@@ -305,6 +317,8 @@ describe("serialized workspace billing mutations", () => {
         status: "created",
         total_count: 120,
         quantity: 2,
+        start_at: Math.floor(effectiveAt.getTime() / 1000),
+        expire_by: Math.floor(undoCutoffAt.getTime() / 1000),
         created_at: Math.floor(Date.now() / 1000),
         notes: {
           app: "lab_lords",
@@ -318,7 +332,7 @@ describe("serialized workspace billing mutations", () => {
       }],
     });
 
-    await BillingMutationService.processNext(organization.id);
+    await BillingMutationService.processNext(organization.id, now);
 
     expect(razorpay.createSubscription).not.toHaveBeenCalled();
     await expect(testPrisma.organizationSubscription.findUnique({
