@@ -188,6 +188,7 @@ describe("replacement reconciliation trust contracts", () => {
       razorpayPlanId: "plan_expected",
       razorpaySubscriptionId: "sub_candidate",
       status: "AUTHENTICATED",
+      pendingReplacementOrganizationId: "org_1",
     });
     linkedReplacement = {
       id: "change_drift",
@@ -238,5 +239,48 @@ describe("replacement reconciliation trust contracts", () => {
       where: { id: "branch_2", billingStatus: "ACTIVE" },
       data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
     });
+  });
+
+  it("does not reinterpret a promoted subscription's historical replacement as candidate drift", async () => {
+    local = localSubscription({
+      currentOrganizationId: "org_1",
+      pendingReplacementOrganizationId: null,
+      providerPaymentMethod: "CARD",
+    });
+    linkedReplacement = {
+      id: "historical_change",
+      status: "APPLIED",
+      replacementSubscriptionId: local.id,
+      branchId: "branch_2",
+      type: "QUANTITY_INCREASE",
+      accessGrantedAt: new Date("2026-07-01T00:00:00.000Z"),
+      accessRevokedAt: new Date("2026-08-01T00:00:00.000Z"),
+    };
+    providerPlan = {
+      providerMode: "TEST",
+      plan: "PRO",
+      razorpayPlanId: "plan_standard",
+      amount: 499,
+      amountSubunits: 49900,
+      currency: "INR",
+      period: "monthly",
+      interval: 1,
+      active: true,
+    };
+    mocks.fetchSubscription.mockResolvedValue({
+      id: "sub_source",
+      entity: "subscription",
+      plan_id: "plan_standard",
+      status: "active",
+      total_count: 120,
+      quantity: 2,
+      payment_method: "card",
+    });
+
+    await BillingReconciliationService.reconcileProviderSubscription("sub_source", { now });
+
+    expect(mocks.changeFindUnique).not.toHaveBeenCalled();
+    expect(mocks.changeUpdate).not.toHaveBeenCalled();
+    expect(mocks.branchUpdateMany).not.toHaveBeenCalled();
   });
 });

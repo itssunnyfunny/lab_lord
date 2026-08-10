@@ -130,9 +130,11 @@ export class BillingReconciliationService {
         SELECT "id" FROM "Organization" WHERE "id" = ${local.organizationId} FOR UPDATE
       `;
 
-      const linkedReplacementChange = await tx.organizationBillingChange.findUnique({
-        where: { replacementSubscriptionId: local.id },
-      });
+      const linkedReplacementChange = local.pendingReplacementOrganizationId
+        ? await tx.organizationBillingChange.findUnique({
+            where: { replacementSubscriptionId: local.id },
+          })
+        : null;
       const providerPlan = await tx.saasRazorpayPlan.findFirst({
         where: {
           razorpayPlanId: providerSubscription.plan_id,
