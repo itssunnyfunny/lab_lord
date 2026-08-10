@@ -16,8 +16,57 @@ export type PreflightArguments = {
   expectEmptyProviderCatalog: boolean;
   expectedBillingWrites: ExpectedSwitch;
   expectedV2: ExpectedSwitch;
+  expectedMultiMethodSubscriptions: ExpectedSwitch;
   expectedCanaryOrganizationId?: string;
+  confirmations: {
+    subscriptionSettings: boolean;
+    upiIntent: boolean;
+    upiQr: boolean;
+    webhookEvents: boolean;
+    amountEligibility: boolean;
+  };
 };
+
+type JsonObject = Record<string, unknown>;
+
+export type RecurringMethodsSummary = {
+  accountMethods: {
+    card: boolean;
+    upi: boolean;
+    netbanking: boolean;
+  };
+  recurring: {
+    card: { enabled: boolean; supportedEntryCount: number };
+    upi: { enabled: boolean; supportedEntryCount: number };
+    emandate: {
+      enabled: boolean;
+      supportedBankCount: number;
+      authenticationTypeCount: number;
+    };
+  };
+  checkoutSignals: {
+    upiIntent: boolean | null;
+    upiQr: boolean | null;
+  };
+};
+
+export const REQUIRED_MULTI_METHOD_WEBHOOK_EVENTS = [
+  "subscription.authenticated",
+  "subscription.activated",
+  "subscription.charged",
+  "subscription.updated",
+  "subscription.pending",
+  "subscription.halted",
+  "subscription.paused",
+  "subscription.resumed",
+  "subscription.cancelled",
+  "subscription.completed",
+  "invoice.paid",
+  "invoice.partially_paid",
+  "payment.authorized",
+  "payment.captured",
+  "payment.failed",
+] as const;
 
 type PlanRow = {
   plan: string;
@@ -51,6 +100,8 @@ type ProvisioningRow = {
 type OperationRow = {
   operationStatus: string;
   status: string;
+  toPlan: string | null;
+  toQuantity: number | null;
 };
 
 type InvoiceRow = { status: string };
@@ -133,10 +184,19 @@ export function parsePreflightArguments(argv: string[]): PreflightArguments {
     "--forbid-plan-id=",
     "--expect-billing-writes=",
     "--expect-v2=",
+    "--expect-multi-method-subscriptions=",
     "--expect-canary-org-id=",
   ];
+  const confirmationFlags = [
+    "--confirm-subscription-settings",
+    "--confirm-upi-intent",
+    "--confirm-upi-qr",
+    "--confirm-webhook-events",
+    "--confirm-amount-eligibility",
+  ] as const;
   const unknown = argv.find(argument =>
     argument !== "--expect-empty-provider-catalog" &&
+    !confirmationFlags.includes(argument as typeof confirmationFlags[number]) &&
     !known.some(prefix => argument.startsWith(prefix))
   );
   if (unknown) throw new Error(`Unknown preflight argument: ${unknown}`);
@@ -169,6 +229,13 @@ export function parsePreflightArguments(argv: string[]): PreflightArguments {
       argv.map(argument => argumentValue(argument, "--expect-v2")).find(Boolean) ?? null,
       "--expect-v2"
     ) ?? (targetValue === "preview" ? "enabled" : "disabled");
+  const expectedMultiMethodSubscriptions =
+    parseSwitch(
+      argv
+        .map(argument => argumentValue(argument, "--expect-multi-method-subscriptions"))
+        .find(Boolean) ?? null,
+      "--expect-multi-method-subscriptions"
+    ) ?? "disabled";
   const expectedCanaryValues = argv
     .map(argument => argumentValue(argument, "--expect-canary-org-id"))
     .filter((value): value is string => Boolean(value));
@@ -204,6 +271,24 @@ export function parsePreflightArguments(argv: string[]): PreflightArguments {
     throw new Error("--expect-canary-org-id is supported only for Production preflight");
   }
 
+  const confirmations = {
+    subscriptionSettings: argv.includes("--confirm-subscription-settings"),
+    upiIntent: argv.includes("--confirm-upi-intent"),
+    upiQr: argv.includes("--confirm-upi-qr"),
+    webhookEvents: argv.includes("--confirm-webhook-events"),
+    amountEligibility: argv.includes("--confirm-amount-eligibility"),
+  };
+  if (expectedMultiMethodSubscriptions === "enabled") {
+    const missing = Object.entries(confirmations)
+      .filter(([, confirmed]) => !confirmed)
+      .map(([name]) => name);
+    if (missing.length > 0) {
+      throw new Error(
+        `Multi-method preflight requires explicit Dashboard/Test confirmations: ${missing.join(", ")}`
+      );
+    }
+  }
+
   return {
     target: targetValue,
     envFile,
@@ -213,7 +298,9 @@ export function parsePreflightArguments(argv: string[]): PreflightArguments {
     expectEmptyProviderCatalog: argv.includes("--expect-empty-provider-catalog"),
     expectedBillingWrites,
     expectedV2,
+    expectedMultiMethodSubscriptions,
     expectedCanaryOrganizationId,
+    confirmations,
   };
 }
 
@@ -233,6 +320,11 @@ function expectedClerkPrefixes(target: PreflightTarget) {
 
 function enabledValue(value: ExpectedSwitch) {
   return value === "enabled" ? "true" : "false";
+}
+
+function featureFlagValue(environment: Environment, name: string) {
+  const configured = environment[name]?.trim().toLowerCase();
+  return configured === undefined || configured === "" ? "false" : configured;
 }
 
 export function buildIsolatedPreflightEnvironment(
@@ -286,7 +378,10 @@ export function validatePreflightEnvironment(
   environment: Environment,
   options: Pick<
     PreflightArguments,
-    "expectedBillingWrites" | "expectedV2" | "expectedCanaryOrganizationId"
+    | "expectedBillingWrites"
+    | "expectedV2"
+    | "expectedMultiMethodSubscriptions"
+    | "expectedCanaryOrganizationId"
   >
 ) {
   const failures: string[] = [];
@@ -320,6 +415,17 @@ export function validatePreflightEnvironment(
   }
   if (environment.WORKSPACE_BRANCH_BILLING_V2_ENABLED !== enabledValue(options.expectedV2)) {
     failures.push(`WORKSPACE_BRANCH_BILLING_V2_ENABLED must be ${enabledValue(options.expectedV2)}`);
+  }
+  const multiMethodSubscriptions = featureFlagValue(
+    environment,
+    "RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED"
+  );
+  if (!new Set(["true", "false"]).has(multiMethodSubscriptions)) {
+    failures.push("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED must be true or false when set");
+  } else if (multiMethodSubscriptions !== enabledValue(options.expectedMultiMethodSubscriptions)) {
+    failures.push(
+      `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED must be ${enabledValue(options.expectedMultiMethodSubscriptions)}`
+    );
   }
   const canaryOrganizations = configuredCanaryOrganizations(environment);
   if (!options.expectedCanaryOrganizationId && canaryOrganizations.length > 0) {
@@ -364,6 +470,165 @@ function countBy<T>(rows: T[], value: (row: T) => string) {
     counts[key] = (counts[key] ?? 0) + 1;
     return counts;
   }, {});
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function child(object: JsonObject | undefined, name: string) {
+  if (!object) return undefined;
+  const match = Object.entries(object).find(([key]) => key.toLowerCase() === name.toLowerCase());
+  return match?.[1];
+}
+
+function capabilityEnabled(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === "number") return value > 0;
+  if (typeof value === "string") {
+    return !new Set(["", "false", "disabled", "inactive", "unavailable", "0"])
+      .has(value.trim().toLowerCase());
+  }
+  if (Array.isArray(value)) return value.some(capabilityEnabled);
+  if (isJsonObject(value)) return Object.values(value).some(capabilityEnabled);
+  return false;
+}
+
+const CAPABILITY_METADATA_KEYS = new Set([
+  "active",
+  "available",
+  "enabled",
+  "status",
+  "supported",
+]);
+
+function supportedEntryCount(value: unknown) {
+  if (Array.isArray(value)) return value.filter(capabilityEnabled).length;
+  if (!isJsonObject(value)) return capabilityEnabled(value) ? 1 : 0;
+  return Object.entries(value).filter(([key, entry]) =>
+    !CAPABILITY_METADATA_KEYS.has(key.toLowerCase()) && capabilityEnabled(entry)
+  ).length;
+}
+
+function collectStringLeaves(value: unknown, target = new Set<string>()) {
+  if (typeof value === "string" && value.trim()) target.add(value.trim().toLowerCase());
+  else if (Array.isArray(value)) value.forEach(entry => collectStringLeaves(entry, target));
+  else if (isJsonObject(value)) Object.values(value).forEach(entry => collectStringLeaves(entry, target));
+  return target;
+}
+
+function namedCapability(root: JsonObject, requiredPathTerms: string[]) {
+  const matches: unknown[] = [];
+  const visit = (value: unknown, path: string[]) => {
+    if (!isJsonObject(value)) return;
+    for (const [key, entry] of Object.entries(value)) {
+      const nextPath = [...path, key.toLowerCase()];
+      const joined = nextPath.join(".");
+      if (requiredPathTerms.every(term => joined.includes(term))) matches.push(entry);
+      visit(entry, nextPath);
+    }
+  };
+  visit(root, []);
+  if (matches.length === 0) return null;
+  return matches.some(capabilityEnabled);
+}
+
+/**
+ * Summarises the account-specific Methods API response without embedding a
+ * bank, app, handle or network catalog in application code. Razorpay remains
+ * the source of truth because these lists and account capabilities change.
+ */
+export function summarizeRecurringMethods(response: unknown): RecurringMethodsSummary {
+  if (!isJsonObject(response)) throw new Error("Razorpay Methods API returned an invalid response");
+
+  const recurringValue = child(response, "recurring");
+  const recurring = isJsonObject(recurringValue) ? recurringValue : undefined;
+  const accountCard = child(response, "card");
+  const accountUpi = child(response, "upi");
+  const accountNetbanking = child(response, "netbanking");
+  const recurringCard = child(recurring, "card");
+  const recurringUpi = child(recurring, "upi");
+  const recurringEmandate = child(recurring, "emandate");
+  const emandateAuthenticationTypes = collectStringLeaves(recurringEmandate);
+
+  return {
+    accountMethods: {
+      card: capabilityEnabled(accountCard),
+      upi: capabilityEnabled(accountUpi),
+      netbanking: capabilityEnabled(accountNetbanking),
+    },
+    recurring: {
+      card: {
+        enabled: capabilityEnabled(recurringCard),
+        supportedEntryCount: supportedEntryCount(recurringCard),
+      },
+      upi: {
+        // Some account responses expose UPI only at the top level while card
+        // and eMandate catalogs live under `recurring`.
+        enabled: capabilityEnabled(recurringUpi ?? accountUpi),
+        supportedEntryCount: supportedEntryCount(recurringUpi ?? accountUpi),
+      },
+      emandate: {
+        enabled: capabilityEnabled(recurringEmandate),
+        supportedBankCount: supportedEntryCount(recurringEmandate),
+        authenticationTypeCount: emandateAuthenticationTypes.size,
+      },
+    },
+    checkoutSignals: {
+      upiIntent: namedCapability(response, ["upi", "intent"]),
+      upiQr: namedCapability(response, ["upi", "qr"]),
+    },
+  };
+}
+
+export function validateRecurringMethods(
+  summary: RecurringMethodsSummary,
+  requireMultiMethodSubscriptions: boolean
+) {
+  if (!requireMultiMethodSubscriptions) return [];
+  const failures: string[] = [];
+  if (!summary.accountMethods.card || !summary.recurring.card.enabled) {
+    failures.push("Razorpay Methods API does not report recurring Card capability");
+  }
+  if (!summary.accountMethods.upi || !summary.recurring.upi.enabled) {
+    failures.push("Razorpay Methods API does not report UPI capability for this account");
+  }
+  if (
+    !summary.recurring.emandate.enabled
+    || summary.recurring.emandate.supportedBankCount === 0
+  ) {
+    failures.push("Razorpay Methods API does not report any recurring eMandate banks");
+  }
+  if (summary.checkoutSignals.upiIntent === false) {
+    failures.push("Razorpay Methods API explicitly reports UPI Intent as unavailable");
+  }
+  if (summary.checkoutSignals.upiQr === false) {
+    failures.push("Razorpay Methods API explicitly reports UPI QR as unavailable");
+  }
+  return failures;
+}
+
+export async function fetchRazorpayMethods(
+  keyId: string,
+  fetchImplementation: typeof fetch = fetch
+) {
+  const auth = Buffer.from(`${keyId}:`).toString("base64");
+  let response: Response;
+  try {
+    response = await fetchImplementation("https://api.razorpay.com/v1/methods", {
+      method: "GET",
+      headers: { Authorization: `Basic ${auth}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new Error("Unable to reach the Razorpay Methods API");
+  }
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(`Razorpay Methods API request failed with ${response.status}`);
+  }
+  return payload;
 }
 
 export function databaseFingerprint(databaseIdentity: string) {
@@ -456,7 +721,7 @@ async function runPreflight(arguments_: PreflightArguments) {
         FROM "RazorpayPlanProvisioning"
       `,
       prisma.$queryRaw<OperationRow[]>`
-        SELECT "operationStatus", "status"
+        SELECT "operationStatus", "status", "toPlan"::TEXT, "toQuantity"
         FROM "OrganizationBillingChange"
       `,
       prisma.$queryRaw<InvoiceRow[]>`
@@ -509,12 +774,69 @@ async function runPreflight(arguments_: PreflightArguments) {
 
     const razorpay = razorpayModule.getRazorpayClient();
     const planCatalogClient = razorpayModule.getRazorpayPlanCatalogClient();
+    const requireMultiMethodSubscriptions =
+      arguments_.expectedMultiMethodSubscriptions === "enabled";
+    const maximumConfiguredChargeSubunitsByCurrency = plans.reduce<Record<string, number>>(
+      (maximums, plan) => {
+        const currency = plan.currency.toUpperCase();
+        maximums[currency] = Math.max(maximums[currency] ?? 0, plan.amountSubunits);
+        return maximums;
+      },
+      {}
+    );
+    const plansById = new Map(plans.map(plan => [plan.razorpayPlanId, plan]));
+    for (const subscription of subscriptions) {
+      const plan = plansById.get(subscription.razorpayPlanId);
+      if (!plan) continue;
+      const currency = plan.currency.toUpperCase();
+      maximumConfiguredChargeSubunitsByCurrency[currency] = Math.max(
+        maximumConfiguredChargeSubunitsByCurrency[currency] ?? 0,
+        plan.amountSubunits * subscription.quantity
+      );
+    }
+    for (const operation of operations) {
+      if (
+        !["QUEUED", "PROCESSING", "AWAITING_PAYMENT"].includes(operation.status)
+        || !operation.toPlan
+        || !operation.toQuantity
+      ) continue;
+      const targetPlan = plans.find(plan =>
+        plan.active
+        && plan.providerMode === expectedProviderMode
+        && plan.plan === operation.toPlan
+      );
+      if (!targetPlan) continue;
+      const currency = targetPlan.currency.toUpperCase();
+      maximumConfiguredChargeSubunitsByCurrency[currency] = Math.max(
+        maximumConfiguredChargeSubunitsByCurrency[currency] ?? 0,
+        targetPlan.amountSubunits * operation.toQuantity
+      );
+    }
     const providerVerification = {
       providerPlanCatalogCount: null as number | null,
       plans: { checked: 0, matched: 0, failures: {} as Record<string, number> },
       subscriptions: { checked: 0, matched: 0, drifted: 0, failures: {} as Record<string, number> },
       forbiddenPlanInaccessible: null as boolean | null,
+      recurringMethods: {
+        checked: false,
+        summary: null as RecurringMethodsSummary | null,
+        dashboardConfirmations: arguments_.confirmations,
+        requiredWebhookEvents: REQUIRED_MULTI_METHOD_WEBHOOK_EVENTS,
+        maximumConfiguredChargeSubunitsByCurrency,
+        amountEligibilitySource:
+          "Razorpay Checkout and the issuing bank remain authoritative for method/amount eligibility",
+      },
     };
+
+    try {
+      const methodsResponse = await fetchRazorpayMethods(process.env.RAZORPAY_KEY_ID!);
+      const recurringMethods = summarizeRecurringMethods(methodsResponse);
+      providerVerification.recurringMethods.checked = true;
+      providerVerification.recurringMethods.summary = recurringMethods;
+      failures.push(...validateRecurringMethods(recurringMethods, requireMultiMethodSubscriptions));
+    } catch (error) {
+      failures.push(`The Razorpay Methods API could not be inspected (${providerErrorCategory(error)})`);
+    }
 
     try {
       let skip = 0;
@@ -619,7 +941,10 @@ async function runPreflight(arguments_: PreflightArguments) {
       databaseFingerprint: fingerprint,
       switches: {
         billingWrites: process.env.RAZORPAY_BILLING_WRITES_ENABLED,
-        multiMethodSubscriptions: process.env.RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED,
+        multiMethodSubscriptions: featureFlagValue(
+          process.env,
+          "RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED"
+        ),
         workspaceBillingV2: process.env.WORKSPACE_BRANCH_BILLING_V2_ENABLED,
         liveCanary: {
           count: configuredCanaryOrganizations(process.env).length,
@@ -700,6 +1025,16 @@ async function runPreflight(arguments_: PreflightArguments) {
         forbiddenPlanIsProviderInaccessible: arguments_.forbidPlanId
           ? providerVerification.forbiddenPlanInaccessible
           : null,
+        recurringMethodsMatchRolloutExpectation:
+          providerVerification.recurringMethods.summary === null
+            ? false
+            : validateRecurringMethods(
+                providerVerification.recurringMethods.summary,
+                requireMultiMethodSubscriptions
+              ).length === 0,
+        dashboardReadinessConfirmed: requireMultiMethodSubscriptions
+          ? Object.values(arguments_.confirmations).every(Boolean)
+          : null,
       },
       failures: [...new Set(failures)],
       note: "Read-only audit complete. No database or Razorpay mutation was attempted.",
@@ -727,8 +1062,15 @@ Options:
   --forbid-plan-id=plan_...               Assert a provider plan is not stored here
   --expect-billing-writes=enabled|disabled
   --expect-v2=enabled|disabled
+  --expect-multi-method-subscriptions=enabled|disabled
   --expect-canary-org-id=ORG_ID            Explicitly allow one Production canary
+  --confirm-subscription-settings          Attest Card, UPI and eMandate are enabled for Subscriptions
+  --confirm-upi-intent                     Attest Standard Checkout UPI Intent was tested
+  --confirm-upi-qr                         Attest desktop UPI QR was tested
+  --confirm-webhook-events                 Attest every reported required webhook event is configured
+  --confirm-amount-eligibility             Attest configured plan/quantity amounts were tested in Checkout
 
+The confirmation flags are required when multi-method subscriptions are expected.
 This command has no mutation or cleanup mode.`);
 }
 
