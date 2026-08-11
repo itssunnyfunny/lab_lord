@@ -143,13 +143,13 @@ export function EditStudentDialog({
             className="max-w-sm"
             footer={(
                 <>
-                    <Button variant="ghost" onClick={handleClose} disabled={loading} className="h-8 px-3 text-sm">
+                    <Button variant="ghost" onClick={handleClose} disabled={loading} className="h-11 px-3 text-sm lg:h-8">
                         Cancel
                     </Button>
                     <Button
                         onClick={handleSave}
                         disabled={loading || !hasChanges}
-                        className="h-8 min-w-[90px] justify-center px-4 text-sm"
+                        className="h-11 min-w-[90px] justify-center px-4 text-sm lg:h-8"
                     >
                         {loading
                             ? <><Loader2 size={12} className="mr-1.5 animate-spin" aria-hidden="true" /> Saving...</>

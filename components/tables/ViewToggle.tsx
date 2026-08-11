@@ -48,7 +48,7 @@ export function ViewToggle({ value, onChange, className }: ViewToggleProps) {
                         title={label}
                         onClick={() => onChange(optionValue)}
                         className={cn(
-                            "relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-[calc(var(--ui-radius-control)-2px)] text-[color:var(--ui-view-toggle-text)] transition-colors",
+                            "relative flex h-11 w-11 cursor-pointer items-center justify-center rounded-[calc(var(--ui-radius-control)-2px)] text-[color:var(--ui-view-toggle-text)] transition-colors lg:h-8 lg:w-8",
                             "hover:bg-[color:var(--ui-view-toggle-hover-bg)] hover:text-[color:var(--ui-view-toggle-hover-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]",
                             active && "ring-1 shadow-sm",
                             active && activeClassName

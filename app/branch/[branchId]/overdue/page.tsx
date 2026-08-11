@@ -389,7 +389,7 @@ function OverdueContent({ branchId, recordDecision }: { branchId: string; record
                                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                                     <select
                                         aria-label="Reminder language"
-                                        className={cn(formControlClass, "h-9 w-full bg-[color:var(--ui-form-input-select-bg)] px-3 text-xs sm:w-32")}
+                                        className={cn(formControlClass, "h-11 w-full bg-[color:var(--ui-form-input-select-bg)] px-3 text-xs sm:w-32 lg:h-9")}
                                         value={language}
                                         onChange={(event) => setLanguage(event.target.value as MessageLanguage)}
                                     >
@@ -461,7 +461,7 @@ function OverdueContent({ branchId, recordDecision }: { branchId: string; record
                                     {selectedPayments.length > 0 && (
                                         <Link
                                             href={bulkReviewHref}
-                                            className="inline-flex h-10 items-center justify-center rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] bg-[color:var(--ui-button-secondary-bg)] px-3 text-sm font-semibold text-[color:var(--ui-button-secondary-text)] transition-colors hover:bg-[color:var(--ui-button-secondary-hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]"
+                                            className="inline-flex min-h-11 items-center justify-center rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] bg-[color:var(--ui-button-secondary-bg)] px-3 text-sm font-semibold text-[color:var(--ui-button-secondary-text)] transition-colors hover:bg-[color:var(--ui-button-secondary-hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]"
                                         >
                                             {selectedPayments.length === 1 ? "Review selected payment" : "Open matching due queue"}
                                         </Link>
@@ -671,7 +671,7 @@ function MetricCard({
     );
 }
 
-const queueActionLinkClass = "inline-flex min-h-10 items-center justify-center rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] bg-[color:var(--ui-button-secondary-bg)] px-3 text-xs font-semibold text-[color:var(--ui-button-secondary-text)] transition-colors hover:bg-[color:var(--ui-button-secondary-hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]";
+const queueActionLinkClass = "inline-flex min-h-11 items-center justify-center rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] bg-[color:var(--ui-button-secondary-bg)] px-3 text-xs font-semibold text-[color:var(--ui-button-secondary-text)] transition-colors hover:bg-[color:var(--ui-button-secondary-hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]";
 
 function PaymentQueueAction({ href, decision }: { href: string; decision: CapabilityDecision }) {
     if (decision.allowed) {
@@ -689,7 +689,7 @@ function PaymentQueueAction({ href, decision }: { href: string; decision: Capabi
                 type="button"
                 disabled
                 aria-describedby="overdue-record-blocker"
-                className="inline-flex min-h-10 cursor-not-allowed items-center justify-center gap-1.5 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] px-3 text-xs font-semibold text-[color:var(--ui-button-secondary-text)] opacity-[var(--ui-control-disabled-opacity)]"
+                className="inline-flex min-h-11 cursor-not-allowed items-center justify-center gap-1.5 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] px-3 text-xs font-semibold text-[color:var(--ui-button-secondary-text)] opacity-[var(--ui-control-disabled-opacity)]"
             >
                 <LockKeyhole size={13} aria-hidden="true" />
                 Record payment

@@ -215,9 +215,9 @@ export function Dialog({
       <div
         ref={dialogRef}
         className={cn(
-          "relative max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-[var(--ui-dialog-radius)] border border-[color:var(--ui-dialog-border)] bg-[color:var(--ui-dialog-bg)] p-4 shadow-[var(--ui-dialog-shadow)] sm:p-6",
-          placement === "right" && "h-full max-h-none max-w-md rounded-none border-y-0 border-r-0",
-          placement === "bottom" && "max-h-[90dvh] rounded-b-none sm:rounded-[var(--ui-dialog-radius)]",
+          "relative max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-[var(--ui-dialog-radius)] border border-[color:var(--ui-dialog-border)] bg-[color:var(--ui-dialog-bg)] p-4 [padding-bottom:max(1rem,env(safe-area-inset-bottom))] shadow-[var(--ui-dialog-shadow)] sm:p-6",
+          placement === "right" && "h-full max-h-none max-w-md rounded-none border-y-0 border-r-0 [padding-top:max(1rem,env(safe-area-inset-top))]",
+          placement === "bottom" && "max-h-[90dvh] rounded-b-none [padding-bottom:max(1rem,env(safe-area-inset-bottom))] sm:rounded-[var(--ui-dialog-radius)]",
           "ui-dialog-enter",
           className
         )}

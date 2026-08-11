@@ -39,7 +39,7 @@ interface OverdueTableProps {
     recordDecision: CapabilityDecision;
 }
 
-const actionLinkClass = "inline-flex min-h-10 items-center justify-center rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] bg-[color:var(--ui-button-secondary-bg)] px-3 text-xs font-semibold text-[color:var(--ui-button-secondary-text)] transition-colors hover:bg-[color:var(--ui-button-secondary-hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]";
+const actionLinkClass = "inline-flex min-h-11 items-center justify-center rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] bg-[color:var(--ui-button-secondary-bg)] px-3 text-xs font-semibold text-[color:var(--ui-button-secondary-text)] transition-colors hover:bg-[color:var(--ui-button-secondary-hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]";
 
 function DashboardPaymentAction({ href, decision }: { href: string; decision: CapabilityDecision }) {
     if (decision.allowed) return <Link href={href} className={actionLinkClass}>Record payment</Link>;
@@ -52,7 +52,7 @@ function DashboardPaymentAction({ href, decision }: { href: string; decision: Ca
                 type="button"
                 disabled
                 aria-describedby="dashboard-overdue-record-blocker"
-                className="inline-flex min-h-10 cursor-not-allowed items-center gap-1.5 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] px-3 text-xs font-semibold text-[color:var(--ui-button-secondary-text)] opacity-[var(--ui-control-disabled-opacity)]"
+                className="inline-flex min-h-11 cursor-not-allowed items-center gap-1.5 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-button-secondary-border)] px-3 text-xs font-semibold text-[color:var(--ui-button-secondary-text)] opacity-[var(--ui-control-disabled-opacity)]"
             >
                 <LockKeyhole size={13} aria-hidden="true" /> Record payment
             </button>
@@ -142,7 +142,7 @@ export function OverdueTable({ payments, branchId, recordDecision }: OverdueTabl
                         </div>
                     </div>
 
-                    <div className="hidden md:block">
+                    <div className="hidden lg:block">
                         <table className="w-full text-left text-sm">
                             <caption className="sr-only">Dashboard overdue payment completion queue</caption>
                             <thead className={cn("border-b text-xs font-medium text-[color:var(--ui-table-muted)]", pageSectionDividerClass, pageTableHeadClass)}>
@@ -187,7 +187,7 @@ export function OverdueTable({ payments, branchId, recordDecision }: OverdueTabl
                         </table>
                     </div>
 
-                    <div className={cn("divide-y md:hidden", pageSectionDividerClass)}>
+                    <div className={cn("divide-y lg:hidden", pageSectionDividerClass)}>
                         {shown.map(payment => {
                             const overdueDays = daysPastDue(payment.dueDate);
                             return (

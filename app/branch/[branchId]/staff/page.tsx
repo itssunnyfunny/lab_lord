@@ -217,7 +217,7 @@ function PermissionModeButton({
             onClick={onClick}
             aria-pressed={active}
             className={cn(
-                "inline-flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg px-2 text-[11px] font-semibold transition-colors",
+                "inline-flex h-11 min-w-0 items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold transition-colors lg:h-8 lg:text-[11px]",
                 active
                     ? "bg-cyan-500/15 text-cyan-200"
                     : "text-[color:var(--ui-form-help)] hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--ui-table-text)]"
@@ -630,7 +630,7 @@ function InviteLinkPanel({
                                 onChange={event => onEmailChange(event.target.value)}
                                 disabled={!capability.allowed}
                                 placeholder="staff@example.com"
-                                className={cn(formControlClass, "h-10 w-full pl-9 pr-3 text-base sm:text-sm")}
+                                className={cn(formControlClass, "h-11 w-full pl-9 pr-3 text-base lg:h-10 lg:text-sm")}
                             />
                         </span>
                     </label>
@@ -658,7 +658,7 @@ function InviteLinkPanel({
                         isLoading={loading}
                         disabled={loading || !capability.allowed}
                         aria-describedby={!capability.allowed ? "staff-manage-blocker" : undefined}
-                        className="h-10 whitespace-nowrap"
+                        className="h-11 whitespace-nowrap lg:h-10"
                     >
                         Create invite
                     </Button>
@@ -676,9 +676,9 @@ function InviteLinkPanel({
                             readOnly
                             aria-label="Latest invite link"
                             value={invite.inviteUrl}
-                            className={cn(formControlClass, "h-10 min-w-0 flex-1 px-3 font-mono text-xs")}
+                            className={cn(formControlClass, "h-11 min-w-0 flex-1 px-3 font-mono text-xs lg:h-10")}
                         />
-                        <Button variant="outline" onClick={() => onCopyInvite(invite)} className="h-10 whitespace-nowrap">
+                        <Button variant="outline" onClick={() => onCopyInvite(invite)} className="h-11 whitespace-nowrap lg:h-10">
                             {copiedInviteId === invite.id ? <><CheckCircle2 size={14} /> Copied</> : <><Copy size={14} /> Copy link</>}
                         </Button>
                         <Button
@@ -687,7 +687,7 @@ function InviteLinkPanel({
                             onClick={() => onRevokeInvite(invite.id)}
                             disabled={!capability.allowed}
                             aria-describedby={!capability.allowed ? "staff-manage-blocker" : undefined}
-                            className="h-10 whitespace-nowrap"
+                            className="h-11 whitespace-nowrap lg:h-10"
                         >
                             <Trash2 size={14} /> Revoke
                         </Button>
@@ -1183,8 +1183,8 @@ function StaffContent({
                 </div>
             ) : (
                 <>
-                <div className="md:hidden">{staffCards}</div>
-                <Card noHover className="hidden overflow-visible p-0 md:block md:p-0">
+                <div className="lg:hidden">{staffCards}</div>
+                <Card noHover className="hidden overflow-visible p-0 lg:block lg:p-0">
                     <div
                         className="w-full overflow-x-auto scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50"
                         role="region"

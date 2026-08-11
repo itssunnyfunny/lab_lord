@@ -28,6 +28,7 @@ import { UserPreferencesProvider, useUserPreferences } from "@/components/settin
 import { ToastProvider } from "@/components/ui/Toast";
 import { RouteTitleUpdater } from "@/components/layout/RouteTitleUpdater";
 import { Drawer } from "@/components/ui/Drawer";
+import { ContextualBackLink } from "@/components/layout/ContextualBackLink";
 
 interface User {
     name: string;
@@ -89,7 +90,7 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
             <AmbientBackground />
 
             {/* Sidebar Area - Glassmorphic */}
-            <div className="relative z-30 hidden md:block">
+            <div className="relative z-30 hidden lg:block">
                 {sidebar}
             </div>
 
@@ -98,7 +99,7 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
                 onClose={() => setMobileNavOpen(false)}
                 title="Workspace navigation"
                 closeLabel="Close navigation"
-                className="max-w-[19rem] md:hidden"
+                className="max-w-[19rem] lg:hidden"
             >
                 <div className="h-[calc(100dvh-7rem)] overflow-hidden">{sidebar}</div>
             </Drawer>
@@ -107,17 +108,17 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
             <div className="flex-1 flex flex-col min-w-0 max-w-full relative z-10">
                 {/* Top Header */}
                 <header className={chromeHeaderClass}>
-                    <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4 md:max-w-md">
+                    <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3 lg:max-w-md lg:gap-4">
                         <button
                             type="button"
                             onClick={() => setMobileNavOpen(true)}
-                            className={cn("flex-shrink-0 md:hidden", chromeIconButtonClass)}
+                            className={cn("flex-shrink-0 lg:hidden", chromeIconButtonClass)}
                             aria-label="Open navigation"
                             aria-expanded={mobileNavOpen}
                         >
                             <Menu size={18} />
                         </button>
-                        <WorkspaceSwitcher className="w-32 shrink-0 sm:w-48" />
+                        <WorkspaceSwitcher className="min-w-0 flex-1 lg:w-48 lg:flex-none" />
                         {showBranchChrome && <BranchTopSearch />}
                     </div>
 
@@ -131,7 +132,7 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
                         <button
                             type="button"
                             onClick={() => router.push('/account')}
-                            className={cn("hidden items-center gap-3 rounded-full border border-transparent py-1 pl-2 pr-1 transition-colors sm:flex", chromeInlineCardHoverClass)}
+                            className={cn("hidden items-center gap-3 rounded-full border border-transparent py-1 pl-2 pr-1 transition-colors lg:flex", chromeInlineCardHoverClass)}
                         >
                             <AccountSummary user={user} />
                         </button>
@@ -144,9 +145,10 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
                 </header>
 
                 {/* Page Content */}
-                <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8 scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50">
+                <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 overflow-y-auto p-4 [padding-bottom:max(1rem,env(safe-area-inset-bottom))] sm:p-6 sm:[padding-bottom:max(1.5rem,env(safe-area-inset-bottom))] lg:p-8 lg:[padding-bottom:max(2rem,env(safe-area-inset-bottom))] scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50">
                     {billing?.experience && <ReadOnlyBanner experience={billing.experience} />}
                     {billing?.experience && <BillingBanner experience={billing.experience} />}
+                    <ContextualBackLink />
                     {children}
                 </main>
             </div>

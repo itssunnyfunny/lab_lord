@@ -210,8 +210,14 @@ function PaymentsContent({
 
     useEffect(() => {
         if (loading || !targetPaymentId) return;
-        const target = document.getElementById(`payment-table-${targetPaymentId}`)
-            ?? document.getElementById(`payment-grid-${targetPaymentId}`);
+        const candidates = [
+            document.getElementById(`payment-grid-${targetPaymentId}`),
+            document.getElementById(`payment-table-${targetPaymentId}`),
+        ].filter((candidate): candidate is HTMLElement => Boolean(candidate));
+        const target = candidates.find(candidate => (
+            candidate.getClientRects().length > 0
+            && window.getComputedStyle(candidate).visibility !== "hidden"
+        ));
         if (!target) return;
         const focusFrame = window.requestAnimationFrame(() => {
             const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -515,7 +521,7 @@ function PaymentsContent({
                     />
                 </div>
 
-                <ViewToggle value={viewMode} onChange={setViewMode} className="hidden md:inline-flex" />
+                <ViewToggle value={viewMode} onChange={setViewMode} className="hidden lg:inline-flex" />
             </div>
 
             {loading ? (
@@ -530,6 +536,7 @@ function PaymentsContent({
                         "aria-label": item.id === targetPaymentId
                             ? `${item.student?.name || "Payment"}, selected search result`
                             : undefined,
+                        "aria-current": item.id === targetPaymentId ? "true" : undefined,
                         className: item.id === targetPaymentId
                             ? "rounded-[var(--ui-radius-control)] bg-cyan-400/10 ring-2 ring-cyan-300/70"
                             : undefined,
@@ -721,7 +728,7 @@ function PaymentTabButton({
             onClick={onClick}
             aria-current={active ? "page" : undefined}
             className={cn(
-                "inline-flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-[var(--ui-radius-control)] border px-3 py-2 text-sm font-medium transition-colors",
+                "inline-flex min-h-11 cursor-pointer items-center gap-2 whitespace-nowrap rounded-[var(--ui-radius-control)] border px-3 py-2 text-sm font-medium transition-colors lg:min-h-10",
                 active
                     ? activeClass
                     : "border-transparent text-[color:var(--text-secondary)] hover:border-[color:var(--ui-form-surface-border)] hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--text-primary)]"

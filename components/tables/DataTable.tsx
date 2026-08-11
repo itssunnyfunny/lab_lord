@@ -128,8 +128,8 @@ export function DataTable<T extends { id: string | number }>({
     if (cardGrid) {
         return (
             <>
-                <div className="md:hidden">{cardGrid}</div>
-                <div className="hidden md:block">{tableView}</div>
+                <div className="lg:hidden">{cardGrid}</div>
+                <div className="hidden lg:block">{tableView}</div>
             </>
         );
     }

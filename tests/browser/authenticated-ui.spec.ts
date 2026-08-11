@@ -99,13 +99,19 @@ for (const session of roleSessions) {
       ).toEqual([]);
     });
 
-    test("branch search follows the combobox keyboard pattern", async ({ page }) => {
+    test("branch search follows the combobox keyboard pattern", async ({ page }, testInfo) => {
       await page.route(`**/api/branches/${branchId}/search?**`, route => route.fulfill({
         contentType: "application/json",
         body: JSON.stringify(searchResults(branchId!)),
       }));
 
       await page.goto(`/branch/${branchId}`);
+      const mobile = testInfo.project.name === "mobile-chromium";
+      const mobileTrigger = page.getByRole("button", { name: "Search current branch" });
+      if (mobile) {
+        await mobileTrigger.click();
+        await expect(page.getByRole("dialog", { name: "Search this branch" })).toBeVisible();
+      }
       const search = page.getByRole("combobox", { name: "Search current branch" });
       await expect(search).toBeEnabled();
       await search.focus();
@@ -127,9 +133,14 @@ for (const session of roleSessions) {
       await expect(search).toHaveAttribute("aria-activedescendant", firstOptionId!);
 
       await page.keyboard.press("Escape");
-      await expect(search).toHaveAttribute("aria-expanded", "false");
       await expect(listbox).toBeHidden();
-      await expect(search).toBeFocused();
+      if (mobile) {
+        await expect(page.getByRole("dialog", { name: "Search this branch" })).toBeHidden();
+        await expect(mobileTrigger).toBeFocused();
+      } else {
+        await expect(search).toHaveAttribute("aria-expanded", "false");
+        await expect(search).toBeFocused();
+      }
     });
 
     test("shared dialog receives, contains, and restores keyboard focus", async ({ page }) => {
@@ -183,6 +194,100 @@ for (const session of roleSessions) {
       await expect(trigger).toBeFocused();
     });
 
+    test("mobile notifications use a modal and restore trigger focus", async ({ page }, testInfo) => {
+      test.skip(testInfo.project.name !== "mobile-chromium", "Mobile notifications coverage runs in the mobile project.");
+
+      await page.goto(`/branch/${branchId}`);
+      const trigger = page.getByRole("button", { name: /branch notifications/i });
+      await expect(trigger).toBeEnabled();
+      await trigger.focus();
+      await trigger.click();
+
+      const dialog = page.getByRole("dialog", { name: "Notifications" });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "Close dialog" })).toBeFocused();
+      await page.keyboard.press("Shift+Tab");
+      await expect.poll(() => page.evaluate(() => (
+        document.activeElement?.closest('[role="dialog"]')?.getAttribute("aria-modal")
+      ))).toBe("true");
+
+      await page.keyboard.press("Escape");
+      await expect(dialog).toBeHidden();
+      await expect(trigger).toBeFocused();
+    });
+
+    test("core mobile shell has no overlapping controls and exposes deterministic back navigation", async ({ page }, testInfo) => {
+      test.skip(testInfo.project.name !== "mobile-chromium", "Responsive shell coverage runs in the mobile project.");
+
+      for (const viewport of [
+        { width: 320, height: 568 },
+        { width: 360, height: 800 },
+        { width: 390, height: 844 },
+        { width: 430, height: 932 },
+        { width: 844, height: 390 },
+      ]) {
+        await page.setViewportSize(viewport);
+        await page.goto(`/branch/${branchId}`);
+        await expect(page.getByRole("main")).toBeVisible();
+
+        const shellMetrics = await page.locator("header").first().evaluate(header => {
+          const controls = Array.from(header.querySelectorAll<HTMLElement>("button, select, a[href]"))
+            .filter(element => {
+              const rect = element.getBoundingClientRect();
+              const style = window.getComputedStyle(element);
+              return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+            })
+            .map(element => {
+              const rect = element.getBoundingClientRect();
+              return {
+                name: element.getAttribute("aria-label") || element.textContent?.trim() || element.tagName,
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                bottom: rect.bottom,
+                height: rect.height,
+              };
+            });
+          const overlaps: string[] = [];
+          for (let leftIndex = 0; leftIndex < controls.length; leftIndex += 1) {
+            for (let rightIndex = leftIndex + 1; rightIndex < controls.length; rightIndex += 1) {
+              const left = controls[leftIndex];
+              const right = controls[rightIndex];
+              const sharesRow = Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1;
+              const overlapsHorizontally = Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1;
+              if (sharesRow && overlapsHorizontally) overlaps.push(`${left.name} / ${right.name}`);
+            }
+          }
+          return {
+            overlaps,
+            undersized: controls.filter(control => control.height < 43.5).map(control => control.name),
+            scrollWidth: document.documentElement.scrollWidth,
+            clientWidth: document.documentElement.clientWidth,
+          };
+        });
+
+        expect(shellMetrics.overlaps, `${viewport.width}x${viewport.height} overlaps`).toEqual([]);
+        expect(shellMetrics.undersized, `${viewport.width}x${viewport.height} touch targets`).toEqual([]);
+        expect(shellMetrics.scrollWidth, `${viewport.width}x${viewport.height} horizontal overflow`).toBeLessThanOrEqual(shellMetrics.clientWidth);
+      }
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(`/branch/${branchId}/payments`);
+      await expect(page.getByRole("link", { name: "Back to branch dashboard" })).toHaveAttribute("href", `/branch/${branchId}`);
+      await expect(page.getByRole("button", { name: "Table view" })).toBeHidden();
+
+      await page.goto(`/branch/${branchId}`);
+      const exactDueLink = page.locator('main a[href*="/payments?paymentId="]').filter({ visible: true }).first();
+      if (await exactDueLink.count()) {
+        const href = await exactDueLink.getAttribute("href");
+        expect(href).toContain("status=DUE");
+        expect(href).not.toContain("month=");
+        await exactDueLink.click();
+        const focusedPayment = page.locator('[aria-current="true"][aria-label*="selected search result"]').filter({ visible: true });
+        await expect(focusedPayment).toBeFocused();
+      }
+    });
+
     test("chart exposes a keyboard-operable data-table alternative", async ({ page }) => {
       await mockChartData(page, branchId!);
       await page.goto(`/branch/${branchId}/analytics`);
@@ -224,5 +329,42 @@ test.describe("Read-only authenticated UI", () => {
     await expect(page.getByText(/read-only/i).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Add student" })).toBeDisabled();
     await expect(page.getByText(/Student changes are disabled/i)).toBeVisible();
+  });
+});
+
+test.describe("Clerk account dark theme", () => {
+  const statePath = process.env.PLAYWRIGHT_OWNER_AUTH_STATE;
+  const branchId = process.env.PLAYWRIGHT_OWNER_BRANCH_ID;
+  const available = Boolean(statePath && fs.existsSync(statePath) && branchId);
+
+  test.use({ storageState: available ? statePath : EMPTY_STATE });
+  test.beforeEach(({}, testInfo) => {
+    test.skip(!available, "Set PLAYWRIGHT_OWNER_AUTH_STATE and PLAYWRIGHT_OWNER_BRANCH_ID.");
+    test.skip(testInfo.project.name !== "chromium", "Clerk profile contrast is exercised once in desktop Chromium.");
+  });
+
+  test("profile and security surfaces retain readable dark-theme contrast", async ({ page }) => {
+    await page.goto(`/branch/${branchId}`);
+    await page.getByRole("button", { name: "Open user menu" }).click();
+    await page.getByText("Manage account", { exact: true }).click();
+
+    const dialog = page.getByRole("dialog").first();
+    await expect(dialog).toBeVisible();
+    const profileResults = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
+    expect(
+      profileResults.violations.filter(item => item.id === "color-contrast"),
+      profileResults.violations.map(item => `${item.id}: ${item.help}`).join("\n")
+    ).toEqual([]);
+
+    const security = dialog.getByText("Security", { exact: true });
+    await expect(security).toBeVisible();
+    await security.click();
+    await expect(dialog.getByText(/Password|Active devices|Security/i).first()).toBeVisible();
+
+    const securityResults = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
+    expect(
+      securityResults.violations.filter(item => item.id === "color-contrast"),
+      securityResults.violations.map(item => `${item.id}: ${item.help}`).join("\n")
+    ).toEqual([]);
   });
 });

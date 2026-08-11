@@ -60,6 +60,7 @@ import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
 import { getPermissionHelpText } from "@/lib/permissionMessages";
 import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 import type { CapabilityDecision } from "@/types";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 
 type SeatStatus = "Allocated" | "Available";
 type StatusFilter = "ALL" | "ALLOCATED" | "AVAILABLE";
@@ -236,6 +237,8 @@ function SeatsContent({
     const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
     const [searchQuery, setSearchQuery] = useState("");
     const [viewMode, setViewMode] = useState<DataViewMode>("grid");
+    const compactLayout = useMediaQuery("(max-width: 1023px)", true);
+    const effectiveViewMode: DataViewMode = compactLayout ? "grid" : viewMode;
     const [selectedSeatId, setSelectedSeatId] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -358,7 +361,7 @@ function SeatsContent({
             });
         });
         return () => window.cancelAnimationFrame(frame);
-    }, [allSeats, linkedSeatId, viewMode]);
+    }, [allSeats, effectiveViewMode, linkedSeatId]);
 
     const seats = useMemo(() => {
         if (!selectedShift) return allSeats;
@@ -526,7 +529,7 @@ function SeatsContent({
                             onChange={(event) => setSearchQuery(event.target.value)}
                             placeholder="Search seat, student, shift..."
                             aria-label="Search loaded seats"
-                            className={cn(formControlClass, "h-10 pl-9 pr-3 text-sm")}
+                            className={cn(formControlClass, "h-11 pl-9 pr-3 text-sm lg:h-10")}
                         />
                     </div>
                     {showSeatManageActions && (
@@ -611,13 +614,13 @@ function SeatsContent({
                         ))}
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                        <div className={cn("inline-flex h-8 max-w-full items-center gap-2 px-2.5 text-xs", pageFilterShellClass, pageSubtleTextClass)}>
+                        <div className={cn("inline-flex min-h-11 max-w-full items-center gap-2 px-2.5 text-xs lg:min-h-8", pageFilterShellClass, pageSubtleTextClass)}>
                             <Clock size={13} className="shrink-0" />
                             <span className="truncate">
                                 {activeShift ? formatTimeRange(activeShift.startTime, activeShift.endTime) : "All active allocations"}
                             </span>
                         </div>
-                        <ViewToggle value={viewMode} onChange={setViewMode} />
+                        <ViewToggle value={viewMode} onChange={setViewMode} className="hidden lg:inline-flex" />
                         <AppButton
                             type="button"
                             variant="quiet"
@@ -642,7 +645,7 @@ function SeatsContent({
                         disabledReason={seatManageDecision.reason ?? undefined}
                         onAddSeat={() => setIsAddModalOpen(true)}
                     />
-                ) : viewMode === "grid" ? (
+                ) : effectiveViewMode === "grid" ? (
                     <SeatGrid
                         seats={filteredSeats}
                         selectedSeatId={selectedSeatId}
@@ -954,7 +957,7 @@ function StatusFilterChip({
             onClick={onClick}
             aria-pressed={active}
             className={cn(
-                "inline-flex h-8 cursor-pointer items-center gap-2 rounded-[var(--ui-radius-control)] border px-2.5 text-xs font-semibold transition-colors",
+                "inline-flex h-11 cursor-pointer items-center gap-2 rounded-[var(--ui-radius-control)] border px-2.5 text-xs font-semibold transition-colors lg:h-8",
                 active ? tone : cn(pageInsetSurfaceClass, pageInsetHoverClass, "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]")
             )}
         >

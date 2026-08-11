@@ -80,7 +80,7 @@ export function WorkspaceSwitcherControl({
     if (directory && destinations.length === 1) {
         return (
             <div className={cn("min-w-0", className)}>
-                <span className="block text-[10px] font-semibold uppercase leading-4 tracking-[0.12em] text-[color:var(--text-tertiary)]">
+                <span className="block text-[10px] font-semibold uppercase leading-4 tracking-[0.12em] text-[color:var(--text-muted)]">
                     {label}
                 </span>
                 <div
@@ -105,7 +105,7 @@ export function WorkspaceSwitcherControl({
         <div className={cn("min-w-0", className)}>
             <label
                 htmlFor={controlId}
-                className="block text-[10px] font-semibold uppercase leading-4 tracking-[0.12em] text-[color:var(--text-tertiary)]"
+                className="block text-[10px] font-semibold uppercase leading-4 tracking-[0.12em] text-[color:var(--text-muted)]"
             >
                 {label}
             </label>

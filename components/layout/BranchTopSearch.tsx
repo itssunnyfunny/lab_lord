@@ -19,12 +19,14 @@ import { branchSearch } from "@/lib/api/branchSearch";
 import type { TopSearchGroup, TopSearchResult, TopSearchResultType } from "@/lib/topSearch";
 import { cn } from "@/lib/utils";
 import { formWarningBannerClass } from "@/components/ui/formSurface";
-import { SkeletonBlock } from "@/components/ui";
+import { Dialog, SkeletonBlock } from "@/components/ui";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import {
     chromeEmptyStateClass,
     chromeInputClass,
     chromeInputIconClass,
     chromeInputShellClass,
+    chromeIconButtonClass,
     chromeListIconClass,
     chromeListItemActiveClass,
     chromeListItemClass,
@@ -88,8 +90,11 @@ export function BranchTopSearch() {
     const rootRef = useRef<HTMLDivElement>(null);
     const loadSeq = useRef(0);
     const listboxId = `branch-search-${useId().replace(/:/g, "")}`;
+    const mobileListboxId = `${listboxId}-mobile`;
+    const compactLayout = useMediaQuery("(max-width: 1023px)", true);
     const [query, setQuery] = useState("");
     const [open, setOpen] = useState(false);
+    const [mobileOpen, setMobileOpen] = useState(false);
     const [groups, setGroups] = useState<TopSearchGroup[]>([]);
     const [loading, setLoading] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -107,21 +112,22 @@ export function BranchTopSearch() {
         [indexedGroups]
     );
 
-    const optionId = useCallback((result: TopSearchResult) => (
-        `${listboxId}-${result.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`
+    const optionId = useCallback((result: TopSearchResult, ownerId = listboxId) => (
+        `${ownerId}-${result.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`
     ), [listboxId]);
 
     useEffect(() => {
         loadSeq.current += 1;
         setQuery("");
         setOpen(false);
+        setMobileOpen(false);
         setGroups([]);
         setLoadError(null);
         setSelectedIndex(-1);
     }, [branchId]);
 
     useEffect(() => {
-        if (!open || !branchId || !access) return;
+        if ((!open && !mobileOpen) || !branchId || !access) return;
 
         const seq = ++loadSeq.current;
         const timer = window.setTimeout(() => {
@@ -143,7 +149,7 @@ export function BranchTopSearch() {
         }, query.trim() ? 200 : 0);
 
         return () => window.clearTimeout(timer);
-    }, [access, branchId, open, query]);
+    }, [access, branchId, mobileOpen, open, query]);
 
     useEffect(() => {
         if (!open) return;
@@ -156,13 +162,14 @@ export function BranchTopSearch() {
 
     useEffect(() => {
         setSelectedIndex(current => {
-            if (!open || flatResults.length === 0) return -1;
+            if ((!open && !mobileOpen) || flatResults.length === 0) return -1;
             return current >= 0 && current < flatResults.length ? current : 0;
         });
-    }, [flatResults.length, open]);
+    }, [flatResults.length, mobileOpen, open]);
 
     const executeResult = useCallback((result: TopSearchResult) => {
         setOpen(false);
+        setMobileOpen(false);
         setQuery("");
         router.push(result.href);
     }, [router]);
@@ -170,6 +177,7 @@ export function BranchTopSearch() {
     const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
         if (event.key === "Escape") {
             setOpen(false);
+            setMobileOpen(false);
             return;
         }
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -204,8 +212,100 @@ export function BranchTopSearch() {
     const hasResults = flatResults.length > 0;
     const trimmedQuery = query.trim();
 
+    const mobileResults = (
+        <div
+            id={mobileListboxId}
+            role="listbox"
+            aria-label="Branch search results"
+            className={chromePopoverScrollClass}
+        >
+            {loading && <SearchPopoverSkeleton />}
+            {loadError && (
+                <div role="alert" className={cn("mx-2 mb-2 flex items-start gap-2 px-3 py-2 text-xs leading-5", formWarningBannerClass)}>
+                    <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                    <span>{loadError}</span>
+                </div>
+            )}
+            {!loading && indexedGroups.map(group => {
+                const groupLabelId = `${mobileListboxId}-${group.id}-label`;
+                return (
+                    <div key={group.id} role="group" aria-labelledby={groupLabelId} className="py-1">
+                        <div id={groupLabelId} className={cn("px-3 pb-1 pt-2 text-xs font-bold uppercase tracking-wider", chromeSubtleTextClass)}>
+                            {group.label}
+                        </div>
+                        <div className="space-y-0.5 px-1.5">
+                            {group.results.map(({ result, index }) => {
+                                const Icon = TYPE_ICONS[result.type];
+                                const selected = index === selectedIndex;
+                                return (
+                                    <button
+                                        id={optionId(result, mobileListboxId)}
+                                        key={result.id}
+                                        type="button"
+                                        role="option"
+                                        aria-selected={selected}
+                                        onMouseEnter={() => setSelectedIndex(index)}
+                                        onClick={() => executeResult(result)}
+                                        className={cn(chromeListItemClass, "min-h-11", selected && chromeListItemActiveClass)}
+                                    >
+                                        <span className={cn(
+                                            chromeListIconClass,
+                                            result.type === "action"
+                                                ? "border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] text-[color:var(--ui-badge-cyan-text)]"
+                                                : ""
+                                        )}>
+                                            <Icon size={15} />
+                                        </span>
+                                        <span className="min-w-0 flex-1">
+                                            <span className="block truncate text-sm font-semibold">{result.title}</span>
+                                            <span className={cn("block truncate text-xs", chromeSubtleTextClass)}>{result.subtitle}</span>
+                                        </span>
+                                        <ArrowRight size={14} className={cn(
+                                            "flex-shrink-0 transition-opacity",
+                                            selected ? "text-[color:var(--ui-form-accent)] opacity-100" : "text-[color:var(--text-muted)] opacity-0"
+                                        )} />
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                );
+            })}
+            {!loading && !loadError && !hasResults && (
+                <div className={chromeEmptyStateClass}>
+                    {trimmedQuery.length === 1
+                        ? "Type one more character to search branch records."
+                        : trimmedQuery
+                            ? `No matches for “${trimmedQuery}”.`
+                            : "No searchable actions are available for this branch."}
+                </div>
+            )}
+            {!loading && !trimmedQuery && hasResults && (
+                <div className={cn("border-t border-[color:var(--ui-panel-header-border)] px-4 py-2 text-xs", chromeSubtleTextClass)}>
+                    Type at least two characters to search records.
+                </div>
+            )}
+        </div>
+    );
+
     return (
-        <div ref={rootRef} className={chromeInputShellClass}>
+        <div ref={rootRef} className="min-w-0">
+            <button
+                type="button"
+                onClick={() => {
+                    setOpen(false);
+                    setMobileOpen(true);
+                }}
+                disabled={disabled}
+                className={cn("lg:hidden", chromeIconButtonClass)}
+                aria-label="Search current branch"
+                aria-haspopup="dialog"
+                aria-expanded={mobileOpen && compactLayout}
+            >
+                <Search size={18} aria-hidden="true" />
+            </button>
+
+            <div className={cn(chromeInputShellClass, "hidden lg:block")}>
             <div className="relative group">
                 <Search
                     className={cn(chromeInputIconClass, disabled && "group-focus-within:text-[color:var(--ui-form-icon)]")}
@@ -239,7 +339,7 @@ export function BranchTopSearch() {
             </div>
 
             {open && !disabled && (
-                <div className={cn(chromePopoverClass, "sm:absolute sm:left-0 sm:right-0 sm:top-12")}>
+                <div className={cn(chromePopoverClass, "absolute left-0 right-0 top-12")}>
                     <div
                         id={listboxId}
                         role="listbox"
@@ -320,6 +420,44 @@ export function BranchTopSearch() {
                     </div>
                 </div>
             )}
+            </div>
+
+            <Dialog
+                open={mobileOpen && compactLayout && !disabled}
+                onClose={() => setMobileOpen(false)}
+                title="Search this branch"
+                description="Find students, payments, seats, shifts, staff, and available actions."
+                placement="bottom"
+                className="max-w-none px-3"
+            >
+                <div className="relative group">
+                    <Search className={chromeInputIconClass} size={18} aria-hidden="true" />
+                    <input
+                        data-dialog-initial-focus
+                        role="combobox"
+                        type="search"
+                        value={query}
+                        placeholder={placeholder}
+                        onChange={event => setQuery(event.target.value)}
+                        onKeyDown={handleKeyDown}
+                        aria-label="Search current branch"
+                        aria-autocomplete="list"
+                        aria-haspopup="listbox"
+                        aria-expanded="true"
+                        aria-controls={mobileListboxId}
+                        aria-activedescendant={selectedIndex >= 0 && flatResults[selectedIndex]
+                            ? optionId(flatResults[selectedIndex], mobileListboxId)
+                            : undefined}
+                        className={cn(chromeInputClass, "min-h-11 text-base")}
+                    />
+                    <span className="sr-only" role="status" aria-live="polite">
+                        {loading ? "Searching" : `${flatResults.length} search results available`}
+                    </span>
+                </div>
+                <div className="mt-3 overflow-hidden rounded-[var(--ui-radius-control)] border border-[color:var(--ui-panel-border)]">
+                    {mobileResults}
+                </div>
+            </Dialog>
         </div>
     );
 }

@@ -168,7 +168,7 @@ function StudentTabButton({
             onClick={onClick}
             aria-pressed={active}
             className={cn(
-                "inline-flex h-9 cursor-pointer items-center gap-2 rounded-[var(--ui-radius-control)] border px-3 text-sm font-medium transition-colors",
+                "inline-flex h-11 cursor-pointer items-center gap-2 rounded-[var(--ui-radius-control)] border px-3 text-sm font-medium transition-colors lg:h-9",
                 active
                     ? activeClassName
                     : "border-transparent text-[color:var(--text-secondary)] hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--text-primary)]"
@@ -759,7 +759,7 @@ function StudentsContent({
                             onChange={(event) => setSearchQuery(event.target.value)}
                             placeholder="Search name or phone..."
                             aria-label="Search students by name or phone"
-                            className={cn(formControlClass, "h-10 pl-9 pr-3 text-sm")}
+                            className={cn(formControlClass, "h-11 pl-9 pr-3 text-base sm:text-sm")}
                         />
                     </div>
                     <AppButton variant="secondary" icon={Download} onClick={() => void handleExportStudents()} isLoading={exporting}>
@@ -808,7 +808,7 @@ function StudentsContent({
                     <label htmlFor="student-shift-filter" className={cn("text-sm", pageSubtleTextClass)}>Shift</label>
                     <select
                         id="student-shift-filter"
-                        className={cn(formControlClass, "w-auto bg-[color:var(--ui-form-input-select-bg)] px-3 py-1.5 text-sm")}
+                        className={cn(formControlClass, "min-h-11 w-auto bg-[color:var(--ui-form-input-select-bg)] px-3 py-1.5 text-base lg:min-h-10 lg:text-sm")}
                         value={selectedShift}
                         onChange={e => setSelectedShift(e.target.value)}
                     >
@@ -832,7 +832,7 @@ function StudentsContent({
                         ))}
                     </div>
 
-                    <ViewToggle value={viewMode} onChange={setViewMode} className="hidden md:inline-flex" />
+                    <ViewToggle value={viewMode} onChange={setViewMode} className="hidden lg:inline-flex" />
                 </div>
             </div>
 

@@ -46,7 +46,7 @@ export function PageHeader({
                             type="text"
                             placeholder="Search..."
                             aria-label={`Search ${title}`}
-                            className={`${formControlClass} h-10 w-full pl-9 pr-4 text-sm md:w-64`}
+                            className={`${formControlClass} h-11 w-full pl-9 pr-4 text-base sm:text-sm md:w-64`}
                             onChange={(e) => onSearch(e.target.value)}
                         />
                     </div>
