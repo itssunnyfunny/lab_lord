@@ -3,6 +3,7 @@ import {
   getRazorpayClient,
   resolveRazorpayMode,
   type RazorpayInvoice,
+  type RazorpayInvoices,
   type RazorpayPayment,
   type RazorpaySubscription,
 } from "@/lib/razorpay";
@@ -10,7 +11,17 @@ import {
   isSupportedProviderPaymentMethod,
   normalizeProviderPaymentMethod,
 } from "@/services/billingPaymentMethod.service";
-import type { SaasSubscriptionStatus } from "@/app/generated/prisma/client";
+import type {
+  OrganizationSubscription,
+  SaasSubscriptionStatus,
+} from "@/app/generated/prisma/client";
+
+type BillingReconciliationResult = {
+  subscription: OrganizationSubscription;
+  confirmedPaidPeriod: boolean;
+  payment: RazorpayPayment | null;
+  invoices: RazorpayInvoices;
+};
 
 const SUBSCRIPTION_STATUSES = new Set([
   "CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "PAUSED",
@@ -71,8 +82,9 @@ export class BillingReconciliationService {
 
   static async reconcileProviderSubscription(
     razorpaySubscriptionId: string,
-    options: { paymentId?: string | null; now?: Date } = {}
-  ) {
+    options: { paymentId?: string | null; now?: Date } = {},
+    staleRetry = 0
+  ): Promise<BillingReconciliationResult> {
     const now = options.now ?? new Date();
     const localBeforeFetch = await prisma.organizationSubscription.findUnique({
       where: { razorpaySubscriptionId },
@@ -90,6 +102,9 @@ export class BillingReconciliationService {
       razorpay.fetchSubscriptionInvoices(razorpaySubscriptionId),
       options.paymentId ? razorpay.fetchPayment(options.paymentId) : Promise.resolve(null),
     ]);
+    if (providerSubscription.id !== razorpaySubscriptionId) {
+      throw new Error("Razorpay subscription response mismatch during reconciliation");
+    }
     if (explicitPayment && explicitPayment.subscription_id !== razorpaySubscriptionId) {
       throw new Error("Razorpay payment does not belong to this subscription");
     }
@@ -122,13 +137,16 @@ export class BillingReconciliationService {
       );
 
     const reconciliation = await prisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Organization" WHERE "id" = ${localBeforeFetch.organizationId} FOR UPDATE
+      `;
       const local = await tx.organizationSubscription.findUnique({
         where: { razorpaySubscriptionId },
       });
       if (!local) throw new Error("Subscription not found");
-      await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id" FROM "Organization" WHERE "id" = ${local.organizationId} FOR UPDATE
-      `;
+      if (local.updatedAt.getTime() !== localBeforeFetch.updatedAt.getTime()) {
+        return { stale: true as const };
+      }
 
       const linkedReplacementChange = local.pendingReplacementOrganizationId
         ? await tx.organizationBillingChange.findUnique({
@@ -430,9 +448,22 @@ export class BillingReconciliationService {
         }
       }
 
-      return { subscription: stored, confirmedPaidPeriod, payment: confirmedPayment, invoices };
+      return {
+        stale: false as const,
+        subscription: stored,
+        confirmedPaidPeriod,
+        payment: confirmedPayment,
+        invoices,
+      };
     });
 
-    return reconciliation;
+    if (reconciliation.stale) {
+      if (staleRetry >= 2) {
+        throw new Error("Subscription changed repeatedly while provider reconciliation was in flight");
+      }
+      return this.reconcileProviderSubscription(razorpaySubscriptionId, options, staleRetry + 1);
+    }
+    const { stale: _stale, ...result } = reconciliation;
+    return result;
   }
 }

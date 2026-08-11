@@ -46,6 +46,7 @@ import { BillingReconciliationService } from "@/services/billingReconciliation.s
 const now = new Date("2026-08-10T12:00:00.000Z");
 
 function localSubscription(overrides: Record<string, unknown> = {}) {
+  const updatedAt = new Date("2026-08-10T11:00:00.000Z");
   return {
     id: "source_row",
     organizationId: "org_1",
@@ -66,6 +67,7 @@ function localSubscription(overrides: Record<string, unknown> = {}) {
     lastConfirmedInvoiceId: null,
     lastConfirmedPaymentId: null,
     billingOfferId: null,
+    updatedAt,
     ...overrides,
   };
 }
@@ -282,5 +284,80 @@ describe("replacement reconciliation trust contracts", () => {
     expect(mocks.changeFindUnique).not.toHaveBeenCalled();
     expect(mocks.changeUpdate).not.toHaveBeenCalled();
     expect(mocks.branchUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("refetches instead of resurrecting a candidate changed while provider state was in flight", async () => {
+    const fetchedAt = new Date("2026-08-10T11:00:00.000Z");
+    const cancelledAt = new Date("2026-08-10T11:30:00.000Z");
+    const beforeFetch = localSubscription({
+      id: "candidate_row",
+      razorpaySubscriptionId: "sub_candidate",
+      status: "ACTIVE",
+      updatedAt: fetchedAt,
+    });
+    const cancelled = localSubscription({
+      id: "candidate_row",
+      razorpaySubscriptionId: "sub_candidate",
+      status: "CANCELLED",
+      endedAt: cancelledAt,
+      updatedAt: cancelledAt,
+    });
+    mocks.localFindUnique
+      .mockReset()
+      .mockResolvedValueOnce(beforeFetch)
+      .mockResolvedValueOnce(cancelled)
+      .mockResolvedValueOnce(cancelled)
+      .mockResolvedValueOnce(cancelled);
+    mocks.fetchSubscription
+      .mockResolvedValueOnce({
+        id: "sub_candidate",
+        entity: "subscription",
+        plan_id: "plan_basic",
+        status: "active",
+        total_count: 120,
+        quantity: 1,
+        payment_method: "upi",
+      })
+      .mockResolvedValueOnce({
+        id: "sub_candidate",
+        entity: "subscription",
+        plan_id: "plan_basic",
+        status: "cancelled",
+        total_count: 120,
+        quantity: 1,
+        payment_method: "upi",
+        ended_at: Math.floor(cancelledAt.getTime() / 1000),
+      });
+
+    const result = await BillingReconciliationService.reconcileProviderSubscription(
+      "sub_candidate",
+      { now }
+    );
+
+    expect(mocks.fetchSubscription).toHaveBeenCalledTimes(2);
+    expect(result.subscription.status).toBe("CANCELLED");
+    expect(mocks.subscriptionUpdate).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "ACTIVE" }),
+    }));
+  });
+
+  it("rejects a provider response for a different subscription identity", async () => {
+    mocks.fetchSubscription.mockResolvedValue({
+      id: "sub_other",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "active",
+      total_count: 120,
+      quantity: 1,
+      payment_method: "upi",
+    });
+
+    await expect(BillingReconciliationService.reconcileProviderSubscription(
+      "sub_source",
+      { now }
+    )).rejects.toThrow("Razorpay subscription response mismatch during reconciliation");
+
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.subscriptionUpdate).not.toHaveBeenCalled();
   });
 });
