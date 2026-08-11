@@ -29,6 +29,7 @@ import { EntitlementService } from "@/services/entitlement.service";
 import { BillingMutationService } from "@/services/billingMutation.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
+import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
 import { assertRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
 import { resolveRazorpayMode } from "@/lib/razorpay";
 import type {
@@ -315,7 +316,9 @@ export class BranchService {
                     ownerId: true,
                     billingModelVersion: true,
                     ownerTrialGrant: { select: { status: true, trialEndsAt: true } },
-                    subscription: { select: { id: true, quantity: true } },
+                    subscription: {
+                        select: { id: true, quantity: true, providerPaymentMethod: true },
+                    },
                 },
             });
             if (!lockedOrg) throw new Error("Organization not found");
@@ -325,7 +328,14 @@ export class BranchService {
                 && lockedOrg.ownerTrialGrant.trialEndsAt > new Date();
             const providerOperation = lockedOrg.billingModelVersion === "WORKSPACE_V2"
                 && lockedOrg.subscription != null;
-            const pendingPaidActivation = providerOperation && !trialActive;
+            const trialReplacementRequired = providerOperation
+                && trialActive
+                && isReplacementMutationEligible({
+                    sourcePaymentMethod: lockedOrg.subscription!.providerPaymentMethod,
+                    mutationType: "TRIAL_SUBSCRIPTION_UPDATE",
+                });
+            const pendingPaidActivation = providerOperation
+                && (!trialActive || trialReplacementRequired);
 
             // 1. Create the branch
             const branch = await tx.branch.create({

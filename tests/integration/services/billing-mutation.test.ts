@@ -3,6 +3,7 @@ import { BillingMutationService } from "@/services/billingMutation.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
 import { BranchService } from "@/services/branch.service";
+import { BillingReplacementService } from "@/services/billingReplacement.service";
 import {
   getReplacementUndoCutoffAt,
   getSafeReplacementCycleBoundary,
@@ -18,6 +19,8 @@ function fakeRazorpay(options: {
   includePaidInvoice?: boolean;
   providerMethod?: "card" | "upi" | "emandate";
   adoptReplacement?: boolean;
+  futureStartAt?: number;
+  omitCurrentPeriod?: boolean;
 } = {}): RazorpayPlanCatalogApiClient {
   const periodStart = Math.floor(Date.now() / 1000) - 60;
   const periodEnd = periodStart + 30 * 24 * 60 * 60;
@@ -78,9 +81,10 @@ function fakeRazorpay(options: {
       status: providerStatus,
       total_count: 120,
       quantity: providerQuantity,
-      current_start: periodStart,
-      current_end: periodEnd,
-      charge_at: periodEnd,
+      start_at: options.futureStartAt,
+      current_start: options.omitCurrentPeriod ? undefined : periodStart,
+      current_end: options.omitCurrentPeriod ? undefined : periodEnd,
+      charge_at: options.omitCurrentPeriod ? undefined : periodEnd,
       payment_method: options.providerMethod ?? "card",
     })),
     updateSubscription: vi.fn(async (_id, input) => ({
@@ -240,6 +244,85 @@ describe("serialized workspace billing mutations", () => {
       storedChange.effectiveAt!.getTime() - 72 * 60 * 60 * 1000
     );
     expect(razorpay.updateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("keeps a future-start eMandate trial branch pending until its replacement is authorized", async () => {
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    const { owner, organization, subscription } = await setup({ paymentMethod: "EMANDATE" });
+    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    const futureStartAt = Math.floor(trialEndsAt.getTime() / 1000);
+    await testPrisma.ownerTrialGrant.create({
+      data: {
+        ownerId: owner.id,
+        organizationId: organization.id,
+        source: "ONBOARDING",
+        status: "ACTIVE",
+        trialStartedAt: new Date(),
+        trialEndsAt,
+        consumedAt: new Date(),
+      },
+    });
+    await testPrisma.organizationSubscription.update({
+      where: { id: subscription.id },
+      data: {
+        status: "AUTHENTICATED",
+        providerStartAt: trialEndsAt,
+        currentStart: null,
+        currentEnd: null,
+        paidThrough: null,
+      },
+    });
+    const razorpay = fakeRazorpay({
+      providerMethod: "emandate",
+      providerStatus: "authenticated",
+      providerQuantity: 1,
+      includePaidInvoice: false,
+      futureStartAt,
+      omitCurrentPeriod: true,
+    });
+    setRazorpayClientForTests(razorpay);
+
+    const result = await BranchService.createBranchForOrg({
+      organizationId: organization.id,
+      userId: owner.id,
+      name: "Future trial branch",
+      contactPhone: "9876543210",
+      idempotencyKey: "future-trial-emandate-branch",
+    });
+
+    expect(result).toMatchObject({
+      billingStatus: "PENDING_ACTIVATION",
+      action: "CHECKOUT_REQUIRED",
+    });
+    expect(razorpay.createSubscription).toHaveBeenCalledWith(expect.objectContaining({
+      quantity: 2,
+      start_at: futureStartAt,
+    }));
+    const change = await testPrisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: result.billingChangeId! },
+      include: { replacementSubscription: true },
+    });
+    expect(change).toMatchObject({
+      type: "TRIAL_SUBSCRIPTION_UPDATE",
+      status: "AWAITING_PAYMENT",
+      effectiveAt: new Date(futureStartAt * 1000),
+      replacementSubscription: {
+        quantity: 2,
+        providerStartAt: new Date(futureStartAt * 1000),
+      },
+    });
+
+    await testPrisma.organizationSubscription.update({
+      where: { id: change.replacementSubscriptionId! },
+      data: { status: "AUTHENTICATED", providerPaymentMethod: "EMANDATE" },
+    });
+    await expect(BillingReplacementService.syncAuthorizedAccess(change.id))
+      .resolves.toMatchObject({ action: "GRANT" });
+    await expect(testPrisma.branch.findUniqueOrThrow({ where: { id: result.id } }))
+      .resolves.toMatchObject({ billingStatus: "ACTIVE" });
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }))
+      .resolves.toMatchObject({ currentOrganizationId: organization.id, quantity: 1 });
   });
 
   it("returns 409 semantics for a second unrelated billable intent while a candidate is open", async () => {

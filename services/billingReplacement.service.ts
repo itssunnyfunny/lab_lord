@@ -35,6 +35,7 @@ const OPEN_CHANGE_STATUSES = ["QUEUED", "PROCESSING", "AWAITING_PAYMENT", "SCHED
 const REPLACEMENT_PROVIDER_LEASE_MS = 2 * 60 * 1000;
 const TRUSTWORTHY_REPLACEMENT_ACCESS_STATUSES = new Set(["AUTHENTICATED", "ACTIVE"]);
 const IMMEDIATE_ACCESS_CHANGE_TYPES = new Set([
+  "TRIAL_SUBSCRIPTION_UPDATE",
   "PLAN_UPGRADE",
   "QUANTITY_INCREASE",
   "BRANCH_REACTIVATION",
@@ -103,6 +104,13 @@ function isImmediateAccessIncrease(input: Pick<
 >) {
   if (!IMMEDIATE_ACCESS_CHANGE_TYPES.has(input.changeType)) return false;
   if (planRank(input.targetPlan) < planRank(input.sourcePlan)) return false;
+  if (input.changeType === "TRIAL_SUBSCRIPTION_UPDATE") {
+    return input.targetQuantity >= input.sourceQuantity
+      && (
+        planRank(input.targetPlan) > planRank(input.sourcePlan)
+        || input.targetQuantity > input.sourceQuantity
+      );
+  }
   if (input.changeType === "PLAN_UPGRADE") {
     return planRank(input.targetPlan) > planRank(input.sourcePlan)
       && input.targetQuantity >= input.sourceQuantity;
@@ -379,7 +387,11 @@ export class BillingReplacementService {
       throw new Error("Razorpay source subscription mismatch during replacement");
     }
     const providerBoundary = dateFromTimestamp(providerSource.current_end);
-    const currentBoundary = providerBoundary ?? source.currentEnd ?? source.paidThrough;
+    const futureStartBoundary = dateFromTimestamp(providerSource.start_at) ?? source.providerStartAt;
+    const currentBoundary = providerBoundary
+      ?? source.currentEnd
+      ?? source.paidThrough
+      ?? futureStartBoundary;
     if (!currentBoundary) throw new Error("A current billing-cycle boundary is required for replacement");
 
     const cadenceMonths = intervalMonths(source);
@@ -638,7 +650,7 @@ export class BillingReplacementService {
       if (action === "NONE") return { action, change: decisionChange, subscription: candidate };
 
       if (action === "GRANT") {
-        if (["QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(change.type)
+        if (["TRIAL_SUBSCRIPTION_UPDATE", "QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(change.type)
           && (!change.branch || change.branch.billingStatus !== "PENDING_ACTIVATION")) {
           return { action: "NONE" as const, change, subscription: candidate };
         }
@@ -650,7 +662,7 @@ export class BillingReplacementService {
           const latest = await tx.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } });
           return { action: "NONE" as const, change: latest, subscription: candidate };
         }
-        if (change.branch && change.type === "QUANTITY_INCREASE") {
+        if (change.branch && ["TRIAL_SUBSCRIPTION_UPDATE", "QUANTITY_INCREASE"].includes(change.type)) {
           await tx.branch.update({
             where: { id: change.branch.id },
             data: { billingStatus: "ACTIVE", billingActivatedAt: now, billingArchivedAt: null },
@@ -675,7 +687,7 @@ export class BillingReplacementService {
         data: { accessRevokedAt: now },
       });
       if (revoked.count > 0 && change.branch?.billingStatus === "ACTIVE") {
-        if (change.type === "QUANTITY_INCREASE") {
+        if (["TRIAL_SUBSCRIPTION_UPDATE", "QUANTITY_INCREASE"].includes(change.type)) {
           await tx.branch.update({
             where: { id: change.branch.id },
             data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
@@ -771,7 +783,7 @@ export class BillingReplacementService {
         });
       }
       if (revokeAccess && change.branch?.billingStatus === "ACTIVE") {
-        if (change.type === "QUANTITY_INCREASE") {
+        if (["TRIAL_SUBSCRIPTION_UPDATE", "QUANTITY_INCREASE"].includes(change.type)) {
           await tx.branch.update({
             where: { id: change.branch.id },
             data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
@@ -915,7 +927,7 @@ export class BillingReplacementService {
           },
         });
         if (revokeAccess && change.branchId) {
-          if (change.type === "QUANTITY_INCREASE") {
+          if (["TRIAL_SUBSCRIPTION_UPDATE", "QUANTITY_INCREASE"].includes(change.type)) {
             await tx.branch.updateMany({
               where: { id: change.branchId, billingStatus: "ACTIVE" },
               data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
@@ -1100,7 +1112,7 @@ export class BillingReplacementService {
           },
         });
         if (revokeAccess && change.branchId) {
-          if (change.type === "QUANTITY_INCREASE") {
+          if (["TRIAL_SUBSCRIPTION_UPDATE", "QUANTITY_INCREASE"].includes(change.type)) {
             await tx.branch.updateMany({
               where: { id: change.branchId, billingStatus: "ACTIVE" },
               data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
@@ -1143,7 +1155,8 @@ export class BillingReplacementService {
           currentOrganizationId: change.organizationId,
         },
       });
-      if (change.branchId && ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(change.type)) {
+      if (change.branchId
+        && ["TRIAL_SUBSCRIPTION_UPDATE", "QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(change.type)) {
         await tx.branch.update({
           where: { id: change.branchId },
           data: { billingStatus: "ACTIVE", billingActivatedAt: now, billingArchivedAt: null },
@@ -1275,7 +1288,9 @@ export class BillingReplacementService {
           },
         });
         if (claim.change.branchId
-          && ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(claim.change.type)) {
+          && ["TRIAL_SUBSCRIPTION_UPDATE", "QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(
+            claim.change.type
+          )) {
           await tx.branch.update({
             where: { id: claim.change.branchId },
             data: options.branchDisposition === "ARCHIVE"

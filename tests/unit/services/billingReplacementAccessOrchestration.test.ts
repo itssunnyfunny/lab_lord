@@ -202,6 +202,24 @@ describe("replacement access orchestration", () => {
     expect(mappingQuery.where).not.toHaveProperty("active");
   });
 
+  it("activates a future-start trial branch only after replacement authorization", async () => {
+    change.type = "TRIAL_SUBSCRIPTION_UPDATE";
+
+    await expect(BillingReplacementService.syncAuthorizedAccess("change_1", now))
+      .resolves.toMatchObject({ action: "GRANT" });
+
+    expect(change.accessGrantedAt).toEqual(now);
+    expect(branch).toMatchObject({ billingStatus: "ACTIVE", billingActivatedAt: now });
+    expect(source).toMatchObject({ quantity: 1, currentOrganizationId: "org_1" });
+
+    candidate.status = "PENDING";
+    await expect(BillingReplacementService.syncAuthorizedAccess(
+      "change_1",
+      new Date("2026-08-11T12:00:00.000Z")
+    )).resolves.toMatchObject({ action: "REVOKE" });
+    expect(branch).toMatchObject({ billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null });
+  });
+
   it.each(["PENDING", "PAUSED"])(
     "atomically revokes branch access when the candidate becomes %s before cutover",
     async candidateStatus => {

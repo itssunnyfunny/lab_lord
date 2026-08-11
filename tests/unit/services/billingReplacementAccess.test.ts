@@ -65,6 +65,34 @@ describe("authorized replacement access policy", () => {
     }
   });
 
+  it("grants only beneficial trial replacement changes after mandate confirmation", () => {
+    expect(getReplacementAccessAction(decision({
+      changeType: "TRIAL_SUBSCRIPTION_UPDATE",
+      sourcePlan: "BASIC",
+      targetPlan: "BASIC",
+      candidatePlan: "BASIC",
+      sourceQuantity: 1,
+      targetQuantity: 2,
+      candidateQuantity: 2,
+      candidateProviderPlanId: "plan_basic",
+      targetProviderPlanId: "plan_basic",
+    }))).toBe("GRANT");
+    expect(getReplacementAccessAction(decision({
+      changeType: "TRIAL_SUBSCRIPTION_UPDATE",
+      sourcePlan: "BASIC",
+      targetPlan: "PRO",
+      candidatePlan: "PRO",
+    }))).toBe("GRANT");
+    expect(getReplacementAccessAction(decision({
+      changeType: "TRIAL_SUBSCRIPTION_UPDATE",
+      sourcePlan: "PRO",
+      targetPlan: "BASIC",
+      candidatePlan: "BASIC",
+      candidateProviderPlanId: "plan_basic",
+      targetProviderPlanId: "plan_basic",
+    }))).toBe("NONE");
+  });
+
   it("keeps CREATED eMandates and unconfirmed or mismatched targets fail-closed", () => {
     expect(getReplacementAccessAction(decision({
       candidateStatus: "CREATED",
