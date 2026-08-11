@@ -141,7 +141,9 @@ describe("BillingPriceSummary", () => {
       />
     );
 
-    expect(html).toContain("Recurring payment method: UPI AutoPay");
+    expect(html).toContain("Payment method");
+    expect(html).toContain("UPI AutoPay");
+    expect(html).toContain("Recurring mandate managed securely by Razorpay");
   });
 
   it("does not use trial-only pricing language when no trial or paid plan is active", () => {

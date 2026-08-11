@@ -39,6 +39,7 @@ import {
 import { useInlineFieldErrors } from "@/components/ui/InlineFieldError";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { BillingPriceSummary } from "@/components/billing/BillingPriceSummary";
+import { BillingPaymentMethodsOverview } from "@/components/billing/BillingPaymentMethodsOverview";
 import { CheckoutConfirmationDialog } from "@/components/billing/CheckoutConfirmationDialog";
 import { PaymentOutcomeDialog, type PaymentOutcome } from "@/components/billing/PaymentOutcomeDialog";
 import {
@@ -709,6 +710,14 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                 ? "NEXT_CYCLE" as const
                 : "IMMEDIATE_PRORATION" as const;
 
+    const checkoutMethodAvailability: BillingOverview["checkoutMethodAvailability"] = billingOverview?.checkoutMethodAvailability
+        ?? (billingOverview?.multiMethodSubscriptionsEnabled
+            ? {
+                mode: "PROVIDER_MANAGED",
+                potentialMethods: ["CARD", "UPI", "EMANDATE"],
+                providerControlsVisibility: true,
+            }
+            : undefined);
     const pendingReplacement = billingOverview?.pendingReplacement ?? null;
     const pendingReplacementChange = billingOverview?.scheduledChanges
         .slice()
@@ -1036,7 +1045,33 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                         </section>
                     ) : null}
 
-                    <div className="px-5 py-4">
+                    {billingOverview ? (
+                        <BillingPaymentMethodsOverview
+                            availability={checkoutMethodAvailability}
+                            currentMethod={billingOverview.current?.providerPaymentMethod}
+                            canChangeMethod={Boolean(
+                                billingOverview.current
+                                && isSupportedRecurringPaymentMethod(billingOverview.current.providerPaymentMethod)
+                                && isCheckoutBillingPlanId(billingOverview.current.plan)
+                                && checkoutMethodAvailability?.mode === "PROVIDER_MANAGED"
+                                && !pendingReplacement
+                            )}
+                            changeDisabled={Boolean(billingOverview.experience.activeOperation)}
+                            changeLoading={billingOperationLoading}
+                            onChangeMethod={() => void startPaymentMethodChange()}
+                        />
+                    ) : null}
+
+                    <section className="px-5 py-5" aria-labelledby="billing-plans-title">
+                        <div className="mb-4">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--text-muted)]">Plans</p>
+                            <h3 id="billing-plans-title" className="mt-1 text-base font-semibold text-[color:var(--text-primary)]">
+                                Choose the right workspace plan
+                            </h3>
+                            <p className="mt-1 text-xs leading-5 text-[color:var(--text-secondary)]">
+                                Monthly billing is based on the selected plan and active branch count. You review the total before continuing to Razorpay.
+                            </p>
+                        </div>
                         {billingLoading ? (
                             <div className="flex min-h-28 items-center justify-center text-sm text-[color:var(--text-primary)]">
                                 <Loader2 className="mr-2 animate-spin" size={18} />
@@ -1057,31 +1092,16 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                                 ))}
                             </div>
                         )}
-                    </div>
+                    </section>
 
-                    {billingOverview?.current && (
-                        <div className="space-y-3 px-5 py-4">
-                            <div className="flex flex-col gap-2 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
-                                <div>
-                                    <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--text-secondary)]">Recurring payment method</p>
-                                    <p className="mt-1 text-sm font-semibold text-[color:var(--text-primary)]">
-                                        {getProviderPaymentMethodLabel(billingOverview.current.providerPaymentMethod)}
-                                    </p>
-                                </div>
-                                {isSupportedRecurringPaymentMethod(billingOverview.current.providerPaymentMethod)
-                                    && isCheckoutBillingPlanId(billingOverview.current.plan)
-                                    && billingOverview.multiMethodSubscriptionsEnabled
-                                    && !pendingReplacement ? (
-                                    <AppButton
-                                        variant="secondary"
-                                        size="sm"
-                                        disabled={billingOperationLoading || Boolean(billingOverview.experience.activeOperation)}
-                                        isLoading={billingOperationLoading}
-                                        onClick={() => void startPaymentMethodChange()}
-                                    >
-                                        Change payment method
-                                    </AppButton>
-                                ) : null}
+                    {billingOverview?.current
+                        && (billingOverview.current.cancelAtCycleEnd || billingOverview.current.status === "ACTIVE") ? (
+                        <section className="space-y-3 px-5 py-4" aria-labelledby="subscription-controls-title">
+                            <div>
+                                <h3 id="subscription-controls-title" className="text-sm font-semibold text-[color:var(--text-primary)]">Subscription controls</h3>
+                                <p className="mt-1 text-xs text-[color:var(--text-secondary)]">
+                                    Cancellation preserves access through the end of the current paid billing cycle.
+                                </p>
                             </div>
                             {billingOverview.current.cancelAtCycleEnd ? (
                                 <div className={cn(formWarningBannerClass, "px-4 py-3 text-sm")}>
@@ -1101,8 +1121,8 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                                     </AppButton>
                                 </div>
                             ) : null}
-                        </div>
-                    )}
+                        </section>
+                    ) : null}
 
                     {billingOverview?.ownerTrialEligibility?.claimable && !billingOverview.trial && (
                         <div className="mx-5 mt-4 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] px-4 py-3 text-sm text-[color:var(--text-primary)]">
@@ -1214,7 +1234,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                     contactEmail={org.contactEmail || org.owner?.email}
                     contactPhone={org.contactPhone}
                     testMode={billingOverview.razorpayTestMode}
-                    multiMethodEnabled={Boolean(billingOverview.multiMethodSubscriptionsEnabled)}
+                    multiMethodEnabled={checkoutMethodAvailability?.mode === "PROVIDER_MANAGED"}
                     onClose={() => setConfirmationPlan(null)}
                     onConfirm={confirmSubscription}
                 />
@@ -1244,7 +1264,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                     contactEmail={org.contactEmail || org.owner?.email}
                     contactPhone={org.contactPhone}
                     testMode={billingOverview.razorpayTestMode}
-                    multiMethodEnabled={Boolean(billingOverview.multiMethodSubscriptionsEnabled)}
+                    multiMethodEnabled={checkoutMethodAvailability?.mode === "PROVIDER_MANAGED"}
                     onClose={() => setRecoveryConfirmationOpen(false)}
                     onConfirm={startRecovery}
                 />

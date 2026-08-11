@@ -189,6 +189,12 @@ function makeOverview(
   return {
     experience,
     razorpayTestMode: true,
+    multiMethodSubscriptionsEnabled: false,
+    checkoutMethodAvailability: {
+      mode: "CARD_ONLY",
+      potentialMethods: ["CARD"],
+      providerControlsVisibility: false,
+    },
     plans: PLANS,
     current,
     pendingReplacement: null,
@@ -1006,6 +1012,11 @@ test("UPI plan replacement opens provider-managed Checkout", async ({ page }) =>
       )
     );
     controller.overview.multiMethodSubscriptionsEnabled = true;
+    controller.overview.checkoutMethodAvailability = {
+      mode: "PROVIDER_MANAGED",
+      potentialMethods: ["CARD", "UPI", "EMANDATE"],
+      providerControlsVisibility: true,
+    };
     const replacement = makeReplacementCheckoutPayload();
     const replacementRequests: Array<Record<string, unknown>> = [];
     await page.route(`**/api/organizations/${ORG_ID}/billing/subscription`, route => {
@@ -1015,6 +1026,11 @@ test("UPI plan replacement opens provider-managed Checkout", async ({ page }) =>
     });
 
     await gotoBilling(page);
+    await expect(page.getByRole("heading", { name: "Choose securely in Razorpay Checkout" })).toBeVisible();
+    const supportedMethods = page.getByRole("list", { name: "Supported recurring payment methods" });
+    await expect(supportedMethods.getByText("Card", { exact: true })).toBeVisible();
+    await expect(supportedMethods.getByText("UPI AutoPay", { exact: true })).toBeVisible();
+    await expect(supportedMethods.getByText("eMandate", { exact: true })).toBeVisible();
     await expect(page.getByText("UPI AutoPay", { exact: true }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Change payment method" })).toBeVisible();
     await setCheckoutScenario(page, "hold");
