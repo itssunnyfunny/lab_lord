@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { BillingMutationService } from "@/services/billingMutation.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
+import { BranchService } from "@/services/branch.service";
 import {
   getReplacementUndoCutoffAt,
   getSafeReplacementCycleBoundary,
@@ -540,6 +541,85 @@ describe("serialized workspace billing mutations", () => {
       .resolves.toMatchObject({ status: "QUEUED", attemptCount: 0 });
     await expect(testPrisma.organization.findUniqueOrThrow({ where: { id: organization.id } }))
       .resolves.toMatchObject({ billingMutationLeaseToken: null, billingMutationLeaseUntil: null });
+  });
+
+  it("atomically discards a pending card branch before its quantity mutation is claimed", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay({ providerQuantity: 1, includePaidInvoice: false });
+    setRazorpayClientForTests(razorpay);
+    const branch = await testPrisma.branch.create({
+      data: { organizationId: organization.id, name: "Discard before claim", billingStatus: "PENDING_ACTIVATION" },
+    });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      branchId: branch.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "discard-card-before-claim",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    await expect(BranchService.discardPendingActivation(owner.id, branch.id))
+      .resolves.toEqual({ archived: true });
+    await expect(BillingMutationService.processNext(organization.id)).resolves.toBeNull();
+
+    expect(razorpay.updateSubscription).not.toHaveBeenCalled();
+    await expect(testPrisma.branch.findUniqueOrThrow({ where: { id: branch.id } }))
+      .resolves.toMatchObject({ billingStatus: "ARCHIVED" });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "SUPERSEDED", operationStatus: "ABANDONED" });
+  });
+
+  it("rejects pending-branch discard while a card quantity provider mutation is in flight", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay({ providerQuantity: 1, includePaidInvoice: false });
+    let providerStarted!: () => void;
+    let releaseProvider!: () => void;
+    const started = new Promise<void>(resolve => { providerStarted = resolve; });
+    const providerRelease = new Promise<void>(resolve => { releaseProvider = resolve; });
+    vi.mocked(razorpay.updateSubscription).mockImplementationOnce(async (_id, input) => {
+      providerStarted();
+      await providerRelease;
+      return {
+        id: "sub_workspace",
+        entity: "subscription",
+        plan_id: input.plan_id ?? "plan_standard",
+        status: "active",
+        total_count: 120,
+        quantity: input.quantity ?? 1,
+        payment_method: "card",
+      };
+    });
+    setRazorpayClientForTests(razorpay);
+    const branch = await testPrisma.branch.create({
+      data: { organizationId: organization.id, name: "Discard during provider call", billingStatus: "PENDING_ACTIVATION" },
+    });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      branchId: branch.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "discard-card-during-provider-call",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    const processing = BillingMutationService.processNext(organization.id);
+    await started;
+    const discardError = await BranchService.discardPendingActivation(owner.id, branch.id)
+      .then(() => null, error => error as Error);
+    releaseProvider();
+    await expect(processing).resolves.toMatchObject({ id: change.id, status: "AWAITING_PAYMENT" });
+
+    expect(discardError).toBeInstanceOf(Error);
+    expect(discardError?.message).toContain("Another billing operation is still processing");
+    await expect(testPrisma.branch.findUniqueOrThrow({ where: { id: branch.id } }))
+      .resolves.toMatchObject({ billingStatus: "PENDING_ACTIVATION", billingArchivedAt: null });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "AWAITING_PAYMENT", operationStatus: "AWAITING_PROVIDER_CONFIRMATION" });
   });
 
   it("does not let an expired worker fail or release a successor lease", async () => {

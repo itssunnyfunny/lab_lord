@@ -627,9 +627,41 @@ export class BranchService {
             });
             return { archived: true };
         }
-        await prisma.$transaction([
-            prisma.organizationBillingChange.update({
-                where: { id: change.id },
+        await prisma.$transaction(async tx => {
+            await lockOrganization(tx, branch.organizationId);
+            const organization = await tx.organization.findUniqueOrThrow({
+                where: { id: branch.organizationId },
+                select: { billingMutationLeaseToken: true, billingMutationLeaseUntil: true },
+            });
+            if (organization.billingMutationLeaseToken
+                || (organization.billingMutationLeaseUntil && organization.billingMutationLeaseUntil > now)) {
+                throw new Error("Another billing operation is still processing; retry shortly");
+            }
+
+            const currentBranch = await tx.branch.findUnique({ where: { id: branchId } });
+            if (!currentBranch) throw new Error("Branch not found");
+            if (currentBranch.billingStatus === "ACTIVE") {
+                throw new Error("Razorpay already confirmed this branch activation");
+            }
+            if (currentBranch.billingStatus !== "PENDING_ACTIVATION") {
+                throw new Error("Branch is not pending activation");
+            }
+            const currentChange = await tx.organizationBillingChange.findFirst({
+                where: {
+                    branchId,
+                    type: { in: ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"] },
+                    status: { in: ["QUEUED", "PROCESSING", "AWAITING_PAYMENT", "SCHEDULED", "FAILED"] },
+                },
+                orderBy: { sequence: "desc" },
+            });
+            if (!currentChange) {
+                throw new Error("Branch activation is still awaiting provider confirmation");
+            }
+            if (currentChange.replacementSubscriptionId) {
+                throw new Error("Replacement branch activation must be discarded through its mandate operation");
+            }
+            await tx.organizationBillingChange.update({
+                where: { id: currentChange.id },
                 data: {
                     status: "SUPERSEDED",
                     operationStatus: "ABANDONED",
@@ -637,12 +669,12 @@ export class BranchService {
                     resolvedAt: now,
                     lastError: "Pending branch discarded by owner",
                 },
-            }),
-            prisma.branch.update({
+            });
+            await tx.branch.update({
                 where: { id: branchId },
                 data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
-            }),
-        ]);
+            });
+        });
         return { archived: true };
     }
 
