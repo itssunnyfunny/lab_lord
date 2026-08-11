@@ -40,6 +40,7 @@ import {
     SettingsWorkspace,
 } from "@/components/settings/SettingsWorkspace";
 import { useInlineFieldErrors } from "@/components/ui/InlineFieldError";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
 import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 import { cn } from "@/lib/utils";
@@ -206,6 +207,8 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
     const [loading, setLoading] = useState(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
     const [activeSection, setActiveSection] = useState("profile");
+    const [isEditing, setIsEditing] = useState(false);
+    const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
     const [saveError, setSaveError] = useState("");
@@ -261,7 +264,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
     }, [branch, form]);
 
     const updateForm = <K extends keyof BranchForm>(key: K, value: BranchForm[K]) => {
-        if (!settingsDecision.allowed) return;
+        if (!settingsDecision.allowed || !isEditing) return;
         setForm(prev => prev ? { ...prev, [key]: value } : prev);
         if (saveStatus !== "idle") setSaveStatus("idle");
     };
@@ -272,6 +275,27 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
         setSaveStatus("idle");
         setSaveError("");
         resetFieldErrors();
+    };
+
+    const discardChanges = () => {
+        reset();
+        setIsEditing(false);
+        setDiscardDialogOpen(false);
+    };
+
+    const requestCancelEditing = () => {
+        if (hasChanges) {
+            setDiscardDialogOpen(true);
+            return;
+        }
+        discardChanges();
+    };
+
+    const beginEditing = () => {
+        if (!settingsDecision.allowed) return;
+        setSaveStatus("idle");
+        setSaveError("");
+        setIsEditing(true);
     };
 
     const validateForm = () => {
@@ -342,7 +366,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
     const defaultAdmissionFeeError = visibleError("defaultAdmissionFee", validation.errors);
 
     const save = async () => {
-        if (!form) return;
+        if (!form || !isEditing) return;
         if (!settingsDecision.allowed) {
             setSaveError(settingsDecision.reason || "These settings cannot be changed right now.");
             setSaveStatus("error");
@@ -393,6 +417,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
             setForm(toForm(updated));
             resetFieldErrors();
             setSaveStatus("success");
+            setIsEditing(false);
             setTimeout(() => setSaveStatus("idle"), 3000);
         } catch (err) {
             setSaveError(err instanceof Error ? err.message : "Save failed.");
@@ -428,11 +453,23 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                 sections={SECTIONS}
                 activeSection={activeSection}
                 onSectionChange={setActiveSection}
+                actions={!isEditing ? (
+                    <AppButton
+                        variant="primary"
+                        size="sm"
+                        disabled={!settingsDecision.allowed}
+                        title={!settingsDecision.allowed ? settingsDecision.reason : undefined}
+                        onClick={beginEditing}
+                        className="min-h-11 lg:min-h-9"
+                    >
+                        Edit settings
+                    </AppButton>
+                ) : null}
             >
                 <SettingsCapabilityNotice decision={settingsDecision} />
 
                 <SettingsPanel id="profile" title="Profile" description="Operational identity and public branch contact details." icon={Building2}>
-                    {showMutationControls ? (
+                    {showMutationControls && isEditing ? (
                         <>
                             <SettingsField label="Branch name" error={nameError} errorId="branch-name-error">
                                 <SettingsInput required autoComplete="organization" value={form.name} disabled={mutationsDisabled} aria-describedby={mutationDescriptionId} onChange={e => updateForm("name", e.target.value)} onBlur={() => markTouched("name")} placeholder="Main Branch" error={nameError} errorId="branch-name-error" />
@@ -465,7 +502,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                 </SettingsPanel>
 
                 <SettingsPanel id="defaults" title="Student Defaults" description="Defaults applied when creating new students in this branch." icon={IndianRupee}>
-                    {showMutationControls ? (
+                    {showMutationControls && isEditing ? (
                         <>
                             <SettingsField label="Default monthly fee" description="Used when a new student has no manual fee or shift-linked fee." error={defaultFeeError} errorId="branch-default-fee-error">
                                 <SettingsInput type="number" inputMode="numeric" min={0} value={form.defaultFee ?? 0} disabled={mutationsDisabled} aria-describedby={mutationDescriptionId} onChange={e => updateForm("defaultFee", Number(e.target.value))} onBlur={() => markTouched("defaultFee")} error={defaultFeeError} errorId="branch-default-fee-error" />
@@ -485,7 +522,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                 </SettingsPanel>
 
                 <SettingsPanel id="communication" title="Communication" description="Defaults for manually copied payment reminder drafts." icon={MessageSquare}>
-                    {showMutationControls ? (
+                    {showMutationControls && isEditing ? (
                         <>
                             <SettingsField label="Default message language">
                                 <fieldset disabled={mutationsDisabled} aria-describedby={mutationDescriptionId} className="min-w-0 border-0 p-0">
@@ -517,7 +554,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                 </SettingsPanel>
 
                 <SettingsPanel id="ai" title="AI" description="Control whether this branch can generate AI reports." icon={Bot}>
-                    {showMutationControls ? (
+                    {showMutationControls && isEditing ? (
                         <SettingsField label="AI reports" description={mutationsDisabled ? settingsDecision.reason : undefined}>
                             <SettingsToggle
                                 checked={form.aiEnabled}
@@ -622,14 +659,25 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
 
             {settingsDecision.allowed && (
                 <SettingsSaveBar
-                    visible={hasChanges}
+                    visible={isEditing}
+                    hasChanges={hasChanges}
                     saving={saving}
                     status={saveStatus}
                     error={saveError}
                     onSave={save}
-                    onReset={reset}
+                    onCancel={requestCancelEditing}
                 />
             )}
+            <ConfirmDialog
+                isOpen={discardDialogOpen}
+                onClose={() => setDiscardDialogOpen(false)}
+                onConfirm={discardChanges}
+                variant="warning"
+                title="Discard branch changes?"
+                description="Your unsaved branch settings will be restored to their last saved values."
+                confirmText="Discard changes"
+                cancelText="Keep editing"
+            />
         </>
     );
 }

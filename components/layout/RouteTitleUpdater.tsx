@@ -18,7 +18,6 @@ const BRANCH_TITLES: Record<string, string> = {
 };
 
 const AI_TITLES: Record<string, string> = {
-    insights: "AI insights",
     reports: "AI reports",
     messages: "AI messages",
 };

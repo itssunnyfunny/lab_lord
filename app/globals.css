@@ -81,6 +81,10 @@ h3,
   font-family: var(--font-manrope), var(--font-inter), "Segoe UI", ui-sans-serif, system-ui, sans-serif;
 }
 
+html.dark {
+  color-scheme: dark;
+}
+
 input,
 select,
 textarea {

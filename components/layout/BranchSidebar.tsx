@@ -12,7 +12,6 @@ import {
     LucideIcon,
     MessageSquare,
     Settings,
-    Sparkles,
     TriangleAlert,
     UserCircle,
     Users,
@@ -75,7 +74,6 @@ export function BranchSidebar() {
     ];
 
     const intelligenceItems: BranchNavItem[] = [
-        { icon: Sparkles, label: "AI Insights", href: `${basePath}/ai/insights`, permission: "analytics", feature: "AI_INSIGHTS", active: current => current === `${basePath}/ai/insights` },
         { icon: FileText, label: "AI Reports", href: `${basePath}/ai/reports`, permission: "analytics", feature: "AI_REPORTS", active: current => current === `${basePath}/ai/reports` },
         { icon: MessageSquare, label: "AI Messages", href: `${basePath}/ai/messages`, permission: "analytics", feature: "AI_MESSAGES", active: current => current === `${basePath}/ai/messages` },
     ];

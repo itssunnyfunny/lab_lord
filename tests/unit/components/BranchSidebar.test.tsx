@@ -89,4 +89,28 @@ describe("BranchSidebar", () => {
     expect(mocks.sidebarItems.map(item => item.label)).not.toContain("Back to organization");
     expect(mocks.sidebarItems.map(item => item.label)).toContain("Branch Settings");
   });
+
+  it("keeps AI reports and messages but removes AI Insights", () => {
+    mocks.access = {
+      branchId: "branch_1",
+      branchName: "Main Branch",
+      organizationId: "org_1",
+      isOwner: true,
+      role: "OWNER",
+      effectivePlan: "PRO",
+      entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
+      permissions: {
+        ...permissions,
+        manage_org: true,
+        staff_management: true,
+      },
+    };
+
+    renderToStaticMarkup(<BranchSidebar />);
+
+    const labels = mocks.sidebarItems.map(item => item.label);
+    expect(labels).not.toContain("AI Insights");
+    expect(labels).toContain("AI Reports");
+    expect(labels).toContain("AI Messages");
+  });
 });

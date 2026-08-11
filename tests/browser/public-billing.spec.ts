@@ -102,7 +102,7 @@ test("public pricing exposes only Basic and Standard branch pricing", async ({ p
     "Multiple branches, each billed separately",
     "Staff invitations, roles and permission controls",
     "Branch and cross-branch advanced analytics",
-    "AI insights, reports and message drafting",
+    "AI reports and message drafting",
   ]) {
     await expect(page.getByText(capability, { exact: false })).toHaveCount(2);
   }

@@ -164,6 +164,8 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     const [loading, setLoading] = useState(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
     const [activeSection, setActiveSection] = useState("profile");
+    const [isEditing, setIsEditing] = useState(false);
+    const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
     const [saveError, setSaveError] = useState("");
@@ -240,7 +242,12 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
         return JSON.stringify(form) !== JSON.stringify(toForm(org));
     }, [org, form]);
 
+    const organizationCanEdit = billingOverview?.entitlements.canWrite ?? false;
+    const organizationEditReason = billingOverview?.entitlements.accessReason
+        ?? (billingLoading ? "Checking workspace access..." : "Organization settings are unavailable until billing access is restored.");
+
     const updateForm = <K extends keyof OrgForm>(key: K, value: OrgForm[K]) => {
+        if (!organizationCanEdit || !isEditing) return;
         setForm(prev => prev ? { ...prev, [key]: value } : prev);
         if (saveStatus !== "idle") setSaveStatus("idle");
     };
@@ -251,6 +258,27 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
         setSaveStatus("idle");
         setSaveError("");
         resetFieldErrors();
+    };
+
+    const discardChanges = () => {
+        reset();
+        setIsEditing(false);
+        setDiscardDialogOpen(false);
+    };
+
+    const requestCancelEditing = () => {
+        if (hasChanges) {
+            setDiscardDialogOpen(true);
+            return;
+        }
+        discardChanges();
+    };
+
+    const beginEditing = () => {
+        if (!organizationCanEdit) return;
+        setSaveStatus("idle");
+        setSaveError("");
+        setIsEditing(true);
     };
 
     const launchCheckout = useCallback((
@@ -665,7 +693,12 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     const paymentGraceDaysError = visibleError("paymentGraceDays", validation.errors);
 
     const save = async () => {
-        if (!form) return;
+        if (!form || !isEditing) return;
+        if (!organizationCanEdit) {
+            setSaveError(organizationEditReason);
+            setSaveStatus("error");
+            return;
+        }
         markSubmitted();
         setSaveError("");
         const result = validateForm();
@@ -710,6 +743,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
             setForm(toForm(nextOrg));
             resetFieldErrors();
             setSaveStatus("success");
+            setIsEditing(false);
             setTimeout(() => setSaveStatus("idle"), 3000);
         } catch (err) {
             setSaveError(err instanceof Error ? err.message : "Save failed.");
@@ -751,60 +785,109 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                 sections={SECTIONS}
                 activeSection={activeSection}
                 onSectionChange={setActiveSection}
+                actions={!isEditing ? (
+                    <AppButton
+                        variant="primary"
+                        size="sm"
+                        disabled={!organizationCanEdit}
+                        title={!organizationCanEdit ? organizationEditReason : undefined}
+                        onClick={beginEditing}
+                        className="min-h-11 lg:min-h-9"
+                    >
+                        Edit settings
+                    </AppButton>
+                ) : null}
             >
+                {billingOverview && !organizationCanEdit ? (
+                    <aside className={cn("flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between", formWarningBannerClass)}>
+                        <p>{organizationEditReason}</p>
+                        <a href="#billing" className="shrink-0 font-semibold underline underline-offset-4">Review billing</a>
+                    </aside>
+                ) : null}
                 <SettingsPanel id="profile" title="Business Profile" description="Core business information used across this organization." icon={Building2}>
-                    <SettingsField label="Organization name" description="The public workspace name." error={nameError} errorId="org-name-error">
-                        <SettingsInput value={form.name} onChange={e => updateForm("name", e.target.value)} onBlur={() => markTouched("name")} placeholder="Organization name" error={nameError} errorId="org-name-error" />
-                    </SettingsField>
-                    <SettingsField label="Legal name" description="Optional legal or billing name." error={legalNameError} errorId="org-legal-name-error">
-                        <SettingsInput value={form.legalName ?? ""} onChange={e => updateForm("legalName", e.target.value)} onBlur={() => markTouched("legalName")} placeholder="Registered business name" error={legalNameError} errorId="org-legal-name-error" />
-                    </SettingsField>
-                    <SettingsField label="Business type" error={businessTypeError} errorId="org-business-type-error">
-                        <SettingsSelect value={form.businessType ?? ""} onChange={e => updateForm("businessType", e.target.value)} onBlur={() => markTouched("businessType")} error={businessTypeError} errorId="org-business-type-error">
-                            <option value="">Not set</option>
-                            {BUSINESS_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
-                        </SettingsSelect>
-                    </SettingsField>
+                    {isEditing && organizationCanEdit ? (
+                        <>
+                            <SettingsField label="Organization name" description="The public workspace name." error={nameError} errorId="org-name-error">
+                                <SettingsInput value={form.name} onChange={e => updateForm("name", e.target.value)} onBlur={() => markTouched("name")} placeholder="Organization name" error={nameError} errorId="org-name-error" />
+                            </SettingsField>
+                            <SettingsField label="Legal name" description="Optional legal or billing name." error={legalNameError} errorId="org-legal-name-error">
+                                <SettingsInput value={form.legalName ?? ""} onChange={e => updateForm("legalName", e.target.value)} onBlur={() => markTouched("legalName")} placeholder="Registered business name" error={legalNameError} errorId="org-legal-name-error" />
+                            </SettingsField>
+                            <SettingsField label="Business type" error={businessTypeError} errorId="org-business-type-error">
+                                <SettingsSelect value={form.businessType ?? ""} onChange={e => updateForm("businessType", e.target.value)} onBlur={() => markTouched("businessType")} error={businessTypeError} errorId="org-business-type-error">
+                                    <option value="">Not set</option>
+                                    {BUSINESS_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+                                </SettingsSelect>
+                            </SettingsField>
+                        </>
+                    ) : (
+                        <>
+                            <ReadOnlyRow label="Organization name" value={org.name} />
+                            <ReadOnlyRow label="Legal name" value={org.legalName || "Not set"} />
+                            <ReadOnlyRow label="Business type" value={org.businessType || "Not set"} />
+                        </>
+                    )}
                 </SettingsPanel>
 
                 <SettingsPanel id="contact" title="Contact" description="Contact details for operations and billing conversations." icon={MapPin}>
-                    <SettingsField label="Contact email" error={contactEmailError} errorId="org-contact-email-error">
-                        <SettingsInput value={form.contactEmail ?? ""} onChange={e => updateForm("contactEmail", e.target.value)} onBlur={() => markTouched("contactEmail")} placeholder="owner@example.com" error={contactEmailError} errorId="org-contact-email-error" />
-                    </SettingsField>
-                    <SettingsField label="Contact phone" description="Required phone number for owner and operations contact." error={contactPhoneError} errorId="org-contact-phone-error">
-                        <SettingsInput value={form.contactPhone ?? ""} onChange={e => updateForm("contactPhone", e.target.value)} onBlur={() => markTouched("contactPhone")} placeholder="+91 98765 43210" error={contactPhoneError} errorId="org-contact-phone-error" />
-                    </SettingsField>
-                    <SettingsField label="Address" error={addressError} errorId="org-address-error">
-                        <SettingsTextArea value={form.address ?? ""} onChange={e => updateForm("address", e.target.value)} onBlur={() => markTouched("address")} placeholder="Organization address" error={addressError} errorId="org-address-error" />
-                    </SettingsField>
+                    {isEditing && organizationCanEdit ? (
+                        <>
+                            <SettingsField label="Contact email" error={contactEmailError} errorId="org-contact-email-error">
+                                <SettingsInput value={form.contactEmail ?? ""} onChange={e => updateForm("contactEmail", e.target.value)} onBlur={() => markTouched("contactEmail")} placeholder="owner@example.com" error={contactEmailError} errorId="org-contact-email-error" />
+                            </SettingsField>
+                            <SettingsField label="Contact phone" description="Required phone number for owner and operations contact." error={contactPhoneError} errorId="org-contact-phone-error">
+                                <SettingsInput value={form.contactPhone ?? ""} onChange={e => updateForm("contactPhone", e.target.value)} onBlur={() => markTouched("contactPhone")} placeholder="+91 98765 43210" error={contactPhoneError} errorId="org-contact-phone-error" />
+                            </SettingsField>
+                            <SettingsField label="Address" error={addressError} errorId="org-address-error">
+                                <SettingsTextArea value={form.address ?? ""} onChange={e => updateForm("address", e.target.value)} onBlur={() => markTouched("address")} placeholder="Organization address" error={addressError} errorId="org-address-error" />
+                            </SettingsField>
+                        </>
+                    ) : (
+                        <>
+                            <ReadOnlyRow label="Contact email" value={org.contactEmail || "Not set"} />
+                            <ReadOnlyRow label="Contact phone" value={org.contactPhone || "Not set"} />
+                            <ReadOnlyRow label="Address" value={org.address || "Not set"} />
+                        </>
+                    )}
                 </SettingsPanel>
 
                 <SettingsPanel id="regional" title="Regional Defaults" description="Defaults new branches can align with later." icon={Clock}>
-                    <SettingsField label="Timezone">
-                        <SettingsSelect value={form.timezone} onChange={e => updateForm("timezone", e.target.value)}>
-                            <option value="Asia/Kolkata">Asia/Kolkata</option>
-                            <option value="UTC">UTC</option>
-                        </SettingsSelect>
-                    </SettingsField>
-                    <SettingsField label="Currency">
-                        <SettingsSelect value={form.currency} onChange={e => updateForm("currency", e.target.value)}>
-                            <option value="INR">INR</option>
-                            <option value="USD">USD</option>
-                        </SettingsSelect>
-                    </SettingsField>
-                    <SettingsField label="Week starts on">
-                        <SegmentedControl
-                            value={String(form.weekStartsOn) as "0" | "1"}
-                            onChange={value => updateForm("weekStartsOn", Number(value) as 0 | 1)}
-                            options={[
-                                { value: "1", label: "Monday" },
-                                { value: "0", label: "Sunday" },
-                            ]}
-                        />
-                    </SettingsField>
-                    <SettingsField label="Payment grace days" description="Stored organization policy for payment follow-up windows." error={paymentGraceDaysError} errorId="org-payment-grace-days-error">
-                        <SettingsInput type="number" min={0} max={60} value={form.paymentGraceDays} onChange={e => updateForm("paymentGraceDays", Number(e.target.value))} onBlur={() => markTouched("paymentGraceDays")} error={paymentGraceDaysError} errorId="org-payment-grace-days-error" />
-                    </SettingsField>
+                    {isEditing && organizationCanEdit ? (
+                        <>
+                            <SettingsField label="Timezone">
+                                <SettingsSelect value={form.timezone} onChange={e => updateForm("timezone", e.target.value)}>
+                                    <option value="Asia/Kolkata">Asia/Kolkata</option>
+                                    <option value="UTC">UTC</option>
+                                </SettingsSelect>
+                            </SettingsField>
+                            <SettingsField label="Currency">
+                                <SettingsSelect value={form.currency} onChange={e => updateForm("currency", e.target.value)}>
+                                    <option value="INR">INR</option>
+                                    <option value="USD">USD</option>
+                                </SettingsSelect>
+                            </SettingsField>
+                            <SettingsField label="Week starts on">
+                                <SegmentedControl
+                                    value={String(form.weekStartsOn) as "0" | "1"}
+                                    onChange={value => updateForm("weekStartsOn", Number(value) as 0 | 1)}
+                                    options={[
+                                        { value: "1", label: "Monday" },
+                                        { value: "0", label: "Sunday" },
+                                    ]}
+                                />
+                            </SettingsField>
+                            <SettingsField label="Payment grace days" description="Stored organization policy for payment follow-up windows." error={paymentGraceDaysError} errorId="org-payment-grace-days-error">
+                                <SettingsInput type="number" min={0} max={60} value={form.paymentGraceDays} onChange={e => updateForm("paymentGraceDays", Number(e.target.value))} onBlur={() => markTouched("paymentGraceDays")} error={paymentGraceDaysError} errorId="org-payment-grace-days-error" />
+                            </SettingsField>
+                        </>
+                    ) : (
+                        <>
+                            <ReadOnlyRow label="Timezone" value={org.timezone} />
+                            <ReadOnlyRow label="Currency" value={org.currency} />
+                            <ReadOnlyRow label="Week starts on" value={org.weekStartsOn === 0 ? "Sunday" : "Monday"} />
+                            <ReadOnlyRow label="Payment grace days" value={org.paymentGraceDays} />
+                        </>
+                    )}
                 </SettingsPanel>
 
                 <SettingsPanel id="branches" title="Branches" description="Open a branch to manage branch-level settings." icon={GitBranch}>
@@ -995,12 +1078,23 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
             </SettingsWorkspace>
 
             <SettingsSaveBar
-                visible={hasChanges}
+                visible={isEditing}
+                hasChanges={hasChanges}
                 saving={saving}
                 status={saveStatus}
                 error={saveError}
                 onSave={save}
-                onReset={reset}
+                onCancel={requestCancelEditing}
+            />
+            <ConfirmDialog
+                isOpen={discardDialogOpen}
+                onClose={() => setDiscardDialogOpen(false)}
+                onConfirm={discardChanges}
+                variant="warning"
+                title="Discard organization changes?"
+                description="Your unsaved organization settings will be restored to their last saved values."
+                confirmText="Discard changes"
+                cancelText="Keep editing"
             />
             {confirmationPlanDetails && billingOverview ? (
                 <CheckoutConfirmationDialog

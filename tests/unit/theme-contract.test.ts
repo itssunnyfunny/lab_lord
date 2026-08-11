@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 const projectRoot = resolve(process.cwd());
 const globalsPath = join(projectRoot, "app", "globals.css");
 const tokensPath = join(projectRoot, "styles", "tokens.css");
+const entrySurfacePath = join(projectRoot, "components", "ui", "entrySurface.ts");
 const sourceRoots = ["app", "components", "styles"].map((directory) => join(projectRoot, directory));
 const sourceExtensions = new Set([".css", ".ts", ".tsx"]);
 const runtimeRequire = createRequire(import.meta.url);
@@ -187,5 +188,31 @@ describe("UI theme contract", () => {
     expect(reducedMotionBlock).toContain("animation-duration: 0.01ms !important");
     expect(reducedMotionBlock).toContain("transition-duration: 0.01ms !important");
     expect(reducedMotionBlock).toContain("scroll-behavior: auto !important");
+  });
+
+  it("uses the current Clerk dark-theme variable contract", () => {
+    const globals = readFileSync(globalsPath, "utf8");
+    const entrySurface = readFileSync(entrySurfacePath, "utf8");
+
+    for (const variable of [
+      "colorForeground",
+      "colorMutedForeground",
+      "colorInput",
+      "colorInputForeground",
+      "colorPrimaryForeground",
+    ]) {
+      expect(entrySurface).toContain(variable);
+    }
+
+    for (const deprecatedVariable of [
+      "colorText:",
+      "colorTextSecondary:",
+      "colorInputText:",
+      "colorInputBackground:",
+    ]) {
+      expect(entrySurface).not.toContain(deprecatedVariable);
+    }
+
+    expect(globals).toMatch(/html\.dark\s*{[^}]*color-scheme:\s*dark;/s);
   });
 });

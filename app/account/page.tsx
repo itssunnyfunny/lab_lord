@@ -32,6 +32,7 @@ import {
 } from "@/components/settings/SettingsWorkspace";
 import { AppButton, PageLoadingSkeleton } from "@/components/ui";
 import { Avatar } from "@/components/ui/Avatar";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { focusFirstInvalidField } from "@/components/ui/FormField";
 import {
     notifyUserPreferencesChanged,
@@ -113,6 +114,8 @@ export default function AccountPage() {
     const [loading, setLoading] = useState(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
     const [activeSection, setActiveSection] = useState("profile");
+    const [isEditing, setIsEditing] = useState(false);
+    const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
     const [saveError, setSaveError] = useState("");
@@ -142,6 +145,7 @@ export default function AccountPage() {
     }, [profile, form]);
 
     const updateForm = <K extends keyof AccountForm>(key: K, value: AccountForm[K]) => {
+        if (!isEditing) return;
         setForm(prev => prev ? { ...prev, [key]: value } : prev);
         if (saveStatus !== "idle") setSaveStatus("idle");
     };
@@ -152,6 +156,26 @@ export default function AccountPage() {
         setSaveStatus("idle");
         setSaveError("");
         resetFieldErrors();
+    };
+
+    const discardChanges = () => {
+        reset();
+        setIsEditing(false);
+        setDiscardDialogOpen(false);
+    };
+
+    const requestCancelEditing = () => {
+        if (hasChanges) {
+            setDiscardDialogOpen(true);
+            return;
+        }
+        discardChanges();
+    };
+
+    const beginEditing = () => {
+        setSaveStatus("idle");
+        setSaveError("");
+        setIsEditing(true);
     };
 
     const validateForm = () => {
@@ -170,7 +194,7 @@ export default function AccountPage() {
     const phoneError = visibleError("phone", validation.errors);
 
     const save = async () => {
-        if (!form) return;
+        if (!form || !isEditing) return;
         markSubmitted();
         setSaveError("");
         const result = validateForm();
@@ -215,6 +239,7 @@ export default function AccountPage() {
             });
             resetFieldErrors();
             setSaveStatus("success");
+            setIsEditing(false);
             setTimeout(() => setSaveStatus("idle"), 3000);
         } catch (err) {
             setSaveError(err instanceof Error ? err.message : "Save failed.");
@@ -248,6 +273,11 @@ export default function AccountPage() {
                 sections={SECTIONS}
                 activeSection={activeSection}
                 onSectionChange={setActiveSection}
+                actions={!isEditing ? (
+                    <AppButton variant="primary" size="sm" onClick={beginEditing} className="min-h-11 lg:min-h-9">
+                        Edit settings
+                    </AppButton>
+                ) : null}
             >
                 <SettingsPanel id="profile" title="Profile" description="These details identify you across the workspace." icon={User}>
                     <div className="mb-2 flex items-center gap-4 rounded-[var(--ui-radius-control)] border border-cyan-300/15 bg-gradient-to-r from-cyan-400/[0.08] to-violet-400/[0.05] p-4">
@@ -261,82 +291,111 @@ export default function AccountPage() {
                             Active
                         </span>
                     </div>
-                    <SettingsField label="Display name" description="Shown in account menus and staff lists." error={nameError} errorId="account-name-error">
-                        <SettingsInput
-                            value={form.name ?? ""}
-                            onChange={e => updateForm("name", e.target.value)}
-                            onBlur={() => markTouched("name")}
-                            placeholder="Your name"
-                            error={nameError}
-                            errorId="account-name-error"
-                        />
-                    </SettingsField>
-                    <SettingsField label="Phone" description="Required contact number for account operations." error={phoneError} errorId="account-phone-error">
-                        <SettingsInput
-                            value={form.phone ?? ""}
-                            onChange={e => updateForm("phone", e.target.value)}
-                            onBlur={() => markTouched("phone")}
-                            placeholder="+91 98765 43210"
-                            error={phoneError}
-                            errorId="account-phone-error"
-                        />
-                    </SettingsField>
+                    {isEditing ? (
+                        <>
+                            <SettingsField label="Display name" description="Shown in account menus and staff lists." error={nameError} errorId="account-name-error">
+                                <SettingsInput
+                                    value={form.name ?? ""}
+                                    onChange={e => updateForm("name", e.target.value)}
+                                    onBlur={() => markTouched("name")}
+                                    placeholder="Your name"
+                                    error={nameError}
+                                    errorId="account-name-error"
+                                />
+                            </SettingsField>
+                            <SettingsField label="Phone" description="Required contact number for account operations." error={phoneError} errorId="account-phone-error">
+                                <SettingsInput
+                                    value={form.phone ?? ""}
+                                    onChange={e => updateForm("phone", e.target.value)}
+                                    onBlur={() => markTouched("phone")}
+                                    placeholder="+91 98765 43210"
+                                    error={phoneError}
+                                    errorId="account-phone-error"
+                                />
+                            </SettingsField>
+                        </>
+                    ) : (
+                        <>
+                            <ReadOnlyRow label="Display name" value={profile.name || "Not set"} />
+                            <ReadOnlyRow label="Phone" value={profile.phone || "Not set"} />
+                        </>
+                    )}
                     <ReadOnlyRow label="Email" value={<span className="inline-flex items-center gap-2"><Mail size={14} />{profile.email}</span>} />
                 </SettingsPanel>
 
                 <SettingsPanel id="preferences" title="Preferences" description="Persisted personal defaults for this account." icon={SlidersHorizontal}>
-                    <SettingsField label="Timezone">
-                        <SettingsSelect value={form.timezone} onChange={e => updateForm("timezone", e.target.value)}>
-                            <option value="Asia/Kolkata">Asia/Kolkata</option>
-                            <option value="UTC">UTC</option>
-                        </SettingsSelect>
-                    </SettingsField>
-                    <SettingsField label="Locale">
-                        <SettingsSelect value={form.locale} onChange={e => updateForm("locale", e.target.value)}>
-                            <option value="en-IN">English India</option>
-                            <option value="en-US">English US</option>
-                        </SettingsSelect>
-                    </SettingsField>
-                    <SettingsField label="Date format">
-                        <SettingsSelect value={form.dateFormat} onChange={e => updateForm("dateFormat", e.target.value)}>
-                            <option value="dd MMM yyyy">dd MMM yyyy</option>
-                            <option value="MMM dd, yyyy">MMM dd, yyyy</option>
-                            <option value="yyyy-MM-dd">yyyy-MM-dd</option>
-                        </SettingsSelect>
-                    </SettingsField>
-                    <SettingsField label="Density">
-                        <SegmentedControl
-                            value={form.densityPreference}
-                            onChange={value => updateForm("densityPreference", value)}
-                            options={[
-                                { value: "comfortable", label: "Comfortable" },
-                                { value: "compact", label: "Compact" },
-                            ]}
-                        />
-                    </SettingsField>
+                    {isEditing ? (
+                        <>
+                            <SettingsField label="Timezone">
+                                <SettingsSelect value={form.timezone} onChange={e => updateForm("timezone", e.target.value)}>
+                                    <option value="Asia/Kolkata">Asia/Kolkata</option>
+                                    <option value="UTC">UTC</option>
+                                </SettingsSelect>
+                            </SettingsField>
+                            <SettingsField label="Locale">
+                                <SettingsSelect value={form.locale} onChange={e => updateForm("locale", e.target.value)}>
+                                    <option value="en-IN">English India</option>
+                                    <option value="en-US">English US</option>
+                                </SettingsSelect>
+                            </SettingsField>
+                            <SettingsField label="Date format">
+                                <SettingsSelect value={form.dateFormat} onChange={e => updateForm("dateFormat", e.target.value)}>
+                                    <option value="dd MMM yyyy">dd MMM yyyy</option>
+                                    <option value="MMM dd, yyyy">MMM dd, yyyy</option>
+                                    <option value="yyyy-MM-dd">yyyy-MM-dd</option>
+                                </SettingsSelect>
+                            </SettingsField>
+                            <SettingsField label="Density">
+                                <SegmentedControl
+                                    value={form.densityPreference}
+                                    onChange={value => updateForm("densityPreference", value)}
+                                    options={[
+                                        { value: "comfortable", label: "Comfortable" },
+                                        { value: "compact", label: "Compact" },
+                                    ]}
+                                />
+                            </SettingsField>
+                        </>
+                    ) : (
+                        <>
+                            <ReadOnlyRow label="Timezone" value={profile.timezone} />
+                            <ReadOnlyRow label="Locale" value={profile.locale === "en-US" ? "English US" : "English India"} />
+                            <ReadOnlyRow label="Date format" value={profile.dateFormat} />
+                            <ReadOnlyRow label="Density" value={profile.densityPreference === "compact" ? "Compact" : "Comfortable"} />
+                        </>
+                    )}
                 </SettingsPanel>
 
                 <SettingsPanel id="workspace" title="Workspace Defaults" description="Defaults used by message and navigation experiences." icon={LayoutDashboard}>
-                    <SettingsField label="Message language">
-                        <SegmentedControl
-                            value={form.defaultMessageLanguage}
-                            onChange={value => updateForm("defaultMessageLanguage", value)}
-                            options={[
-                                { value: "en", label: "English" },
-                                { value: "hi", label: "Hindi" },
-                            ]}
-                        />
-                    </SettingsField>
-                    <SettingsField label="Landing page">
-                        <SegmentedControl
-                            value={form.defaultLandingPage}
-                            onChange={value => updateForm("defaultLandingPage", value)}
-                            options={[
-                                { value: "org", label: "Last workspace" },
-                                { value: "account", label: "Account" },
-                            ]}
-                        />
-                    </SettingsField>
+                    {isEditing ? (
+                        <>
+                            <SettingsField label="Message language">
+                                <SegmentedControl
+                                    value={form.defaultMessageLanguage}
+                                    onChange={value => updateForm("defaultMessageLanguage", value)}
+                                    options={[
+                                        { value: "en", label: "English" },
+                                        { value: "hi", label: "Hindi" },
+                                    ]}
+                                />
+                            </SettingsField>
+                            <SettingsField label="Landing page">
+                                <SegmentedControl
+                                    value={form.defaultLandingPage}
+                                    onChange={value => updateForm("defaultLandingPage", value)}
+                                    options={[
+                                        { value: "org", label: "Last workspace" },
+                                        { value: "account", label: "Account" },
+                                    ]}
+                                />
+                            </SettingsField>
+                        </>
+                    ) : (
+                        <>
+                            <ReadOnlyRow label="Message language" value={profile.defaultMessageLanguage === "hi" ? "Hindi" : "English"} />
+                            <ReadOnlyRow label="Landing page" value={profile.defaultLandingPage === "account" ? "Account" : "Last workspace"} />
+                        </>
+                    )}
                 </SettingsPanel>
 
                 <SettingsPanel id="access" title="Access" description="Read-only membership and role summary." icon={Shield}>
@@ -382,12 +441,23 @@ export default function AccountPage() {
             </SettingsWorkspace>
 
             <SettingsSaveBar
-                visible={hasChanges}
+                visible={isEditing}
+                hasChanges={hasChanges}
                 saving={saving}
                 status={saveStatus}
                 error={saveError}
                 onSave={save}
-                onReset={reset}
+                onCancel={requestCancelEditing}
+            />
+            <ConfirmDialog
+                isOpen={discardDialogOpen}
+                onClose={() => setDiscardDialogOpen(false)}
+                onConfirm={discardChanges}
+                variant="warning"
+                title="Discard account changes?"
+                description="Your unsaved account settings will be restored to their last saved values."
+                confirmText="Discard changes"
+                cancelText="Keep editing"
             />
         </>
     );

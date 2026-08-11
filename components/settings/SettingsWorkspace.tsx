@@ -32,6 +32,7 @@ export function SettingsWorkspace({
     sections,
     activeSection,
     onSectionChange,
+    actions,
     children,
 }: {
     title: string;
@@ -39,6 +40,7 @@ export function SettingsWorkspace({
     sections: SettingsSection[];
     activeSection: string;
     onSectionChange: (section: string) => void;
+    actions?: ReactNode;
     children: ReactNode;
 }) {
     const clickedSectionRef = useRef<string | null>(null);
@@ -86,9 +88,12 @@ export function SettingsWorkspace({
     return (
         <div>
             <PageShell>
-            <div>
-                <h1 className="text-2xl font-semibold tracking-tight text-[color:var(--text-primary)]">{title}</h1>
-                <p className={cn("mt-1 max-w-2xl text-sm leading-6", pageMutedTextClass)}>{subtitle}</p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                    <h1 className="text-2xl font-semibold tracking-tight text-[color:var(--text-primary)]">{title}</h1>
+                    <p className={cn("mt-1 max-w-2xl text-sm leading-6", pageMutedTextClass)}>{subtitle}</p>
+                </div>
+                {actions ? <div className="shrink-0">{actions}</div> : null}
             </div>
 
             <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
@@ -302,17 +307,19 @@ export function SegmentedControl<T extends string>({
     value,
     options,
     onChange,
+    disabled = false,
 }: {
     value: T;
     options: { value: T; label: string }[];
     onChange: (value: T) => void;
+    disabled?: boolean;
 }) {
     const field = useContext(SettingsFieldContext);
     return (
         <RadioGroup
             id={field?.controlId}
             value={value}
-            options={options}
+            options={options.map(option => ({ ...option, disabled }))}
             onChange={onChange}
             labelledBy={field?.labelId}
             describedBy={field?.describedBy}
@@ -322,9 +329,9 @@ export function SegmentedControl<T extends string>({
 
 export function ReadOnlyRow({ label, value }: { label: string; value: ReactNode }) {
     return (
-        <div className="flex items-center justify-between gap-4 px-5 py-3 text-sm">
+        <div className="flex flex-col items-start justify-between gap-2 px-5 py-3 text-sm sm:flex-row sm:gap-4">
             <span className={formHelpTextClass}>{label}</span>
-            <span className="min-w-0 truncate text-right font-medium text-[color:var(--ui-form-label)]">{value}</span>
+            <span className="min-w-0 max-w-full break-words text-left font-medium text-[color:var(--ui-form-label)] sm:text-right">{value}</span>
         </div>
     );
 }
@@ -376,24 +383,26 @@ export function SettingsSubtleText({ children, className }: { children: ReactNod
 
 export function SettingsSaveBar({
     visible,
+    hasChanges,
     saving,
     status,
     error,
     onSave,
-    onReset,
+    onCancel,
 }: {
     visible: boolean;
+    hasChanges: boolean;
     saving: boolean;
     status: "idle" | "success" | "error";
     error?: string;
     onSave: () => void;
-    onReset: () => void;
+    onCancel: () => void;
 }) {
     if (!visible && status === "idle") return null;
 
     return (
         <div
-            className="fixed bottom-5 left-1/2 z-50 w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-savebar-bg)] p-3 shadow-[var(--ui-form-dialog-shadow)] backdrop-blur"
+            className="fixed left-1/2 z-50 w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-savebar-bg)] p-3 [bottom:max(1.25rem,env(safe-area-inset-bottom))] shadow-[var(--ui-form-dialog-shadow)] backdrop-blur"
             role={status === "error" ? "alert" : "status"}
             aria-live={status === "error" ? "assertive" : "polite"}
         >
@@ -403,18 +412,22 @@ export function SettingsSaveBar({
                         <span className="flex items-center gap-2 text-[color:var(--ui-tone-success-text)]"><CheckCircle2 size={15} /> Settings saved.</span>
                     ) : status === "error" ? (
                         <span className="flex items-center gap-2 text-[color:var(--ui-form-error-text)]"><AlertCircle size={15} /> {error || "Save failed."}</span>
-                    ) : (
+                    ) : hasChanges ? (
                         <span className="text-[color:var(--ui-form-label)]">You have unsaved settings changes.</span>
+                    ) : (
+                        <span className="text-[color:var(--ui-form-label)]">Editing settings.</span>
                     )}
                 </div>
-                <div className="flex justify-end gap-2">
-                    <AppButton variant="quiet" size="sm" onClick={onReset} disabled={saving}>
-                        Reset
-                    </AppButton>
-                    <AppButton variant="primary" size="sm" onClick={onSave} disabled={!visible || saving} isLoading={saving} className="min-w-[110px]">
-                        {saving ? "Saving" : "Save changes"}
-                    </AppButton>
-                </div>
+                {visible ? (
+                    <div className="flex justify-end gap-2">
+                        <AppButton variant="quiet" size="sm" onClick={onCancel} disabled={saving} className="min-h-11 lg:min-h-9">
+                            Cancel
+                        </AppButton>
+                        <AppButton variant="primary" size="sm" onClick={onSave} disabled={!hasChanges || saving} isLoading={saving} className="min-h-11 min-w-[110px] lg:min-h-9">
+                            {saving ? "Saving" : "Save changes"}
+                        </AppButton>
+                    </div>
+                ) : null}
             </div>
         </div>
     );

@@ -39,7 +39,7 @@ const CAPABILITIES = [
   { id: "MULTIPLE_BRANCHES", label: "Multiple branches, each billed separately", standardOnly: false },
   { id: "STAFF_CONTROLS", label: "Staff invitations, roles and permission controls", standardOnly: true },
   { id: "ADVANCED_ANALYTICS", label: "Branch and cross-branch advanced analytics", standardOnly: true },
-  { id: "AI_ASSISTANCE", label: "AI insights, reports and message drafting", standardOnly: true },
+  { id: "AI_ASSISTANCE", label: "AI reports and message drafting", standardOnly: true },
 ] as const;
 
 const PLANS: BillingPlanDto[] = [
