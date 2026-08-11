@@ -463,7 +463,11 @@ export class BillingReconciliationService {
       }
       return this.reconcileProviderSubscription(razorpaySubscriptionId, options, staleRetry + 1);
     }
-    const { stale: _stale, ...result } = reconciliation;
-    return result;
+    return {
+      subscription: reconciliation.subscription,
+      confirmedPaidPeriod: reconciliation.confirmedPaidPeriod,
+      payment: reconciliation.payment,
+      invoices: reconciliation.invoices,
+    };
   }
 }
