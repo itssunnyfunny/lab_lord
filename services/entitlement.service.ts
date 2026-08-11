@@ -70,8 +70,11 @@ export class EntitlementService {
             replacementBillingChange: {
               select: {
                 type: true,
+                status: true,
+                failureCategory: true,
                 organizationSubscriptionId: true,
                 replacementSubscriptionId: true,
+                effectiveAt: true,
                 accessGrantedAt: true,
                 accessRevokedAt: true,
                 accessGraceEndsAt: true,
@@ -90,6 +93,7 @@ export class EntitlementService {
       },
     });
     if (!organization) throw new Error("Organization not found");
+    const now = new Date();
     const subscription = organization.subscription
       && organization.subscription.providerMode === resolveRazorpayMode()
       ? organization.subscription
@@ -102,6 +106,8 @@ export class EntitlementService {
     const replacementOverride = subscription && pendingReplacement && replacementChange
       ? deriveAuthorizedReplacementOverride({
           changeType: replacementChange.type,
+          changeStatus: replacementChange.status,
+          failureCategory: replacementChange.failureCategory,
           sourceSubscriptionId: subscription.id,
           changeSourceSubscriptionId: replacementChange.organizationSubscriptionId,
           candidateSubscriptionId: pendingReplacement.id,
@@ -114,7 +120,9 @@ export class EntitlementService {
           candidatePaymentMethod: pendingReplacement.providerPaymentMethod,
           accessGrantedAt: replacementChange.accessGrantedAt,
           accessRevokedAt: replacementChange.accessRevokedAt,
+          effectiveAt: replacementChange.effectiveAt,
           accessGraceEndsAt: replacementChange.accessGraceEndsAt,
+          now,
         })
       : null;
     const authorizedReplacement = replacementOverride
@@ -124,7 +132,7 @@ export class EntitlementService {
 
     if (organization.billingModelVersion === "WORKSPACE_V2") {
       const state = deriveWorkspaceBillingState({
-        now: new Date(),
+        now,
         trial: organization.ownerTrialGrant
           ? {
               status: organization.ownerTrialGrant.status,

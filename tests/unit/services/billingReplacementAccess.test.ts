@@ -7,6 +7,9 @@ import {
 } from "@/services/billingReplacement.service";
 
 const grantedAt = new Date("2026-08-10T10:00:00.000Z");
+const effectiveAt = new Date("2026-09-01T00:00:00.000Z");
+const graceEndsAt = new Date("2026-09-04T00:00:00.000Z");
+const beforeCutover = new Date("2026-08-20T00:00:00.000Z");
 
 function decision(
   overrides: Partial<ReplacementAccessDecisionInput> = {}
@@ -14,6 +17,7 @@ function decision(
   return {
     changeType: "PLAN_UPGRADE",
     changeStatus: "AWAITING_PAYMENT",
+    failureCategory: null,
     sourcePlan: "BASIC",
     sourceQuantity: 1,
     targetPlan: "PRO",
@@ -26,6 +30,9 @@ function decision(
     targetProviderPlanId: "plan_pro",
     accessGrantedAt: null,
     accessRevokedAt: null,
+    effectiveAt,
+    accessGraceEndsAt: graceEndsAt,
+    now: beforeCutover,
     ...overrides,
   };
 }
@@ -88,6 +95,10 @@ describe("authorized replacement access policy", () => {
   it.each([
     { changeStatus: "FAILED" },
     { changeStatus: "UNDONE" },
+    { failureCategory: "MANUAL_REVIEW_REQUIRED" },
+    { candidatePaymentMethod: "UNKNOWN" },
+    { candidateStatus: "PENDING" },
+    { candidateStatus: "PAUSED" },
     { candidateStatus: "HALTED" },
     { candidateStatus: "EXPIRED" },
     { candidateStatus: "CANCELLED" },
@@ -96,6 +107,31 @@ describe("authorized replacement access policy", () => {
       accessGrantedAt: grantedAt,
       ...overrides,
     }))).toBe("REVOKE");
+  });
+
+  it("retains only the bounded eMandate charge-confirmation grace", () => {
+    expect(getReplacementAccessAction(decision({
+      accessGrantedAt: grantedAt,
+      candidateStatus: "PENDING",
+      candidatePaymentMethod: "EMANDATE",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+    }))).toBe("NONE");
+    expect(getReplacementAccessAction(decision({
+      accessGrantedAt: grantedAt,
+      candidateStatus: "PENDING",
+      candidatePaymentMethod: "UPI",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+    }))).toBe("REVOKE");
+    expect(getReplacementAccessAction(decision({
+      accessGrantedAt: grantedAt,
+      candidateStatus: "AUTHENTICATED",
+      now: graceEndsAt,
+    }))).toBe("NONE");
+    expect(getReplacementAccessAction(decision({
+      accessGrantedAt: grantedAt,
+      candidateStatus: "ACTIVE",
+      now: new Date("2026-09-10T00:00:00.000Z"),
+    }))).toBe("NONE");
   });
 
   it("does not mutate access twice or revoke access after canonical promotion", () => {
@@ -115,6 +151,8 @@ describe("authorized replacement access policy", () => {
   it("exposes only a live, supported, correctly linked beneficial override", () => {
     const input = {
       changeType: "PLAN_UPGRADE",
+      changeStatus: "SCHEDULED",
+      failureCategory: null,
       sourceSubscriptionId: "source",
       changeSourceSubscriptionId: "source",
       candidateSubscriptionId: "candidate",
@@ -127,7 +165,9 @@ describe("authorized replacement access policy", () => {
       candidatePaymentMethod: "EMANDATE",
       accessGrantedAt: grantedAt,
       accessRevokedAt: null,
-      accessGraceEndsAt: new Date("2026-09-03T00:00:00.000Z"),
+      effectiveAt,
+      accessGraceEndsAt: graceEndsAt,
+      now: new Date("2026-09-02T00:00:00.000Z"),
     };
 
     expect(deriveAuthorizedReplacementOverride(input)).toMatchObject({
@@ -147,6 +187,29 @@ describe("authorized replacement access policy", () => {
     expect(deriveAuthorizedReplacementOverride({
       ...input,
       accessRevokedAt: new Date("2026-08-12T00:00:00.000Z"),
+    })).toBeNull();
+    expect(deriveAuthorizedReplacementOverride({
+      ...input,
+      candidateStatus: "PAUSED",
+    })).toBeNull();
+    expect(deriveAuthorizedReplacementOverride({
+      ...input,
+      failureCategory: "MANUAL_REVIEW_REQUIRED",
+    })).toBeNull();
+    expect(deriveAuthorizedReplacementOverride({
+      ...input,
+      candidateStatus: "PENDING",
+      now: graceEndsAt,
+    })).toBeNull();
+    expect(deriveAuthorizedReplacementOverride({
+      ...input,
+      candidateStatus: "AUTHENTICATED",
+      now: graceEndsAt,
+    })).toMatchObject({ plan: "PRO", accessGrantedAt: grantedAt });
+    expect(deriveAuthorizedReplacementOverride({
+      ...input,
+      candidateStatus: "PENDING",
+      candidatePaymentMethod: "UPI",
     })).toBeNull();
   });
 });

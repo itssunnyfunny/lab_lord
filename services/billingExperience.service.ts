@@ -129,6 +129,8 @@ export class BillingExperienceService {
     const replacementOverride = subscription && pendingReplacement && replacementChange
       ? deriveAuthorizedReplacementOverride({
           changeType: replacementChange.type,
+          changeStatus: replacementChange.status,
+          failureCategory: replacementChange.failureCategory,
           sourceSubscriptionId: subscription.id,
           changeSourceSubscriptionId: replacementChange.organizationSubscriptionId,
           candidateSubscriptionId: pendingReplacement.id,
@@ -141,7 +143,9 @@ export class BillingExperienceService {
           candidatePaymentMethod: pendingReplacement.providerPaymentMethod,
           accessGrantedAt: replacementChange.accessGrantedAt,
           accessRevokedAt: replacementChange.accessRevokedAt,
+          effectiveAt: replacementChange.effectiveAt,
           accessGraceEndsAt: replacementChange.accessGraceEndsAt,
+          now,
         })
       : null;
     const authorizedReplacement = replacementOverride

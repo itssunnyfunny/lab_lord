@@ -20,6 +20,7 @@ import {
   isReplacementMutationEligible,
   isReplacementPromotionReady,
   isSupportedRecurringPaymentMethod,
+  normalizeReplacementPaymentMethod,
 } from "@/services/billingReplacementPolicy";
 import type {
   BillingChangeType,
@@ -32,13 +33,7 @@ import type {
 const TERMINAL_PROVIDER_STATUSES = new Set(["cancelled", "completed", "expired"]);
 const OPEN_CHANGE_STATUSES = ["QUEUED", "PROCESSING", "AWAITING_PAYMENT", "SCHEDULED"] as const;
 const REPLACEMENT_PROVIDER_LEASE_MS = 2 * 60 * 1000;
-const ACCESS_REVOCATION_PROVIDER_STATUSES = new Set([
-  "HALTED",
-  "CANCELLED",
-  "COMPLETED",
-  "EXPIRED",
-]);
-const ACCESS_REVOCATION_CHANGE_STATUSES = new Set(["FAILED", "UNDONE", "SUPERSEDED"]);
+const TRUSTWORTHY_REPLACEMENT_ACCESS_STATUSES = new Set(["AUTHENTICATED", "ACTIVE"]);
 const IMMEDIATE_ACCESS_CHANGE_TYPES = new Set([
   "PLAN_UPGRADE",
   "QUANTITY_INCREASE",
@@ -50,6 +45,7 @@ export type ReplacementAccessAction = "GRANT" | "REVOKE" | "NONE";
 export type ReplacementAccessDecisionInput = {
   changeType: string;
   changeStatus: string;
+  failureCategory: string | null | undefined;
   sourcePlan: string;
   sourceQuantity: number;
   targetPlan: string;
@@ -62,7 +58,38 @@ export type ReplacementAccessDecisionInput = {
   targetProviderPlanId: string | null | undefined;
   accessGrantedAt: Date | null;
   accessRevokedAt: Date | null;
+  effectiveAt: Date | null;
+  accessGraceEndsAt: Date | null;
+  now: Date;
 };
+
+type ReplacementAccessTrustInput = Pick<
+  ReplacementAccessDecisionInput,
+  | "changeStatus"
+  | "failureCategory"
+  | "candidateStatus"
+  | "candidatePaymentMethod"
+  | "effectiveAt"
+  | "accessGraceEndsAt"
+  | "now"
+>;
+
+function hasTrustworthyReplacementAccessState(input: ReplacementAccessTrustInput) {
+  if (!OPEN_CHANGE_STATUSES.includes(
+    input.changeStatus as typeof OPEN_CHANGE_STATUSES[number]
+  ) || input.failureCategory === "MANUAL_REVIEW_REQUIRED") return false;
+  if (!isSupportedRecurringPaymentMethod(input.candidatePaymentMethod)) return false;
+
+  const candidateStatus = input.candidateStatus.trim().toUpperCase();
+  if (TRUSTWORTHY_REPLACEMENT_ACCESS_STATUSES.has(candidateStatus)) return true;
+
+  return candidateStatus === "PENDING"
+    && normalizeReplacementPaymentMethod(input.candidatePaymentMethod) === "EMANDATE"
+    && input.effectiveAt != null
+    && input.now >= input.effectiveAt
+    && input.accessGraceEndsAt != null
+    && input.now < input.accessGraceEndsAt;
+}
 
 function planRank(plan: string) {
   if (plan === "PRO") return 2;
@@ -94,8 +121,7 @@ export function getReplacementAccessAction(
   input: ReplacementAccessDecisionInput
 ): ReplacementAccessAction {
   if (input.changeStatus === "APPLIED" || input.accessRevokedAt) return "NONE";
-  if (ACCESS_REVOCATION_CHANGE_STATUSES.has(input.changeStatus)
-    || ACCESS_REVOCATION_PROVIDER_STATUSES.has(input.candidateStatus.trim().toUpperCase())) {
+  if (!hasTrustworthyReplacementAccessState(input)) {
     return input.accessGrantedAt ? "REVOKE" : "NONE";
   }
   if (input.accessGrantedAt || !isImmediateAccessIncrease(input)) return "NONE";
@@ -114,6 +140,8 @@ export function getReplacementAccessAction(
 
 export type AuthorizedReplacementOverrideInput = {
   changeType: string;
+  changeStatus: string;
+  failureCategory: string | null | undefined;
   sourceSubscriptionId: string;
   changeSourceSubscriptionId: string | null;
   candidateSubscriptionId: string;
@@ -126,7 +154,9 @@ export type AuthorizedReplacementOverrideInput = {
   candidatePaymentMethod: string | null | undefined;
   accessGrantedAt: Date | null;
   accessRevokedAt: Date | null;
+  effectiveAt: Date | null;
   accessGraceEndsAt: Date | null;
+  now: Date;
 };
 
 /** Returns the fail-closed read override represented by a granted change. */
@@ -136,9 +166,7 @@ export function deriveAuthorizedReplacementOverride(
   if (!input.accessGrantedAt || input.accessRevokedAt) return null;
   if (input.changeSourceSubscriptionId !== input.sourceSubscriptionId
     || input.changeCandidateSubscriptionId !== input.candidateSubscriptionId) return null;
-  if (!["AUTHENTICATED", "ACTIVE", "PENDING", "PAUSED"].includes(
-    input.candidateStatus.trim().toUpperCase()
-  )) return null;
+  if (!hasTrustworthyReplacementAccessState(input)) return null;
   if (!isSupportedRecurringPaymentMethod(input.candidatePaymentMethod)) return null;
   if (!isImmediateAccessIncrease({
     changeType: input.changeType,
@@ -151,7 +179,9 @@ export function deriveAuthorizedReplacementOverride(
     plan: input.candidatePlan,
     accessGrantedAt: input.accessGrantedAt,
     accessRevokedAt: input.accessRevokedAt,
-    graceEndsAt: input.accessGraceEndsAt,
+    graceEndsAt: normalizeReplacementPaymentMethod(input.candidatePaymentMethod) === "EMANDATE"
+      ? input.accessGraceEndsAt
+      : null,
   };
 }
 
@@ -587,6 +617,7 @@ export class BillingReplacementService {
       const action = getReplacementAccessAction({
         changeType: decisionChange.type,
         changeStatus: decisionChange.status,
+        failureCategory: decisionChange.failureCategory,
         sourcePlan: source.plan,
         sourceQuantity: source.quantity,
         targetPlan,
@@ -599,6 +630,9 @@ export class BillingReplacementService {
         targetProviderPlanId: targetMapping?.razorpayPlanId,
         accessGrantedAt: decisionChange.accessGrantedAt,
         accessRevokedAt: decisionChange.accessRevokedAt,
+        effectiveAt: decisionChange.effectiveAt,
+        accessGraceEndsAt: decisionChange.accessGraceEndsAt,
+        now,
       });
 
       if (action === "NONE") return { action, change: decisionChange, subscription: candidate };
@@ -868,6 +902,7 @@ export class BillingReplacementService {
       }
       if (!change.effectiveAt) throw new Error("Replacement effective date is missing");
       if (now >= change.effectiveAt) {
+        const revokeAccess = Boolean(change.accessGrantedAt && !change.accessRevokedAt);
         await tx.organizationBillingChange.update({
           where: { id: change.id },
           data: {
@@ -876,8 +911,23 @@ export class BillingReplacementService {
             failureCategory: "MANUAL_REVIEW_REQUIRED",
             lastError: "Source cancellation was not submitted before the replacement effective date",
             failedAt: now,
+            accessRevokedAt: revokeAccess ? now : undefined,
           },
         });
+        if (revokeAccess && change.branchId) {
+          if (change.type === "QUANTITY_INCREASE") {
+            await tx.branch.updateMany({
+              where: { id: change.branchId, billingStatus: "ACTIVE" },
+              data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
+            });
+          }
+          if (change.type === "BRANCH_REACTIVATION") {
+            await tx.branch.updateMany({
+              where: { id: change.branchId, billingStatus: "ACTIVE" },
+              data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
+            });
+          }
+        }
         return { skipped: "MANUAL_REVIEW_REQUIRED" as const };
       }
       const targetPlan = change.toPlan ?? source.plan;
@@ -1024,6 +1074,7 @@ export class BillingReplacementService {
       if (!targetMapping) throw new Error("Replacement plan mapping not found");
 
       if (hasPaidPeriod && !["CANCELLED", "COMPLETED", "EXPIRED"].includes(source.status)) {
+        const revokeAccess = Boolean(change.accessGrantedAt && !change.accessRevokedAt);
         const failed = await tx.organizationBillingChange.update({
           where: { id: change.id },
           data: {
@@ -1032,8 +1083,23 @@ export class BillingReplacementService {
             failureCategory: "MANUAL_REVIEW_REQUIRED",
             lastError: "Both source and replacement may have charged during cutover",
             failedAt: now,
+            accessRevokedAt: revokeAccess ? now : undefined,
           },
         });
+        if (revokeAccess && change.branchId) {
+          if (change.type === "QUANTITY_INCREASE") {
+            await tx.branch.updateMany({
+              where: { id: change.branchId, billingStatus: "ACTIVE" },
+              data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
+            });
+          }
+          if (change.type === "BRANCH_REACTIVATION") {
+            await tx.branch.updateMany({
+              where: { id: change.branchId, billingStatus: "ACTIVE" },
+              data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
+            });
+          }
+        }
         return { promoted: false, manualReview: true, change: failed, subscription: candidate };
       }
 

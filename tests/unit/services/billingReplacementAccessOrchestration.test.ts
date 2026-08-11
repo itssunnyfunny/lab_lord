@@ -68,10 +68,13 @@ describe("replacement access orchestration", () => {
       type: "QUANTITY_INCREASE",
       status: "AWAITING_PAYMENT",
       operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+      failureCategory: null,
       toPlan: "BASIC",
       toQuantity: 2,
       accessGrantedAt: null,
       accessRevokedAt: null,
+      effectiveAt: new Date("2026-09-01T00:00:00.000Z"),
+      accessGraceEndsAt: new Date("2026-09-04T00:00:00.000Z"),
     };
     branch = {
       id: "branch_2",
@@ -131,6 +134,17 @@ describe("replacement access orchestration", () => {
           branch = { ...branch, ...data };
           return { ...branch };
         }),
+        updateMany: vi.fn(async ({ where, data }: {
+          where: { id: string; billingStatus?: string };
+          data: Record<string, unknown>;
+        }) => {
+          if (where.id !== branch.id
+            || (where.billingStatus && where.billingStatus !== branch.billingStatus)) {
+            return { count: 0 };
+          }
+          branch = { ...branch, ...data };
+          return { count: 1 };
+        }),
       },
     };
     mocks.transaction.mockImplementation(async (callback: (client: typeof tx) => unknown) => callback(tx));
@@ -165,6 +179,59 @@ describe("replacement access orchestration", () => {
       },
     });
     expect(mappingQuery.where).not.toHaveProperty("active");
+  });
+
+  it.each(["PENDING", "PAUSED"])(
+    "atomically revokes branch access when the candidate becomes %s before cutover",
+    async candidateStatus => {
+      await BillingReplacementService.syncAuthorizedAccess("change_1", now);
+      candidate.status = candidateStatus;
+
+      await expect(BillingReplacementService.syncAuthorizedAccess(
+        "change_1",
+        new Date("2026-08-11T12:00:00.000Z")
+      )).resolves.toMatchObject({ action: "REVOKE" });
+
+      expect(change.accessRevokedAt).toEqual(new Date("2026-08-11T12:00:00.000Z"));
+      expect(branch).toMatchObject({
+        billingStatus: "PENDING_ACTIVATION",
+        billingActivatedAt: null,
+      });
+      expect(source).toMatchObject({
+        currentOrganizationId: "org_1",
+        plan: "BASIC",
+        quantity: 1,
+      });
+    }
+  );
+
+  it("keeps only the bounded eMandate debit-confirmation grace", async () => {
+    candidate.providerPaymentMethod = "EMANDATE";
+    await BillingReplacementService.syncAuthorizedAccess("change_1", now);
+    candidate.status = "PENDING";
+
+    await expect(BillingReplacementService.syncAuthorizedAccess(
+      "change_1",
+      new Date("2026-09-02T00:00:00.000Z")
+    )).resolves.toMatchObject({ action: "NONE" });
+    expect(branch.billingStatus).toBe("ACTIVE");
+
+    await expect(BillingReplacementService.syncAuthorizedAccess(
+      "change_1",
+      new Date("2026-09-04T00:00:00.000Z")
+    )).resolves.toMatchObject({ action: "REVOKE" });
+    expect(branch.billingStatus).toBe("PENDING_ACTIVATION");
+  });
+
+  it("revokes complimentary branch access when the change requires manual review", async () => {
+    await BillingReplacementService.syncAuthorizedAccess("change_1", now);
+    change.failureCategory = "MANUAL_REVIEW_REQUIRED";
+
+    await expect(BillingReplacementService.syncAuthorizedAccess(
+      "change_1",
+      new Date("2026-08-11T12:00:00.000Z")
+    )).resolves.toMatchObject({ action: "REVOKE" });
+    expect(branch.billingStatus).toBe("PENDING_ACTIVATION");
   });
 
   it("promotes against the exact historical plan mapping even when it is inactive", async () => {
@@ -202,6 +269,43 @@ describe("replacement access orchestration", () => {
       pendingReplacementOrganizationId: null,
       currentOrganizationId: "org_1",
     });
+  });
+
+  it("revokes complimentary branch access atomically when cutover needs manual review", async () => {
+    branch = {
+      ...branch,
+      billingStatus: "ACTIVE",
+      billingActivatedAt: new Date("2026-08-09T00:00:00.000Z"),
+    };
+    candidate = {
+      ...candidate,
+      status: "ACTIVE",
+      currentStart: new Date("2026-08-10T00:00:00.000Z"),
+      currentEnd: new Date("2026-09-10T00:00:00.000Z"),
+      paidThrough: new Date("2026-09-10T00:00:00.000Z"),
+      lastConfirmedInvoiceId: "inv_candidate",
+      lastConfirmedPaymentId: "pay_candidate",
+    };
+    change = {
+      ...change,
+      status: "SCHEDULED",
+      operationStatus: "SCHEDULED",
+      accessGrantedAt: new Date("2026-08-09T00:00:00.000Z"),
+    };
+
+    await expect(BillingReplacementService.promoteIfReady("change_1", now))
+      .resolves.toMatchObject({ promoted: false, manualReview: true });
+
+    expect(change).toMatchObject({
+      status: "FAILED",
+      failureCategory: "MANUAL_REVIEW_REQUIRED",
+      accessRevokedAt: now,
+    });
+    expect(branch).toMatchObject({
+      billingStatus: "PENDING_ACTIVATION",
+      billingActivatedAt: null,
+    });
+    expect(source.currentOrganizationId).toBe("org_1");
   });
 
   it("cancels only the candidate and restores access idempotently on abandon", async () => {
