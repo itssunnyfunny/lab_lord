@@ -266,6 +266,22 @@ function href(branchId: string, path: string) {
     return `/branch/${branchId}/${path}`;
 }
 
+function paymentCalendarMonth(value: Date | string | null | undefined) {
+    if (!value) return undefined;
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return undefined;
+
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Kolkata",
+        year: "numeric",
+        month: "2-digit",
+    }).formatToParts(date);
+    const year = parts.find(part => part.type === "year")?.value;
+    const month = parts.find(part => part.type === "month")?.value;
+
+    return year && month ? `${year}-${month}` : undefined;
+}
+
 function hrefWithQuery(branchId: string, path: string, params: Record<string, string | null | undefined>) {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
@@ -337,6 +353,7 @@ export function buildTopSearchResults(input: BuildTopSearchResultsInput): TopSea
     if (normalizedQuery && can(input.access, "view_payments")) {
         groups.payments = (input.payments ?? []).flatMap(payment => {
             const studentName = payment.student?.name?.trim() || "Unknown student";
+            const paymentStatus = payment.status?.toUpperCase();
             const fields = [
                 studentName,
                 payment.student?.phone,
@@ -361,10 +378,11 @@ export function buildTopSearchResults(input: BuildTopSearchResultsInput): TopSea
                 ]).join(" - "),
                 href: hrefWithQuery(input.branchId, "payments", {
                     paymentId: payment.id,
-                    month: payment.dueDate
-                        ? new Date(payment.dueDate).toISOString().slice(0, 7)
+                    studentId: payment.studentId ?? undefined,
+                    month: paymentStatus === "PAID" || paymentStatus === "WAIVED"
+                        ? paymentCalendarMonth(payment.dueDate)
                         : undefined,
-                    status: payment.status ?? undefined,
+                    status: paymentStatus,
                 }),
                 keywords: compact(fields),
                 score,

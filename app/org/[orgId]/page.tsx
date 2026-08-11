@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/pageSurface";
 import { analytics, OrganizationAnalyticsSnapshot } from "@/lib/api/analytics";
 import { BranchWithCounts, organizations } from "@/lib/api/organizations";
+import { getUtilizationStatus } from "@/lib/utilizationStatus";
 import { cn } from "@/lib/utils";
 import { failResourceRefresh, resourceData, resourceUpdatedAt, startResourceRefresh } from "@/lib/resourceState";
 import type { ResourceState } from "@/types";
@@ -44,12 +45,6 @@ function DashboardSkeleton() {
     return <PageLoadingSkeleton label="Loading organization dashboard" variant="workspace" rows={4} />;
 }
 
-function utilizationTone(value: number): "success" | "warning" | "danger" {
-    if (value >= 70) return "success";
-    if (value >= 40) return "warning";
-    return "danger";
-}
-
 function getBranchStatus(overdueCount: number, utilization: number) {
     if (overdueCount > 0) {
         return {
@@ -58,10 +53,11 @@ function getBranchStatus(overdueCount: number, utilization: number) {
         };
     }
 
-    if (utilization >= 90) {
+    const utilizationStatus = getUtilizationStatus(utilization);
+    if (utilizationStatus.key !== "balanced") {
         return {
-            label: "Capacity tight",
-            variant: "warning" as const,
+            label: utilizationStatus.label,
+            variant: utilizationStatus.tone,
         };
     }
 
@@ -174,6 +170,9 @@ export default function OrgDashboardPage({ params }: { params: Promise<{ orgId: 
             .sort((a, b) => b.snapshot.payments.overdueCount - a.snapshot.payments.overdueCount)
             .slice(0, 5);
     }, [snapshot]);
+    const organizationUtilizationStatus = totals.utilization === null
+        ? null
+        : getUtilizationStatus(totals.utilization);
 
     if (loading) return <DashboardSkeleton />;
 
@@ -376,6 +375,7 @@ export default function OrgDashboardPage({ params }: { params: Promise<{ orgId: 
                         value={formatNumber(totals.branches)}
                         sub={`${formatNumber(totals.shifts)} configured shifts`}
                         icon={Building2}
+                        accent="cyan"
                         tone="info"
                     />
                     <StatCard
@@ -383,6 +383,7 @@ export default function OrgDashboardPage({ params }: { params: Promise<{ orgId: 
                         value={totals.students === null ? "Unavailable" : formatNumber(totals.students)}
                         sub={totals.students === null ? "Analytics could not be loaded" : "Currently active across branches"}
                         icon={Users}
+                        accent="cyan"
                         tone={totals.students === null ? "neutral" : "success"}
                     />
                     <StatCard
@@ -394,8 +395,10 @@ export default function OrgDashboardPage({ params }: { params: Promise<{ orgId: 
                                 : `${formatNumber(totals.seats)} seats configured`
                         }
                         icon={LayoutGrid}
-                        tone={totals.utilization === null ? "neutral" : utilizationTone(totals.utilization)}
+                        accent="violet"
+                        tone={organizationUtilizationStatus?.tone ?? "neutral"}
                         progress={totals.utilization ?? undefined}
+                        footer={organizationUtilizationStatus?.label}
                     />
                     <StatCard
                         title="Payment risk"
@@ -404,6 +407,7 @@ export default function OrgDashboardPage({ params }: { params: Promise<{ orgId: 
                             ? "Payment analytics could not be loaded"
                             : `${formatNumber(totals.overdueCount)} overdue payments`}
                         icon={TriangleAlert}
+                        accent="rose"
                         tone={totals.overdueCount === null ? "neutral" : totals.overdueCount > 0 ? "danger" : "success"}
                         alert={totals.overdueCount !== null && totals.overdueCount > 0}
                     />

@@ -15,7 +15,7 @@ const marchPayment = {
 describe("overdue queue navigation", () => {
     it("builds an exact canonical payment destination", () => {
         expect(getOverduePaymentHref("branch one", marchPayment)).toBe(
-            "/branch/branch%20one/payments?paymentId=pay%2F1&studentId=student+1&month=2026-03&status=DUE"
+            "/branch/branch%20one/payments?paymentId=pay%2F1&studentId=student+1&status=DUE"
         );
     });
 
@@ -25,12 +25,12 @@ describe("overdue queue navigation", () => {
         );
     });
 
-    it("reviews one payment exactly and groups same-month selections", () => {
+    it("reviews one payment exactly and opens the current-month due queue for a bulk selection", () => {
         expect(getOverdueBulkReviewHref("branch", [marchPayment])).toContain("paymentId=pay%2F1");
         expect(getOverdueBulkReviewHref("branch", [
             marchPayment,
             { paymentId: "pay-2", studentId: "student-2", dueDate: "2026-03-20" },
-        ])).toBe("/branch/branch/payments?month=2026-03&status=DUE");
+        ])).toBe("/branch/branch/payments?status=DUE");
     });
 
     it("uses the truthful due queue when selected payments span months", () => {

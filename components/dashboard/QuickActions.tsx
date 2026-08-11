@@ -95,7 +95,7 @@ export function QuickActions({ branchId }: { branchId: string }) {
         <AppPanel
             title="Next actions"
             description="Shortcuts for common branch operations."
-            contentClassName="max-h-[312px] overflow-y-auto p-2 scrollbar-thin"
+            contentClassName="p-2"
             className="h-full"
         >
             {loading && (

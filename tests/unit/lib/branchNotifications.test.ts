@@ -21,6 +21,7 @@ describe("buildBranchNotifications", () => {
                 nextCursor: null,
                 items: [{
                     paymentId: "payment_1",
+                    studentId: "student_1",
                     studentName: "Rahul Patel",
                     amount: 1200,
                     dueDate: "2026-01-10T00:00:00.000Z",
@@ -32,7 +33,7 @@ describe("buildBranchNotifications", () => {
         expect(notifications[0]).toMatchObject({
             kind: "overdue_payments",
             severity: "warning",
-            href: `/branch/${branchId}/payments?paymentId=payment_1&status=DUE&month=2026-01`,
+            href: `/branch/${branchId}/payments?paymentId=payment_1&studentId=student_1&status=DUE`,
             count: 2,
         });
         expect(notifications[0].readKey).toContain("overdue_payments:2");

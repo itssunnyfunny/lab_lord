@@ -27,6 +27,7 @@ export type BranchNotificationAccess = {
 
 export type OverduePaymentNotificationRecord = {
     paymentId?: string | null;
+    studentId?: string | null;
     studentName?: string | null;
     amount?: number | null;
     dueDate?: Date | string | null;
@@ -86,11 +87,9 @@ type OverduePaymentRecord = OverduePaymentNotificationData["items"][number];
 
 function paymentHref(branchId: string, payment: OverduePaymentRecord | undefined) {
     if (!payment?.paymentId) return href(branchId, "overdue");
-    const params = new URLSearchParams({ paymentId: payment.paymentId, status: "DUE" });
-    if (payment.dueDate) {
-        const dueDate = payment.dueDate instanceof Date ? payment.dueDate : new Date(payment.dueDate);
-        if (!Number.isNaN(dueDate.getTime())) params.set("month", dueDate.toISOString().slice(0, 7));
-    }
+    const params = new URLSearchParams({ paymentId: payment.paymentId });
+    if (payment.studentId) params.set("studentId", payment.studentId);
+    params.set("status", "DUE");
     return `${href(branchId, "payments")}?${params.toString()}`;
 }
 

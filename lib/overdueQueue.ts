@@ -4,11 +4,6 @@ export type OverdueQueuePayment = {
     dueDate: string;
 };
 
-function paymentMonth(dueDate: string) {
-    const parsed = new Date(dueDate);
-    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 7);
-}
-
 function paymentsPath(branchId: string, parameters: Record<string, string | null>) {
     const search = new URLSearchParams();
     Object.entries(parameters).forEach(([key, value]) => {
@@ -21,7 +16,6 @@ export function getOverduePaymentHref(branchId: string, payment: OverdueQueuePay
     return paymentsPath(branchId, {
         paymentId: payment.paymentId,
         studentId: payment.studentId,
-        month: paymentMonth(payment.dueDate),
         status: "DUE",
     });
 }
@@ -34,9 +28,7 @@ export function getOverdueStudentHref(branchId: string, studentId: string) {
 export function getOverdueBulkReviewHref(branchId: string, payments: OverdueQueuePayment[]) {
     if (payments.length === 1) return getOverduePaymentHref(branchId, payments[0]);
 
-    const months = new Set(payments.map(payment => paymentMonth(payment.dueDate)).filter(Boolean));
     return paymentsPath(branchId, {
-        month: months.size === 1 ? [...months][0] ?? null : null,
         status: "DUE",
     });
 }

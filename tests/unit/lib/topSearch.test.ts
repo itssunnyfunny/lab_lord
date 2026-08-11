@@ -122,6 +122,48 @@ describe("buildTopSearchResults", () => {
         expect(hrefs).toContain(`/branch/${branchId}/staff?staffId=staff1`);
     });
 
+    it("keeps DUE results on the current month and resolves completed-payment months in India time", () => {
+        const groups = buildTopSearchResults({
+            branchId,
+            query: "boundary",
+            access: { permissions: permissions(["view_payments"]) },
+            payments: [
+                {
+                    id: "due-boundary",
+                    studentId: "student-due",
+                    status: "DUE",
+                    dueDate: "2026-03-31T20:00:00.000Z",
+                    student: { name: "Boundary Due" },
+                },
+                {
+                    id: "paid-boundary",
+                    studentId: "student-paid",
+                    status: "PAID",
+                    dueDate: "2026-03-31T20:00:00.000Z",
+                    student: { name: "Boundary Paid" },
+                },
+                {
+                    id: "waived-boundary",
+                    studentId: "student-waived",
+                    status: "WAIVED",
+                    dueDate: "2026-03-31T20:00:00.000Z",
+                    student: { name: "Boundary Waived" },
+                },
+            ],
+        });
+
+        const hrefs = groups.flatMap(group => group.results.map(result => result.href));
+        expect(hrefs).toContain(
+            `/branch/${branchId}/payments?paymentId=due-boundary&studentId=student-due&status=DUE`
+        );
+        expect(hrefs).toContain(
+            `/branch/${branchId}/payments?paymentId=paid-boundary&studentId=student-paid&month=2026-04&status=PAID`
+        );
+        expect(hrefs).toContain(
+            `/branch/${branchId}/payments?paymentId=waived-boundary&studentId=student-waived&month=2026-04&status=WAIVED`
+        );
+    });
+
     it("only exposes payment generation when both page and action permissions are available", () => {
         const generateOnly = buildTopSearchResults({
             branchId,

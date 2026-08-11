@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/Badge";
 import { AppButton, AppPanel, ErrorState, PageLoadingSkeleton, PageShell } from "@/components/ui";
 import { DataTable } from "@/components/tables/DataTable";
 import { StatCard } from "@/components/dashboard/StatCard";
+import { getUtilizationStatus } from "@/lib/utilizationStatus";
 import { cn } from "@/lib/utils";
 import { formWarningBannerClass } from "@/components/ui/formSurface";
 import {
@@ -63,12 +64,6 @@ function money(value: number, formatNumber: NumberFormatter) {
 
 function percent(value: number, formatNumber: NumberFormatter) {
     return formatNumber(value, percentFormatOptions);
-}
-
-function utilizationTone(value: number): "success" | "warning" | "danger" {
-    if (value >= 0.7) return "success";
-    if (value >= 0.4) return "warning";
-    return "danger";
 }
 
 export default function OrgAnalyticsPage({ params }: { params: Promise<{ orgId: string }> }) {
@@ -198,6 +193,7 @@ export default function OrgAnalyticsPage({ params }: { params: Promise<{ orgId: 
                     title="Branches"
                     value={formatNumber(branchCount)}
                     sub="Operating locations"
+                    accent="cyan"
                     tone="info"
                 />
                 <StatCard
@@ -205,6 +201,7 @@ export default function OrgAnalyticsPage({ params }: { params: Promise<{ orgId: 
                     title="Active students"
                     value={formatNumber(snapshot.students.active)}
                     sub={`${formatNumber(snapshot.students.total)} total profiles`}
+                    accent="cyan"
                     tone="success"
                 />
                 <StatCard
@@ -212,14 +209,17 @@ export default function OrgAnalyticsPage({ params }: { params: Promise<{ orgId: 
                     title="Slot utilization"
                     value={percent(snapshot.seats.utilizationRatio, formatNumber)}
                     sub={`${formatNumber(usedSeatSlots)} of ${formatNumber(totalSeatSlots)} slots used`}
-                    tone={utilizationTone(snapshot.seats.utilizationRatio)}
+                    accent="violet"
+                    tone={getUtilizationStatus(snapshot.seats.utilizationRatio * 100).tone}
                     progress={snapshot.seats.utilizationRatio * 100}
+                    footer={getUtilizationStatus(snapshot.seats.utilizationRatio * 100).label}
                 />
                 <StatCard
                     icon={CreditCard}
                     title="Collection rate"
                     value={percent(collectionRate, formatNumber)}
                     sub={`${money(snapshot.payments.paidAmount, formatNumber)} collected`}
+                    accent="emerald"
                     tone={collectionRate >= 0.75 ? "success" : collectionRate >= 0.5 ? "warning" : "danger"}
                     progress={collectionRate * 100}
                 />
@@ -386,7 +386,7 @@ function BranchAnalyticsCard({ item, onOpen }: { item: BranchAnalyticsRow; onOpe
                         <p className="truncate text-base font-semibold text-[color:var(--text-primary)]">{item.branchName}</p>
                         <p className={cn(pageSubtleTextClass, "mt-1 text-xs")}>{item.students} students</p>
                     </div>
-                    <Badge variant={utilizationTone(item.utilization)}>{percent(item.utilization, formatNumber)}</Badge>
+                    <Badge variant={getUtilizationStatus(item.utilization * 100).tone}>{percent(item.utilization, formatNumber)}</Badge>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">

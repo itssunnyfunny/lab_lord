@@ -9,6 +9,7 @@ import { ShiftOccupancyCard } from "@/components/dashboard/ShiftOccupancyCard";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { useBranchAccess } from "@/hooks/useBranchAccess";
 import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
+import { getUtilizationStatus } from "@/lib/utilizationStatus";
 import {
     loadBranchDashboardSources,
     type DashboardOverduePayment,
@@ -43,12 +44,6 @@ interface DashboardData {
 
 function DashboardSkeleton() {
     return <PageLoadingSkeleton label="Loading branch dashboard" variant="dashboard" rows={6} />;
-}
-
-function toneForUtilization(rate: number): "success" | "warning" | "danger" {
-    if (rate >= 70) return "success";
-    if (rate >= 40) return "warning";
-    return "danger";
 }
 
 function toneForCollection(rate: number, dueAmount: number): "success" | "warning" | "danger" {
@@ -261,6 +256,7 @@ export default function BranchDashboardPage({
             note,
         };
     }, [analyticsStatus, formatMoney, snap]);
+    const utilizationStatus = snap ? getUtilizationStatus(snap.occupancyRate) : null;
 
     if (loading) return <DashboardSkeleton />;
 
@@ -342,6 +338,7 @@ export default function BranchDashboardPage({
                     value={snap ? formatMoney(snap.paidAmount) : analyticsStatus === "restricted" ? "Restricted" : "Unavailable"}
                     sub={snap ? `${formatNumber(snap.collectionRate / 100, { style: "percent", maximumFractionDigits: 0 })} collection rate` : collectionSummary.note}
                     icon={IndianRupee}
+                    accent="emerald"
                     tone={snap ? toneForCollection(snap.collectionRate, snap.dueAmount) : "neutral"}
                     progress={snap ? collectionSummary.progress : undefined}
                     footer={snap ? `${formatMoney(collectionSummary.pending)} pending` : undefined}
@@ -357,6 +354,7 @@ export default function BranchDashboardPage({
                                 : "Follow-up data unavailable"
                     }
                     icon={AlertTriangle}
+                    accent="rose"
                     tone={snap ? (snap.dueAmount > 0 ? "danger" : "success") : "neutral"}
                     alert={!!snap && snap.dueAmount > 0}
                 />
@@ -381,6 +379,7 @@ export default function BranchDashboardPage({
                                     : "Student records unavailable"
                     }
                     icon={Users}
+                    accent="cyan"
                     tone="info"
                 />
                 <StatCard
@@ -396,8 +395,10 @@ export default function BranchDashboardPage({
                                     : "Utilization data unavailable"
                     }
                     icon={LayoutGrid}
-                    tone={snap ? toneForUtilization(snap.occupancyRate) : "neutral"}
+                    accent="violet"
+                    tone={utilizationStatus?.tone ?? "neutral"}
                     progress={snap ? snap.occupancyRate : undefined}
+                    footer={utilizationStatus?.label}
                 />
             </section>
 
@@ -410,7 +411,7 @@ export default function BranchDashboardPage({
                     >
                     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
                         <div>
-                            <div className="flex items-end justify-between gap-3">
+                            <div className="flex flex-col items-start gap-3 min-[380px]:flex-row min-[380px]:items-end min-[380px]:justify-between">
                                 <div>
                                     <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Collection progress</p>
                                     <p className="mt-2 text-3xl font-semibold tracking-tight text-white">
@@ -438,18 +439,18 @@ export default function BranchDashboardPage({
                             <p className="mt-3 text-sm leading-6 text-gray-400">{collectionSummary.note}</p>
                         </div>
 
-                        <div className="grid grid-cols-3 gap-3 lg:grid-cols-1">
-                            <div className="rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-1">
+                            <div className="min-w-0 rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
                                 <p className="text-xs text-gray-500">Billed</p>
-                                <p className="mt-1 text-sm font-semibold text-white">{formatMoney(collectionSummary.billed)}</p>
+                                <p className="mt-1 break-words text-base font-semibold text-white sm:text-sm">{formatMoney(collectionSummary.billed)}</p>
                             </div>
-                            <div className="rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
+                            <div className="min-w-0 rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
                                 <p className="text-xs text-gray-500">Collected</p>
-                                <p className="mt-1 text-sm font-semibold text-emerald-200">{formatMoney(collectionSummary.collected)}</p>
+                                <p className="mt-1 break-words text-base font-semibold text-emerald-200 sm:text-sm">{formatMoney(collectionSummary.collected)}</p>
                             </div>
-                            <div className="rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
+                            <div className="min-w-0 rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
                                 <p className="text-xs text-gray-500">Pending</p>
-                                <p className="mt-1 text-sm font-semibold text-amber-200">{formatMoney(collectionSummary.pending)}</p>
+                                <p className="mt-1 break-words text-base font-semibold text-amber-200 sm:text-sm">{formatMoney(collectionSummary.pending)}</p>
                             </div>
                         </div>
                     </div>

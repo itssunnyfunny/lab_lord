@@ -7,6 +7,7 @@ import {
     pageSubtleTextClass,
 } from "@/components/ui/pageSurface";
 import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
+import { getUtilizationStatus, type UtilizationStatus } from "@/lib/utilizationStatus";
 import { cn } from "@/lib/utils";
 import { ArrowRight, CalendarCheck, CheckCircle2, TriangleAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -24,35 +25,27 @@ interface ShiftOccupancyCardProps {
     branchId: string;
 }
 
-function getShiftState(percent: number) {
-    if (percent >= 100) {
-        return {
-            label: "Full",
-            icon: TriangleAlert,
-            text: "text-rose-300",
-            bar: "bg-rose-400",
-            badge: "border-rose-400/20 bg-rose-400/10 text-rose-200",
-        };
-    }
-
-    if (percent >= 80) {
-        return {
-            label: "Tight",
-            icon: TriangleAlert,
-            text: "text-amber-300",
-            bar: "bg-amber-400",
-            badge: "border-amber-400/20 bg-amber-400/10 text-amber-200",
-        };
-    }
-
-    return {
-        label: "Healthy",
-        icon: CheckCircle2,
+const utilizationStyleMap: Record<UtilizationStatus["tone"], {
+    text: string;
+    bar: string;
+    badge: string;
+}> = {
+    success: {
         text: "text-emerald-300",
         bar: "bg-emerald-400",
         badge: "border-emerald-400/20 bg-emerald-400/10 text-emerald-200",
-    };
-}
+    },
+    warning: {
+        text: "text-amber-300",
+        bar: "bg-amber-400",
+        badge: "border-amber-400/20 bg-amber-400/10 text-amber-200",
+    },
+    danger: {
+        text: "text-rose-300",
+        bar: "bg-rose-400",
+        badge: "border-rose-400/20 bg-rose-400/10 text-rose-200",
+    },
+};
 
 export function ShiftOccupancyCard({ shifts, branchId }: ShiftOccupancyCardProps) {
     const router = useRouter();
@@ -96,8 +89,9 @@ export function ShiftOccupancyCard({ shifts, branchId }: ShiftOccupancyCardProps
                 <div className={cn("divide-y", pageSectionDividerClass)}>
                     {shifts.map((shift) => {
                         const percent = Math.max(0, Math.min(shift.occupancyPercent, 100));
-                        const state = getShiftState(shift.occupancyPercent);
-                        const StateIcon = state.icon;
+                        const status = getUtilizationStatus(shift.occupancyPercent);
+                        const statusStyle = utilizationStyleMap[status.tone];
+                        const StatusIcon = status.tone === "success" ? CheckCircle2 : TriangleAlert;
 
                         return (
                             <div key={shift.shiftId} className="px-4 py-3">
@@ -111,18 +105,18 @@ export function ShiftOccupancyCard({ shifts, branchId }: ShiftOccupancyCardProps
                                     <span
                                         className={cn(
                                             "inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium",
-                                            state.badge
+                                            statusStyle.badge
                                         )}
                                     >
-                                        <StateIcon size={12} />
-                                        {state.label}
+                                        <StatusIcon size={12} />
+                                        {status.label}
                                     </span>
                                 </div>
                                 <div className="mt-3 flex items-center gap-3">
                                     <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[color:var(--ui-form-muted-surface-bg)]">
-                                        <div className={cn("h-full rounded-full", state.bar)} style={{ width: `${percent}%` }} />
+                                        <div className={cn("h-full rounded-full", statusStyle.bar)} style={{ width: `${percent}%` }} />
                                     </div>
-                                    <span className={cn("w-11 text-right text-xs font-semibold", state.text)}>
+                                    <span className={cn("w-11 text-right text-xs font-semibold", statusStyle.text)}>
                                         {formatNumber(shift.occupancyPercent / 100, {
                                             style: "percent",
                                             maximumFractionDigits: 0,
