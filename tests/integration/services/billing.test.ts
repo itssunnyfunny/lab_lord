@@ -734,13 +734,27 @@ describe("BillingService SaaS subscriptions", () => {
       cancel_at_cycle_end: false,
     });
     expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(2);
-    await expect(testPrisma.organizationSubscription.findUnique({
+    const currentSubscription = await testPrisma.organizationSubscription.findUniqueOrThrow({
       where: { currentOrganizationId: org.id },
-    })).resolves.toMatchObject({
+    });
+    expect(currentSubscription).toMatchObject({
       plan: "PRO",
       razorpaySubscriptionId: "sub_pro",
       status: "CREATED",
     });
+    const retiredSubscription = await testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { razorpaySubscriptionId: "sub_basic" },
+    });
+    expect(retiredSubscription).toMatchObject({
+      currentOrganizationId: null,
+      plan: "BASIC",
+      razorpaySubscriptionId: "sub_basic",
+      status: "CANCELLED",
+    });
+    expect(currentSubscription.replacesSubscriptionId).toBe(retiredSubscription.id);
+    await expect(testPrisma.organizationSubscription.count({
+      where: { organizationId: org.id },
+    })).resolves.toBe(2);
     const history = await testPrisma.organizationSubscriptionHistory.findMany({
       where: { organizationId: org.id },
       orderBy: { createdAt: "asc" },
@@ -762,6 +776,89 @@ describe("BillingService SaaS subscriptions", () => {
       operationStatus: "CHECKOUT_OPEN",
     });
   });
+
+  it("does not drop a locally expired provider identity when provider cleanup fails", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    const first = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const lapsedAt = new Date("2026-08-11T00:00:00.000Z");
+    await testPrisma.organizationSubscription.update({
+      where: { currentOrganizationId: org.id },
+      data: {
+        status: "EXPIRED",
+        providerPaymentMethod: "EMANDATE",
+        authorizationLapsedAt: lapsedAt,
+      },
+    });
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValueOnce({
+      id: first.subscriptionId,
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "authenticated",
+      total_count: 120,
+      quantity: 1,
+      payment_method: "emandate",
+    });
+    vi.mocked(fakeRazorpay.cancelSubscription).mockRejectedValueOnce(
+      new Error("provider cancellation unavailable")
+    );
+
+    await expect(BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "PRO" }))
+      .rejects.toThrow("provider cancellation unavailable");
+
+    expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(1);
+    expect(fakeRazorpay.cancelSubscription).toHaveBeenCalledWith(first.subscriptionId, {
+      cancel_at_cycle_end: false,
+    });
+    await expect(testPrisma.organizationSubscription.findMany({
+      where: { organizationId: org.id },
+    })).resolves.toEqual([
+      expect.objectContaining({
+        currentOrganizationId: org.id,
+        razorpaySubscriptionId: first.subscriptionId,
+        status: "EXPIRED",
+      }),
+    ]);
+  });
+
+  it.each(["card", "upi"] as const)(
+    "reopens the same initial provider identity after a normal %s checkout failure",
+    async providerMethod => {
+      const fakeRazorpay = createFakeRazorpayClient();
+      setRazorpayClientForTests(fakeRazorpay);
+      const user = await createUser();
+      const org = await createOrg({ ownerId: user.id });
+      const checkout = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+      await BillingService.recordCheckoutEvent(user.id, org.id, checkout.changeId, {
+        event: "FAILED",
+        reason: "network_error",
+        source: "network",
+      });
+      vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValueOnce({
+        id: checkout.subscriptionId,
+        entity: "subscription",
+        plan_id: "plan_basic",
+        status: "created",
+        total_count: 120,
+        quantity: 1,
+        payment_method: providerMethod,
+      });
+
+      const retried = await BillingService.retryBillingOperation(user.id, org.id, checkout.changeId);
+
+      expect(retried).toMatchObject({
+        subscriptionId: checkout.subscriptionId,
+        operation: { operationStatus: "CHECKOUT_OPEN" },
+      });
+      expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(1);
+      expect(fakeRazorpay.cancelSubscription).not.toHaveBeenCalled();
+      await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+        where: { currentOrganizationId: org.id },
+      })).resolves.toMatchObject({ razorpaySubscriptionId: checkout.subscriptionId });
+    }
+  );
 
   it("leaves only the winning authorization active when different plans race", async () => {
     const fakeRazorpay = createFakeRazorpayClient();

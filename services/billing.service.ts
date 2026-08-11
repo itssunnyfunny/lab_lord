@@ -525,7 +525,7 @@ function getSubscriptionCycles() {
 }
 
 function subscriptionSnapshotData(subscription: RazorpaySubscription) {
-  const data: Prisma.OrganizationSubscriptionUpdateInput = {
+  const data: Prisma.OrganizationSubscriptionUncheckedUpdateInput = {
     status: mapSubscriptionStatus(subscription.status),
     razorpayCustomerId: subscription.customer_id ?? null,
   };
@@ -548,6 +548,60 @@ function subscriptionSnapshotData(subscription: RazorpaySubscription) {
   }
 
   return data;
+}
+
+function assertMatchingProviderSubscription(
+  expectedSubscriptionId: string,
+  subscription: RazorpaySubscription,
+  context: string
+) {
+  if (subscription.id !== expectedSubscriptionId) {
+    throw new Error(`Razorpay subscription mismatch while ${context}`);
+  }
+}
+
+function assertTerminalProviderSubscription(subscription: RazorpaySubscription, context: string) {
+  const status = mapSubscriptionStatus(subscription.status);
+  if (!TERMINAL_STATUSES.has(status)) {
+    throw new Error(`Razorpay subscription remained ${status.toLowerCase()} while ${context}`);
+  }
+  return status;
+}
+
+async function retireInitialProviderCheckout(
+  razorpay: ReturnType<typeof getRazorpayClient>,
+  subscription: OrganizationSubscription
+) {
+  let providerSubscription: RazorpaySubscription;
+  let cancelled = false;
+
+  if (subscription.status === "CREATED") {
+    providerSubscription = await razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
+      cancel_at_cycle_end: false,
+    });
+    cancelled = true;
+  } else {
+    providerSubscription = await razorpay.fetchSubscription(subscription.razorpaySubscriptionId);
+    assertMatchingProviderSubscription(
+      subscription.razorpaySubscriptionId,
+      providerSubscription,
+      "checking a retired checkout"
+    );
+    if (!TERMINAL_STATUSES.has(mapSubscriptionStatus(providerSubscription.status))) {
+      providerSubscription = await razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
+        cancel_at_cycle_end: false,
+      });
+      cancelled = true;
+    }
+  }
+
+  assertMatchingProviderSubscription(
+    subscription.razorpaySubscriptionId,
+    providerSubscription,
+    "retiring a checkout"
+  );
+  assertTerminalProviderSubscription(providerSubscription, "retiring a checkout");
+  return { providerSubscription, cancelled };
 }
 
 function serializeSubscription(subscription: OrganizationSubscription | null | undefined) {
@@ -685,6 +739,111 @@ async function recordSubscriptionHistory(
     },
     update: {},
   });
+}
+
+export async function cancelLapsedInitialAuthorization(
+  subscriptionId: string,
+  now = new Date(),
+  deadlineSnapshot?: Pick<
+    OrganizationSubscription,
+    "authorizationExpiresAt" | "providerPaymentMethod" | "providerStartAt"
+  >
+) {
+  const initial = await prisma.organizationSubscription.findUnique({
+    where: { id: subscriptionId },
+    select: { organizationId: true },
+  });
+  if (!initial) return null;
+  assertRazorpayBillingWritesEnabled(initial.organizationId);
+
+  const leaseToken = await claimCheckoutMutationLease(initial.organizationId);
+  try {
+    const subscription = await prisma.organizationSubscription.findUnique({
+      where: { id: subscriptionId },
+    });
+    if (!subscription || subscription.organizationId !== initial.organizationId) return null;
+    const authorizationDue = isInitialAuthorizationDue(subscription, now)
+      || Boolean(deadlineSnapshot && isInitialAuthorizationDue(deadlineSnapshot, now));
+    if (!authorizationDue || subscription.paidThrough) return null;
+
+    const razorpay = getRazorpayClient();
+    let providerSubscription = await razorpay.fetchSubscription(subscription.razorpaySubscriptionId);
+    assertMatchingProviderSubscription(
+      subscription.razorpaySubscriptionId,
+      providerSubscription,
+      "checking a lapsed authorization"
+    );
+    if (!TERMINAL_STATUSES.has(mapSubscriptionStatus(providerSubscription.status))) {
+      providerSubscription = await razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
+        cancel_at_cycle_end: false,
+      });
+    }
+    assertMatchingProviderSubscription(
+      subscription.razorpaySubscriptionId,
+      providerSubscription,
+      "cancelling a lapsed authorization"
+    );
+    const terminalStatus = assertTerminalProviderSubscription(
+      providerSubscription,
+      "cancelling a lapsed authorization"
+    );
+
+    return await prisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Organization" WHERE "id" = ${initial.organizationId} FOR UPDATE
+      `;
+      const latest = await tx.organizationSubscription.findUnique({
+        where: { id: subscription.id },
+      });
+      if (!latest || latest.razorpaySubscriptionId !== subscription.razorpaySubscriptionId) {
+        throw new Error("Subscription identity changed while expiring authorization");
+      }
+
+      const stored = await tx.organizationSubscription.update({
+        where: { id: latest.id },
+        data: {
+          ...subscriptionSnapshotData(providerSubscription),
+          status: terminalStatus,
+          authorizationLapsedAt: now,
+          lastReconciledAt: now,
+          cancelAtCycleEnd: false,
+          cancellationRequestedAt: terminalStatus === "CANCELLED"
+            ? latest.cancellationRequestedAt ?? now
+            : latest.cancellationRequestedAt,
+          cancelledAt: terminalStatus === "CANCELLED"
+            ? timestampToDate(providerSubscription.ended_at) ?? now
+            : latest.cancelledAt,
+          endedAt: timestampToDate(providerSubscription.ended_at) ?? latest.endedAt ?? now,
+        },
+      });
+      await recordSubscriptionHistory(tx, stored, {
+        source: "SYSTEM",
+        fromStatus: latest.status,
+        event: "authorization_lapsed_provider_terminal",
+      });
+      return stored;
+    });
+  } finally {
+    await releaseCheckoutMutationLease(initial.organizationId, leaseToken);
+  }
+}
+
+export function isInitialAuthorizationDue(
+  subscription: Pick<
+    OrganizationSubscription,
+    "authorizationExpiresAt" | "providerPaymentMethod" | "providerStartAt"
+  >,
+  now = new Date()
+) {
+  if (subscription.authorizationExpiresAt && subscription.authorizationExpiresAt <= now) {
+    return true;
+  }
+  if (!subscription.providerStartAt) return false;
+
+  const confirmationWindowMs = subscription.providerPaymentMethod === "EMANDATE"
+    ? EMANDATE_AUTHORIZATION_WINDOW_MS
+    : 0;
+  return subscription.providerStartAt.getTime() + confirmationWindowMs <= now.getTime();
 }
 
 function isSuccessfulPayment(payment: RazorpayPayment | null) {
@@ -839,7 +998,8 @@ export class BillingService {
     }
     const leaseToken = await claimCheckoutMutationLease(organizationId);
     const razorpay = getRazorpayClient();
-    let replacedProviderSubscriptionId: string | null = null;
+    let cancelledProviderSubscriptionId: string | null = null;
+    let retiredProviderSubscription: RazorpaySubscription | null = null;
     let createdGatewaySubscriptionId: string | null = null;
     let persistedGatewaySubscription = false;
 
@@ -947,14 +1107,12 @@ export class BillingService {
           })
         : null);
 
-      if (existing?.status === "CREATED") {
-        const cancelled = await razorpay.cancelSubscription(existing.razorpaySubscriptionId, {
-          cancel_at_cycle_end: false,
-        });
-        if (cancelled.id !== existing.razorpaySubscriptionId) {
-          throw new Error("Razorpay subscription mismatch while replacing checkout");
+      if (existing && ["CREATED", "EXPIRED"].includes(existing.status)) {
+        const retired = await retireInitialProviderCheckout(razorpay, existing);
+        retiredProviderSubscription = retired.providerSubscription;
+        if (retired.cancelled) {
+          cancelledProviderSubscriptionId = existing.razorpaySubscriptionId;
         }
-        replacedProviderSubscriptionId = existing.razorpaySubscriptionId;
       }
 
       const totalCount = getSubscriptionCycles();
@@ -1067,29 +1225,42 @@ export class BillingService {
           cancelledAt: null,
           createdByUserId: userId,
         };
-        const stored = current
-          ? await tx.organizationSubscription.update({ where: { id: current.id }, data: recordData })
-          : await tx.organizationSubscription.create({ data: recordData });
-
-        if (existing?.status === "CREATED") {
-          await tx.organizationSubscriptionHistory.create({
+        let archivedSubscription = current;
+        if (current) {
+          const retiredStatus = retiredProviderSubscription
+            ? mapSubscriptionStatus(retiredProviderSubscription.status)
+            : current.status;
+          archivedSubscription = await tx.organizationSubscription.update({
+            where: { id: current.id },
             data: {
-              organizationId,
-              organizationSubscriptionId: stored.id,
-              razorpaySubscriptionId: existing.razorpaySubscriptionId,
-              plan: existing.plan,
-              fromStatus: existing.status,
-              toStatus: "CANCELLED",
-              source: "SYSTEM",
-              event: "checkout_replaced",
-              amountSubunits: existing.amountSubunits,
-              quantity: existing.quantity,
-              unitAmountSubunits: existing.amountSubunits,
-              totalAmountSubunits: existing.amountSubunits * existing.quantity,
-              paidThrough: existing.paidThrough,
-              dedupeKey: `SYSTEM:${existing.razorpaySubscriptionId}:checkout_replaced:CANCELLED`,
-              currency: existing.currency,
+              ...(retiredProviderSubscription
+                ? subscriptionSnapshotData(retiredProviderSubscription)
+                : {}),
+              status: retiredStatus,
+              currentOrganizationId: null,
+              cancelAtCycleEnd: false,
+              lastReconciledAt: retiredProviderSubscription ? checkoutNow : current.lastReconciledAt,
+              cancelledAt: retiredStatus === "CANCELLED"
+                ? timestampToDate(retiredProviderSubscription?.ended_at) ?? checkoutNow
+                : current.cancelledAt,
+              endedAt: retiredProviderSubscription
+                ? timestampToDate(retiredProviderSubscription.ended_at) ?? current.endedAt ?? checkoutNow
+                : current.endedAt,
             },
+          });
+        }
+        const stored = await tx.organizationSubscription.create({
+          data: {
+            ...recordData,
+            replacesSubscriptionId: current?.id ?? null,
+          },
+        });
+
+        if (existing && archivedSubscription) {
+          await recordSubscriptionHistory(tx, archivedSubscription, {
+            source: "SYSTEM",
+            fromStatus: existing.status,
+            event: "checkout_replaced",
           });
         }
         await recordSubscriptionHistory(tx, stored, {
@@ -1139,17 +1310,17 @@ export class BillingService {
           });
         }
       }
-      if (replacedProviderSubscriptionId && !persistedGatewaySubscription) {
+      if (cancelledProviderSubscriptionId && !persistedGatewaySubscription) {
         try {
           await reconcileLocallyCancelledCheckout(
             organizationId,
-            replacedProviderSubscriptionId,
+            cancelledProviderSubscriptionId,
             "checkout_replacement_failed"
           );
         } catch (reconciliationError) {
           console.error("[SAAS_SUBSCRIPTION_REPLACEMENT_RECONCILIATION_FAILED]", {
             organizationId,
-            razorpaySubscriptionId: replacedProviderSubscriptionId,
+            razorpaySubscriptionId: cancelledProviderSubscriptionId,
             error: reconciliationError,
           });
         }

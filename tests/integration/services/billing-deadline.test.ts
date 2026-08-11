@@ -326,6 +326,135 @@ describe("workspace billing deadlines", () => {
       .resolves.toMatchObject({ providerPaymentMethod: storedMethod, paidThrough: null });
   });
 
+  it("waits through the eMandate confirmation window, then cancels and reconciles it", async () => {
+    const insideConfirmationWindow = new Date("2026-09-10T00:00:00.000Z");
+    const lapsedAt = new Date("2026-09-16T00:00:00.000Z");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    const client = checkoutClient("authenticated", "emandate");
+    vi.mocked(client.cancelSubscription).mockResolvedValue({
+      id: "sub_deadline",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "cancelled",
+      total_count: 120,
+      quantity: 1,
+      payment_method: "emandate",
+      ended_at: Math.floor(lapsedAt.getTime() / 1000),
+    });
+    setRazorpayClientForTests(client);
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    const subscription = await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        providerMode: "TEST",
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        currentOrganizationId: organization.id,
+        razorpaySubscriptionId: "sub_deadline",
+        status: "AUTHENTICATED",
+        providerPaymentMethod: "EMANDATE",
+        providerStartAt: new Date("2026-09-09T00:00:00.000Z"),
+      },
+    });
+
+    const waitingResult = await BillingDeadlineService.run(insideConfirmationWindow);
+
+    expect(waitingResult).toMatchObject({ lapsedAuthorizations: 0, errors: [] });
+    expect(client.fetchSubscription).not.toHaveBeenCalled();
+    expect(client.cancelSubscription).not.toHaveBeenCalled();
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { id: subscription.id },
+    })).resolves.toMatchObject({
+      currentOrganizationId: organization.id,
+      status: "AUTHENTICATED",
+      authorizationLapsedAt: null,
+      paidThrough: null,
+    });
+
+    const result = await BillingDeadlineService.run(lapsedAt);
+
+    expect(client.cancelSubscription).toHaveBeenCalledWith("sub_deadline", {
+      cancel_at_cycle_end: false,
+    });
+    expect(result).toMatchObject({ lapsedAuthorizations: 1, errors: [] });
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { id: subscription.id },
+    })).resolves.toMatchObject({
+      currentOrganizationId: organization.id,
+      razorpaySubscriptionId: "sub_deadline",
+      status: "CANCELLED",
+      authorizationLapsedAt: lapsedAt,
+      cancelledAt: lapsedAt,
+      endedAt: lapsedAt,
+    });
+    await expect(testPrisma.organizationSubscriptionHistory.findFirstOrThrow({
+      where: {
+        organizationSubscriptionId: subscription.id,
+        event: "authorization_lapsed_provider_terminal",
+      },
+    })).resolves.toMatchObject({
+      razorpaySubscriptionId: "sub_deadline",
+      fromStatus: "AUTHENTICATED",
+      toStatus: "CANCELLED",
+    });
+  });
+
+  it("honors Razorpay's explicit eMandate authorization expiry", async () => {
+    const now = new Date("2026-09-10T00:00:00.000Z");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    const client = checkoutClient("authenticated", "emandate");
+    vi.mocked(client.cancelSubscription).mockResolvedValue({
+      id: "sub_deadline",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "cancelled",
+      total_count: 120,
+      quantity: 1,
+      payment_method: "emandate",
+      ended_at: Math.floor(now.getTime() / 1000),
+    });
+    setRazorpayClientForTests(client);
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    const subscription = await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        providerMode: "TEST",
+        plan: "BASIC",
+        amount: 299,
+        amountSubunits: 29900,
+        totalCount: 120,
+        quantity: 1,
+        razorpayPlanId: "plan_basic",
+        currentOrganizationId: organization.id,
+        razorpaySubscriptionId: "sub_deadline",
+        status: "AUTHENTICATED",
+        providerPaymentMethod: "EMANDATE",
+        providerStartAt: new Date("2026-09-09T00:00:00.000Z"),
+        authorizationExpiresAt: now,
+      },
+    });
+
+    const result = await BillingDeadlineService.run(now);
+
+    expect(result).toMatchObject({ lapsedAuthorizations: 1, errors: [] });
+    expect(client.cancelSubscription).toHaveBeenCalledWith("sub_deadline", {
+      cancel_at_cycle_end: false,
+    });
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { id: subscription.id },
+    })).resolves.toMatchObject({
+      status: "CANCELLED",
+      authorizationLapsedAt: now,
+      paidThrough: null,
+    });
+  });
+
   it("does not lapse a CREATED eMandate while its seven-day confirmation window is open", async () => {
     const client = checkoutClient("created", "emandate");
     setRazorpayClientForTests(client);

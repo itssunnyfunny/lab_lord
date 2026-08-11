@@ -6,6 +6,10 @@ import { OwnerTrialService } from "@/services/ownerTrial.service";
 import { areRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
 import { isSupportedProviderPaymentMethod } from "@/services/billingPaymentMethod.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
+import {
+  cancelLapsedInitialAuthorization,
+  isInitialAuthorizationDue,
+} from "@/services/billing.service";
 
 const RECONCILE_AFTER_MS = 6 * 60 * 60 * 1000;
 const MAX_AUTOMATIC_ATTEMPTS = 3;
@@ -398,26 +402,27 @@ export class BillingDeadlineService {
           },
         },
       },
-      select: { id: true, organizationId: true, status: true },
+      select: {
+        id: true,
+        organizationId: true,
+        status: true,
+        authorizationExpiresAt: true,
+        providerPaymentMethod: true,
+        providerStartAt: true,
+      },
     });
     let lapsedAuthorizations = 0;
     for (const subscription of deadlineSubscriptions) {
+      if (!isInitialAuthorizationDue(subscription, now)) continue;
       try {
         const reconciled = await BillingReconciliationService.reconcileByOrganization(
           subscription.organizationId,
           { now }
         );
-        if (!reconciled.subscription.paidThrough) {
-          await prisma.organizationSubscription.update({
-            where: { id: subscription.id },
-            data: {
-              authorizationLapsedAt: now,
-              status: ["CREATED", "AUTHENTICATED"].includes(reconciled.subscription.status)
-                ? "EXPIRED"
-                : undefined,
-            },
-          });
-          lapsedAuthorizations += 1;
+        if (!reconciled.subscription.paidThrough
+          && areRazorpayBillingWritesEnabled(subscription.organizationId)) {
+          const lapsed = await cancelLapsedInitialAuthorization(subscription.id, now, subscription);
+          if (lapsed) lapsedAuthorizations += 1;
         }
       } catch (error) {
         errors.push({
