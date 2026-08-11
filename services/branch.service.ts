@@ -620,10 +620,8 @@ export class BranchService {
         if (!change) throw new Error("Branch activation is still awaiting provider confirmation");
         const now = new Date();
         if (change.replacementSubscriptionId) {
-            await BillingReplacementService.undoReplacement(change.id, now);
-            await prisma.branch.update({
-                where: { id: branchId },
-                data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
+            await BillingReplacementService.undoReplacement(change.id, now, {
+                branchDisposition: "ARCHIVE",
             });
             return { archived: true };
         }

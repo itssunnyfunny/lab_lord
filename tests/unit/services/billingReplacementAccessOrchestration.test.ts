@@ -29,9 +29,11 @@ describe("replacement access orchestration", () => {
   let change: Record<string, unknown>;
   let branch: Record<string, unknown>;
   let tx: Record<string, unknown>;
+  let organizationLeaseToken: string | null;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    organizationLeaseToken = null;
     mocks.planMappingFindFirst.mockResolvedValue({ razorpayPlanId: "plan_basic", active: false });
     source = {
       id: "source_row",
@@ -91,6 +93,25 @@ describe("replacement access orchestration", () => {
     });
     tx = {
       $queryRaw: vi.fn().mockResolvedValue([]),
+      organization: {
+        findUniqueOrThrow: vi.fn(async () => ({
+          billingMutationLeaseToken: organizationLeaseToken,
+        })),
+        update: vi.fn(async ({ data }: { data: { billingMutationLeaseToken?: string | null } }) => {
+          if ("billingMutationLeaseToken" in data) {
+            organizationLeaseToken = data.billingMutationLeaseToken ?? null;
+          }
+          return { id: "org_1", billingMutationLeaseToken: organizationLeaseToken };
+        }),
+        updateMany: vi.fn(async ({ where, data }: {
+          where: { billingMutationLeaseToken?: string };
+          data: { billingMutationLeaseToken?: string | null };
+        }) => {
+          if (where.billingMutationLeaseToken !== organizationLeaseToken) return { count: 0 };
+          organizationLeaseToken = data.billingMutationLeaseToken ?? null;
+          return { count: 1 };
+        }),
+      },
       organizationBillingChange: {
         findUnique: vi.fn(async (args: { select?: unknown }) => args.select
           ? { organizationId: change.organizationId }
@@ -271,6 +292,34 @@ describe("replacement access orchestration", () => {
     });
   });
 
+  it("defers promotion while another provider mutation owns the organization lease", async () => {
+    source.status = "EXPIRED";
+    candidate = {
+      ...candidate,
+      status: "ACTIVE",
+      currentStart: new Date("2026-08-10T00:00:00.000Z"),
+      currentEnd: new Date("2026-09-10T00:00:00.000Z"),
+      paidThrough: new Date("2026-09-10T00:00:00.000Z"),
+      lastConfirmedInvoiceId: "inv_candidate",
+      lastConfirmedPaymentId: "pay_candidate",
+    };
+    change = {
+      ...change,
+      status: "SCHEDULED",
+      operationStatus: "SCHEDULED",
+      providerConfirmedAt: now,
+    };
+    organizationLeaseToken = "mutation-in-flight";
+
+    await expect(BillingReplacementService.promoteIfReady("change_1", now))
+      .resolves.toMatchObject({ promoted: false, deferredByLease: true });
+
+    expect(source.currentOrganizationId).toBe("org_1");
+    expect(candidate.pendingReplacementOrganizationId).toBe("org_1");
+    expect(candidate).not.toHaveProperty("currentOrganizationId");
+    expect(change.status).toBe("SCHEDULED");
+  });
+
   it("revokes complimentary branch access atomically when cutover needs manual review", async () => {
     branch = {
       ...branch,
@@ -343,5 +392,25 @@ describe("replacement access orchestration", () => {
       razorpaySubscriptionId: "sub_source",
       status: "ACTIVE",
     });
+  });
+
+  it("archives a discarded replacement branch in the same transaction that releases its slot", async () => {
+    change.accessGrantedAt = new Date("2026-08-09T00:00:00.000Z");
+    branch.billingStatus = "ACTIVE";
+    branch.billingActivatedAt = change.accessGrantedAt;
+
+    await expect(BillingReplacementService.undoReplacement(
+      "change_1",
+      now,
+      { branchDisposition: "ARCHIVE" }
+    )).resolves.toMatchObject({ status: "UNDONE", operationStatus: "ABANDONED" });
+
+    expect(candidate.pendingReplacementOrganizationId).toBeNull();
+    expect(branch).toMatchObject({
+      billingStatus: "ARCHIVED",
+      billingActivatedAt: null,
+      billingArchivedAt: now,
+    });
+    expect(change).toMatchObject({ accessRevokedAt: now });
   });
 });

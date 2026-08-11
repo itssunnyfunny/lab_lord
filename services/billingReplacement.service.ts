@@ -1052,6 +1052,19 @@ export class BillingReplacementService {
       if (["FAILED", "UNDONE", "SUPERSEDED"].includes(change.status)) {
         return { promoted: false, manualReview: false, change, subscription: candidate };
       }
+      const organization = await tx.organization.findUniqueOrThrow({
+        where: { id: change.organizationId },
+        select: { billingMutationLeaseToken: true },
+      });
+      if (organization.billingMutationLeaseToken) {
+        return {
+          promoted: false,
+          manualReview: false,
+          deferredByLease: true,
+          change,
+          subscription: candidate,
+        };
+      }
 
       const hasPaidPeriod = Boolean(
         candidate.paidThrough
@@ -1180,7 +1193,11 @@ export class BillingReplacementService {
     });
   }
 
-  static async undoReplacement(changeId: string, now = new Date()) {
+  static async undoReplacement(
+    changeId: string,
+    now = new Date(),
+    options: { branchDisposition?: "RESTORE" | "ARCHIVE" } = {}
+  ) {
     const leaseToken = crypto.randomUUID();
     const claim = await prisma.$transaction(async tx => {
       const initial = await tx.organizationBillingChange.findUnique({
@@ -1261,7 +1278,13 @@ export class BillingReplacementService {
           && ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(claim.change.type)) {
           await tx.branch.update({
             where: { id: claim.change.branchId },
-            data: claim.change.type === "BRANCH_REACTIVATION"
+            data: options.branchDisposition === "ARCHIVE"
+              ? {
+                  billingStatus: "ARCHIVED",
+                  billingActivatedAt: null,
+                  billingArchivedAt: now,
+                }
+              : claim.change.type === "BRANCH_REACTIVATION"
               ? { billingStatus: "ARCHIVED", billingArchivedAt: now }
               : { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
           });
