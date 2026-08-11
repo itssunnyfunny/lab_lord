@@ -2,11 +2,14 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { getRazorpayClient, resolveRazorpayMode } from "@/lib/razorpay";
 import {
+  areRazorpayMultiMethodSubscriptionsEnabled,
   areRazorpayBillingWritesEnabled,
   assertRazorpayBillingWritesEnabled,
 } from "@/lib/billingFeature";
 import { getBillingPlan } from "@/lib/billingPlans";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
+import { BillingReplacementService } from "@/services/billingReplacement.service";
+import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
 import type {
   BillingChangeType,
   OrganizationBillingChange,
@@ -29,6 +32,14 @@ const QUANTITY_TYPES = new Set<BillingChangeType>([
   "BRANCH_REACTIVATION",
   "LEGACY_TRANSITION",
 ]);
+const SOURCE_CHANGED_MESSAGE = "Billing mutation source subscription is no longer current";
+
+class BillingMutationSourceChangedError extends Error {
+  constructor() {
+    super(SOURCE_CHANGED_MESSAGE);
+    this.name = "BillingMutationSourceChangedError";
+  }
+}
 
 type EnqueueInput = {
   organizationId: string;
@@ -56,7 +67,7 @@ function timestamp(value: Date | null | undefined) {
 
 function providerStatus(status: string) {
   const normalized = status.toUpperCase();
-  return ["CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "CANCELLED", "COMPLETED", "EXPIRED"]
+  return ["CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "PAUSED", "HALTED", "CANCELLED", "COMPLETED", "EXPIRED"]
     .includes(normalized) ? normalized : "PENDING";
 }
 
@@ -96,6 +107,11 @@ export class BillingMutationService {
           throw new Error("Idempotency key was already used for another billing operation");
         }
         return duplicate;
+      }
+
+      if (input.type !== "SUBSCRIPTION_AUTHORIZATION"
+        && input.type !== "UNSUPPORTED_METHOD_CANCELLATION") {
+        await BillingReplacementService.assertNoOpenReplacement(tx, input.organizationId);
       }
 
       const organization = await tx.organization.update({
@@ -214,6 +230,30 @@ export class BillingMutationService {
         return null;
       }
 
+      // A queued mutation belongs to the immutable subscription row captured
+      // when the intent was created. Never carry that intent across a
+      // replacement promotion to whichever row happens to be current later.
+      const source = next.organizationSubscriptionId
+        ? await tx.organizationSubscription.findUnique({
+            where: { id: next.organizationSubscriptionId },
+            select: { organizationId: true, currentOrganizationId: true },
+          })
+        : null;
+      if (!source
+        || source.organizationId !== organizationId
+        || source.currentOrganizationId !== organizationId) {
+        await tx.organizationBillingChange.update({
+          where: { id: next.id },
+          data: {
+            status: "SUPERSEDED",
+            operationStatus: "ABANDONED",
+            resolvedAt: now,
+            lastError: SOURCE_CHANGED_MESSAGE,
+          },
+        });
+        return null;
+      }
+
       await tx.organization.update({
         where: { id: organizationId },
         data: {
@@ -234,6 +274,31 @@ export class BillingMutationService {
     if (!claimed) return null;
 
     try {
+      const source = await prisma.organizationSubscription.findUnique({
+        where: { id: claimed.organizationSubscriptionId! },
+        select: {
+          organizationId: true,
+          currentOrganizationId: true,
+          providerPaymentMethod: true,
+        },
+      });
+      if (!source
+        || source.organizationId !== organizationId
+        || source.currentOrganizationId !== organizationId) {
+        throw new BillingMutationSourceChangedError();
+      }
+      if (areRazorpayMultiMethodSubscriptionsEnabled()
+        && isReplacementMutationEligible({
+          sourcePaymentMethod: source.providerPaymentMethod,
+          mutationType: claimed.type,
+        })) {
+        const replacement = await BillingReplacementService.provisionClaimedChange(
+          claimed.id,
+          leaseToken,
+          now
+        );
+        return replacement.change;
+      }
       const result = await this.executeProviderMutation(claimed, leaseToken);
       return await prisma.$transaction(async tx => {
         await tx.$queryRaw<Array<{ id: string }>>`
@@ -242,6 +307,25 @@ export class BillingMutationService {
         const current = await tx.organization.findUnique({ where: { id: organizationId } });
         if (current?.billingMutationLeaseToken !== leaseToken) {
           throw new Error("Billing mutation lease was lost");
+        }
+        const sourceSubscription = claimed.organizationSubscriptionId
+          ? await tx.organizationSubscription.findUnique({
+              where: { id: claimed.organizationSubscriptionId },
+              select: {
+                id: true,
+                organizationId: true,
+                currentOrganizationId: true,
+                razorpaySubscriptionId: true,
+              },
+            })
+          : null;
+        if (!sourceSubscription
+          || sourceSubscription.organizationId !== organizationId
+          || sourceSubscription.currentOrganizationId !== organizationId) {
+          throw new BillingMutationSourceChangedError();
+        }
+        if (result.id !== sourceSubscription.razorpaySubscriptionId) {
+          throw new Error("Razorpay subscription mismatch while applying billing mutation");
         }
 
         const cancellationType = claimed.type === "CANCELLATION"
@@ -276,7 +360,7 @@ export class BillingMutationService {
             })
           : null;
         await tx.organizationSubscription.update({
-          where: { organizationId },
+          where: { id: sourceSubscription.id },
           data: {
             plan: providerPlan?.plan,
             amount: providerPlan?.amount,
@@ -317,12 +401,13 @@ export class BillingMutationService {
         });
         // An expired worker must never fail or release a successor's attempt.
         if (current?.billingMutationLeaseToken !== leaseToken) return;
+        const sourceChanged = error instanceof BillingMutationSourceChangedError;
         await tx.organizationBillingChange.updateMany({
           where: { id: claimed.id, status: "PROCESSING" },
           data: {
-            status: "FAILED",
-            operationStatus: "FAILED",
-            failedAt: new Date(),
+            status: sourceChanged ? "SUPERSEDED" : "FAILED",
+            operationStatus: sourceChanged ? "ABANDONED" : "FAILED",
+            failedAt: sourceChanged ? null : new Date(),
             resolvedAt: new Date(),
             lastError: error instanceof Error ? error.message : "Provider mutation failed",
           },
@@ -366,6 +451,10 @@ export class BillingMutationService {
     if (!snapshot || snapshot.status !== "SCHEDULED") {
       throw new Error("Scheduled billing change not found");
     }
+    if (snapshot.replacementSubscriptionId) {
+      const change = await BillingReplacementService.undoReplacement(changeId, now);
+      return { change, replayed: null };
+    }
     const subscription = snapshot.organizationSubscription;
     if (!subscription) throw new Error("Subscription not found for scheduled billing change");
     assertRazorpayBillingWritesEnabled(snapshot.organizationId);
@@ -375,8 +464,8 @@ export class BillingMutationService {
         `Subscription provider mode ${subscription.providerMode} cannot be mutated in ${providerMode} mode`
       );
     }
-    if (subscription.providerPaymentMethod !== "CARD") {
-      throw new Error("V1 subscription changes require a card-authorized subscription");
+    if (snapshot.type !== "CANCELLATION" && subscription.providerPaymentMethod !== "CARD") {
+      throw new Error("UPI AutoPay and eMandate billing changes require a replacement mandate");
     }
 
     const leaseToken = crypto.randomUUID();
@@ -505,10 +594,17 @@ export class BillingMutationService {
     change: OrganizationBillingChange,
     leaseToken: string
   ) {
+    if (!change.organizationSubscriptionId) {
+      throw new BillingMutationSourceChangedError();
+    }
     const subscription = await prisma.organizationSubscription.findUnique({
-      where: { organizationId: change.organizationId },
+      where: { id: change.organizationSubscriptionId },
     });
-    if (!subscription) throw new Error("Subscription not found");
+    if (!subscription
+      || subscription.organizationId !== change.organizationId
+      || subscription.currentOrganizationId !== change.organizationId) {
+      throw new BillingMutationSourceChangedError();
+    }
     const providerMode = resolveRazorpayMode();
     if (subscription.providerMode !== providerMode) {
       throw new Error(
@@ -525,16 +621,15 @@ export class BillingMutationService {
         cancel_at_cycle_end: false,
       });
     }
-    if (subscription.providerPaymentMethod !== "CARD") {
-      throw new Error("V1 subscription changes require a card-authorized subscription");
-    }
-
     if (change.type === "CANCELLATION") {
       const immediate = subscription.status === "CREATED" || subscription.status === "AUTHENTICATED";
       await this.renewLeaseForProviderMutation(change.organizationId, leaseToken);
       return razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
         cancel_at_cycle_end: !immediate,
       });
+    }
+    if (subscription.providerPaymentMethod !== "CARD") {
+      throw new Error("UPI AutoPay and eMandate billing changes require a replacement mandate");
     }
 
     let mapping = null;

@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   areRazorpayBillingWritesEnabled,
+  areRazorpayMultiMethodSubscriptionsEnabled,
   assertRazorpayBillingWritesEnabled,
   BillingWritesDisabledError,
+  getRazorpayCheckoutMethodAvailability,
   isWorkspaceBillingEnabled,
   isWorkspaceBillingEnabledFor,
   RAZORPAY_BILLING_WRITES_FLAG,
+  RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG,
   WORKSPACE_BILLING_FLAG,
 } from "@/lib/billingFeature";
 
 const original = process.env[WORKSPACE_BILLING_FLAG];
 const originalBillingWrites = process.env[RAZORPAY_BILLING_WRITES_FLAG];
+const originalMultiMethod = process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG];
 const originalCanaries = process.env.RAZORPAY_LIVE_CANARY_ORG_IDS;
 const originalRazorpayMode = process.env.RAZORPAY_MODE;
 const originalRazorpayKeyId = process.env.RAZORPAY_KEY_ID;
@@ -21,6 +25,8 @@ afterEach(() => {
   else process.env[WORKSPACE_BILLING_FLAG] = original;
   if (originalBillingWrites === undefined) delete process.env[RAZORPAY_BILLING_WRITES_FLAG];
   else process.env[RAZORPAY_BILLING_WRITES_FLAG] = originalBillingWrites;
+  if (originalMultiMethod === undefined) delete process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG];
+  else process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG] = originalMultiMethod;
   if (originalCanaries === undefined) delete process.env.RAZORPAY_LIVE_CANARY_ORG_IDS;
   else process.env.RAZORPAY_LIVE_CANARY_ORG_IDS = originalCanaries;
   if (originalRazorpayMode === undefined) delete process.env.RAZORPAY_MODE;
@@ -75,5 +81,30 @@ describe("workspace billing feature flag", () => {
     process.env[WORKSPACE_BILLING_FLAG] = "true";
     expect(isWorkspaceBillingEnabledFor("LEGACY")).toBe(false);
     expect(isWorkspaceBillingEnabledFor("WORKSPACE_V2")).toBe(true);
+  });
+});
+
+describe("Razorpay multi-method subscriptions feature flag", () => {
+  it("is disabled by default", () => {
+    delete process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG];
+    expect(areRazorpayMultiMethodSubscriptionsEnabled()).toBe(false);
+    expect(getRazorpayCheckoutMethodAvailability()).toEqual({
+      mode: "CARD_ONLY",
+      potentialMethods: ["CARD"],
+      providerControlsVisibility: false,
+    });
+  });
+
+  it("is enabled only by an explicit true value", () => {
+    process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG] = " TRUE ";
+    expect(areRazorpayMultiMethodSubscriptionsEnabled()).toBe(true);
+    expect(getRazorpayCheckoutMethodAvailability()).toEqual({
+      mode: "PROVIDER_MANAGED",
+      potentialMethods: ["CARD", "UPI", "EMANDATE"],
+      providerControlsVisibility: true,
+    });
+
+    process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG] = "false";
+    expect(areRazorpayMultiMethodSubscriptionsEnabled()).toBe(false);
   });
 });

@@ -12,6 +12,7 @@ async function createSubscription(
   return testPrisma.organizationSubscription.create({
     data: {
       organizationId,
+      currentOrganizationId: organizationId,
       providerMode: "TEST",
       plan,
       amount: plan === "BASIC" ? 299 : 499,

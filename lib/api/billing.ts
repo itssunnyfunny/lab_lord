@@ -6,6 +6,10 @@ import type {
   CheckoutBillingPlanId,
 } from "@/lib/billingPlans";
 import type { BillingExperience } from "@/types/billingExperience";
+import type {
+  ProviderPaymentMethodValue,
+  SupportedRecurringPaymentMethod,
+} from "@/lib/billingPaymentMethods";
 
 export type BillingPlanDto = {
   id: CheckoutBillingPlanId;
@@ -28,6 +32,8 @@ export type BillingPlanDto = {
 export type OrganizationSubscriptionDto = {
   id: string;
   organizationId: string;
+  position: "CURRENT" | "PENDING_REPLACEMENT" | "ARCHIVED";
+  replacesSubscriptionId: string | null;
   plan: BillingPlanId;
   planName: string;
   shortName: string;
@@ -48,7 +54,7 @@ export type OrganizationSubscriptionDto = {
   endedAt: string | null;
   providerStartAt: string | null;
   authorizationExpiresAt: string | null;
-  providerPaymentMethod: string;
+  providerPaymentMethod: ProviderPaymentMethodValue;
   paidThrough: string | null;
   cancelAtCycleEnd: boolean;
   cancellationRequestedAt: string | null;
@@ -90,8 +96,15 @@ export type OrganizationEntitlementProfileDto = {
 export type BillingOverview = {
   experience: BillingExperience;
   razorpayTestMode: boolean;
+  multiMethodSubscriptionsEnabled?: boolean;
+  checkoutMethodAvailability?: {
+    mode: "CARD_ONLY" | "PROVIDER_MANAGED";
+    potentialMethods: SupportedRecurringPaymentMethod[];
+    providerControlsVisibility: boolean;
+  };
   plans: BillingPlanDto[];
   current: OrganizationSubscriptionDto | null;
+  pendingReplacement: OrganizationSubscriptionDto | null;
   history: OrganizationSubscriptionHistoryDto[];
   entitlements: OrganizationEntitlementProfileDto;
   billingModelVersion: "LEGACY" | "WORKSPACE_V2";
@@ -107,7 +120,7 @@ export type BillingOverview = {
     claimable: boolean;
     boundOrganizationId: string | null;
   } | null;
-  paymentMethod: string | null;
+  paymentMethod: ProviderPaymentMethodValue | null;
   invoices: Array<{
     id: string;
     status: string;
@@ -124,6 +137,10 @@ export type BillingOverview = {
     toPlan: BillingPlanId | null;
     toQuantity: number | null;
     lastError: string | null;
+    replacementSubscriptionId?: string | null;
+    accessGrantedAt?: string | null;
+    accessRevokedAt?: string | null;
+    accessGraceEndsAt?: string | null;
   }>;
 };
 
@@ -144,7 +161,7 @@ export type BillingOperationDto = {
   updatedAt: string;
 };
 
-export type RazorpayCardOnlyConfig = {
+export type RazorpayCheckoutConfig = {
   display: {
     blocks: {
       cards: {
@@ -157,7 +174,13 @@ export type RazorpayCardOnlyConfig = {
   };
 };
 
+/** @deprecated Use RazorpayCheckoutConfig. Kept while older callers migrate. */
+export type RazorpayCardOnlyConfig = RazorpayCheckoutConfig;
+
+export type BillingCheckoutPurpose = "INITIAL" | "REPLACEMENT";
+
 export type BillingCheckoutPayload = {
+  purpose: BillingCheckoutPurpose;
   changeId: string;
   processingUrl: string;
   keyId: string;
@@ -169,7 +192,7 @@ export type BillingCheckoutPayload = {
   currency: string;
   name: string;
   description: string;
-  config: RazorpayCardOnlyConfig;
+  config?: RazorpayCheckoutConfig;
   plan: Pick<BillingPlanDto, "id" | "name" | "shortName" | "amount" | "currency" | "period">;
   prefill: {
     name?: string;
@@ -204,12 +227,23 @@ export type BillingCancellationResult = {
   subscription: OrganizationSubscriptionDto;
 };
 
+export type BillingPlanChangeProcessingResult = {
+  unchanged?: true;
+  subscription?: OrganizationSubscriptionDto;
+  operation?: BillingOperationDto;
+  processingUrl?: string;
+};
+
+export type BillingPlanChangeResult = BillingCheckoutPayload | BillingPlanChangeProcessingResult;
+
 export type BillingRecoveryPayload = {
+  purpose: "RECOVERY";
   keyId: string;
   testMode: boolean;
   subscriptionId: string;
-  subscription_card_change: true;
-  config: RazorpayCardOnlyConfig;
+  subscription_card_change?: true;
+  hostedRecoveryUrl?: string;
+  config?: RazorpayCheckoutConfig;
   changeId: string;
   processingUrl: string;
   operation: BillingOperationDto;
@@ -256,8 +290,18 @@ export const billing = {
     return apiClient.post(`/organizations/${orgId}/billing/trial/claim`);
   },
 
-  changePlan(orgId: string, plan: CheckoutBillingPlanId, returnPath?: string) {
+  changePlan(
+    orgId: string,
+    plan: CheckoutBillingPlanId,
+    returnPath?: string
+  ): Promise<BillingPlanChangeResult> {
     return apiClient.patch(`/organizations/${orgId}/billing/subscription`, { plan, returnPath }, {
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    });
+  },
+
+  changePaymentMethod(orgId: string, returnPath?: string): Promise<BillingPlanChangeResult> {
+    return apiClient.post(`/organizations/${orgId}/billing/subscription/payment-method`, { returnPath }, {
       headers: { "Idempotency-Key": crypto.randomUUID() },
     });
   },
@@ -294,7 +338,10 @@ export const billing = {
     return apiClient.post(`/organizations/${orgId}/billing/mutations/${changeId}/checkout-event`, { event, ...details });
   },
 
-  createRecovery(orgId: string, returnPath?: string): Promise<BillingRecoveryPayload> {
+  createRecovery(
+    orgId: string,
+    returnPath?: string
+  ): Promise<BillingRecoveryPayload | BillingCheckoutPayload> {
     return apiClient.post(`/organizations/${orgId}/billing/subscription/recovery`, { returnPath });
   },
 };

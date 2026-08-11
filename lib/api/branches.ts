@@ -2,6 +2,34 @@ import { apiClient } from "./core";
 import type { Student, Seat, Payment, Staff, Shift, Branch } from "@/app/generated/prisma/browser";
 import type { SeatNumberingConfig } from "@/lib/seatNumbering";
 import type { BranchAccess } from "@/types";
+import type { BillingCheckoutPayload } from "@/lib/api/billing";
+
+export type BranchBillingAction = "NONE" | "PROCESSING" | "CHECKOUT_REQUIRED";
+
+export type BranchBillingMutationResponse = {
+    action?: BranchBillingAction;
+    billingChangeId?: string;
+    processingUrl?: string | null;
+    checkout?: BillingCheckoutPayload | null;
+};
+
+export type BranchCreationResponse = Branch & BranchBillingMutationResponse;
+
+const BRANCH_BILLING_ACTIONS = new Set<BranchBillingAction>([
+    "NONE",
+    "PROCESSING",
+    "CHECKOUT_REQUIRED",
+]);
+
+/** Normalizes the additive action field while older API responses are still deployable. */
+export function resolveBranchBillingAction(
+    response: BranchBillingMutationResponse
+): BranchBillingAction {
+    if (response.action && BRANCH_BILLING_ACTIONS.has(response.action)) return response.action;
+    if (response.checkout) return "CHECKOUT_REQUIRED";
+    if (response.processingUrl) return "PROCESSING";
+    return "NONE";
+}
 
 export const branches = {
     getDetails: async (branchId: string): Promise<Branch> => {
@@ -12,11 +40,12 @@ export const branches = {
         return apiClient.get(`/branches/${branchId}/access`);
     },
 
-    retryPendingActivation: (branchId: string) => apiClient.post(`/branches/${branchId}/billing/pending`),
+    retryPendingActivation: (branchId: string): Promise<BranchBillingMutationResponse> =>
+        apiClient.post(`/branches/${branchId}/billing/pending`),
 
     discardPendingActivation: (branchId: string) => apiClient.delete(`/branches/${branchId}/billing/pending`),
 
-    reactivate: (branchId: string) => apiClient.post(`/branches/${branchId}/billing/reactivate`, null, {
+    reactivate: (branchId: string): Promise<BranchBillingMutationResponse> => apiClient.post(`/branches/${branchId}/billing/reactivate`, null, {
         headers: { "Idempotency-Key": crypto.randomUUID() },
     }),
 

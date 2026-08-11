@@ -1,4 +1,5 @@
 import type { OrganizationSubscriptionDto } from "@/lib/api/billing";
+import { getProviderPaymentMethodLabel } from "@/lib/billingPaymentMethods";
 import type { BillingExperience } from "@/types/billingExperience";
 
 type BillingPriceSummaryProps = {
@@ -18,11 +19,21 @@ const formatDate = (value: string) => new Intl.DateTimeFormat("en-IN", {
   year: "numeric",
 }).format(new Date(value));
 
-function SummaryRow({ label, value, detail }: { label: string; value: string; detail?: string }) {
+function SummaryRow({
+  label,
+  value,
+  detail,
+  emphasis = false,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  emphasis?: boolean;
+}) {
   return (
     <div className="rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-surface-bg)] px-3 py-2.5">
       <dt className="text-xs font-medium uppercase tracking-wide text-[color:var(--text-muted)]">{label}</dt>
-      <dd className="mt-1 font-semibold text-[color:var(--text-primary)]">{value}</dd>
+      <dd className={`mt-1 font-semibold text-[color:var(--text-primary)] ${emphasis ? "text-base" : "text-sm"}`}>{value}</dd>
       {detail ? <p className="mt-0.5 text-xs text-[color:var(--text-secondary)]">{detail}</p> : null}
     </div>
   );
@@ -48,29 +59,33 @@ export function BillingPriceSummary({ experience, current }: BillingPriceSummary
       ? "Authorized — Razorpay charge date pending"
       : experience.authorizationStatus === "VERIFYING"
         ? "Waiting for Razorpay confirmation"
-        : "Not scheduled — authorize a card first";
+        : "Not scheduled — authorize a payment method first";
+  const paymentMethodLabel = getProviderPaymentMethodLabel(current?.providerPaymentMethod);
 
   if (paidPlanActive) {
     const currentPlanName = experience.effectivePlan === "STANDARD" ? "Standard" : "Basic";
     return (
-      <section className="space-y-3 px-5 pt-4" aria-labelledby="current-subscription-summary">
+      <section className="space-y-4 px-5 pt-4" aria-labelledby="current-subscription-summary">
         <div>
-          <h3 id="current-subscription-summary" className="text-sm font-semibold text-[color:var(--text-primary)]">Current subscription</h3>
+          <h3 id="current-subscription-summary" className="text-base font-semibold text-[color:var(--text-primary)]">Current subscription</h3>
           <p className="mt-1 text-xs text-[color:var(--text-secondary)]">Provider-confirmed paid access and renewal details.</p>
         </div>
-        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryRow label="Current plan" value={currentPlanName} />
+        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <SummaryRow label="Current plan" value={currentPlanName} emphasis />
           <SummaryRow
             label="Monthly branch billing"
             value={`${formatInr(experience.currentMonthlyTotal)}/month`}
             detail={`${experience.confirmedQuantity} ${experience.confirmedQuantity === 1 ? "branch" : "branches"} × ${formatInr(experience.currentUnitAmount)}`}
+            emphasis
+          />
+          <SummaryRow
+            label="Payment method"
+            value={current ? paymentMethodLabel : "Provider confirmation pending"}
+            detail={current ? "Recurring mandate managed securely by Razorpay" : undefined}
           />
           <SummaryRow label="Paid through" value={experience.paidThrough ? formatDate(experience.paidThrough) : "Awaiting paid invoice"} />
           <SummaryRow label="Next charge" value={experience.nextChargeAt ? formatDate(experience.nextChargeAt) : "Not scheduled"} />
         </dl>
-        {current?.providerPaymentMethod === "CARD" ? (
-          <p className="text-xs text-[color:var(--text-secondary)]">Recurring payment method: Card</p>
-        ) : null}
       </section>
     );
   }
@@ -81,9 +96,10 @@ export function BillingPriceSummary({ experience, current }: BillingPriceSummary
       aria-label={trialActive ? "Trial and post-trial billing summary" : "Billing authorization summary"}
     >
       <div className="rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] p-4">
-        <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Current access</h3>
+        <h3 className="text-base font-semibold text-[color:var(--text-primary)]">Current access</h3>
+        <p className="mt-1 text-xs text-[color:var(--text-secondary)]">What your workspace can use right now.</p>
         <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-          <SummaryRow label="Access now" value={trialActive ? "Standard trial" : "No active paid plan"} />
+          <SummaryRow label="Access now" value={trialActive ? "Standard trial" : "No active paid plan"} emphasis />
           {trialActive ? (
             <SummaryRow label="Plan fee today" value={formatInr(experience.planFeeDueToday)} />
           ) : (
@@ -100,12 +116,19 @@ export function BillingPriceSummary({ experience, current }: BillingPriceSummary
       </div>
 
       <div className="rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)] p-4">
-        <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">
+        <h3 className="text-base font-semibold text-[color:var(--text-primary)]">
           {trialActive ? "After the trial" : "Plan authorization"}
         </h3>
+        <p className="mt-1 text-xs text-[color:var(--text-secondary)]">
+          {trialActive ? "The plan and recurring billing that begin after your trial." : "Authorize recurring billing before paid access can begin."}
+        </p>
         <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-          <SummaryRow label="Selected plan" value={selectedPlanName ?? "Choose a plan"} />
-          <SummaryRow label="Card authorization" value={authorizationLabel} />
+          <SummaryRow label="Selected plan" value={selectedPlanName ?? "Choose a plan"} emphasis />
+          <SummaryRow
+            label="Payment mandate"
+            value={authorizationLabel}
+            detail={current ? `Recurring method: ${paymentMethodLabel}` : undefined}
+          />
           <SummaryRow
             label="Estimated monthly total"
             value={selectedPlanName ? `${formatInr(experience.projectedMonthlyTotal)}/month` : "Choose a plan"}
@@ -115,15 +138,11 @@ export function BillingPriceSummary({ experience, current }: BillingPriceSummary
           />
           <SummaryRow label="First plan charge" value={firstCharge} />
         </dl>
-        {trialActive ? (
-          <p className="mt-3 text-xs text-[color:var(--text-secondary)]">
-            No plan fee is charged during the Standard trial. Razorpay may make a temporary ₹5 card-verification payment and automatically refund it.
-          </p>
-        ) : (
-          <p className="mt-3 text-xs text-[color:var(--text-secondary)]">
-            Paid access starts only after Razorpay confirms the subscription payment. Your existing data remains preserved while access is inactive.
-          </p>
-        )}
+        <p className="mt-3 text-xs leading-5 text-[color:var(--text-secondary)]">
+          {trialActive
+            ? "No plan fee is charged during the Standard trial. If you choose a card, Razorpay may make a temporary ₹5 verification payment and automatically refund it."
+            : "Paid access starts only after Razorpay confirms the subscription payment. Your existing data remains preserved while access is inactive."}
+        </p>
       </div>
     </section>
   );

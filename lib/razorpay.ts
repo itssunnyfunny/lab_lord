@@ -116,6 +116,7 @@ export type RazorpaySubscription = {
   payment_method?: string | null;
   offer_id?: string | null;
   notes?: Record<string, string> | null;
+  created_at?: number;
 };
 
 export type RazorpayInvoice = {
@@ -136,6 +137,12 @@ export type RazorpayInvoices = {
   entity: "collection";
   count: number;
   items: RazorpayInvoice[];
+};
+
+export type RazorpaySubscriptions = {
+  entity: "collection";
+  count: number;
+  items: RazorpaySubscription[];
 };
 
 export type RazorpayOrderPayments = {
@@ -172,9 +179,16 @@ export interface RazorpayApiClient {
     customer_notify: boolean;
     notes: Record<string, string>;
     start_at?: number;
+    expire_by?: number;
     offer_id?: string;
   }): Promise<RazorpaySubscription>;
   fetchSubscription(subscriptionId: string): Promise<RazorpaySubscription>;
+  /**
+   * Optional because small test doubles and legacy adapters only need the
+   * single-subscription API. Replacement provisioning requires this capability
+   * to recover a provider create whose HTTP response was lost.
+   */
+  listSubscriptions?(input?: { count?: number; skip?: number }): Promise<RazorpaySubscriptions>;
   updateSubscription(subscriptionId: string, input: {
     plan_id?: string;
     quantity?: number;
@@ -528,6 +542,7 @@ class DefaultRazorpayClient implements RazorpayPlanCatalogApiClient {
     customer_notify: boolean;
     notes: Record<string, string>;
     start_at?: number;
+    expire_by?: number;
     offer_id?: string;
   }) {
     return razorpayRequest<RazorpaySubscription>("/subscriptions", {
@@ -538,6 +553,15 @@ class DefaultRazorpayClient implements RazorpayPlanCatalogApiClient {
 
   fetchSubscription(subscriptionId: string) {
     return razorpayRequest<RazorpaySubscription>(`/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  }
+
+  listSubscriptions(input: { count?: number; skip?: number } = {}) {
+    const params = new URLSearchParams();
+    params.set("count", String(Math.min(Math.max(input.count ?? 100, 1), 100)));
+    if (input.skip !== undefined) {
+      params.set("skip", String(Math.max(input.skip, 0)));
+    }
+    return razorpayRequest<RazorpaySubscriptions>(`/subscriptions?${params.toString()}`);
   }
 
   updateSubscription(subscriptionId: string, input: {

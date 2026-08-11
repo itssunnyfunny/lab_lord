@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  getBillingProcessingCopy,
   isBillingOperationTerminal,
   preferProviderConfirmedOperation,
   reconcileWithCooldown,
@@ -55,6 +56,13 @@ describe("billing processing reconciliation", () => {
 
     expect(preferProviderConfirmedOperation(declined, verifying)).toBe(declined);
     expect(preferProviderConfirmedOperation(declined, operation("APPLIED")).operationStatus).toBe("APPLIED");
+  });
+
+  it("offers a declined customer another recurring payment method", () => {
+    const copy = getBillingProcessingCopy(operation("DECLINED"), false);
+
+    expect(copy.body).toContain("supported recurring payment method");
+    expect(copy.body.toLowerCase()).not.toContain("card");
   });
 
   it("limits reconciliation to one request per ten-second window", async () => {

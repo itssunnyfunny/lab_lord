@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { BillingPriceSummary } from "@/components/billing/BillingPriceSummary";
-import type { BillingExperience } from "@/types/billingExperience";
+import type { OrganizationSubscriptionDto } from "@/lib/api/billing";
+import { BILLING_PAYMENT_ACTION, type BillingExperience } from "@/types/billingExperience";
 
 function experience(overrides: Partial<BillingExperience> = {}): BillingExperience {
   return {
@@ -24,7 +25,7 @@ function experience(overrides: Partial<BillingExperience> = {}): BillingExperien
     authorizationStatus: "NOT_AUTHORIZED",
     planFeeDueToday: 0,
     nextChargeAt: null,
-    paymentAction: "AUTHORIZE_CARD",
+    paymentAction: BILLING_PAYMENT_ACTION.AUTHORIZE_PAYMENT_METHOD,
     entitlements: [],
     latestOperation: null,
     activeOperation: null,
@@ -50,7 +51,9 @@ describe("BillingPriceSummary", () => {
     expect(html).toContain("Not authorized");
     expect(html).toContain("₹598/month");
     expect(html).toContain("2 branches × ₹299");
-    expect(html).toContain("Not scheduled — authorize a card first");
+    expect(html).toContain("Payment mandate");
+    expect(html).toContain("Not scheduled — authorize a payment method first");
+    expect(html).toContain("If you choose a card");
   });
 
   it("shows a provider-confirmed future Standard authorization without calling it current", () => {
@@ -91,7 +94,7 @@ describe("BillingPriceSummary", () => {
     );
 
     expect(html.match(/Choose a plan/g)).toHaveLength(2);
-    expect(html).toContain("Not scheduled — authorize a card first");
+    expect(html).toContain("Not scheduled — authorize a payment method first");
   });
 
   it("labels a plan current only with a provider-confirmed paid boundary", () => {
@@ -118,6 +121,29 @@ describe("BillingPriceSummary", () => {
     expect(html).toContain("Current plan");
     expect(html).toContain("Provider-confirmed paid access");
     expect(html).not.toContain("After the trial");
+  });
+
+  it("uses the shared provider label for a non-card recurring payment method", () => {
+    const html = renderToStaticMarkup(
+      <BillingPriceSummary
+        experience={experience({
+          effectivePlan: "BASIC",
+          selectedPostTrialPlan: "BASIC",
+          customerState: "BASIC_ACTIVE",
+          trialEndsAt: null,
+          trialDaysRemaining: null,
+          paidThrough: "2026-10-05T00:00:00.000Z",
+          confirmedQuantity: 1,
+          currentUnitAmount: 299,
+          currentMonthlyTotal: 299,
+        })}
+        current={{ providerPaymentMethod: "UPI" } as OrganizationSubscriptionDto}
+      />
+    );
+
+    expect(html).toContain("Payment method");
+    expect(html).toContain("UPI AutoPay");
+    expect(html).toContain("Recurring mandate managed securely by Razorpay");
   });
 
   it("does not use trial-only pricing language when no trial or paid plan is active", () => {

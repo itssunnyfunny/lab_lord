@@ -97,11 +97,32 @@ describe("RazorpayCheckoutLauncher", () => {
     expect(harness.open).toHaveBeenCalledOnce();
   });
 
-  it("marks recovery Checkout as a card-change flow", () => {
-    const { harness } = openWithHarness({ mode: "RECOVERY" });
+  it("lets provider-managed Checkout choose eligible methods when config is omitted", () => {
+    const { harness } = openWithHarness({ payload: { ...payload, config: undefined } });
+
+    expect(harness.options.config).toBeUndefined();
+    expect(harness.options.method).toBeUndefined();
+  });
+
+  it("marks only an explicit card fallback as a card-change flow", () => {
+    const { harness } = openWithHarness({
+      mode: "RECOVERY",
+      payload: { ...payload, subscription_card_change: true },
+    });
 
     expect(harness.options.subscription_card_change).toBe(true);
     expect(harness.options.remember_customer).toBe(false);
+  });
+
+  it("keeps method-neutral recovery eligible for provider-managed methods", () => {
+    const { harness } = openWithHarness({
+      mode: "RECOVERY",
+      payload: { ...payload, config: undefined, subscription_card_change: undefined },
+    });
+
+    expect(harness.options.subscription_card_change).toBeUndefined();
+    expect(harness.options.config).toBeUndefined();
+    expect(harness.options.method).toBeUndefined();
   });
 
   it("keeps a failed attempt provisional when an in-modal retry later succeeds", async () => {
@@ -243,6 +264,9 @@ describe("Razorpay failure normalization", () => {
     expect(classifyRazorpayFailure({ source: "gateway" })).toBe("FAILED");
     expect(classifyRazorpayFailure({ failureCategory: "payment_failed" })).toBe("FAILED");
     expect(classifyRazorpayFailure({ failureCategory: "payment_cancelled" })).toBe("ABANDONED");
+    expect(classifyRazorpayFailure({ failureCategory: "upi_mandate_cancelled" })).toBe("ABANDONED");
+    expect(classifyRazorpayFailure({ reason: "mandate_declined", source: "bank" })).toBe("DECLINED");
+    expect(classifyRazorpayFailure({ reason: "upi_autopay_declined" })).toBe("DECLINED");
     expect(classifyRazorpayFailure({
       reason: "card_mandate_card_not_supported",
       source: "customer",

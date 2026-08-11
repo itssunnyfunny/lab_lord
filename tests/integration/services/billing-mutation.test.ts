@@ -2,6 +2,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { BillingMutationService } from "@/services/billingMutation.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
+import { BranchService } from "@/services/branch.service";
+import { BillingReplacementService } from "@/services/billingReplacement.service";
+import {
+  getReplacementUndoCutoffAt,
+  getSafeReplacementCycleBoundary,
+} from "@/services/billingReplacementPolicy";
 import { setRazorpayClientForTests, type RazorpayPlanCatalogApiClient } from "@/lib/razorpay";
 import { createBranch, createOrg, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
@@ -11,13 +17,17 @@ function fakeRazorpay(options: {
   providerStatus?: "active" | "authenticated";
   providerQuantity?: number;
   includePaidInvoice?: boolean;
+  providerMethod?: "card" | "upi" | "emandate";
+  adoptReplacement?: boolean;
+  futureStartAt?: number;
+  omitCurrentPeriod?: boolean;
 } = {}): RazorpayPlanCatalogApiClient {
   const periodStart = Math.floor(Date.now() / 1000) - 60;
   const periodEnd = periodStart + 30 * 24 * 60 * 60;
   const providerStatus = options.providerStatus ?? "active";
   const providerQuantity = options.providerQuantity ?? 2;
   const paidAt = options.paidAt ?? Math.floor(Date.now() / 1000);
-  return {
+  const client: RazorpayPlanCatalogApiClient = {
     createOrder: vi.fn(async () => { throw new Error("unused"); }),
     fetchPayment: vi.fn(async paymentId => ({
       id: paymentId,
@@ -53,7 +63,17 @@ function fakeRazorpay(options: {
       },
     })),
     listPlans: vi.fn(async () => ({ entity: "collection" as const, count: 0, items: [] })),
-    createSubscription: vi.fn(async () => { throw new Error("unused"); }),
+    createSubscription: vi.fn(async input => ({
+      id: "sub_candidate",
+      entity: "subscription" as const,
+      plan_id: input.plan_id,
+      status: "created",
+      total_count: input.total_count,
+      quantity: input.quantity,
+      start_at: input.start_at,
+      expire_by: input.expire_by,
+      notes: input.notes,
+    })),
     fetchSubscription: vi.fn(async () => ({
       id: "sub_workspace",
       entity: "subscription" as const,
@@ -61,10 +81,11 @@ function fakeRazorpay(options: {
       status: providerStatus,
       total_count: 120,
       quantity: providerQuantity,
-      current_start: periodStart,
-      current_end: periodEnd,
-      charge_at: periodEnd,
-      payment_method: "card",
+      start_at: options.futureStartAt,
+      current_start: options.omitCurrentPeriod ? undefined : periodStart,
+      current_end: options.omitCurrentPeriod ? undefined : periodEnd,
+      charge_at: options.omitCurrentPeriod ? undefined : periodEnd,
+      payment_method: options.providerMethod ?? "card",
     })),
     updateSubscription: vi.fn(async (_id, input) => ({
       id: "sub_workspace",
@@ -112,6 +133,31 @@ function fakeRazorpay(options: {
       quantity: 1,
     })),
   };
+  client.listSubscriptions = vi.fn(async () => ({
+    entity: "collection" as const,
+    count: options.adoptReplacement ? 1 : 0,
+    items: options.adoptReplacement ? [{
+      id: "sub_candidate",
+      entity: "subscription" as const,
+      plan_id: "plan_standard",
+      status: "created",
+      total_count: 120,
+      quantity: 2,
+      start_at: periodEnd,
+      expire_by: periodEnd - 72 * 60 * 60,
+      created_at: periodStart,
+      notes: {
+        app: "lab_lords",
+        billing_type: "saas_subscription_replacement",
+        organization_id: "filled-by-test",
+        provider_mode: "TEST",
+        billing_change_id: "filled-by-test",
+        replacement_source_subscription_id: "sub_workspace",
+        plan: "PRO",
+      },
+    }] : [],
+  }));
+  return client;
 }
 
 describe("serialized workspace billing mutations", () => {
@@ -122,7 +168,7 @@ describe("serialized workspace billing mutations", () => {
   });
   afterAll(async () => { await disconnectDatabase(); });
 
-  async function setup() {
+  async function setup(options: { paymentMethod?: "CARD" | "UPI" | "EMANDATE" } = {}) {
     const owner = await createUser();
     const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
     const first = await createBranch({ organizationId: organization.id });
@@ -143,13 +189,240 @@ describe("serialized workspace billing mutations", () => {
         totalCount: 120,
         quantity: 1,
         razorpayPlanId: "plan_standard",
+        currentOrganizationId: organization.id,
         razorpaySubscriptionId: "sub_workspace",
         status: "ACTIVE",
-        providerPaymentMethod: "CARD",
+        providerPaymentMethod: options.paymentMethod ?? "CARD",
       },
     });
     return { owner, organization, first, subscription };
   }
+
+  it("provisions one checkout-backed candidate for a UPI quantity increase", async () => {
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    const razorpay = fakeRazorpay({ providerMethod: "upi" });
+    setRazorpayClientForTests(razorpay);
+    const { owner, organization, subscription } = await setup({ paymentMethod: "UPI" });
+    const secondBranch = await testPrisma.branch.create({
+      data: {
+        organizationId: organization.id,
+        name: "Second",
+        billingStatus: "PENDING_ACTIVATION",
+      },
+    });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      branchId: secondBranch.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "upi-add-second",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    const processed = await BillingMutationService.processNext(organization.id);
+    const [source, candidate, storedChange] = await Promise.all([
+      testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      testPrisma.organizationSubscription.findUniqueOrThrow({
+        where: { pendingReplacementOrganizationId: organization.id },
+      }),
+      testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
+    ]);
+
+    expect(processed).toMatchObject({ status: "AWAITING_PAYMENT", operationStatus: "CHECKOUT_OPEN" });
+    expect(source.currentOrganizationId).toBe(organization.id);
+    expect(source.quantity).toBe(1);
+    expect(candidate).toMatchObject({
+      replacesSubscriptionId: source.id,
+      quantity: 2,
+      razorpaySubscriptionId: "sub_candidate",
+    });
+    expect(storedChange.replacementSubscriptionId).toBe(candidate.id);
+    expect(storedChange.undoCutoffAt?.getTime()).toBe(
+      storedChange.effectiveAt!.getTime() - 72 * 60 * 60 * 1000
+    );
+    expect(razorpay.updateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("keeps a future-start eMandate trial branch pending until its replacement is authorized", async () => {
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    const { owner, organization, subscription } = await setup({ paymentMethod: "EMANDATE" });
+    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    const futureStartAt = Math.floor(trialEndsAt.getTime() / 1000);
+    await testPrisma.ownerTrialGrant.create({
+      data: {
+        ownerId: owner.id,
+        organizationId: organization.id,
+        source: "ONBOARDING",
+        status: "ACTIVE",
+        trialStartedAt: new Date(),
+        trialEndsAt,
+        consumedAt: new Date(),
+      },
+    });
+    await testPrisma.organizationSubscription.update({
+      where: { id: subscription.id },
+      data: {
+        status: "AUTHENTICATED",
+        providerStartAt: trialEndsAt,
+        currentStart: null,
+        currentEnd: null,
+        paidThrough: null,
+      },
+    });
+    const razorpay = fakeRazorpay({
+      providerMethod: "emandate",
+      providerStatus: "authenticated",
+      providerQuantity: 1,
+      includePaidInvoice: false,
+      futureStartAt,
+      omitCurrentPeriod: true,
+    });
+    setRazorpayClientForTests(razorpay);
+
+    const result = await BranchService.createBranchForOrg({
+      organizationId: organization.id,
+      userId: owner.id,
+      name: "Future trial branch",
+      contactPhone: "9876543210",
+      idempotencyKey: "future-trial-emandate-branch",
+    });
+
+    expect(result).toMatchObject({
+      billingStatus: "PENDING_ACTIVATION",
+      action: "CHECKOUT_REQUIRED",
+    });
+    expect(razorpay.createSubscription).toHaveBeenCalledWith(expect.objectContaining({
+      quantity: 2,
+      start_at: futureStartAt,
+    }));
+    const change = await testPrisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: result.billingChangeId! },
+      include: { replacementSubscription: true },
+    });
+    expect(change).toMatchObject({
+      type: "TRIAL_SUBSCRIPTION_UPDATE",
+      status: "AWAITING_PAYMENT",
+      effectiveAt: new Date(futureStartAt * 1000),
+      replacementSubscription: {
+        quantity: 2,
+        providerStartAt: new Date(futureStartAt * 1000),
+      },
+    });
+
+    await testPrisma.organizationSubscription.update({
+      where: { id: change.replacementSubscriptionId! },
+      data: { status: "AUTHENTICATED", providerPaymentMethod: "EMANDATE" },
+    });
+    await expect(BillingReplacementService.syncAuthorizedAccess(change.id))
+      .resolves.toMatchObject({ action: "GRANT" });
+    await expect(testPrisma.branch.findUniqueOrThrow({ where: { id: result.id } }))
+      .resolves.toMatchObject({ billingStatus: "ACTIVE" });
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }))
+      .resolves.toMatchObject({ currentOrganizationId: organization.id, quantity: 1 });
+  });
+
+  it("returns 409 semantics for a second unrelated billable intent while a candidate is open", async () => {
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    setRazorpayClientForTests(fakeRazorpay({ providerMethod: "upi" }));
+    const { owner, organization, subscription } = await setup({ paymentMethod: "UPI" });
+    const firstChange = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "PLAN_DOWNGRADE",
+      idempotencyKey: "first-replacement",
+      fromPlan: "PRO",
+      toPlan: "BASIC",
+      fromQuantity: 1,
+      toQuantity: 1,
+      createdByUserId: owner.id,
+    });
+    await BillingMutationService.processNext(organization.id);
+
+    await expect(BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "second-replacement",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    })).rejects.toMatchObject({
+      code: "BILLING_CHANGE_IN_PROGRESS",
+      existingChangeId: firstChange.id,
+    });
+    await expect(BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "PLAN_DOWNGRADE",
+      idempotencyKey: "first-replacement",
+      fromPlan: "PRO",
+      toPlan: "BASIC",
+      fromQuantity: 1,
+      toQuantity: 1,
+      createdByUserId: owner.id,
+    })).resolves.toMatchObject({ id: firstChange.id });
+  });
+
+  it("adopts a response-lost provider candidate by exact durable notes", async () => {
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    vi.stubEnv("RAZORPAY_BILLING_WRITES_ENABLED", "true");
+    const razorpay = fakeRazorpay({ providerMethod: "emandate" });
+    setRazorpayClientForTests(razorpay);
+    const { owner, organization, subscription } = await setup({ paymentMethod: "EMANDATE" });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "adopt-response-lost",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+    const now = new Date();
+    const providerSource = await razorpay.fetchSubscription(subscription.razorpaySubscriptionId);
+    const effectiveAt = getSafeReplacementCycleBoundary({
+      now,
+      currentCycleEnd: new Date(providerSource.current_end! * 1000),
+      intervalMonths: 1,
+    });
+    const undoCutoffAt = getReplacementUndoCutoffAt(effectiveAt);
+    vi.mocked(razorpay.listSubscriptions!).mockResolvedValueOnce({
+      entity: "collection",
+      count: 1,
+      items: [{
+        id: "sub_adopted",
+        entity: "subscription",
+        plan_id: "plan_standard",
+        status: "created",
+        total_count: 120,
+        quantity: 2,
+        start_at: Math.floor(effectiveAt.getTime() / 1000),
+        expire_by: Math.floor(undoCutoffAt.getTime() / 1000),
+        created_at: Math.floor(Date.now() / 1000),
+        notes: {
+          app: "lab_lords",
+          billing_type: "saas_subscription_replacement",
+          organization_id: organization.id,
+          provider_mode: "TEST",
+          billing_change_id: change.id,
+          replacement_source_subscription_id: subscription.razorpaySubscriptionId,
+          plan: "PRO",
+        },
+      }],
+    });
+
+    await BillingMutationService.processNext(organization.id, now);
+
+    expect(razorpay.createSubscription).not.toHaveBeenCalled();
+    await expect(testPrisma.organizationSubscription.findUnique({
+      where: { razorpaySubscriptionId: "sub_adopted" },
+    })).resolves.toMatchObject({ pendingReplacementOrganizationId: organization.id });
+  });
 
   it("assigns distinct FIFO targets to concurrent branch additions", async () => {
     const { owner, organization, subscription } = await setup();
@@ -353,6 +626,85 @@ describe("serialized workspace billing mutations", () => {
       .resolves.toMatchObject({ billingMutationLeaseToken: null, billingMutationLeaseUntil: null });
   });
 
+  it("atomically discards a pending card branch before its quantity mutation is claimed", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay({ providerQuantity: 1, includePaidInvoice: false });
+    setRazorpayClientForTests(razorpay);
+    const branch = await testPrisma.branch.create({
+      data: { organizationId: organization.id, name: "Discard before claim", billingStatus: "PENDING_ACTIVATION" },
+    });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      branchId: branch.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "discard-card-before-claim",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    await expect(BranchService.discardPendingActivation(owner.id, branch.id))
+      .resolves.toEqual({ archived: true });
+    await expect(BillingMutationService.processNext(organization.id)).resolves.toBeNull();
+
+    expect(razorpay.updateSubscription).not.toHaveBeenCalled();
+    await expect(testPrisma.branch.findUniqueOrThrow({ where: { id: branch.id } }))
+      .resolves.toMatchObject({ billingStatus: "ARCHIVED" });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "SUPERSEDED", operationStatus: "ABANDONED" });
+  });
+
+  it("rejects pending-branch discard while a card quantity provider mutation is in flight", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay({ providerQuantity: 1, includePaidInvoice: false });
+    let providerStarted!: () => void;
+    let releaseProvider!: () => void;
+    const started = new Promise<void>(resolve => { providerStarted = resolve; });
+    const providerRelease = new Promise<void>(resolve => { releaseProvider = resolve; });
+    vi.mocked(razorpay.updateSubscription).mockImplementationOnce(async (_id, input) => {
+      providerStarted();
+      await providerRelease;
+      return {
+        id: "sub_workspace",
+        entity: "subscription",
+        plan_id: input.plan_id ?? "plan_standard",
+        status: "active",
+        total_count: 120,
+        quantity: input.quantity ?? 1,
+        payment_method: "card",
+      };
+    });
+    setRazorpayClientForTests(razorpay);
+    const branch = await testPrisma.branch.create({
+      data: { organizationId: organization.id, name: "Discard during provider call", billingStatus: "PENDING_ACTIVATION" },
+    });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      branchId: branch.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "discard-card-during-provider-call",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    const processing = BillingMutationService.processNext(organization.id);
+    await started;
+    const discardError = await BranchService.discardPendingActivation(owner.id, branch.id)
+      .then(() => null, error => error as Error);
+    releaseProvider();
+    await expect(processing).resolves.toMatchObject({ id: change.id, status: "AWAITING_PAYMENT" });
+
+    expect(discardError).toBeInstanceOf(Error);
+    expect(discardError?.message).toContain("Another billing operation is still processing");
+    await expect(testPrisma.branch.findUniqueOrThrow({ where: { id: branch.id } }))
+      .resolves.toMatchObject({ billingStatus: "PENDING_ACTIVATION", billingArchivedAt: null });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "AWAITING_PAYMENT", operationStatus: "AWAITING_PROVIDER_CONFIRMATION" });
+  });
+
   it("does not let an expired worker fail or release a successor lease", async () => {
     const { owner, organization, subscription } = await setup();
     const razorpay = fakeRazorpay();
@@ -399,6 +751,89 @@ describe("serialized workspace billing mutations", () => {
       .resolves.toMatchObject({ billingMutationLeaseToken: "successor-lease" });
     await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
       .resolves.toMatchObject({ status: "PROCESSING", attemptCount: 1, failedAt: null });
+  });
+
+  it("does not apply an old provider response after the current subscription is swapped", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay();
+    let providerStarted!: () => void;
+    let releaseProvider!: () => void;
+    const started = new Promise<void>(resolve => { providerStarted = resolve; });
+    const providerRelease = new Promise<void>(resolve => { releaseProvider = resolve; });
+    vi.mocked(razorpay.updateSubscription).mockImplementationOnce(async (subscriptionId, input) => {
+      providerStarted();
+      await providerRelease;
+      return {
+        id: subscriptionId,
+        entity: "subscription",
+        plan_id: input.plan_id ?? "plan_standard",
+        status: "active",
+        total_count: 120,
+        quantity: input.quantity ?? 1,
+        payment_method: "card",
+      };
+    });
+    setRazorpayClientForTests(razorpay);
+    const replacement = await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        providerMode: "TEST",
+        plan: "PRO",
+        amount: 499,
+        amountSubunits: 49900,
+        totalCount: 120,
+        quantity: 7,
+        razorpayPlanId: "plan_standard",
+        pendingReplacementOrganizationId: organization.id,
+        replacesSubscriptionId: subscription.id,
+        razorpaySubscriptionId: "sub_promoted_during_mutation",
+        status: "AUTHENTICATED",
+        providerPaymentMethod: "CARD",
+      },
+    });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "current-slot-swapped-during-provider-call",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    const processing = BillingMutationService.processNext(organization.id);
+    await started;
+    await testPrisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Organization" WHERE "id" = ${organization.id} FOR UPDATE
+      `;
+      await tx.organizationSubscription.update({
+        where: { id: subscription.id },
+        data: { currentOrganizationId: null },
+      });
+      await tx.organizationSubscription.update({
+        where: { id: replacement.id },
+        data: {
+          pendingReplacementOrganizationId: null,
+          currentOrganizationId: organization.id,
+        },
+      });
+    });
+    releaseProvider();
+
+    await expect(processing).rejects.toThrow("Billing mutation source subscription is no longer current");
+    expect(razorpay.updateSubscription).toHaveBeenCalledWith("sub_workspace", expect.objectContaining({
+      quantity: 2,
+    }));
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: replacement.id } }))
+      .resolves.toMatchObject({
+        currentOrganizationId: organization.id,
+        razorpaySubscriptionId: "sub_promoted_during_mutation",
+        status: "AUTHENTICATED",
+        quantity: 7,
+      });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "SUPERSEDED", operationStatus: "ABANDONED" });
   });
 
   it("serializes scheduled-change undo and replays the next queued intent", async () => {

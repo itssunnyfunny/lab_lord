@@ -7,8 +7,10 @@ import {
   RazorpayPlanCatalogBusyError,
   RazorpayPlanCatalogProvisioningError,
 } from "@/services/razorpayPlanCatalog.service";
+import { BillingChangeInProgressError } from "@/lib/billingErrors";
 
 function errorStatus(message: string, error?: unknown) {
+  if (error instanceof BillingChangeInProgressError) return 409;
   if (error instanceof BillingWritesDisabledError) return 503;
   if (
     error instanceof RazorpayConfigurationError
@@ -42,7 +44,12 @@ export async function POST(
     return NextResponse.json(checkout);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: message }, { status: errorStatus(message, error) });
+    return NextResponse.json(
+      error instanceof BillingChangeInProgressError
+        ? { error: message, code: error.code, existingChangeId: error.existingChangeId }
+        : { error: message },
+      { status: errorStatus(message, error) }
+    );
   }
 }
 
@@ -63,6 +70,11 @@ export async function PATCH(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: message }, { status: errorStatus(message, error) });
+    return NextResponse.json(
+      error instanceof BillingChangeInProgressError
+        ? { error: message, code: error.code, existingChangeId: error.existingChangeId }
+        : { error: message },
+      { status: errorStatus(message, error) }
+    );
   }
 }
