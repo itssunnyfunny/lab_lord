@@ -255,6 +255,33 @@ describe("BillingService SaaS subscriptions", () => {
     });
   });
 
+  it("publishes the server-controlled Checkout method availability", async () => {
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "false");
+    await expect(BillingService.listPlansForOrganization(user.id, org.id))
+      .resolves.toMatchObject({
+        multiMethodSubscriptionsEnabled: false,
+        checkoutMethodAvailability: {
+          mode: "CARD_ONLY",
+          potentialMethods: ["CARD"],
+          providerControlsVisibility: false,
+        },
+      });
+
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    await expect(BillingService.listPlansForOrganization(user.id, org.id))
+      .resolves.toMatchObject({
+        multiMethodSubscriptionsEnabled: true,
+        checkoutMethodAvailability: {
+          mode: "PROVIDER_MANAGED",
+          potentialMethods: ["CARD", "UPI", "EMANDATE"],
+          providerControlsVisibility: true,
+        },
+      });
+  });
+
   it("uses the local post-trial choice when no provider subscription exists", async () => {
     const user = await createUser();
     const org = await createOrg({

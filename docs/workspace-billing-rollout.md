@@ -27,6 +27,12 @@ Preview and Production must use separate databases, Clerk instances, Razorpay mo
 
 `RAZORPAY_KEY_ID` is server-only. Do not configure `NEXT_PUBLIC_RAZORPAY_KEY_ID`; the server includes the public Key ID in the authenticated Checkout payload. Never put an API secret or webhook secret in a `NEXT_PUBLIC_` variable.
 
+### Diagnosing a Card-only Checkout
+
+There are two independent gates. If `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED` is absent or not exactly `true`, the billing overview reports `checkoutMethodAvailability.mode` as `CARD_ONLY` and the Checkout payload intentionally contains a card-only `config.display` block. For an approved local Test-mode check, set the server-only flag to `true` in the ignored local environment file and restart the Next.js process; environment changes are not applied to an already-running server. The overview should then report `PROVIDER_MANAGED`, and the Checkout payload must omit `config` so Razorpay can choose eligible recurring methods.
+
+`PROVIDER_MANAGED` does not guarantee that every candidate method appears. Razorpay still requires Card, UPI AutoPay, and eMandate to be enabled for Subscriptions in the matching Test or Live account, with any required account approval complete. Currency, mandate amount, merchant category, device, UPI app, and bank support can further narrow Checkout. Netbanking appears only as an eMandate authorisation route, not as a separate one-time payment option.
+
 Set GitHub Environment secret `PRODUCTION_DIRECT_DATABASE_URL` to the direct Production Postgres URL. The protected `.github/workflows/production-migrate.yml` workflow requires an explicit confirmation and is the only supported Production migration path.
 
 ## Provider and database preflight

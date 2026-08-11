@@ -4,6 +4,7 @@ import {
   areRazorpayMultiMethodSubscriptionsEnabled,
   assertRazorpayBillingWritesEnabled,
   BillingWritesDisabledError,
+  getRazorpayCheckoutMethodAvailability,
   isWorkspaceBillingEnabled,
   isWorkspaceBillingEnabledFor,
   RAZORPAY_BILLING_WRITES_FLAG,
@@ -87,11 +88,21 @@ describe("Razorpay multi-method subscriptions feature flag", () => {
   it("is disabled by default", () => {
     delete process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG];
     expect(areRazorpayMultiMethodSubscriptionsEnabled()).toBe(false);
+    expect(getRazorpayCheckoutMethodAvailability()).toEqual({
+      mode: "CARD_ONLY",
+      potentialMethods: ["CARD"],
+      providerControlsVisibility: false,
+    });
   });
 
   it("is enabled only by an explicit true value", () => {
     process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG] = " TRUE ";
     expect(areRazorpayMultiMethodSubscriptionsEnabled()).toBe(true);
+    expect(getRazorpayCheckoutMethodAvailability()).toEqual({
+      mode: "PROVIDER_MANAGED",
+      potentialMethods: ["CARD", "UPI", "EMANDATE"],
+      providerControlsVisibility: true,
+    });
 
     process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG] = "false";
     expect(areRazorpayMultiMethodSubscriptionsEnabled()).toBe(false);

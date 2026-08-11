@@ -6,7 +6,10 @@ import type {
   CheckoutBillingPlanId,
 } from "@/lib/billingPlans";
 import type { BillingExperience } from "@/types/billingExperience";
-import type { ProviderPaymentMethodValue } from "@/lib/billingPaymentMethods";
+import type {
+  ProviderPaymentMethodValue,
+  SupportedRecurringPaymentMethod,
+} from "@/lib/billingPaymentMethods";
 
 export type BillingPlanDto = {
   id: CheckoutBillingPlanId;
@@ -94,6 +97,11 @@ export type BillingOverview = {
   experience: BillingExperience;
   razorpayTestMode: boolean;
   multiMethodSubscriptionsEnabled?: boolean;
+  checkoutMethodAvailability?: {
+    mode: "CARD_ONLY" | "PROVIDER_MANAGED";
+    potentialMethods: SupportedRecurringPaymentMethod[];
+    providerControlsVisibility: boolean;
+  };
   plans: BillingPlanDto[];
   current: OrganizationSubscriptionDto | null;
   pendingReplacement: OrganizationSubscriptionDto | null;

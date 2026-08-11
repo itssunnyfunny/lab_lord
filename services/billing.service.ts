@@ -28,6 +28,7 @@ import {
 import {
   areRazorpayMultiMethodSubscriptionsEnabled,
   assertRazorpayBillingWritesEnabled,
+  getRazorpayCheckoutMethodAvailability,
 } from "@/lib/billingFeature";
 import type { OrganizationSubscription, OrganizationSubscriptionHistory, Prisma } from "@/app/generated/prisma/client";
 import type { SaasPlan, SaasSubscriptionHistorySource, SaasSubscriptionStatus } from "@/types";
@@ -748,6 +749,7 @@ export class BillingService {
       billingModelVersion: organization.billingModelVersion,
       razorpayTestMode: razorpayTestMode(),
       multiMethodSubscriptionsEnabled: areRazorpayMultiMethodSubscriptionsEnabled(),
+      checkoutMethodAvailability: getRazorpayCheckoutMethodAvailability(),
       plans: publicBillingPlans(),
       current: serializeSubscription(subscription),
       pendingReplacement: serializeSubscription(pendingReplacement),
