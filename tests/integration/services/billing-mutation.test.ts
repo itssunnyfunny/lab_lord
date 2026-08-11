@@ -670,6 +670,89 @@ describe("serialized workspace billing mutations", () => {
       .resolves.toMatchObject({ status: "PROCESSING", attemptCount: 1, failedAt: null });
   });
 
+  it("does not apply an old provider response after the current subscription is swapped", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay();
+    let providerStarted!: () => void;
+    let releaseProvider!: () => void;
+    const started = new Promise<void>(resolve => { providerStarted = resolve; });
+    const providerRelease = new Promise<void>(resolve => { releaseProvider = resolve; });
+    vi.mocked(razorpay.updateSubscription).mockImplementationOnce(async (subscriptionId, input) => {
+      providerStarted();
+      await providerRelease;
+      return {
+        id: subscriptionId,
+        entity: "subscription",
+        plan_id: input.plan_id ?? "plan_standard",
+        status: "active",
+        total_count: 120,
+        quantity: input.quantity ?? 1,
+        payment_method: "card",
+      };
+    });
+    setRazorpayClientForTests(razorpay);
+    const replacement = await testPrisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        providerMode: "TEST",
+        plan: "PRO",
+        amount: 499,
+        amountSubunits: 49900,
+        totalCount: 120,
+        quantity: 7,
+        razorpayPlanId: "plan_standard",
+        pendingReplacementOrganizationId: organization.id,
+        replacesSubscriptionId: subscription.id,
+        razorpaySubscriptionId: "sub_promoted_during_mutation",
+        status: "AUTHENTICATED",
+        providerPaymentMethod: "CARD",
+      },
+    });
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "current-slot-swapped-during-provider-call",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    const processing = BillingMutationService.processNext(organization.id);
+    await started;
+    await testPrisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Organization" WHERE "id" = ${organization.id} FOR UPDATE
+      `;
+      await tx.organizationSubscription.update({
+        where: { id: subscription.id },
+        data: { currentOrganizationId: null },
+      });
+      await tx.organizationSubscription.update({
+        where: { id: replacement.id },
+        data: {
+          pendingReplacementOrganizationId: null,
+          currentOrganizationId: organization.id,
+        },
+      });
+    });
+    releaseProvider();
+
+    await expect(processing).rejects.toThrow("Billing mutation source subscription is no longer current");
+    expect(razorpay.updateSubscription).toHaveBeenCalledWith("sub_workspace", expect.objectContaining({
+      quantity: 2,
+    }));
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: replacement.id } }))
+      .resolves.toMatchObject({
+        currentOrganizationId: organization.id,
+        razorpaySubscriptionId: "sub_promoted_during_mutation",
+        status: "AUTHENTICATED",
+        quantity: 7,
+      });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "SUPERSEDED", operationStatus: "ABANDONED" });
+  });
+
   it("serializes scheduled-change undo and replays the next queued intent", async () => {
     const { owner, organization, subscription } = await setup();
     const razorpay = fakeRazorpay();

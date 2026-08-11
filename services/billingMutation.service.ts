@@ -32,6 +32,14 @@ const QUANTITY_TYPES = new Set<BillingChangeType>([
   "BRANCH_REACTIVATION",
   "LEGACY_TRANSITION",
 ]);
+const SOURCE_CHANGED_MESSAGE = "Billing mutation source subscription is no longer current";
+
+class BillingMutationSourceChangedError extends Error {
+  constructor() {
+    super(SOURCE_CHANGED_MESSAGE);
+    this.name = "BillingMutationSourceChangedError";
+  }
+}
 
 type EnqueueInput = {
   organizationId: string;
@@ -222,6 +230,30 @@ export class BillingMutationService {
         return null;
       }
 
+      // A queued mutation belongs to the immutable subscription row captured
+      // when the intent was created. Never carry that intent across a
+      // replacement promotion to whichever row happens to be current later.
+      const source = next.organizationSubscriptionId
+        ? await tx.organizationSubscription.findUnique({
+            where: { id: next.organizationSubscriptionId },
+            select: { organizationId: true, currentOrganizationId: true },
+          })
+        : null;
+      if (!source
+        || source.organizationId !== organizationId
+        || source.currentOrganizationId !== organizationId) {
+        await tx.organizationBillingChange.update({
+          where: { id: next.id },
+          data: {
+            status: "SUPERSEDED",
+            operationStatus: "ABANDONED",
+            resolvedAt: now,
+            lastError: SOURCE_CHANGED_MESSAGE,
+          },
+        });
+        return null;
+      }
+
       await tx.organization.update({
         where: { id: organizationId },
         data: {
@@ -243,11 +275,19 @@ export class BillingMutationService {
 
     try {
       const source = await prisma.organizationSubscription.findUnique({
-        where: { currentOrganizationId: organizationId },
-        select: { providerPaymentMethod: true },
+        where: { id: claimed.organizationSubscriptionId! },
+        select: {
+          organizationId: true,
+          currentOrganizationId: true,
+          providerPaymentMethod: true,
+        },
       });
-      if (source
-        && areRazorpayMultiMethodSubscriptionsEnabled()
+      if (!source
+        || source.organizationId !== organizationId
+        || source.currentOrganizationId !== organizationId) {
+        throw new BillingMutationSourceChangedError();
+      }
+      if (areRazorpayMultiMethodSubscriptionsEnabled()
         && isReplacementMutationEligible({
           sourcePaymentMethod: source.providerPaymentMethod,
           mutationType: claimed.type,
@@ -267,6 +307,25 @@ export class BillingMutationService {
         const current = await tx.organization.findUnique({ where: { id: organizationId } });
         if (current?.billingMutationLeaseToken !== leaseToken) {
           throw new Error("Billing mutation lease was lost");
+        }
+        const sourceSubscription = claimed.organizationSubscriptionId
+          ? await tx.organizationSubscription.findUnique({
+              where: { id: claimed.organizationSubscriptionId },
+              select: {
+                id: true,
+                organizationId: true,
+                currentOrganizationId: true,
+                razorpaySubscriptionId: true,
+              },
+            })
+          : null;
+        if (!sourceSubscription
+          || sourceSubscription.organizationId !== organizationId
+          || sourceSubscription.currentOrganizationId !== organizationId) {
+          throw new BillingMutationSourceChangedError();
+        }
+        if (result.id !== sourceSubscription.razorpaySubscriptionId) {
+          throw new Error("Razorpay subscription mismatch while applying billing mutation");
         }
 
         const cancellationType = claimed.type === "CANCELLATION"
@@ -301,7 +360,7 @@ export class BillingMutationService {
             })
           : null;
         await tx.organizationSubscription.update({
-          where: { currentOrganizationId: organizationId },
+          where: { id: sourceSubscription.id },
           data: {
             plan: providerPlan?.plan,
             amount: providerPlan?.amount,
@@ -342,12 +401,13 @@ export class BillingMutationService {
         });
         // An expired worker must never fail or release a successor's attempt.
         if (current?.billingMutationLeaseToken !== leaseToken) return;
+        const sourceChanged = error instanceof BillingMutationSourceChangedError;
         await tx.organizationBillingChange.updateMany({
           where: { id: claimed.id, status: "PROCESSING" },
           data: {
-            status: "FAILED",
-            operationStatus: "FAILED",
-            failedAt: new Date(),
+            status: sourceChanged ? "SUPERSEDED" : "FAILED",
+            operationStatus: sourceChanged ? "ABANDONED" : "FAILED",
+            failedAt: sourceChanged ? null : new Date(),
             resolvedAt: new Date(),
             lastError: error instanceof Error ? error.message : "Provider mutation failed",
           },
@@ -534,10 +594,17 @@ export class BillingMutationService {
     change: OrganizationBillingChange,
     leaseToken: string
   ) {
+    if (!change.organizationSubscriptionId) {
+      throw new BillingMutationSourceChangedError();
+    }
     const subscription = await prisma.organizationSubscription.findUnique({
-      where: { currentOrganizationId: change.organizationId },
+      where: { id: change.organizationSubscriptionId },
     });
-    if (!subscription) throw new Error("Subscription not found");
+    if (!subscription
+      || subscription.organizationId !== change.organizationId
+      || subscription.currentOrganizationId !== change.organizationId) {
+      throw new BillingMutationSourceChangedError();
+    }
     const providerMode = resolveRazorpayMode();
     if (subscription.providerMode !== providerMode) {
       throw new Error(
