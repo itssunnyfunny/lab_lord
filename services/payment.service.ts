@@ -7,6 +7,26 @@ import type { Prisma } from "@/app/generated/prisma/client";
 import { startOfDay, startOfMonth, endOfMonth } from "date-fns";
 import { dueCyclesThrough } from "@/utils/studentBillingCycles";
 import { EntitlementService } from "@/services/entitlement.service";
+import {
+    DEFAULT_PAGE_SIZE,
+    pageFromRows,
+    type DateIdCursor,
+} from "@/lib/cursorPagination";
+import type { PagedResult } from "@/types/ui";
+
+const PAYMENT_LIST_INCLUDE = {
+    student: {
+        select: {
+            id: true,
+            name: true,
+            phone: true,
+            joinedAt: true,
+        },
+    },
+} satisfies Prisma.PaymentInclude;
+
+type PaymentListRecord = Prisma.PaymentGetPayload<{ include: typeof PAYMENT_LIST_INCLUDE }>;
+type PaymentListPagination = { cursor?: DateIdCursor | null; limit: number };
 
 const STUDENT_GENERATION_BATCH_SIZE = 250;
 const PAYMENT_INSERT_BATCH_SIZE = 1000;
@@ -306,9 +326,23 @@ export class PaymentService {
     static async listPayments(
         userId: string,
         branchId: string,
+        status: PaymentStatus | undefined,
+        month: Date | undefined,
+        pagination: PaymentListPagination
+    ): Promise<PagedResult<PaymentListRecord>>;
+    static async listPayments(
+        userId: string,
+        branchId: string,
         status?: PaymentStatus,
         month?: Date
-    ) {
+    ): Promise<PaymentListRecord[]>;
+    static async listPayments(
+        userId: string,
+        branchId: string,
+        status?: PaymentStatus,
+        month?: Date,
+        pagination?: PaymentListPagination
+    ): Promise<PagedResult<PaymentListRecord> | PaymentListRecord[]> {
         await this.assertBranchAccess(userId, branchId, "view_payments");
 
         // Default all-time view excludes WAIVED unless a status or monthly history view asks for it.
@@ -363,22 +397,48 @@ export class PaymentService {
             }
         }
 
-        return prisma.payment.findMany({
-            where: whereClause,
-            include: {
-                student: {
-                    select: {
-                        id: true,
-                        name: true,
-                        phone: true,
-                        joinedAt: true,
+        if (!pagination) {
+            return prisma.payment.findMany({
+                where: whereClause,
+                include: PAYMENT_LIST_INCLUDE,
+                orderBy: [
+                    { dueDate: "asc" },
+                    { id: "asc" },
+                ],
+            });
+        }
+
+        const cursorWhere: Prisma.PaymentWhereInput | undefined = pagination.cursor
+            ? {
+                OR: [
+                    { dueDate: { gt: pagination.cursor.sort } },
+                    {
+                        dueDate: pagination.cursor.sort,
+                        id: { gt: pagination.cursor.id },
                     },
-                },
-            },
-            orderBy: {
-                dueDate: "asc",
-            },
-        });
+                ],
+            }
+            : undefined;
+
+        const limit = pagination.limit ?? DEFAULT_PAGE_SIZE;
+
+        const [rows, total] = await Promise.all([
+            prisma.payment.findMany({
+                where: cursorWhere ? { AND: [whereClause, cursorWhere] } : whereClause,
+                include: PAYMENT_LIST_INCLUDE,
+                orderBy: [
+                    { dueDate: "asc" },
+                    { id: "asc" },
+                ],
+                take: limit + 1,
+            }),
+            prisma.payment.count({ where: whereClause }),
+        ]);
+
+        return pageFromRows(rows, limit, total, payment => ({
+            sort: payment.dueDate,
+            id: payment.id,
+        }));
     }
 
     /**

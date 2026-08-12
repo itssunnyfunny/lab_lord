@@ -32,7 +32,7 @@ export class ImportPreviewService {
         sessionId: string,
         mode: CommitMode = "SAFE_PARTIAL"
     ): Promise<ImportPreview> {
-        const detail = await ImportSessionService.revalidateSession(userId, branchId, sessionId);
+        const detail = await ImportSessionService.getSessionDetail(userId, branchId, sessionId);
         const rows = detail.rows.map(row => {
             const issues = (Array.isArray(row.issues) ? row.issues : []) as ImportIssue[];
             const warnings = (Array.isArray(row.warnings) ? row.warnings : []) as ImportIssue[];

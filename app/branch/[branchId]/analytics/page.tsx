@@ -5,14 +5,14 @@ import { MainChart } from "@/components/snapshot/MainChart";
 import { SideStats } from "@/components/snapshot/SideStats";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/Badge";
-import { AppPanel, PageLoadingSkeleton, PageShell } from "@/components/ui";
+import { AppButton, AppPanel, ErrorState, PageLoadingSkeleton, PageShell } from "@/components/ui";
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
 import { cn } from "@/lib/utils";
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { AnalyticsPeriod, analytics, BranchSnapshot, TrendData } from "@/lib/api/analytics";
 import { branches } from "@/lib/api/branches";
 import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
-import { formErrorBannerClass } from "@/components/ui/formSurface";
+import { formWarningBannerClass } from "@/components/ui/formSurface";
 import {
     pageFilterShellClass,
     pageGridCardClass,
@@ -22,6 +22,10 @@ import {
     pageSectionDividerClass,
     pageSubtleTextClass,
 } from "@/components/ui/pageSurface";
+import { AlertCircle, RefreshCw } from "lucide-react";
+import type { ResourceState } from "@/types";
+import { failResourceRefresh, resourceData, resourceUpdatedAt, startResourceRefresh } from "@/lib/resourceState";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 
 type ChartKey = "revenue" | "collected" | "due" | "utilization" | "students";
 
@@ -29,10 +33,20 @@ interface BranchAnalyticsRow {
     id: string;
     branch: string;
     students: number;
-    util: string;
+    util: number;
     revenue: number;
     collected: number;
     due: number;
+}
+
+interface BranchAnalyticsPayload {
+    row: BranchAnalyticsRow;
+    snapshot: BranchSnapshot;
+    trends: TrendData;
+    period: AnalyticsPeriod;
+    chart: ChartKey;
+    from: string;
+    to: string;
 }
 
 type SummaryTone = "success" | "danger" | "info" | "neutral";
@@ -64,14 +78,6 @@ function getTrendWindow(period: AnalyticsPeriod, chart: ChartKey) {
     return { from: from.toISOString(), to: to.toISOString() };
 }
 
-function money(value: number) {
-    return new Intl.NumberFormat("en-IN", {
-        style: "currency",
-        currency: "INR",
-        maximumFractionDigits: 0,
-    }).format(value);
-}
-
 export default function AnalyticsPage({ params }: { params: Promise<{ branchId: string }> }) {
     const { branchId } = use(params);
 
@@ -83,18 +89,25 @@ export default function AnalyticsPage({ params }: { params: Promise<{ branchId: 
 }
 
 function AnalyticsContent({ branchId }: { branchId: string }) {
-    const [data, setData] = useState<BranchAnalyticsRow[]>([]);
-    const [snapshot, setSnapshot] = useState<BranchSnapshot | null>(null);
-    const [trends, setTrends] = useState<TrendData>([]);
     const [period, setPeriod] = useState<AnalyticsPeriod>("month");
     const [activeChart, setActiveChart] = useState<ChartKey>("revenue");
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [resource, setResource] = useState<ResourceState<BranchAnalyticsPayload>>({ status: "loading" });
+    const [refreshKey, setRefreshKey] = useState(0);
+    const { formatDateTime, formatNumber } = useUserPreferences();
+    const formatMoney = (value: number) => formatNumber(value, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
+    const formatPercent = (value: number, maximumFractionDigits = 0) => formatNumber(value / 100, {
+        style: "percent",
+        maximumFractionDigits,
+    });
 
     useEffect(() => {
+        let active = true;
         const loadAnalytics = async () => {
-            setLoading(true);
-            setError(null);
+            setResource(current => startResourceRefresh(current));
             try {
                 const { from, to } = getTrendWindow(period, activeChart);
                 const trendType = activeChart === "utilization" ? "seat" : activeChart === "students" ? "students" : "payment";
@@ -107,31 +120,53 @@ function AnalyticsContent({ branchId }: { branchId: string }) {
                         : analytics.getTrends(branchId, { from, to, type: trendType, period }),
                 ]);
 
-                setData([{
-                    id: branchDetails.id,
-                    branch: branchDetails.name,
-                    students: snap.totalStudents,
-                    util: `${snap.occupancyRate.toFixed(2)}%`,
-                    revenue: snap.monthlyRevenue,
-                    collected: snap.paidAmount,
-                    due: snap.dueAmount,
-                }]);
-                setSnapshot(snap);
-                setTrends(trendData);
+                if (!active) return;
+                setResource({
+                    status: "success",
+                    updatedAt: new Date().toISOString(),
+                    data: {
+                        row: {
+                            id: branchDetails.id,
+                            branch: branchDetails.name,
+                            students: snap.totalStudents,
+                            util: snap.occupancyRate,
+                            revenue: snap.monthlyRevenue,
+                            collected: snap.paidAmount,
+                            due: snap.dueAmount,
+                        },
+                        snapshot: snap,
+                        trends: trendData,
+                        period,
+                        chart: activeChart,
+                        from,
+                        to,
+                    },
+                });
             } catch (loadError) {
                 console.error("Failed to load analytics", loadError);
-                setError("Failed to load analytics.");
-            } finally {
-                setLoading(false);
+                if (active) {
+                    setResource(current => failResourceRefresh(
+                        current,
+                        "The requested analytics view could not be refreshed."
+                    ));
+                }
             }
         };
-        loadAnalytics();
-    }, [branchId, period, activeChart]);
+        void loadAnalytics();
+        return () => { active = false; };
+    }, [activeChart, branchId, period, refreshKey]);
 
-    const chartConfig = CHARTS.find(chart => chart.key === activeChart) ?? CHARTS[0];
+    const payload = resourceData(resource);
+    const displayedPeriod = payload?.period ?? period;
+    const displayedChart = payload?.chart ?? activeChart;
+    const snapshot = payload?.snapshot;
+    const trends = payload?.trends ?? [];
+    const updatedAt = resourceUpdatedAt(resource);
 
-    const chartData = useMemo(() => {
-        if (activeChart === "students") {
+    const chartConfig = CHARTS.find(chart => chart.key === displayedChart) ?? CHARTS[0];
+
+    const chartData = (() => {
+        if (displayedChart === "students") {
             if (!snapshot) return [];
             return [
                 { date: "Active", value: snapshot.activeStudents, category: "Active" },
@@ -139,49 +174,86 @@ function AnalyticsContent({ branchId }: { branchId: string }) {
             ];
         }
 
-        if (activeChart === "utilization") {
+        if (displayedChart === "utilization") {
             return trends;
         }
 
-        const category = activeChart === "revenue"
+        const category = displayedChart === "revenue"
             ? "Revenue"
-            : activeChart === "collected"
+            : displayedChart === "collected"
                 ? "Collected"
                 : "Pending";
 
         return trends.filter(item => item.category === category);
-    }, [activeChart, snapshot, trends]);
+    })();
 
-    const valueFormatter = activeChart === "utilization"
-        ? (value: number) => `${value.toFixed(0)}%`
-        : activeChart === "students"
-            ? (value: number) => value.toLocaleString("en-IN")
-            : money;
+    const valueFormatter = displayedChart === "utilization"
+        ? (value: number) => formatPercent(value)
+        : displayedChart === "students"
+            ? (value: number) => formatNumber(value)
+            : formatMoney;
+    const chartContext = displayedChart === "students"
+        ? "Current active and inactive student counts"
+        : displayedPeriod === "month" && ["revenue", "collected", "due"].includes(displayedChart)
+            ? `${chartConfig.label} trend for the current month`
+            : `${chartConfig.label} trend for the last 30 days`;
 
-    if (loading && !snapshot) {
+    if (resource.status === "loading" && !payload) {
         return <PageLoadingSkeleton label="Loading branch analytics" variant="analytics" />;
     }
 
+    if (resource.status === "error") {
+        return (
+            <ErrorState
+                title="Branch analytics unavailable"
+                description={resource.message}
+                onRetry={resource.retryable ? () => setRefreshKey(key => key + 1) : undefined}
+            />
+        );
+    }
+
+    if (!payload || !snapshot) {
+        return <ErrorState title="Branch analytics unavailable" description="No verified analytics snapshot was returned." />;
+    }
+
     return (
-        <div className="p-4 md:p-8">
-            <PageShell>
+        <PageShell>
             <PageHeader
                 title="Analytics & Trends"
                 subtitle="Branch performance with corrected revenue, collections, dues, and utilization."
             />
 
-            {error && (
-                <div className={cn("px-4 py-3 text-sm", formErrorBannerClass)}>
-                    {error}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className={pageMutedTextClass}>
+                    Updated {updatedAt ? formatDateTime(updatedAt) : "recently"}
+                </span>
+                <AppButton
+                    variant="quiet"
+                    size="sm"
+                    icon={RefreshCw}
+                    isLoading={resource.status === "loading"}
+                    onClick={() => setRefreshKey(key => key + 1)}
+                >
+                    Refresh
+                </AppButton>
+            </div>
+
+            {(resource.status === "stale" || (resource.status === "loading" && resource.previous)) && (
+                <div role="status" className={cn("flex items-start gap-2 px-4 py-3 text-sm", formWarningBannerClass)}>
+                    <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                    {resource.status === "stale"
+                        ? `${resource.reason} Showing ${CHARTS.find(item => item.key === displayedChart)?.label ?? displayedChart} / ${PERIODS.find(item => item.key === displayedPeriod)?.label ?? displayedPeriod} from the last verified response.`
+                        : `Loading ${CHARTS.find(item => item.key === activeChart)?.label ?? activeChart} / ${PERIODS.find(item => item.key === period)?.label ?? period}. Showing the previous verified selection until it finishes.`}
                 </div>
             )}
 
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                <div className={cn("inline-flex w-fit p-1", pageFilterShellClass)}>
+                <div role="group" aria-label="Analytics period" className={cn("inline-flex w-fit p-1", pageFilterShellClass)}>
                     {PERIODS.map(item => (
                         <button
                             key={item.key}
                             type="button"
+                            aria-pressed={period === item.key}
                             onClick={() => setPeriod(item.key)}
                             className={cn(
                                 "rounded-[var(--ui-radius-control)] px-4 py-2 text-sm font-medium transition-colors",
@@ -195,11 +267,12 @@ function AnalyticsContent({ branchId }: { branchId: string }) {
                     ))}
                 </div>
 
-                <div className="inline-flex flex-wrap gap-2">
+                <div role="group" aria-label="Chart metric" className="inline-flex flex-wrap gap-2">
                     {CHARTS.map(item => (
                         <button
                             key={item.key}
                             type="button"
+                            aria-pressed={activeChart === item.key}
                             onClick={() => setActiveChart(item.key)}
                             className={cn(
                                 "rounded-[var(--ui-radius-control)] border px-3 py-2 text-xs font-semibold transition-colors",
@@ -214,18 +287,20 @@ function AnalyticsContent({ branchId }: { branchId: string }) {
                 </div>
             </div>
 
-            <KpiRow snapshot={snapshot ?? undefined} branchId={branchId} period={period} />
+            <KpiRow snapshot={snapshot} branchId={branchId} period={displayedPeriod} />
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <MainChart
                     data={chartData}
-                    title={`${chartConfig.label} ${activeChart === "students" ? "Snapshot" : "Trend"}`}
-                    variant={activeChart === "students" ? "bar" : "area"}
+                    title={`${chartConfig.label} ${displayedChart === "students" ? "Snapshot" : "Trend"}`}
+                    variant={displayedChart === "students" ? "bar" : "area"}
                     color={chartConfig.color}
                     valueFormatter={valueFormatter}
                     emptyLabel="No data available for this selection."
+                    contextLabel={chartContext}
+                    dataLabel={displayedChart === "students" ? "Student status" : "Date"}
                 />
-                <SideStats snapshot={snapshot ?? undefined} period={period} />
+                <SideStats snapshot={snapshot} period={displayedPeriod} />
             </div>
 
             <AppPanel
@@ -233,20 +308,20 @@ function AnalyticsContent({ branchId }: { branchId: string }) {
                 description="A compact snapshot of the current branch numbers."
                 contentClassName="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"
             >
-                {data.map(item => (
-                    <BranchSummaryCard key={`${item.id}-students`} label="Students" value={item.students.toLocaleString("en-IN")} detail={item.branch} tone="info" />
+                {[payload.row].map(item => (
+                    <BranchSummaryCard key={`${item.id}-students`} label="Students" value={formatNumber(item.students)} detail={item.branch} tone="info" />
                 ))}
-                {data.map(item => (
-                    <BranchSummaryCard key={`${item.id}-util`} label="Seat utilization" value={item.util} detail="Current occupancy" tone="neutral" badge={item.util} />
+                {[payload.row].map(item => (
+                    <BranchSummaryCard key={`${item.id}-util`} label="Seat utilization" value={formatPercent(item.util, 2)} detail="Current occupancy" tone="neutral" badge={formatPercent(item.util, 2)} />
                 ))}
-                {data.map(item => (
-                    <BranchSummaryCard key={`${item.id}-revenue`} label="Revenue" value={money(item.revenue)} detail={period === "month" ? "This month" : "All time"} tone="neutral" />
+                {[payload.row].map(item => (
+                    <BranchSummaryCard key={`${item.id}-revenue`} label="Revenue" value={formatMoney(item.revenue)} detail={displayedPeriod === "month" ? "This month" : "All time"} tone="neutral" />
                 ))}
-                {data.map(item => (
-                    <BranchSummaryCard key={`${item.id}-collected`} label="Collected" value={money(item.collected)} detail="Received payments" tone="success" />
+                {[payload.row].map(item => (
+                    <BranchSummaryCard key={`${item.id}-collected`} label="Collected" value={formatMoney(item.collected)} detail="Received payments" tone="success" />
                 ))}
-                {data.map(item => (
-                    <BranchSummaryCard key={`${item.id}-due`} label="All due" value={money(item.due)} detail="Open receivables" tone="danger" />
+                {[payload.row].map(item => (
+                    <BranchSummaryCard key={`${item.id}-due`} label="All due" value={formatMoney(item.due)} detail="Open receivables" tone="danger" />
                 ))}
             </AppPanel>
 
@@ -261,8 +336,7 @@ function AnalyticsContent({ branchId }: { branchId: string }) {
                         ))}
                 </AppPanel>
             )}
-            </PageShell>
-        </div>
+        </PageShell>
     );
 }
 
@@ -303,8 +377,13 @@ function ShiftBreakdownCard({
 }: {
     shift: NonNullable<BranchSnapshot["seatDetails"]>["shifts"][number];
 }) {
+    const { formatNumber } = useUserPreferences();
     const percent = Math.min(Math.max(shift.occupancyPercent, 0), 100);
     const available = Math.max(shift.capacity - shift.used, 0);
+    const formattedPercent = formatNumber(shift.occupancyPercent / 100, {
+        style: "percent",
+        maximumFractionDigits: 0,
+    });
     const tone = percent >= 90 ? "danger" : percent >= 70 ? "warning" : "success";
     const barClass = tone === "danger"
         ? "bg-[color:var(--ui-tone-danger-progress)]"
@@ -318,19 +397,19 @@ function ShiftBreakdownCard({
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold text-white">{shift.shiftName}</h3>
                     <p className={cn("mt-1 text-xs", pageSubtleTextClass)}>
-                        {available} available of {shift.capacity}
+                        {formatNumber(available)} available of {formatNumber(shift.capacity)}
                     </p>
                 </div>
                 <Badge variant={tone === "danger" ? "danger" : tone === "warning" ? "warning" : "success"}>
-                    {shift.occupancyPercent.toFixed(0)}%
+                    {formattedPercent}
                 </Badge>
             </div>
 
             <div className="mt-5 flex items-end justify-between gap-4">
                 <div>
                     <p className="text-2xl font-semibold tracking-tight text-white">
-                        {shift.used}
-                        <span className={cn("text-sm font-medium", pageMutedTextClass)}> / {shift.capacity}</span>
+                        {formatNumber(shift.used)}
+                        <span className={cn("text-sm font-medium", pageMutedTextClass)}> / {formatNumber(shift.capacity)}</span>
                     </p>
                     <p className={cn("mt-1 text-xs", pageMutedTextClass)}>Seats used</p>
                 </div>

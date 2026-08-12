@@ -19,7 +19,7 @@ export function FieldError({
     if (!error) return null;
 
     return (
-        <p id={id} className={cn("mt-1.5 flex items-start gap-1.5 text-xs text-[color:var(--ui-form-error-text)]", className)}>
+        <p id={id} role="alert" className={cn("mt-1.5 flex items-start gap-1.5 text-xs text-[color:var(--ui-form-error-text)]", className)}>
             <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
             <span>{error}</span>
         </p>

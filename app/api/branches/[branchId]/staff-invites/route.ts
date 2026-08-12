@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { StaffInviteService } from "@/services/staffInvite.service";
 import { getSessionUser } from "@/lib/auth";
 import { StaffRole } from "@/types";
+import { validateOptionalEmail } from "@/lib/formValidation";
 
 function isStaffRole(role: unknown): role is StaffRole {
     return role === StaffRole.MANAGER || role === StaffRole.STAFF;
@@ -68,10 +69,18 @@ export async function POST(
 
         const body = await req.json().catch(() => ({}));
         const role = body.role;
+        const invitedEmailResult = validateOptionalEmail(body.email, "Invite email");
 
         if (!isStaffRole(role)) {
             return NextResponse.json(
                 { error: "Invalid role. Must be MANAGER or STAFF." },
+                { status: 400 }
+            );
+        }
+
+        if (!invitedEmailResult.ok || !invitedEmailResult.value) {
+            return NextResponse.json(
+                { error: invitedEmailResult.ok ? "Invite email is required." : invitedEmailResult.error },
                 { status: 400 }
             );
         }
@@ -84,7 +93,13 @@ export async function POST(
             );
         }
 
-        const invite = await StaffInviteService.createInvite(user.id, branchId, role, ttlDays);
+        const invite = await StaffInviteService.createInvite(
+            user.id,
+            branchId,
+            role,
+            invitedEmailResult.value,
+            ttlDays
+        );
         const origin = new URL(req.url).origin;
 
         return NextResponse.json(toInviteResponse(invite, origin), { status: 201 });

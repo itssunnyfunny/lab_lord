@@ -39,7 +39,7 @@ describe("billing plan catalog", () => {
       "Multiple branches, each billed separately",
       "Staff invitations, roles and permission controls",
       "Branch and cross-branch advanced analytics",
-      "AI insights, reports and message drafting",
+      "AI reports and message drafting",
     ];
 
     expect(basic.capabilities.map(capability => capability.label)).toEqual(labels);

@@ -2,7 +2,7 @@
 
 import { cn } from "@/lib/utils";
 import { MoreVertical } from "lucide-react";
-import { type CSSProperties, type ElementType, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, type ElementType, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 export interface RowActionsMenuItem {
@@ -11,6 +11,7 @@ export interface RowActionsMenuItem {
     onClick: () => void;
     variant?: "default" | "danger" | "warning";
     disabled?: boolean;
+    description?: string;
 }
 
 interface RowActionsMenuProps {
@@ -40,8 +41,26 @@ export function RowActionsMenu({
         visibility: "hidden",
     });
 
-    const triggerRef = useRef<HTMLDivElement>(null);
+    const triggerRef = useRef<HTMLButtonElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
+    const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+    const menuId = useId();
+
+    const enabledIndexes = useMemo(
+        () => actions
+            .map((action, index) => action.disabled ? -1 : index)
+            .filter(index => index >= 0),
+        [actions]
+    );
+
+    const focusItem = useCallback((index: number) => {
+        itemRefs.current[index]?.focus();
+    }, []);
+
+    const closeAndRestoreFocus = useCallback(() => {
+        setOpen(false);
+        queueMicrotask(() => triggerRef.current?.focus());
+    }, []);
 
     const updatePosition = useCallback(() => {
         const trigger = triggerRef.current?.getBoundingClientRect();
@@ -79,10 +98,16 @@ export function RowActionsMenu({
         if (!open) return;
 
         updatePosition();
-        const frame = window.requestAnimationFrame(updatePosition);
+        const frame = window.requestAnimationFrame(() => {
+            updatePosition();
+            if (!menuRef.current?.contains(document.activeElement)) {
+                const firstEnabled = enabledIndexes[0];
+                if (firstEnabled !== undefined) focusItem(firstEnabled);
+            }
+        });
 
         return () => window.cancelAnimationFrame(frame);
-    }, [open, updatePosition]);
+    }, [enabledIndexes, focusItem, open, updatePosition]);
 
     useEffect(() => {
         if (!open) return;
@@ -98,7 +123,10 @@ export function RowActionsMenu({
         };
 
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "Escape") setOpen(false);
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeAndRestoreFocus();
+            }
         };
 
         document.addEventListener("mousedown", handlePointerDown);
@@ -112,7 +140,28 @@ export function RowActionsMenu({
             window.removeEventListener("resize", updatePosition);
             window.removeEventListener("scroll", updatePosition, true);
         };
-    }, [open, updatePosition]);
+    }, [closeAndRestoreFocus, open, updatePosition]);
+
+    const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (enabledIndexes.length === 0) return;
+        const current = itemRefs.current.findIndex(item => item === document.activeElement);
+        const currentPosition = Math.max(0, enabledIndexes.indexOf(current));
+
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            const delta = event.key === "ArrowDown" ? 1 : -1;
+            const nextPosition = (currentPosition + delta + enabledIndexes.length) % enabledIndexes.length;
+            focusItem(enabledIndexes[nextPosition]);
+        } else if (event.key === "Home") {
+            event.preventDefault();
+            focusItem(enabledIndexes[0]);
+        } else if (event.key === "End") {
+            event.preventDefault();
+            focusItem(enabledIndexes[enabledIndexes.length - 1]);
+        } else if (event.key === "Tab") {
+            setOpen(false);
+        }
+    };
 
     if (actions.length === 0) return null;
 
@@ -122,12 +171,14 @@ export function RowActionsMenu({
                 ref={menuRef}
                 style={menuStyle}
                 className={cn(
-                    "z-[120] max-h-[min(20rem,calc(100dvh-1rem))] overflow-y-auto rounded-[var(--ui-menu-radius)] border border-[color:var(--ui-menu-border)] bg-[color:var(--ui-menu-bg)] py-1 shadow-[var(--ui-menu-shadow)] animate-in fade-in zoom-in-95 duration-100",
+                    "z-[120] max-h-[min(20rem,calc(100dvh-1rem))] overflow-y-auto rounded-[var(--ui-menu-radius)] border border-[color:var(--ui-menu-border)] bg-[color:var(--ui-menu-bg)] py-1 shadow-[var(--ui-menu-shadow)] ui-dialog-enter",
                     menuWidthClassName,
                     menuClassName
                 )}
                 role="menu"
                 aria-label={buttonLabel}
+                id={menuId}
+                onKeyDown={handleMenuKeyDown}
             >
                 {actions.map((action, index) => {
                     const Icon = action.icon;
@@ -135,16 +186,17 @@ export function RowActionsMenu({
                     return (
                         <button
                             key={`${action.label}-${index}`}
+                            ref={element => { itemRefs.current[index] = element; }}
                             type="button"
                             disabled={action.disabled}
                             role="menuitem"
                             onClick={() => {
                                 if (action.disabled) return;
-                                setOpen(false);
+                                closeAndRestoreFocus();
                                 action.onClick();
                             }}
                             className={cn(
-                                "flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                                "flex min-h-11 w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                                 action.variant === "danger"
                                     ? "text-[color:var(--ui-menu-item-danger-text)] hover:bg-[color:var(--ui-menu-item-danger-hover-bg)]"
                                     : action.variant === "warning"
@@ -153,7 +205,10 @@ export function RowActionsMenu({
                             )}
                         >
                             <Icon size={14} className="shrink-0" />
-                            <span className="min-w-0 truncate">{action.label}</span>
+                            <span className="min-w-0">
+                                <span className="block truncate">{action.label}</span>
+                                {action.description ? <span className="mt-0.5 block text-xs leading-4 opacity-80">{action.description}</span> : null}
+                            </span>
                         </button>
                     );
                 })}
@@ -163,10 +218,22 @@ export function RowActionsMenu({
         : null;
 
     return (
-        <div ref={triggerRef} className="flex justify-end">
+        <div className="flex justify-end">
             <button
+                ref={triggerRef}
                 type="button"
                 onClick={() => setOpen(value => !value)}
+                onKeyDown={event => {
+                    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                    event.preventDefault();
+                    setOpen(true);
+                    queueMicrotask(() => {
+                        const index = event.key === "ArrowUp"
+                            ? enabledIndexes[enabledIndexes.length - 1]
+                            : enabledIndexes[0];
+                        if (index !== undefined) focusItem(index);
+                    });
+                }}
                 className={cn(
                     "flex h-8 w-8 cursor-pointer items-center justify-center rounded-[var(--ui-radius-control)] text-[color:var(--ui-menu-trigger-text)] transition-all hover:bg-[color:var(--ui-menu-trigger-hover-bg)] hover:text-[color:var(--ui-menu-trigger-hover-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]",
                     open && "bg-[color:var(--ui-menu-trigger-active-bg)] text-[color:var(--ui-menu-trigger-active-text)]",
@@ -176,6 +243,7 @@ export function RowActionsMenu({
                 aria-label={buttonLabel}
                 aria-expanded={open}
                 aria-haspopup="menu"
+                aria-controls={open ? menuId : undefined}
             >
                 <ButtonIcon size={16} />
             </button>

@@ -2,8 +2,16 @@ import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 import { config, isProtectedRoute } from "@/proxy";
+import { clerkRouting } from "@/lib/clerkRouting";
 
 describe("proxy matcher", () => {
+  it("keeps protected-route authentication on the local themed entry routes", () => {
+    expect(clerkRouting).toEqual({
+      signInUrl: "/sign-in",
+      signUpUrl: "/sign-up",
+    });
+  });
+
   it.each([
     "https://lablords.in/sitemap.xml",
     "https://lablords.in/robots.txt",
@@ -32,8 +40,6 @@ describe("proxy matcher", () => {
     "https://lablords.in/org/example",
     "https://lablords.in/org/example/settings",
     "https://lablords.in/onboarding",
-    "https://lablords.in/invite",
-    "https://lablords.in/invite/example-token",
   ])("runs Clerk and requires authentication for private route %s", url => {
     expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true);
     expect(isProtectedRoute(new NextRequest(url))).toBe(true);
@@ -55,6 +61,8 @@ describe("proxy matcher", () => {
     "https://lablords.in/software/fee-reminder",
     "https://lablords.in/software/coaching-management",
     "https://lablords.in/software/tuition-management",
+    "https://lablords.in/invite",
+    "https://lablords.in/invite/example-token",
   ])("keeps public page %s accessible without authentication", url => {
     expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true);
     expect(isProtectedRoute(new NextRequest(url))).toBe(false);

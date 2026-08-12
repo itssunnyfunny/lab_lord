@@ -128,7 +128,7 @@ describe("SeatService Integration", () => {
       const student = await createStudent({ branchId: branch.id });
       await createAllocation({ seatId: seat.id, studentId: student.id, shiftId: shift.id });
 
-      const seats = await SeatService.listSeats(user.id, branch.id);
+      const { items: seats } = await SeatService.listSeats(user.id, branch.id);
       const found = seats.find(s => s.id === seat.id);
       expect(found).toBeDefined();
       expect(found!.seatAllocations).toHaveLength(1);
@@ -140,20 +140,36 @@ describe("SeatService Integration", () => {
       await createStaff({ userId: staffUser.id, branchId: branch.id, role: "STAFF" });
       const seat = await createSeat({ branchId: branch.id, label: "S1" });
 
-      const seats = await SeatService.listSeats(staffUser.id, branch.id);
+      const { items: seats } = await SeatService.listSeats(staffUser.id, branch.id);
 
       expect(seats.some(s => s.id === seat.id)).toBe(true);
     });
 
-    it("sorts labels naturally", async () => {
+    it("paginates with stable createdAt and id ordering", async () => {
       const { user, branch } = await createTestWorld();
-      await Promise.all(
-        ["A10", "A2", "A1"].map(label => createSeat({ branchId: branch.id, label }))
-      );
+      await testPrisma.seat.updateMany({
+        where: { branchId: branch.id },
+        data: { createdAt: new Date("2026-01-01T00:00:00.000Z") },
+      });
+      const createdAt = new Date("2026-02-01T00:00:00.000Z");
+      await testPrisma.seat.createMany({
+        data: [
+          { id: "seat_a", branchId: branch.id, label: "A1", createdAt },
+          { id: "seat_b", branchId: branch.id, label: "A2", createdAt },
+        ],
+      });
 
-      const seats = await SeatService.listSeats(user.id, branch.id);
+      const first = await SeatService.listSeats(user.id, branch.id, { limit: 1 });
+      expect(first.items.map(seat => seat.id)).toEqual(["seat_b"]);
+      expect(first.nextCursor).not.toBeNull();
+      expect(first.total).toBe(3);
 
-      expect(seats.map(seat => seat.label).filter(label => label.startsWith("A"))).toEqual(["A1", "A2", "A10"]);
+      const { decodeDateIdCursor } = await import("@/lib/cursorPagination");
+      const second = await SeatService.listSeats(user.id, branch.id, {
+        limit: 1,
+        cursor: decodeDateIdCursor(first.nextCursor),
+      });
+      expect(second.items.map(seat => seat.id)).toEqual(["seat_a"]);
     });
 
     it("excludes ended allocations (endDate ≠ null)", async () => {
@@ -168,7 +184,7 @@ describe("SeatService Integration", () => {
         endDate: new Date("2026-01-01"),
       });
 
-      const seats = await SeatService.listSeats(user.id, branch.id);
+      const { items: seats } = await SeatService.listSeats(user.id, branch.id);
       const found = seats.find(s => s.id === seat.id);
       // Ended allocation must not appear in the active list
       expect(found!.seatAllocations).toHaveLength(0);
@@ -383,6 +399,54 @@ describe("SeatService Integration", () => {
       expect(entry!.occupied).toBe(false);
       expect(entry!.occupiedBy).toBeNull();
     });
+
+    it("blocks active non-component shifts that overlap a component", async () => {
+      const { user, branch, shift: morning } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "17:00",
+        endTime: "22:00",
+      });
+      const fullDay = await createShift({
+        branchId: branch.id,
+        name: "Open all day",
+        startTime: null,
+        endTime: null,
+      });
+      const overnight = await createShift({
+        branchId: branch.id,
+        name: "Overnight",
+        startTime: "22:00",
+        endTime: "07:00",
+      });
+      const multiShift = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          price: 0,
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+      const fullDaySeat = await createSeat({ branchId: branch.id, label: "FD" });
+      const overnightSeat = await createSeat({ branchId: branch.id, label: "ON" });
+      const student = await createStudent({ branchId: branch.id, name: "Conflict" });
+      await createAllocation({ seatId: fullDaySeat.id, studentId: student.id, shiftId: fullDay.id });
+      await createAllocation({ seatId: overnightSeat.id, studentId: student.id, shiftId: overnight.id });
+
+      const map = await SeatService.getSeatMap(user.id, branch.id, morning.id, multiShift.id);
+
+      expect(map.seats.find(seat => seat.seatId === fullDaySeat.id)?.occupied).toBe(true);
+      expect(map.seats.find(seat => seat.seatId === overnightSeat.id)?.occupied).toBe(true);
+    });
   });
 
   // ─── getShiftsCapacity ─────────────────────────────────────────────────────
@@ -441,6 +505,83 @@ describe("SeatService Integration", () => {
       const eveningEntry = capacities.find(c => c.shiftId === evening.id);
       // Evening does NOT overlap Morning
       expect(eveningEntry!.studentAlreadyAllocated).toBe(false);
+    });
+  });
+
+  describe("getShiftsCapacityWithMulti", () => {
+    it("uses the physical-seat intersection instead of component minimums", async () => {
+      const { user, branch, shift: morning, seat: morningSeat } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "17:00",
+        endTime: "22:00",
+      });
+      const eveningSeat = await createSeat({ branchId: branch.id, label: "E1" });
+      const morningStudent = await createStudent({ branchId: branch.id, name: "Morning student" });
+      const eveningStudent = await createStudent({ branchId: branch.id, name: "Evening student" });
+      await createAllocation({ seatId: morningSeat.id, studentId: morningStudent.id, shiftId: morning.id });
+      await createAllocation({ seatId: eveningSeat.id, studentId: eveningStudent.id, shiftId: evening.id });
+      const multiShift = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          price: 0,
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+
+      const capacities = await SeatService.getShiftsCapacityWithMulti(user.id, branch.id);
+      const fullDay = capacities.find(item => item.multiShiftId === multiShift.id);
+
+      expect(fullDay).toMatchObject({ totalSeats: 2, used: 2, available: 0, isFull: true });
+    });
+
+    it("honors excluded allocation IDs in the shared availability calculation", async () => {
+      const { user, branch, shift: morning, seat } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "17:00",
+        endTime: "22:00",
+      });
+      const student = await createStudent({ branchId: branch.id });
+      const allocation = await createAllocation({ seatId: seat.id, studentId: student.id, shiftId: morning.id });
+      const multiShift = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          price: 0,
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+
+      const capacities = await SeatService.getShiftsCapacityWithMulti(
+        user.id,
+        branch.id,
+        student.id,
+        [allocation.id],
+      );
+      const fullDay = capacities.find(item => item.multiShiftId === multiShift.id);
+
+      expect(fullDay).toMatchObject({ used: 0, available: 1, isFull: false });
+      expect(fullDay?.studentAlreadyAllocated).toBe(false);
     });
   });
 });

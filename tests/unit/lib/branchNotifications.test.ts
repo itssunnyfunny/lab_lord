@@ -17,8 +17,11 @@ describe("buildBranchNotifications", () => {
             branchId,
             access: { permissions: permissions(["view_payments"]) },
             overdue: {
-                count: 2,
-                payments: [{
+                total: 2,
+                nextCursor: null,
+                items: [{
+                    paymentId: "payment_1",
+                    studentId: "student_1",
                     studentName: "Rahul Patel",
                     amount: 1200,
                     dueDate: "2026-01-10T00:00:00.000Z",
@@ -30,7 +33,7 @@ describe("buildBranchNotifications", () => {
         expect(notifications[0]).toMatchObject({
             kind: "overdue_payments",
             severity: "warning",
-            href: `/branch/${branchId}/overdue`,
+            href: `/branch/${branchId}/payments?paymentId=payment_1&studentId=student_1&status=DUE`,
             count: 2,
         });
         expect(notifications[0].readKey).toContain("overdue_payments:2");
@@ -41,7 +44,7 @@ describe("buildBranchNotifications", () => {
         const notifications = buildBranchNotifications({
             branchId,
             access: { permissions: permissions(["students"]) },
-            overdue: { count: 3 },
+            overdue: { total: 3, nextCursor: null, items: [] },
             staffInvites: [{ id: "invite_1", role: "STAFF", expiresAt: "2026-02-01T00:00:00.000Z" }],
         });
 
@@ -67,7 +70,7 @@ describe("buildBranchNotifications", () => {
         expect(notifications[0]).toMatchObject({
             kind: "students_without_seats",
             title: "1 active student without a seat",
-            href: `/branch/${branchId}/allocations`,
+            href: `/branch/${branchId}/allocations?studentId=student_2`,
         });
     });
 
@@ -115,16 +118,18 @@ describe("buildBranchNotifications", () => {
             branchId,
             access: { permissions: permissions(["view_payments"]) },
             overdue: {
-                count: 1,
-                payments: [{ paymentId: "payment_1", studentName: "Rahul", amount: 1200 }],
+                total: 1,
+                nextCursor: null,
+                items: [{ paymentId: "payment_1", studentName: "Rahul", amount: 1200 }],
             },
         });
         const second = buildBranchNotifications({
             branchId,
             access: { permissions: permissions(["view_payments"]) },
             overdue: {
-                count: 2,
-                payments: [
+                total: 2,
+                nextCursor: null,
+                items: [
                     { paymentId: "payment_1", studentName: "Rahul", amount: 1200 },
                     { paymentId: "payment_2", studentName: "Aarav", amount: 900 },
                 ],

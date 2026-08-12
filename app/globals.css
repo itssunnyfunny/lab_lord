@@ -1,34 +1,109 @@
 @import "tailwindcss";
-
 @import "../styles/tokens.css";
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@plugin "tailwind-scrollbar";
+
+/* Tailwind v4 no longer discovers JavaScript configuration files automatically.
+   Keep the application theme in CSS so the utility contract and design tokens
+   are compiled from the same source of truth. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: var(--font-inter), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: var(--font-geist-mono), "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --font-display: var(--font-manrope), var(--font-inter), "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+
+  --color-app: var(--bg-app);
+  --color-surface: var(--bg-surface);
+  --color-card: var(--bg-card);
+  --color-cardHover: var(--bg-card-hover);
+  --color-borderSubtle: var(--border-subtle);
+
+  --color-primary: var(--accent-primary);
+  --color-secondary: var(--accent-secondary);
+  --color-success: var(--accent-success);
+  --color-warning: var(--accent-warning);
+  --color-danger: var(--accent-danger);
+  --color-cyan: var(--accent-cyan);
+
+  --color-textPrimary: var(--text-primary);
+  --color-textSecondary: var(--text-secondary);
+  --color-textMuted: var(--text-muted);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-card: 0 8px 32px 0 rgb(0 0 0 / 36%);
+
+  --animate-pulse-slow: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-shimmer: shimmer 2s linear infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes ui-dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.ui-dialog-enter {
+  animation: ui-dialog-enter 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
 
 html,
 body {
   background: var(--bg-app);
   color: var(--text-primary);
-  font-family: var(--font-ops);
+  font-family: var(--font-inter), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 .font-sans {
-  font-family: var(--font-ops);
+  font-family: var(--font-inter), "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 h1,
 h2,
 h3,
 .font-display {
-  font-family: var(--font-ops-display);
+  font-family: var(--font-manrope), var(--font-inter), "Segoe UI", ui-sans-serif, system-ui, sans-serif;
 }
 
-button,
+html.dark {
+  color-scheme: dark;
+}
+
 input,
 select,
 textarea {
   font-family: inherit;
+}
+
+nav,
+button,
+[role="button"] {
+  font-family: var(--font-manrope), var(--font-inter), "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+}
+
+code,
+kbd,
+samp,
+pre,
+.font-mono,
+.tabular-nums {
+  font-family: var(--font-geist-mono), "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 }
 
 select {
@@ -43,6 +118,14 @@ select optgroup {
 
 select option:disabled {
   color: var(--ui-form-input-placeholder);
+}
+
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
 }
 
 * {
@@ -307,6 +390,20 @@ textarea:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .landing-reveal,
   .landing-dashboard-drift,
   .landing-scanline,
@@ -333,9 +430,28 @@ textarea:disabled {
   }
 }
 
-/* Custom Scrollbar - Advanced Variation */
+/* Persisted workspace density is applied to shared high-volume views. */
+html[data-density="compact"] {
+  --ui-page-gap: 1rem;
+}
+
+html[data-density="compact"] .ui-density-cell {
+  padding-top: 0.625rem;
+  padding-bottom: 0.625rem;
+}
+
+html[data-density="compact"] [data-density-card="true"] {
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+
+/* Quiet scrollbars: visible enough to find, brighter only while interacting. */
+html {
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
 ::-webkit-scrollbar {
-  width: 14px; /* Wider track for easier clicking */
+  width: 14px;
   height: 14px;
 }
 
@@ -344,17 +460,14 @@ textarea:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  /* Looks thin but has a wider clickable area */
   background-color: rgba(255, 255, 255, 0.1);
   border-radius: 10px;
-  border: 4px solid rgba(0, 0, 0, 0);
+  border: 4px solid transparent;
   background-clip: padding-box;
   transition: background-color 0.2s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover,
 ::-webkit-scrollbar-thumb:active {
-  background-color: var(--accent-primary);
-  /* Glowing effect when interacting */
-  box-shadow: inset 0 0 0 10px var(--accent-primary);
+  background-color: var(--ui-accent);
 }

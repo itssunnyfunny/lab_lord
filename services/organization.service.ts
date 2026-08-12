@@ -115,10 +115,7 @@ export class OrganizationService {
         userId: string,
         data: UpdateOrganizationSettingsDto
     ) {
-        // Ownership check
-        const org = await prisma.organization.findUnique({ where: { id }, select: { ownerId: true } });
-        if (!org) throw new Error("Organization not found");
-        if (org.ownerId !== userId) throw new Error("Unauthorized");
+        await this.assertOwnerCanWrite(id, userId);
 
         return await prisma.organization.update({
             where: { id },
@@ -129,8 +126,16 @@ export class OrganizationService {
     }
 
     static async updateSettings(id: string, userId: string, body: unknown) {
+        await this.assertOwnerCanWrite(id, userId);
         const data = this.parseSettingsPayload(body);
-        return this.updateOrganization(id, userId, data);
+        return prisma.organization.update({ where: { id }, data });
+    }
+
+    private static async assertOwnerCanWrite(id: string, userId: string) {
+        const org = await prisma.organization.findUnique({ where: { id }, select: { ownerId: true } });
+        if (!org) throw new Error("Organization not found");
+        if (org.ownerId !== userId) throw new Error("Unauthorized");
+        await EntitlementService.assertOrganizationWritable(id);
     }
 
     static async isOwner(organizationId: string, userId: string): Promise<boolean> {

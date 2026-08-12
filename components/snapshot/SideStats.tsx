@@ -2,15 +2,9 @@
 
 import { AppPanel } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { AnalyticsPeriod, BranchSnapshot } from "@/lib/api/analytics";
 import { IndianRupee, Wallet } from "lucide-react";
-
-const formatMoney = (amount: number) =>
-    new Intl.NumberFormat("en-IN", {
-        style: "currency",
-        currency: "INR",
-        maximumFractionDigits: 0,
-    }).format(amount);
 
 export function SideStats({
     snapshot,
@@ -19,6 +13,13 @@ export function SideStats({
     snapshot?: BranchSnapshot;
     period?: AnalyticsPeriod;
 }) {
+    const { formatNumber } = useUserPreferences();
+    const formatMoney = (amount: number) => formatNumber(amount, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
+
     if (!snapshot) {
         return (
             <AppPanel className="col-span-1 flex h-[400px] flex-col" title="Revenue Summary" contentClassName="min-h-0 flex-1">
@@ -40,7 +41,12 @@ export function SideStats({
                     <h3 className="mt-1 text-3xl font-semibold text-[color:var(--text-primary)]">{formatMoney(snapshot.monthlyRevenue)}</h3>
                     <div className="mt-2 flex items-center gap-2">
                         <Badge variant="purple">{periodLabel}</Badge>
-                        <span className="text-xs text-[color:var(--text-muted)]">{snapshot.collectionRate.toFixed(0)}% collected</span>
+                        <span className="text-xs text-[color:var(--text-muted)]">
+                            {formatNumber(snapshot.collectionRate / 100, {
+                                style: "percent",
+                                maximumFractionDigits: 0,
+                            })} collected
+                        </span>
                     </div>
                 </div>
 

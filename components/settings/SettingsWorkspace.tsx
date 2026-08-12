@@ -1,14 +1,12 @@
 "use client";
 
-import { ReactNode, useEffect, useRef } from "react";
+import { ReactNode, createContext, useContext, useEffect, useId, useRef } from "react";
 import { CheckCircle2, AlertCircle, LucideIcon } from "lucide-react";
-import { AppButton, PageShell } from "@/components/ui";
+import { AppButton, AppSelect, PageShell, type AppSelectProps } from "@/components/ui";
 import {
     formControlClass,
     formHelpTextClass,
     formLabelClass,
-    formSurfaceClass,
-    formSurfaceHoverClass,
 } from "@/components/ui/formSurface";
 import { FieldError, fieldErrorClass, fieldErrorProps } from "@/components/ui/InlineFieldError";
 import {
@@ -19,6 +17,8 @@ import {
     pageSubtleTextClass,
 } from "@/components/ui/pageSurface";
 import { cn } from "@/lib/utils";
+import { RadioGroup } from "@/components/ui/RadioGroup";
+import { Toggle } from "@/components/ui/Toggle";
 
 export interface SettingsSection {
     id: string;
@@ -32,6 +32,7 @@ export function SettingsWorkspace({
     sections,
     activeSection,
     onSectionChange,
+    actions,
     children,
 }: {
     title: string;
@@ -39,6 +40,7 @@ export function SettingsWorkspace({
     sections: SettingsSection[];
     activeSection: string;
     onSectionChange: (section: string) => void;
+    actions?: ReactNode;
     children: ReactNode;
 }) {
     const clickedSectionRef = useRef<string | null>(null);
@@ -76,18 +78,22 @@ export function SettingsWorkspace({
     const handleSectionClick = (sectionId: string) => {
         clickedSectionRef.current = sectionId;
         onSectionChange(sectionId);
+        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         document.getElementById(sectionId)?.scrollIntoView({
-            behavior: "smooth",
+            behavior: reduceMotion ? "auto" : "smooth",
             block: "start",
         });
     };
 
     return (
-        <div className="p-4 md:p-8">
+        <div>
             <PageShell>
-            <div>
-                <h1 className="text-2xl font-semibold tracking-tight text-[color:var(--text-primary)]">{title}</h1>
-                <p className={cn("mt-1 max-w-2xl text-sm leading-6", pageMutedTextClass)}>{subtitle}</p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                    <h1 className="text-2xl font-semibold tracking-tight text-[color:var(--text-primary)]">{title}</h1>
+                    <p className={cn("mt-1 max-w-2xl text-sm leading-6", pageMutedTextClass)}>{subtitle}</p>
+                </div>
+                {actions ? <div className="shrink-0">{actions}</div> : null}
             </div>
 
             <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
@@ -98,7 +104,9 @@ export function SettingsWorkspace({
                         return (
                             <button
                                 key={section.id}
+                                type="button"
                                 onClick={() => handleSectionClick(section.id)}
+                                aria-current={active ? "location" : undefined}
                                 className={cn(
                                     "flex w-full items-center gap-3 rounded-[var(--ui-radius-control)] border px-3 py-2.5 text-left text-sm transition-colors",
                                     active
@@ -117,6 +125,19 @@ export function SettingsWorkspace({
             </PageShell>
         </div>
     );
+}
+
+type SettingsFieldContextValue = {
+    controlId: string;
+    labelId: string;
+    describedBy?: string;
+};
+
+const SettingsFieldContext = createContext<SettingsFieldContextValue | null>(null);
+
+function mergeDescribedBy(...values: Array<string | undefined>) {
+    const ids = values.flatMap(value => value?.split(/\s+/).filter(Boolean) ?? []);
+    return ids.length > 0 ? [...new Set(ids)].join(" ") : undefined;
 }
 
 export function SettingsPanel({
@@ -161,15 +182,24 @@ export function SettingsField({
     errorId?: string;
     children: ReactNode;
 }) {
+    const generatedId = useId();
+    const controlId = `settings-field-${generatedId.replace(/:/g, "")}`;
+    const labelId = `${controlId}-label`;
+    const descriptionId = description ? `${controlId}-description` : undefined;
+    const resolvedErrorId = errorId ?? (error ? `${controlId}-error` : undefined);
+    const describedBy = mergeDescribedBy(descriptionId, error ? resolvedErrorId : undefined);
+
     return (
         <div className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(170px,220px)_minmax(0,1fr)] md:items-center">
             <div>
-                <label className={formLabelClass}>{label}</label>
-                {description && <p className={cn("mt-1 text-xs leading-relaxed", formHelpTextClass)}>{description}</p>}
+                <label id={labelId} htmlFor={controlId} className={formLabelClass}>{label}</label>
+                {description && <p id={descriptionId} className={cn("mt-1 text-xs leading-relaxed", formHelpTextClass)}>{description}</p>}
             </div>
             <div className="min-w-0">
-                {children}
-                <FieldError id={errorId} error={error} />
+                <SettingsFieldContext.Provider value={{ controlId, labelId, describedBy }}>
+                    {children}
+                </SettingsFieldContext.Provider>
+                <FieldError id={resolvedErrorId} error={error} />
             </div>
         </div>
     );
@@ -181,10 +211,14 @@ export function SettingsInput({
     className,
     ...props
 }: React.InputHTMLAttributes<HTMLInputElement> & { error?: string | null; errorId?: string }) {
+    const field = useContext(SettingsFieldContext);
+    const describedBy = mergeDescribedBy(props["aria-describedby"], field?.describedBy, error ? errorId : undefined);
     return (
         <input
             {...props}
             {...(errorId ? fieldErrorProps(errorId, error) : {})}
+            id={props.id ?? field?.controlId}
+            aria-describedby={describedBy}
             className={cn(
                 formControlClass,
                 "px-3 py-2 text-sm",
@@ -201,10 +235,14 @@ export function SettingsTextArea({
     className,
     ...props
 }: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { error?: string | null; errorId?: string }) {
+    const field = useContext(SettingsFieldContext);
+    const describedBy = mergeDescribedBy(props["aria-describedby"], field?.describedBy, error ? errorId : undefined);
     return (
         <textarea
             {...props}
             {...(errorId ? fieldErrorProps(errorId, error) : {})}
+            id={props.id ?? field?.controlId}
+            aria-describedby={describedBy}
             className={cn(
                 formControlClass,
                 "min-h-24 resize-y px-3 py-2 text-sm",
@@ -220,14 +258,17 @@ export function SettingsSelect({
     errorId,
     className,
     ...props
-}: React.SelectHTMLAttributes<HTMLSelectElement> & { error?: string | null; errorId?: string }) {
+}: AppSelectProps) {
+    const field = useContext(SettingsFieldContext);
+    const describedBy = mergeDescribedBy(props["aria-describedby"], field?.describedBy, error ? errorId : undefined);
     return (
-        <select
+        <AppSelect
             {...props}
-            {...(errorId ? fieldErrorProps(errorId, error) : {})}
+            id={props.id ?? field?.controlId}
+            aria-labelledby={props["aria-labelledby"] ?? field?.labelId}
+            aria-describedby={describedBy}
+            aria-invalid={Boolean(error)}
             className={cn(
-                formControlClass,
-                "bg-[color:var(--ui-form-input-select-bg)] px-3 py-2 text-sm",
                 fieldErrorClass(error),
                 className
             )}
@@ -248,63 +289,48 @@ export function SettingsToggle({
     description?: string;
     disabled?: boolean;
 }) {
-    return (
-        <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange(!checked)}
-            className={cn(
-                "flex w-full items-center justify-between gap-4 px-4 py-3 text-left",
-                formSurfaceClass,
-                disabled ? "cursor-not-allowed opacity-60" : formSurfaceHoverClass
-            )}
-        >
-            <span>
-                <span className="block text-sm font-medium text-[color:var(--ui-form-label-strong)]">{label}</span>
-                {description && <span className={cn("mt-0.5 block text-xs", formHelpTextClass)}>{description}</span>}
-            </span>
-            <span className={cn("relative h-5 w-10 rounded-full transition-colors", checked ? "bg-[color:var(--ui-form-toggle-checked-bg)]" : "bg-[color:var(--ui-form-toggle-bg)]")}>
-                <span className={cn("absolute top-0.5 h-4 w-4 rounded-full bg-[color:var(--ui-form-toggle-thumb)] transition-transform", checked ? "translate-x-5" : "translate-x-0.5")} />
-            </span>
-        </button>
-    );
+    const field = useContext(SettingsFieldContext);
+    return <Toggle
+        id={field?.controlId}
+        checked={checked}
+        onCheckedChange={onChange}
+        label={label}
+        description={description}
+        labelledBy={field?.labelId}
+        describedBy={field?.describedBy}
+        disabled={disabled}
+    />;
 }
 
 export function SegmentedControl<T extends string>({
     value,
     options,
     onChange,
+    disabled = false,
 }: {
     value: T;
     options: { value: T; label: string }[];
     onChange: (value: T) => void;
+    disabled?: boolean;
 }) {
+    const field = useContext(SettingsFieldContext);
     return (
-        <div className={cn("flex flex-wrap gap-2 p-1", formSurfaceClass)}>
-            {options.map(option => (
-                <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => onChange(option.value)}
-                    className={cn(
-                        "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                        value === option.value
-                            ? "bg-[color:var(--ui-view-toggle-table-active-bg)] text-[color:var(--ui-view-toggle-table-active-text)]"
-                            : "text-[color:var(--ui-table-muted)] hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--ui-table-text)]"
-                    )}
-                >
-                    {option.label}
-                </button>
-            ))}
-        </div>
+        <RadioGroup
+            id={field?.controlId}
+            value={value}
+            options={options.map(option => ({ ...option, disabled }))}
+            onChange={onChange}
+            labelledBy={field?.labelId}
+            describedBy={field?.describedBy}
+        />
     );
 }
 
 export function ReadOnlyRow({ label, value }: { label: string; value: ReactNode }) {
     return (
-        <div className="flex items-center justify-between gap-4 px-5 py-3 text-sm">
+        <div className="flex flex-col items-start justify-between gap-2 px-5 py-3 text-sm sm:flex-row sm:gap-4">
             <span className={formHelpTextClass}>{label}</span>
-            <span className="min-w-0 truncate text-right font-medium text-[color:var(--ui-form-label)]">{value}</span>
+            <span className="min-w-0 max-w-full break-words text-left font-medium text-[color:var(--ui-form-label)] sm:text-right">{value}</span>
         </div>
     );
 }
@@ -356,41 +382,51 @@ export function SettingsSubtleText({ children, className }: { children: ReactNod
 
 export function SettingsSaveBar({
     visible,
+    hasChanges,
     saving,
     status,
     error,
     onSave,
-    onReset,
+    onCancel,
 }: {
     visible: boolean;
+    hasChanges: boolean;
     saving: boolean;
     status: "idle" | "success" | "error";
     error?: string;
     onSave: () => void;
-    onReset: () => void;
+    onCancel: () => void;
 }) {
     if (!visible && status === "idle") return null;
 
     return (
-        <div className="fixed bottom-5 left-1/2 z-50 w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-savebar-bg)] p-3 shadow-[var(--ui-form-dialog-shadow)] backdrop-blur">
+        <div
+            className="fixed left-1/2 z-50 w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 rounded-[var(--ui-radius-panel)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-savebar-bg)] p-3 [bottom:max(1.25rem,env(safe-area-inset-bottom))] shadow-[var(--ui-form-dialog-shadow)] backdrop-blur"
+            role={status === "error" ? "alert" : "status"}
+            aria-live={status === "error" ? "assertive" : "polite"}
+        >
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm">
                     {status === "success" ? (
                         <span className="flex items-center gap-2 text-[color:var(--ui-tone-success-text)]"><CheckCircle2 size={15} /> Settings saved.</span>
                     ) : status === "error" ? (
                         <span className="flex items-center gap-2 text-[color:var(--ui-form-error-text)]"><AlertCircle size={15} /> {error || "Save failed."}</span>
-                    ) : (
+                    ) : hasChanges ? (
                         <span className="text-[color:var(--ui-form-label)]">You have unsaved settings changes.</span>
+                    ) : (
+                        <span className="text-[color:var(--ui-form-label)]">Editing settings.</span>
                     )}
                 </div>
-                <div className="flex justify-end gap-2">
-                    <AppButton variant="quiet" size="sm" onClick={onReset} disabled={saving}>
-                        Reset
-                    </AppButton>
-                    <AppButton variant="primary" size="sm" onClick={onSave} disabled={!visible || saving} isLoading={saving} className="min-w-[110px]">
-                        {saving ? "Saving" : "Save changes"}
-                    </AppButton>
-                </div>
+                {visible ? (
+                    <div className="flex justify-end gap-2">
+                        <AppButton variant="quiet" size="sm" onClick={onCancel} disabled={saving} className="min-h-11 lg:min-h-9">
+                            Cancel
+                        </AppButton>
+                        <AppButton variant="primary" size="sm" onClick={onSave} disabled={!hasChanges || saving} isLoading={saving} className="min-h-11 min-w-[110px] lg:min-h-9">
+                            {saving ? "Saving" : "Save changes"}
+                        </AppButton>
+                    </div>
+                ) : null}
             </div>
         </div>
     );

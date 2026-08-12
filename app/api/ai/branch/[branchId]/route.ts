@@ -17,6 +17,7 @@ export async function GET(
 
         await StaffService.authorize(user.id, params.branchId, "analytics")
         await EntitlementService.assertBranchEntitlement(params.branchId, "AI_ACCESS")
+        await EntitlementService.assertBranchWritable(params.branchId)
 
         const rateLimit = checkRateLimit(
             getRequestRateLimitKey(request, "ai-report", `${user.id}:${params.branchId}`),

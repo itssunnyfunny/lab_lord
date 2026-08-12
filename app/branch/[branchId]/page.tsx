@@ -8,9 +8,15 @@ import { RecentStudents } from "@/components/dashboard/RecentStudents";
 import { ShiftOccupancyCard } from "@/components/dashboard/ShiftOccupancyCard";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { useBranchAccess } from "@/hooks/useBranchAccess";
-import { analytics, BranchSnapshot } from "@/lib/api/analytics";
-import { branches } from "@/lib/api/branches";
-import { format } from "date-fns";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
+import { getUtilizationStatus } from "@/lib/utilizationStatus";
+import {
+    loadBranchDashboardSources,
+    type DashboardOverduePayment,
+    type DashboardResourceStatuses,
+    type DashboardStudent,
+} from "@/lib/branchDashboard";
+import type { BranchSnapshot } from "@/lib/api/analytics";
 import {
     AlertCircle,
     AlertTriangle,
@@ -18,77 +24,26 @@ import {
     CheckCircle2,
     IndianRupee,
     LayoutGrid,
+    RefreshCw,
     Users,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useMemo, useState } from "react";
-
-interface OverduePayment {
-    paymentId: string;
-    studentId: string;
-    studentName: string;
-    phone: string | null;
-    dueDate: string;
-    amount: number;
-}
-
-interface Student {
-    id: string;
-    name: string;
-    status: string;
-    joinedAt?: Date | string | null;
-    createdAt?: Date | string;
-}
-
-interface PaymentWithStudent {
-    id: string;
-    status: "DUE" | "PAID" | string;
-    dueDate: string | Date;
-    amount: number;
-    paidAt?: string | Date | null;
-    updatedAt?: string | Date | null;
-    student?: {
-        id?: string;
-        name?: string | null;
-        phone?: string | null;
-    } | null;
-}
-
-interface AllocationSummary {
-    seat?: { label?: string | null } | null;
-    student?: { name?: string | null } | null;
-    startDate?: string | Date | null;
-}
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 
 interface DashboardData {
     snapshot: BranchSnapshot | null;
-    overduePayments: OverduePayment[];
-    recentStudents: Student[];
+    overduePayments: DashboardOverduePayment[];
+    recentStudents: DashboardStudent[];
+    activeStudentCount: number;
     activityItems: ActivityItem[];
     branchName: string;
+    resources: DashboardResourceStatuses;
+    updatedAt: string;
 }
 
 function DashboardSkeleton() {
     return <PageLoadingSkeleton label="Loading branch dashboard" variant="dashboard" rows={6} />;
-}
-
-function formatDateLabel() {
-    return new Date().toLocaleDateString("en-IN", {
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-    });
-}
-
-function formatMoney(value: number) {
-    return `Rs ${value.toLocaleString("en-IN")}`;
-}
-
-function toneForUtilization(rate: number): "success" | "warning" | "danger" {
-    if (rate >= 70) return "success";
-    if (rate >= 40) return "warning";
-    return "danger";
 }
 
 function toneForCollection(rate: number, dueAmount: number): "success" | "warning" | "danger" {
@@ -97,14 +52,28 @@ function toneForCollection(rate: number, dueAmount: number): "success" | "warnin
     return "danger";
 }
 
-async function fetchJson<T>(url: string, fallback: T): Promise<T> {
-    try {
-        const response = await fetch(url);
-        if (!response.ok) return fallback;
-        return response.json() as Promise<T>;
-    } catch {
-        return fallback;
-    }
+function DashboardUnavailablePanel({
+    title,
+    description,
+    onRetry,
+}: {
+    title: string;
+    description: string;
+    onRetry?: () => void;
+}) {
+    return (
+        <AppPanel title={title} description={description} className="h-full">
+            <div className="flex min-h-40 flex-col items-center justify-center gap-3 text-center">
+                <AlertCircle size={22} className="text-amber-300" />
+                <p className="max-w-sm text-sm leading-6 text-gray-400">{description}</p>
+                {onRetry && (
+                    <AppButton onClick={onRetry} variant="secondary" size="sm" icon={RefreshCw}>
+                        Try again
+                    </AppButton>
+                )}
+            </div>
+        </AppPanel>
+    );
 }
 
 export default function BranchDashboardPage({
@@ -116,8 +85,19 @@ export default function BranchDashboardPage({
     const router = useRouter();
     const [data, setData] = useState<DashboardData | null>(null);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [refreshKey, setRefreshKey] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const { access, loading: accessLoading } = useBranchAccess(branchId);
+    const { formatDate, formatDateTime, formatNumber } = useUserPreferences();
+    const formatMoney = useMemo(
+        () => (value: number) => formatNumber(value, {
+            style: "currency",
+            currency: "INR",
+            maximumFractionDigits: 0,
+        }),
+        [formatNumber]
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -131,51 +111,32 @@ export default function BranchDashboardPage({
                 return;
             }
 
-            setLoading(true);
+            if (refreshKey === 0) {
+                setLoading(true);
+            } else {
+                setRefreshing(true);
+            }
             setError(null);
 
             try {
-                const ensureResponse = await fetch(`/api/branches/${branchId}/payments/ensure`, {
-                    method: "POST",
-                    cache: "no-store",
-                });
-                if (!ensureResponse.ok) {
-                    throw new Error("Failed to ensure branch payments");
-                }
-
-                const month = format(new Date(), "yyyy-MM");
-                const [snapshot, studentsResult, allocationsResult, monthPayments, overdueResult] =
-                    await Promise.all([
-                        access.permissions.analytics ? analytics.getSnapshot(branchId, { period: "month" }) : Promise.resolve(null),
-                        access.permissions.students ? branches.getStudents(branchId) : Promise.resolve([]),
-                        access.permissions.seat_allocation
-                            ? fetchJson<AllocationSummary[]>(`/api/branches/${branchId}/seat-allocations?activeOnly=true`, [])
-                            : Promise.resolve([]),
-                        access.permissions.view_payments
-                            ? fetchJson<PaymentWithStudent[]>(`/api/branches/${branchId}/payments?month=${month}`, [])
-                            : Promise.resolve([]),
-                        access.permissions.view_payments
-                            ? fetchJson<{ payments?: OverduePayment[] }>(`/api/branches/${branchId}/payments/overdue`, { payments: [] })
-                            : Promise.resolve({ payments: [] }),
-                    ]);
+                const sources = await loadBranchDashboardSources(branchId, access.permissions);
 
                 if (cancelled) return;
 
-                const students = studentsResult as Student[];
-                const allocations = [...allocationsResult].sort((a, b) => {
+                const allocations = [...sources.allocations].sort((a, b) => {
                     const left = new Date(a.startDate ?? 0).getTime();
                     const right = new Date(b.startDate ?? 0).getTime();
                     return right - left;
                 });
-                const paidPayments = [...monthPayments]
+                const paidPayments = [...sources.monthPayments]
                     .filter((payment) => payment.status === "PAID")
                     .sort((a, b) => {
                         const left = new Date(a.paidAt ?? a.updatedAt ?? 0).getTime();
                         const right = new Date(b.paidAt ?? b.updatedAt ?? 0).getTime();
                         return right - left;
                     });
-                const overduePayments = overdueResult.payments ?? [];
-                const sortedStudents = [...students].sort((a, b) => {
+                const overduePayments = sources.overduePayments;
+                const sortedStudents = [...sources.students].sort((a, b) => {
                     const left = new Date(a.joinedAt ?? a.createdAt ?? 0).getTime();
                     const right = new Date(b.joinedAt ?? b.createdAt ?? 0).getTime();
                     return right - left;
@@ -199,7 +160,7 @@ export default function BranchDashboardPage({
                             {
                                 type: "overdue" as const,
                                 count: overduePayments.length,
-                                ts: new Date().toISOString(),
+                                ts: sources.updatedAt,
                             },
                         ]
                         : []),
@@ -213,20 +174,33 @@ export default function BranchDashboardPage({
                     .slice(0, 10);
 
                 setData({
-                    snapshot,
+                    snapshot: sources.snapshot,
                     overduePayments,
                     recentStudents: sortedStudents.slice(0, 6),
+                    activeStudentCount: sources.students.filter(student => student.status === "ACTIVE").length,
                     activityItems,
                     branchName: access.branchName,
+                    resources: sources.resources,
+                    updatedAt: sources.updatedAt,
                 });
+
+                const failedResources = Object.entries(sources.resources)
+                    .filter(([, status]) => status === "error")
+                    .map(([resource]) => resource);
+                if (failedResources.length > 0) {
+                    setError(
+                        `${failedResources.join(", ")} data could not be refreshed. Unavailable sections are labelled below.`
+                    );
+                }
             } catch (loadError) {
                 console.error("[Dashboard] load failed", loadError);
                 if (!cancelled) {
-                    setError("Some dashboard data failed to load.");
+                    setError("The dashboard could not be refreshed. Previously loaded values may be stale.");
                 }
             } finally {
                 if (!cancelled) {
                     setLoading(false);
+                    setRefreshing(false);
                 }
             }
         };
@@ -236,11 +210,23 @@ export default function BranchDashboardPage({
         return () => {
             cancelled = true;
         };
-    }, [access, accessLoading, branchId]);
+    }, [access, accessLoading, branchId, refreshKey]);
 
     const snap = data?.snapshot ?? null;
     const canAddStudents = access?.permissions.students ?? false;
     const canViewPayments = access?.permissions.view_payments ?? false;
+    const analyticsStatus = data?.resources.analytics ?? "error";
+    const studentsStatus = data?.resources.students ?? "error";
+    const overdueStatus = data?.resources.overdue ?? "error";
+    const activityHasError = data
+        ? [
+            data.resources.students,
+            data.resources.allocations,
+            data.resources.payments,
+            data.resources.overdue,
+        ].some(status => status === "error")
+        : true;
+    const refreshDashboard = () => setRefreshKey(key => key + 1);
 
     const collectionSummary = useMemo(() => {
         if (!snap) {
@@ -249,7 +235,9 @@ export default function BranchDashboardPage({
                 collected: 0,
                 pending: 0,
                 progress: 0,
-                note: "Analytics access is required for revenue metrics.",
+                note: analyticsStatus === "restricted"
+                    ? "Analytics access is required for revenue metrics."
+                    : "Revenue metrics could not be refreshed.",
             };
         }
 
@@ -267,16 +255,30 @@ export default function BranchDashboardPage({
             progress,
             note,
         };
-    }, [snap]);
+    }, [analyticsStatus, formatMoney, snap]);
+    const utilizationStatus = snap ? getUtilizationStatus(snap.occupancyRate) : null;
 
     if (loading) return <DashboardSkeleton />;
 
     return (
         <PageShell>
             {error && (
-                <div className="flex items-center gap-3 rounded-[8px] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
-                    <AlertCircle size={16} className="shrink-0" />
-                    {error}
+                <div role="alert" className="flex flex-col gap-3 rounded-[8px] border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-200 sm:flex-row sm:items-center">
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                        <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                        <span>{error}</span>
+                    </div>
+                    {access && (
+                        <AppButton
+                            onClick={refreshDashboard}
+                            variant="secondary"
+                            size="sm"
+                            icon={RefreshCw}
+                            isLoading={refreshing}
+                        >
+                            Retry
+                        </AppButton>
+                    )}
                 </div>
             )}
 
@@ -285,11 +287,13 @@ export default function BranchDashboardPage({
                     <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400">
                         <span>Branch overview</span>
                         <span className="h-1 w-1 rounded-full bg-gray-600" />
-                        <span>{formatDateLabel()}</span>
-                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-0.5 text-emerald-200">
-                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" />
-                            Live
-                        </span>
+                        <span>{formatDate(new Date())}</span>
+                        {data?.updatedAt && (
+                            <>
+                                <span className="h-1 w-1 rounded-full bg-gray-600" />
+                                <span>Updated {formatDateTime(data.updatedAt)}</span>
+                            </>
+                        )}
                     </div>
                     <h1 className="mt-2 truncate text-2xl font-semibold tracking-tight text-white md:text-3xl">
                         {data?.branchName ?? "Dashboard"}
@@ -300,6 +304,14 @@ export default function BranchDashboardPage({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                    <AppButton
+                        onClick={refreshDashboard}
+                        variant="quiet"
+                        icon={RefreshCw}
+                        isLoading={refreshing}
+                    >
+                        Refresh
+                    </AppButton>
                     {canViewPayments && (
                         <AppButton
                             onClick={() => router.push(`/branch/${branchId}/payments`)}
@@ -323,57 +335,87 @@ export default function BranchDashboardPage({
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <StatCard
                     title="Collected this month"
-                    value={snap ? formatMoney(snap.paidAmount) : "Restricted"}
-                    sub={snap ? `${snap.collectionRate.toFixed(0)}% collection rate` : "No analytics access"}
+                    value={snap ? formatMoney(snap.paidAmount) : analyticsStatus === "restricted" ? "Restricted" : "Unavailable"}
+                    sub={snap ? `${formatNumber(snap.collectionRate / 100, { style: "percent", maximumFractionDigits: 0 })} collection rate` : collectionSummary.note}
                     icon={IndianRupee}
+                    accent="emerald"
                     tone={snap ? toneForCollection(snap.collectionRate, snap.dueAmount) : "neutral"}
                     progress={snap ? collectionSummary.progress : undefined}
                     footer={snap ? `${formatMoney(collectionSummary.pending)} pending` : undefined}
                 />
                 <StatCard
                     title="Pending dues"
-                    value={snap ? formatMoney(snap.dueAmount) : "Restricted"}
-                    sub={`${data?.overduePayments.length ?? 0} overdue follow-ups`}
+                    value={snap ? formatMoney(snap.dueAmount) : analyticsStatus === "restricted" ? "Restricted" : "Unavailable"}
+                    sub={
+                        overdueStatus === "success"
+                            ? `${formatNumber(data?.overduePayments.length ?? 0)} overdue follow-ups`
+                            : overdueStatus === "restricted"
+                                ? "Payment access is required"
+                                : "Follow-up data unavailable"
+                    }
                     icon={AlertTriangle}
-                    tone={snap && snap.dueAmount > 0 ? "danger" : "success"}
+                    accent="rose"
+                    tone={snap ? (snap.dueAmount > 0 ? "danger" : "success") : "neutral"}
                     alert={!!snap && snap.dueAmount > 0}
                 />
                 <StatCard
                     title="Active students"
-                    value={snap ? snap.activeStudents.toLocaleString("en-IN") : `${data?.recentStudents.length ?? 0}+`}
-                    sub={snap ? `${snap.totalStudents.toLocaleString("en-IN")} total profiles` : "Recent enrollments loaded"}
+                    value={
+                        snap
+                            ? formatNumber(snap.activeStudents)
+                            : studentsStatus === "success"
+                                ? formatNumber(data?.activeStudentCount ?? 0)
+                                : studentsStatus === "restricted"
+                                    ? "Restricted"
+                                    : "Unavailable"
+                    }
+                    sub={
+                        snap
+                            ? `${formatNumber(snap.totalStudents)} total profiles`
+                            : studentsStatus === "success"
+                                ? "Calculated from student records"
+                                : studentsStatus === "restricted"
+                                    ? "Student access is required"
+                                    : "Student records unavailable"
+                    }
                     icon={Users}
+                    accent="cyan"
                     tone="info"
                 />
                 <StatCard
                     title="Seat utilization"
-                    value={snap ? `${snap.occupancyRate.toFixed(0)}%` : "Restricted"}
+                    value={snap ? formatNumber(snap.occupancyRate / 100, { style: "percent", maximumFractionDigits: 0 }) : analyticsStatus === "restricted" ? "Restricted" : "Unavailable"}
                     sub={
                         snap?.seatDetails
-                            ? `${snap.seatDetails.totalUsedSlots} of ${snap.seatDetails.totalShiftCapacity} shift slots`
+                            ? `${formatNumber(snap.seatDetails.totalUsedSlots)} of ${formatNumber(snap.seatDetails.totalShiftCapacity)} shift slots`
                             : snap
-                                ? `${snap.assignedSeats} of ${snap.totalSeats} seats`
-                                : "No analytics access"
+                                ? `${formatNumber(snap.assignedSeats)} of ${formatNumber(snap.totalSeats)} seats`
+                                : analyticsStatus === "restricted"
+                                    ? "Analytics access is required"
+                                    : "Utilization data unavailable"
                     }
                     icon={LayoutGrid}
-                    tone={snap ? toneForUtilization(snap.occupancyRate) : "neutral"}
+                    accent="violet"
+                    tone={utilizationStatus?.tone ?? "neutral"}
                     progress={snap ? snap.occupancyRate : undefined}
+                    footer={utilizationStatus?.label}
                 />
             </section>
 
             <section className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.75fr)]">
-                <AppPanel
-                    title="Monthly collections"
-                    description="Billed, collected, and pending revenue for the active billing month."
-                    className="h-full"
-                >
+                {snap ? (
+                    <AppPanel
+                        title="Monthly collections"
+                        description="Billed, collected, and pending revenue for the active billing month."
+                        className="h-full"
+                    >
                     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
                         <div>
-                            <div className="flex items-end justify-between gap-3">
+                            <div className="flex flex-col items-start gap-3 min-[380px]:flex-row min-[380px]:items-end min-[380px]:justify-between">
                                 <div>
                                     <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Collection progress</p>
                                     <p className="mt-2 text-3xl font-semibold tracking-tight text-white">
-                                        {snap ? `${collectionSummary.progress.toFixed(0)}%` : "Restricted"}
+                                        {snap ? formatNumber(collectionSummary.progress / 100, { style: "percent", maximumFractionDigits: 0 }) : "Restricted"}
                                     </p>
                                 </div>
                                 {snap && snap.dueAmount === 0 ? (
@@ -397,34 +439,94 @@ export default function BranchDashboardPage({
                             <p className="mt-3 text-sm leading-6 text-gray-400">{collectionSummary.note}</p>
                         </div>
 
-                        <div className="grid grid-cols-3 gap-3 lg:grid-cols-1">
-                            <div className="rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-1">
+                            <div className="min-w-0 rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
                                 <p className="text-xs text-gray-500">Billed</p>
-                                <p className="mt-1 text-sm font-semibold text-white">{formatMoney(collectionSummary.billed)}</p>
+                                <p className="mt-1 break-words text-base font-semibold text-white sm:text-sm">{formatMoney(collectionSummary.billed)}</p>
                             </div>
-                            <div className="rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
+                            <div className="min-w-0 rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
                                 <p className="text-xs text-gray-500">Collected</p>
-                                <p className="mt-1 text-sm font-semibold text-emerald-200">{formatMoney(collectionSummary.collected)}</p>
+                                <p className="mt-1 break-words text-base font-semibold text-emerald-200 sm:text-sm">{formatMoney(collectionSummary.collected)}</p>
                             </div>
-                            <div className="rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
+                            <div className="min-w-0 rounded-[8px] border border-white/10 bg-white/[0.02] p-3">
                                 <p className="text-xs text-gray-500">Pending</p>
-                                <p className="mt-1 text-sm font-semibold text-amber-200">{formatMoney(collectionSummary.pending)}</p>
+                                <p className="mt-1 break-words text-base font-semibold text-amber-200 sm:text-sm">{formatMoney(collectionSummary.pending)}</p>
                             </div>
                         </div>
                     </div>
-                </AppPanel>
+                    </AppPanel>
+                ) : (
+                    <DashboardUnavailablePanel
+                        title="Monthly collections"
+                        description={
+                            analyticsStatus === "restricted"
+                                ? "Your role does not include analytics access."
+                                : "Collection analytics could not be refreshed."
+                        }
+                        onRetry={analyticsStatus === "error" ? refreshDashboard : undefined}
+                    />
+                )}
 
                 <QuickActions branchId={branchId} />
             </section>
 
             <section className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.85fr)]">
-                <OverdueTable payments={data?.overduePayments ?? []} branchId={branchId} />
-                <ShiftOccupancyCard shifts={snap?.seatDetails?.shifts ?? []} branchId={branchId} />
+                {overdueStatus === "success" ? (
+                    <OverdueTable
+                        key={data?.updatedAt ?? "overdue"}
+                        payments={data?.overduePayments ?? []}
+                        branchId={branchId}
+                        recordDecision={getBranchCapabilityDecision(access, "paymentsRecord")}
+                    />
+                ) : (
+                    <DashboardUnavailablePanel
+                        title="Payment follow-ups"
+                        description={
+                            overdueStatus === "restricted"
+                                ? "Your role does not include payment access."
+                                : "Overdue payment data could not be refreshed."
+                        }
+                        onRetry={overdueStatus === "error" ? refreshDashboard : undefined}
+                    />
+                )}
+                {snap ? (
+                    <ShiftOccupancyCard shifts={snap.seatDetails?.shifts ?? []} branchId={branchId} />
+                ) : (
+                    <DashboardUnavailablePanel
+                        title="Shift occupancy"
+                        description={
+                            analyticsStatus === "restricted"
+                                ? "Your role does not include occupancy analytics."
+                                : "Occupancy data could not be refreshed."
+                        }
+                        onRetry={analyticsStatus === "error" ? refreshDashboard : undefined}
+                    />
+                )}
             </section>
 
             <section className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-                <RecentActivity items={data?.activityItems ?? []} branchId={branchId} />
-                <RecentStudents students={data?.recentStudents ?? []} branchId={branchId} />
+                {(data?.activityItems.length ?? 0) > 0 || !activityHasError ? (
+                    <RecentActivity items={data?.activityItems ?? []} branchId={branchId} />
+                ) : (
+                    <DashboardUnavailablePanel
+                        title="Activity stream"
+                        description="Recent activity could not be verified because one or more data sources failed."
+                        onRetry={refreshDashboard}
+                    />
+                )}
+                {studentsStatus === "success" ? (
+                    <RecentStudents students={data?.recentStudents ?? []} branchId={branchId} />
+                ) : (
+                    <DashboardUnavailablePanel
+                        title="New enrollments"
+                        description={
+                            studentsStatus === "restricted"
+                                ? "Your role does not include student access."
+                                : "Recent student records could not be refreshed."
+                        }
+                        onRetry={studentsStatus === "error" ? refreshDashboard : undefined}
+                    />
+                )}
             </section>
         </PageShell>
     );

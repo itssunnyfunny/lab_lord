@@ -13,7 +13,6 @@ export const BRANCH_PAGE_ACCESS = {
     allocations: "seat_allocation",
     aiReports: "analytics",
     aiMessages: "analytics",
-    aiInsights: "analytics",
 } as const satisfies Record<string, StaffAction>;
 
 export type BranchPageAccessKey = keyof typeof BRANCH_PAGE_ACCESS;

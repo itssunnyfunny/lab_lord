@@ -83,7 +83,25 @@ function LoadingMetrics({ count = 4 }: { count?: number }) {
 
 export function LoadingTableSkeleton({ rows = 6, className }: { rows?: number; className?: string }) {
     return (
-        <div className={cn(pageTableShellClass, className)} aria-hidden="true">
+        <div className={className} aria-hidden="true">
+            <div className="grid gap-3 md:hidden">
+                {Array.from({ length: Math.min(rows, 4) }, (_, index) => (
+                    <div key={index} className={cn("space-y-3", pageGridCardClass)}>
+                        <div className="flex items-center gap-3">
+                            <SkeletonBlock className="h-10 w-10 rounded-full" />
+                            <div className="flex-1 space-y-2">
+                                <SkeletonBlock className="h-4 w-36 max-w-full" />
+                                <SkeletonBlock className="h-3 w-24" />
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                            <SkeletonBlock className="h-12" />
+                            <SkeletonBlock className="h-12" />
+                        </div>
+                    </div>
+                ))}
+            </div>
+            <div className={cn("hidden md:block", pageTableShellClass)}>
             <div className="grid grid-cols-[minmax(180px,1.5fr)_repeat(3,minmax(96px,0.75fr))_72px] gap-4 border-b border-[color:var(--ui-table-divider)] bg-[color:var(--ui-table-head-bg)] px-4 py-4">
                 {Array.from({ length: 5 }, (_, index) => (
                     <SkeletonBlock key={index} className={cn("h-3", index === 0 ? "w-36" : "w-20")} />
@@ -108,6 +126,7 @@ export function LoadingTableSkeleton({ rows = 6, className }: { rows?: number; c
                         <SkeletonBlock className="h-8 w-8 justify-self-end" />
                     </div>
                 ))}
+            </div>
             </div>
         </div>
     );

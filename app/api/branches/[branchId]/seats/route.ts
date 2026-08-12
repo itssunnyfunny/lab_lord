@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { SeatService } from "@/services/seat.service";
 import { getSessionUser } from "@/lib/auth";
 import { validateSeatLabel } from "@/lib/formValidation";
+import {
+    decodeDateIdCursor,
+    PaginationInputError,
+    parsePageLimit,
+} from "@/lib/cursorPagination";
 
 interface Params {
     params: Promise<{
@@ -11,6 +16,12 @@ interface Params {
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Internal Server Error";
+}
+
+function parseAll(value: string | null) {
+    if (value === null || value === "false") return false;
+    if (value === "true") return true;
+    throw new PaginationInputError("all must be true or false");
 }
 
 export async function GET(req: Request, { params }: Params) {
@@ -27,11 +38,28 @@ export async function GET(req: Request, { params }: Params) {
 
         const { searchParams } = new URL(req.url);
         const shiftId = searchParams.get("shiftId") || undefined;
+        const cursorValue = searchParams.get("cursor");
+        const limitValue = searchParams.get("limit");
+        const all = parseAll(searchParams.get("all"));
+        const cursor = decodeDateIdCursor(cursorValue);
+        const limit = parsePageLimit(limitValue);
 
-        const seats = await SeatService.listSeats(user.id, branchId, shiftId);
+        if (all && (cursorValue || limitValue)) {
+            throw new PaginationInputError("all cannot be combined with cursor or limit");
+        }
+
+        const seats = await SeatService.listSeats(user.id, branchId, {
+            shiftId,
+            cursor,
+            limit,
+            all,
+        });
         return NextResponse.json(seats);
     } catch (error: unknown) {
         const message = getErrorMessage(error);
+        if (error instanceof PaginationInputError) {
+            return NextResponse.json({ error: message }, { status: 400 });
+        }
         console.error("Error fetching seats:", error);
         if (message.includes("Unauthorized") || message.includes("does not own")) {
             return NextResponse.json({ error: message }, { status: 403 });

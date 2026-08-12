@@ -15,6 +15,53 @@ import {
     validateRequiredPhone,
     validateRequiredText,
 } from "@/lib/formValidation";
+import {
+    DEFAULT_PAGE_SIZE,
+    pageFromRows,
+    type DateIdCursor,
+} from "@/lib/cursorPagination";
+import type { PagedResult } from "@/types/ui";
+
+const STUDENT_LIST_INCLUDE = {
+    seatAllocations: {
+        where: { endDate: null },
+        include: {
+            seat: {
+                select: {
+                    id: true,
+                    label: true,
+                },
+            },
+            shift: {
+                select: {
+                    id: true,
+                    name: true,
+                    startTime: true,
+                    endTime: true,
+                },
+            },
+            multiShift: {
+                select: {
+                    id: true,
+                    name: true,
+                },
+            },
+        },
+        orderBy: {
+            startDate: "desc" as const,
+        },
+    },
+} satisfies Prisma.StudentInclude;
+
+type StudentListRecord = Prisma.StudentGetPayload<{ include: typeof STUDENT_LIST_INCLUDE }>;
+type StudentListFilters = {
+    status?: StudentStatus;
+    shiftId?: string;
+    multiShiftId?: string;
+    query?: string;
+    cursor?: DateIdCursor | null;
+    limit?: number;
+};
 
 function assertNever(value: never): never {
     throw new Error(`Unexpected due resolution: ${String(value)}`);
@@ -437,59 +484,108 @@ export class StudentService {
     static async getStudentsByBranch(
         userId: string,
         branchId: string,
-        filters?: { status?: StudentStatus; shiftId?: string }
-    ) {
+        filters: StudentListFilters & { limit: number }
+    ): Promise<PagedResult<StudentListRecord>>;
+    static async getStudentsByBranch(
+        userId: string,
+        branchId: string,
+        filters?: Omit<StudentListFilters, "cursor" | "limit">
+    ): Promise<StudentListRecord[]>;
+    static async getStudentsByBranch(
+        userId: string,
+        branchId: string,
+        filters?: StudentListFilters
+    ): Promise<PagedResult<StudentListRecord> | StudentListRecord[]> {
         await this.verifyBranchAccess(userId, branchId);
 
-        return prisma.student.findMany({
-            where: {
-                branchId,
-                ...(filters?.status ? { status: filters.status } : {}),
-                ...(filters?.shiftId
-                    ? {
-                        seatAllocations: {
-                            some: {
-                                shiftId: filters.shiftId,
-                                endDate: null,
-                            },
-                        },
-                    }
-                    : {}),
-            },
-            include: {
-                seatAllocations: {
-                    where: { endDate: null },
-                    include: {
-                        seat: {
-                            select: {
-                                id: true,
-                                label: true,
-                            },
-                        },
-                        shift: {
-                            select: {
-                                id: true,
-                                name: true,
-                                startTime: true,
-                                endTime: true,
-                            },
-                        },
-                        multiShift: {
-                            select: {
-                                id: true,
-                                name: true,
-                            },
+        if (filters?.shiftId && filters.multiShiftId) {
+            throw new Error("shiftId and multiShiftId cannot be combined");
+        }
+        if (filters?.multiShiftId) {
+            const multiShift = await prisma.multiShift.findUnique({
+                where: { id: filters.multiShiftId },
+                select: { branchId: true },
+            });
+            if (!multiShift || multiShift.branchId !== branchId) {
+                throw new Error("Multi-shift not found");
+            }
+        }
+
+        const query = filters?.query?.trim();
+        const baseWhere: Prisma.StudentWhereInput = {
+            branchId,
+            ...(filters?.status ? { status: filters.status } : {}),
+            ...(filters?.shiftId
+                ? {
+                    seatAllocations: {
+                        some: {
+                            shiftId: filters.shiftId,
+                            endDate: null,
                         },
                     },
-                    orderBy: {
-                        startDate: "desc",
+                }
+                : {}),
+            ...(filters?.multiShiftId
+                ? {
+                    seatAllocations: {
+                        some: {
+                            multiShiftId: filters.multiShiftId,
+                            endDate: null,
+                        },
                     },
-                },
-            },
-            orderBy: {
-                name: "asc",
-            },
-        });
+                }
+                : {}),
+            ...(query
+                ? {
+                    OR: [
+                        { name: { contains: query, mode: "insensitive" } },
+                        { phone: { contains: query } },
+                    ],
+                }
+                : {}),
+        };
+        const cursorWhere: Prisma.StudentWhereInput | undefined = filters?.cursor
+            ? {
+                OR: [
+                    { createdAt: { lt: filters.cursor.sort } },
+                    {
+                        createdAt: filters.cursor.sort,
+                        id: { lt: filters.cursor.id },
+                    },
+                ],
+            }
+            : undefined;
+
+        if (filters?.limit === undefined) {
+            return prisma.student.findMany({
+                where: baseWhere,
+                include: STUDENT_LIST_INCLUDE,
+                orderBy: [
+                    { name: "asc" },
+                    { id: "asc" },
+                ],
+            });
+        }
+
+        const limit = filters.limit ?? DEFAULT_PAGE_SIZE;
+
+        const [rows, total] = await Promise.all([
+            prisma.student.findMany({
+                where: cursorWhere ? { AND: [baseWhere, cursorWhere] } : baseWhere,
+                include: STUDENT_LIST_INCLUDE,
+                orderBy: [
+                    { createdAt: "desc" },
+                    { id: "desc" },
+                ],
+                take: limit + 1,
+            }),
+            prisma.student.count({ where: baseWhere }),
+        ]);
+
+        return pageFromRows(rows, limit, total, student => ({
+            sort: student.createdAt,
+            id: student.id,
+        }));
     }
 
     /**

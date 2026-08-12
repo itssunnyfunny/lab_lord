@@ -2,6 +2,7 @@
 
 import { use } from "react";
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 import { ImportSessionWizard } from "./_components/ImportSessionWizard";
 
 export default function ImportSessionPage({ params }: { params: Promise<{ branchId: string; sessionId: string }> }) {
@@ -9,7 +10,13 @@ export default function ImportSessionPage({ params }: { params: Promise<{ branch
 
     return (
         <BranchAccessGuard branchId={branchId} permission="students">
-            <ImportSessionWizard branchId={branchId} sessionId={sessionId} />
+            {access => (
+                <ImportSessionWizard
+                    branchId={branchId}
+                    sessionId={sessionId}
+                    importDecision={getBranchCapabilityDecision(access, "importStudents")}
+                />
+            )}
         </BranchAccessGuard>
     );
 }

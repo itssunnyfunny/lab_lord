@@ -28,13 +28,16 @@ export const entrySecondaryLinkClass =
 
 const clerkThemeVariables = {
     colorPrimary: "#67e8f9",
+    colorPrimaryForeground: "#07131a",
     colorBackground: "#0f111a",
-    colorInputBackground: "#171a24",
-    colorInputText: "#f9fafb",
-    colorText: "#f9fafb",
-    colorTextSecondary: "#b6bdc9",
+    colorForeground: "#f9fafb",
+    colorMutedForeground: "#b6bdc9",
+    colorInput: "#171a24",
+    colorInputForeground: "#f9fafb",
     colorDanger: "#fca5a5",
     colorNeutral: "#a8b0bd",
+    colorBorder: "rgba(255, 255, 255, 0.14)",
+    colorRing: "rgba(103, 232, 249, 0.58)",
     borderRadius: "12px",
     fontFamily: "inherit",
 };
@@ -66,6 +69,9 @@ export const entryClerkAppearance = {
             "!text-slate-400 hover:!text-white focus-visible:ring-2 focus-visible:ring-cyan-300/40",
         formFieldAction:
             "font-medium !text-cyan-300 hover:!text-cyan-200",
+        formFieldHintText: "text-sm leading-5 !text-slate-300",
+        formFieldInfoText: "text-sm leading-5 !text-slate-300",
+        formFieldWarningText: "text-sm leading-5 !text-amber-200",
         formFieldErrorText: "text-sm !text-red-300",
         formFieldSuccessText: "text-sm !text-emerald-300",
         formButtonPrimary:
@@ -100,7 +106,7 @@ export const accountMenuClerkAppearance = {
     variables: clerkThemeVariables,
     elements: {
         avatarBox:
-            "h-9 w-9 rounded-full ring-1 ring-white/15 transition-shadow hover:ring-cyan-300/45 focus-visible:ring-2 focus-visible:ring-cyan-300/60",
+            "!h-11 !w-11 rounded-full ring-1 ring-white/15 transition-shadow hover:ring-cyan-300/45 focus-visible:ring-2 focus-visible:ring-cyan-300/60 lg:!h-9 lg:!w-9",
         userButtonPopoverCard:
             "rounded-xl !border !border-white/10 !bg-[#0f111a] shadow-[0_24px_70px_rgba(0,0,0,0.48)]",
         userButtonPopoverMain: "!bg-[#0f111a]",
@@ -122,7 +128,8 @@ export const accountProfileClerkAppearance = {
         modalBackdrop: "!bg-black/75 backdrop-blur-sm",
         modalContent:
             "overflow-hidden rounded-2xl !border !border-white/10 !bg-[#0f111a] shadow-[0_28px_90px_rgba(0,0,0,0.58)]",
-        cardBox: "shadow-none",
+        rootBox: "!text-slate-100",
+        cardBox: "!bg-[#0f111a] shadow-none",
         card:
             "rounded-2xl !border !border-white/10 !bg-[#0f111a] shadow-[0_28px_90px_rgba(0,0,0,0.52)]",
         navbar: "!border-white/10 !bg-[#0b0d14]",
@@ -156,5 +163,14 @@ export const accountProfileClerkAppearance = {
         alertText: "!text-red-200",
         modalCloseButton:
             "rounded-lg !text-slate-400 hover:!bg-white/[0.06] hover:!text-white",
+    },
+};
+
+export const clerkAppAppearance = {
+    variables: clerkThemeVariables,
+    elements: {
+        ...entryClerkAppearance.elements,
+        ...accountMenuClerkAppearance.elements,
+        ...accountProfileClerkAppearance.elements,
     },
 };

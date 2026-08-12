@@ -6,18 +6,15 @@ import { AmbientBackground } from "@/components/ui/AmbientBackground";
 import { usePathname, useRouter } from "next/navigation";
 import { BranchTopSearch } from "@/components/layout/BranchTopSearch";
 import { BranchNotifications } from "@/components/layout/BranchNotifications";
-import { Menu, X } from "lucide-react";
+import { Menu } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
     chromeAppRootClass,
-    chromeCompactIconButtonClass,
     chromeDividerClass,
     chromeHeaderClass,
     chromeIconButtonClass,
     chromeInlineCardHoverClass,
-    chromeMobilePanelClass,
     chromeMutedTextClass,
-    chromeOverlayClass,
 } from "@/components/ui/chromeSurface";
 import {
     accountMenuClerkAppearance,
@@ -26,6 +23,12 @@ import {
 import { useBillingExperience } from "@/components/billing/BillingExperienceProvider";
 import { BillingBanner } from "@/components/billing/BillingBanner";
 import { ReadOnlyBanner } from "@/components/billing/ReadOnlyBanner";
+import { WorkspaceSwitcher } from "@/components/layout/WorkspaceSwitcher";
+import { UserPreferencesProvider, useUserPreferences } from "@/components/settings/UserPreferencesApplier";
+import { ToastProvider } from "@/components/ui/Toast";
+import { RouteTitleUpdater } from "@/components/layout/RouteTitleUpdater";
+import { Drawer } from "@/components/ui/Drawer";
+import { ContextualBackLink } from "@/components/layout/ContextualBackLink";
 
 interface User {
     name: string;
@@ -41,7 +44,12 @@ interface AppShellProps {
 
 function AccountSummary({ user }: { user?: User }) {
     const { user: clerkUser } = useUser();
-    const displayName = user?.name ?? clerkUser?.fullName ?? clerkUser?.primaryEmailAddress?.emailAddress ?? "Account";
+    const { profileName } = useUserPreferences();
+    const displayName = profileName
+        || user?.name?.trim()
+        || clerkUser?.fullName?.trim()
+        || clerkUser?.firstName?.trim()
+        || "Set up profile";
     const displayRole = user?.role ?? "Workspace User";
 
     return (
@@ -68,69 +76,49 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
         return () => window.clearTimeout(closeTimer);
     }, [pathname]);
 
-    useEffect(() => {
-        if (!mobileNavOpen) return;
-
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                setMobileNavOpen(false);
-            }
-        };
-
-        document.addEventListener("keydown", handleKeyDown);
-        return () => document.removeEventListener("keydown", handleKeyDown);
-    }, [mobileNavOpen]);
-
     return (
+        <UserPreferencesProvider>
+        <ToastProvider>
         <div className={chromeAppRootClass}>
+            <RouteTitleUpdater />
+            <a
+                href="#main-content"
+                className="fixed left-4 top-3 z-[120] -translate-y-20 rounded-[var(--ui-radius-control)] bg-cyan-200 px-4 py-2 text-sm font-bold text-slate-950 shadow-lg transition-transform focus:translate-y-0"
+            >
+                Skip to main content
+            </a>
             <AmbientBackground />
 
             {/* Sidebar Area - Glassmorphic */}
-            <div className="relative z-30 hidden md:block">
+            <div className="relative z-30 hidden lg:block">
                 {sidebar}
             </div>
 
-            {mobileNavOpen && (
-                <div className="fixed inset-0 z-[80] md:hidden">
-                    <button
-                        type="button"
-                        className={chromeOverlayClass}
-                        aria-label="Close navigation"
-                        onClick={() => setMobileNavOpen(false)}
-                    />
-                    <aside
-                        className={chromeMobilePanelClass}
-                        aria-label="Mobile navigation"
-                    >
-                        <button
-                            type="button"
-                            onClick={() => setMobileNavOpen(false)}
-                            className={cn("absolute right-3 top-3 z-50", chromeCompactIconButtonClass)}
-                            aria-label="Close navigation"
-                        >
-                            <X size={17} />
-                        </button>
-                        <div className="h-full overflow-hidden">
-                            {sidebar}
-                        </div>
-                    </aside>
-                </div>
-            )}
+            <Drawer
+                open={mobileNavOpen}
+                onClose={() => setMobileNavOpen(false)}
+                title="Workspace navigation"
+                closeLabel="Close navigation"
+                className="max-w-[19rem] lg:hidden"
+            >
+                <div className="h-[calc(100dvh-7rem)] overflow-hidden">{sidebar}</div>
+            </Drawer>
 
             {/* Main Content Area */}
             <div className="flex-1 flex flex-col min-w-0 max-w-full relative z-10">
                 {/* Top Header */}
                 <header className={chromeHeaderClass}>
-                    <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4 md:max-w-md">
+                    <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3 lg:max-w-md lg:gap-4">
                         <button
                             type="button"
                             onClick={() => setMobileNavOpen(true)}
-                            className={cn("flex-shrink-0 md:hidden", chromeIconButtonClass)}
+                            className={cn("flex-shrink-0 lg:hidden", chromeIconButtonClass)}
                             aria-label="Open navigation"
                             aria-expanded={mobileNavOpen}
                         >
                             <Menu size={18} />
                         </button>
+                        <WorkspaceSwitcher className="min-w-0 flex-1 lg:w-48 lg:flex-none" />
                         {showBranchChrome && <BranchTopSearch />}
                     </div>
 
@@ -142,8 +130,9 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
                             </>
                         )}
                         <button
+                            type="button"
                             onClick={() => router.push('/account')}
-                            className={cn("hidden items-center gap-3 rounded-full border border-transparent py-1 pl-2 pr-1 transition-colors sm:flex", chromeInlineCardHoverClass)}
+                            className={cn("hidden items-center gap-3 rounded-full border border-transparent py-1 pl-2 pr-1 transition-colors lg:flex", chromeInlineCardHoverClass)}
                         >
                             <AccountSummary user={user} />
                         </button>
@@ -156,12 +145,15 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
                 </header>
 
                 {/* Page Content */}
-                <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto p-3 sm:p-4 md:p-6 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 overflow-y-auto p-4 [padding-bottom:max(1rem,env(safe-area-inset-bottom))] sm:p-6 sm:[padding-bottom:max(1.5rem,env(safe-area-inset-bottom))] lg:p-8 lg:[padding-bottom:max(2rem,env(safe-area-inset-bottom))]">
                     {billing?.experience && <ReadOnlyBanner experience={billing.experience} />}
                     {billing?.experience && <BillingBanner experience={billing.experience} />}
+                    <ContextualBackLink />
                     {children}
                 </main>
             </div>
         </div>
+        </ToastProvider>
+        </UserPreferencesProvider>
     );
 }

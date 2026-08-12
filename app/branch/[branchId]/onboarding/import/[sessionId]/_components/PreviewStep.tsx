@@ -1,11 +1,12 @@
 import { RotateCcw, UploadCloud } from "lucide-react";
-import { AppButton, AppPanel } from "@/components/ui";
+import { AppButton, AppPanel, AppSelect } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { cn } from "@/lib/utils";
 import type { CommitMode, ImportOptions } from "@/importing/contracts/import-session.contract";
 import { isPaymentSkipped, isPreviewFresh } from "@/importing/utils/import-wizard-view-model";
 import { pageInsetSurfaceClass, pageMutedTextClass, pageTableBodyDividerClass, pageTableHeadClass, pageTableRowClass } from "@/components/ui/pageSurface";
-import { PlanCheckBadge, StepNotice, previewSummaryLabels, StatusBadge, importOptionClass, importSelectClass } from "./shared";
+import { AccessibleTableScroll, PlanCheckBadge, StepNotice, previewSummaryLabels, StatusBadge } from "./shared";
 import type { Preview } from "./types";
 
 type PreviewStepProps = {
@@ -13,6 +14,7 @@ type PreviewStepProps = {
     importOptions: ImportOptions;
     commitMode: CommitMode;
     saving: boolean;
+    mutationsDisabled: boolean;
     onModeChange: (mode: CommitMode) => void;
     onRefreshPreview: () => void;
     onConfirmImport: () => void;
@@ -23,18 +25,20 @@ export function PreviewStep({
     importOptions,
     commitMode,
     saving,
+    mutationsDisabled,
     onModeChange,
     onRefreshPreview,
     onConfirmImport,
 }: PreviewStepProps) {
+    const { formatDateTime, formatNumber } = useUserPreferences();
     const previewFresh = isPreviewFresh(preview, commitMode);
     const rowsNotImported = (preview?.summary.blockedRows ?? 0) + (preview?.summary.skippedRows ?? 0);
     const commitLabel = !preview
         ? "Refresh final preview"
         : commitMode === "SAFE_PARTIAL"
             ? rowsNotImported > 0
-                ? `Import ${preview.summary.createStudents} ready, skip ${rowsNotImported}`
-                : `Import ${preview.summary.createStudents} students`
+                ? `Import ${formatNumber(preview.summary.createStudents)} ready, skip ${formatNumber(rowsNotImported)}`
+                : `Import ${formatNumber(preview.summary.createStudents)} students`
             : "Import all rows";
     const modeLabel = commitMode === "SAFE_PARTIAL"
         ? "Ready rows only"
@@ -78,15 +82,23 @@ export function PreviewStep({
                 description={preview?.planVersion ? `Plan ${preview.planVersion}` : "Refresh the plan before importing."}
                 action={
                     <div className="flex flex-wrap gap-2">
-                        <select
+                        <label htmlFor="import-commit-mode" className="sr-only">Import mode</label>
+                        <AppSelect
+                            id="import-commit-mode"
                             value={commitMode}
-                            onChange={event => onModeChange(event.target.value as CommitMode)}
-                            className={cn("h-10 px-3 py-0", importSelectClass)}
+                            onValueChange={value => onModeChange(value as CommitMode)}
+                            options={[
+                                { value: "SAFE_PARTIAL", label: "Safe partial" },
+                                { value: "STRICT_ALL_OR_NOTHING", label: "Strict all or nothing" },
+                            ]}
+                            className="h-11 min-h-11 px-3 py-0 lg:h-10 lg:min-h-10"
+                        />
+                        <AppButton
+                            variant="secondary"
+                            icon={RotateCcw}
+                            onClick={onRefreshPreview}
+                            isLoading={saving}
                         >
-                            <option value="SAFE_PARTIAL" className={importOptionClass}>Safe partial</option>
-                            <option value="STRICT_ALL_OR_NOTHING" className={importOptionClass}>Strict all or nothing</option>
-                        </select>
-                        <AppButton variant="secondary" icon={RotateCcw} onClick={onRefreshPreview} isLoading={saving}>
                             Refresh
                         </AppButton>
                     </div>
@@ -112,14 +124,14 @@ export function PreviewStep({
                                 {preview.canCommit && previewFresh && (
                                     <Badge variant="purple">Database write ready</Badge>
                                 )}
-                                <span className={cn("text-xs", pageMutedTextClass)}>{new Date(preview.generatedAt).toLocaleString()}</span>
+                                <span className={cn("text-xs", pageMutedTextClass)}>{formatDateTime(preview.generatedAt)}</span>
                             </div>
 
                             <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
                                 {Object.entries(preview.summary).map(([label, value]) => (
                                     <div key={label} className={cn("p-3", pageInsetSurfaceClass)}>
                                         <p className={cn("text-xs", pageMutedTextClass)}>{previewSummaryLabels[label] ?? label}</p>
-                                        <p className="mt-1 text-lg font-semibold text-[color:var(--text-primary)]">{String(value)}</p>
+                                        <p className="mt-1 text-lg font-semibold text-[color:var(--text-primary)]">{formatNumber(value)}</p>
                                     </div>
                                 ))}
                             </div>
@@ -128,7 +140,7 @@ export function PreviewStep({
                                 <div className={cn("p-3", pageInsetSurfaceClass)}>
                                     <p className={cn("text-xs", pageMutedTextClass)}>Students after confirm</p>
                                     <p className="mt-1 text-sm font-semibold text-[color:var(--text-primary)]">
-                                        {preview.summary.createStudents} will be created
+                                        {formatNumber(preview.summary.createStudents)} will be created
                                     </p>
                                     <p className={cn("mt-1 text-xs leading-5", pageMutedTextClass)}>
                                         From rows marked will import.
@@ -137,7 +149,7 @@ export function PreviewStep({
                                 <div className={cn("p-3", pageInsetSurfaceClass)}>
                                     <p className={cn("text-xs", pageMutedTextClass)}>Seat/shift after confirm</p>
                                     <p className="mt-1 text-sm font-semibold text-[color:var(--text-primary)]">
-                                        {allocationsDeferred ? "Deferred when unclear" : `${preview.summary.createAllocations} allocation links`}
+                                        {allocationsDeferred ? "Deferred when unclear" : `${formatNumber(preview.summary.createAllocations)} allocation links`}
                                     </p>
                                     <p className={cn("mt-1 text-xs leading-5", pageMutedTextClass)}>
                                         {allocationsDeferred ? "Unclear rows become students without allocation links." : "Links are created only where seat and shift are valid."}
@@ -146,7 +158,7 @@ export function PreviewStep({
                                 <div className={cn("p-3", pageInsetSurfaceClass)}>
                                     <p className={cn("text-xs", pageMutedTextClass)}>Payments after confirm</p>
                                     <p className="mt-1 text-sm font-semibold text-[color:var(--text-primary)]">
-                                        {paymentsSkipped ? "Skipped for now" : `${preview.summary.generatePayments} payments planned`}
+                                        {paymentsSkipped ? "Skipped for now" : `${formatNumber(preview.summary.generatePayments)} payments planned`}
                                     </p>
                                     <p className={cn("mt-1 text-xs leading-5", pageMutedTextClass)}>
                                         {paymentsSkipped ? "No due or paid records will be created." : "Payment records follow joined-date billing and stop at today."}
@@ -160,7 +172,7 @@ export function PreviewStep({
                                         <div className="flex flex-wrap items-center gap-2">
                                             <PlanCheckBadge status={check.status} />
                                             <p className="text-sm font-semibold text-[color:var(--text-primary)]">{check.label}</p>
-                                            {typeof check.count === "number" && <Badge variant="default">{check.count}</Badge>}
+                                            {typeof check.count === "number" && <Badge variant="default">{formatNumber(check.count)}</Badge>}
                                         </div>
                                         <p className={cn("mt-1 text-xs leading-5", pageMutedTextClass)}>{check.message}</p>
                                         {check.action && <p className="mt-1 text-xs text-amber-200">{check.action}</p>}
@@ -174,7 +186,8 @@ export function PreviewStep({
                         variant="primary"
                         icon={UploadCloud}
                         onClick={preview ? onConfirmImport : onRefreshPreview}
-                        disabled={preview ? !preview.canCommit || !previewFresh : false}
+                        disabled={preview ? mutationsDisabled || !preview.canCommit || !previewFresh : false}
+                        aria-describedby={preview && mutationsDisabled ? "import-session-mutation-blocker" : undefined}
                         isLoading={saving}
                     >
                         {commitLabel}
@@ -184,21 +197,25 @@ export function PreviewStep({
 
             {preview && (
                 <AppPanel title="Rows in this plan" description="The commit service revalidates this plan before creating records." contentClassName="p-0">
-                    <div className="max-h-[460px] overflow-auto">
+                    <AccessibleTableScroll
+                        label="Rows in the final import plan"
+                        className="max-h-[460px]"
+                    >
                         <table className="w-full min-w-[820px] text-left text-sm">
+                            <caption className="sr-only">Rows included in the final import plan</caption>
                             <thead className={pageTableHeadClass}>
                                 <tr className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">
-                                    <th className="p-3">Row</th>
-                                    <th className="p-3">Student</th>
-                                    <th className="p-3">Seat / shift</th>
-                                    <th className="p-3">Status</th>
-                                    <th className="p-3">Action</th>
+                                    <th scope="col" className="p-3">Row</th>
+                                    <th scope="col" className="p-3">Student</th>
+                                    <th scope="col" className="p-3">Seat / shift</th>
+                                    <th scope="col" className="p-3">Status</th>
+                                    <th scope="col" className="p-3">Action</th>
                                 </tr>
                             </thead>
                             <tbody className={pageTableBodyDividerClass}>
                                 {preview.rows.slice(0, 80).map(row => (
                                     <tr key={row.rowId} className={pageTableRowClass}>
-                                        <td className="p-3">#{row.rowNumber}</td>
+                                        <th scope="row" className="p-3 text-left font-normal">#{formatNumber(row.rowNumber)}</th>
                                         <td className="p-3 font-medium text-[color:var(--text-primary)]">{row.normalizedData?.student?.name ?? "-"}</td>
                                         <td className={cn("p-3", pageMutedTextClass)}>
                                             {[
@@ -216,7 +233,7 @@ export function PreviewStep({
                                 ))}
                             </tbody>
                         </table>
-                    </div>
+                    </AccessibleTableScroll>
                     {preview.rows.length > 80 && (
                         <p className={cn("border-t border-[color:var(--ui-table-border)] p-3 text-xs", pageMutedTextClass)}>
                             Showing first 80 rows from the final plan.

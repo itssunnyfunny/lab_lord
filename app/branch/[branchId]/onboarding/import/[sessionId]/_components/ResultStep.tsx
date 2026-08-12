@@ -2,6 +2,7 @@ import { ArrowRight, LayoutDashboard, ReceiptText, Sofa, UsersRound } from "luci
 import { useRouter } from "next/navigation";
 import { AppButton, AppPanel } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { cn } from "@/lib/utils";
 import { pageInsetSurfaceClass, pageMutedTextClass } from "@/components/ui/pageSurface";
 import { StatusBadge, StepNotice } from "./shared";
@@ -37,6 +38,7 @@ const knownCommitSummaryKeys = new Set([
 
 export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
     const router = useRouter();
+    const { formatDateTime, formatNumber } = useUserPreferences();
     const latestCommit = detail.commits?.[0];
     const summary = latestCommit?.summary;
     const createdStudents = summaryNumber(summary, "createdStudents");
@@ -66,14 +68,14 @@ export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
                 ? {
                     tone: "warning" as const,
                     title: "Partial import committed",
-                    message: `${createdStudents} student${createdStudents === 1 ? "" : "s"} were created. Skipped or failed rows remain in this import session for follow-up.`,
+                    message: `${formatNumber(createdStudents)} student${createdStudents === 1 ? "" : "s"} were created. Skipped or failed rows remain in this import session for follow-up.`,
                 }
                 : {
                     tone: "success" as const,
                     title: "Import committed",
-                    message: `${createdStudents} student${createdStudents === 1 ? "" : "s"} were created in the branch records.`,
+                    message: `${formatNumber(createdStudents)} student${createdStudents === 1 ? "" : "s"} were created in the branch records.`,
                 };
-    const resultCards = [
+    const resultCards: Array<[string, number]> = [
         ["Students created", createdStudents],
         ["Seat links created", createdAllocations],
         ["Payments generated", generatedPayments],
@@ -112,7 +114,7 @@ export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
                                 {latestCommit.status}
                             </Badge>
                             {latestCommit.createdAt && (
-                                <span className={cn("text-xs", pageMutedTextClass)}>{new Date(latestCommit.createdAt).toLocaleString()}</span>
+                                <span className={cn("text-xs", pageMutedTextClass)}>{formatDateTime(latestCommit.createdAt)}</span>
                             )}
                         </div>
 
@@ -120,7 +122,7 @@ export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
                             {resultCards.map(([label, value]) => (
                                 <div key={label} className={cn("p-3", pageInsetSurfaceClass)}>
                                     <p className={cn("text-xs", pageMutedTextClass)}>{label}</p>
-                                    <p className="mt-1 text-xl font-semibold text-[color:var(--text-primary)]">{String(value)}</p>
+                                    <p className="mt-1 text-xl font-semibold text-[color:var(--text-primary)]">{formatNumber(value)}</p>
                                 </div>
                             ))}
                         </div>
@@ -136,7 +138,7 @@ export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
                                         .map(([label, value]) => (
                                             <div key={label}>
                                                 <p className={cn("text-xs", pageMutedTextClass)}>{formatSummaryLabel(label)}</p>
-                                                <p className="mt-1 text-sm font-semibold text-[color:var(--text-primary)]">{String(value)}</p>
+                                                <p className="mt-1 text-sm font-semibold text-[color:var(--text-primary)]">{formatNumber(value)}</p>
                                             </div>
                                         ))}
                                 </div>
@@ -148,7 +150,9 @@ export function ResultStep({ branchId, detail, onGoPreview }: ResultStepProps) {
                                 {latestCommit.errors.slice(0, 10).map((error, index) => (
                                     <div key={index} className={cn("p-3", pageInsetSurfaceClass)}>
                                         <p className="text-sm font-semibold text-red-200">
-                                            {typeof error === "object" && error && "rowNumber" in error ? `Row ${(error as { rowNumber?: number }).rowNumber ?? "-"}` : "Import error"}
+                                            {typeof error === "object" && error && "rowNumber" in error
+                                                ? `Row ${typeof (error as { rowNumber?: number }).rowNumber === "number" ? formatNumber((error as { rowNumber: number }).rowNumber) : "-"}`
+                                                : "Import error"}
                                         </p>
                                         <p className={cn("mt-1 text-xs", pageMutedTextClass)}>
                                             {typeof error === "object" && error && "message" in error ? String((error as { message?: unknown }).message) : JSON.stringify(error)}

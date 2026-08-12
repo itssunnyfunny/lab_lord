@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   authorize: vi.fn(),
   assertBranchEntitlement: vi.fn(),
+  assertBranchWritable: vi.fn(),
   runBranchAI: vi.fn(),
   draftOverdueMessages: vi.fn(),
 }));
@@ -13,7 +14,10 @@ vi.mock("@/services/staff.service", () => ({
   StaffService: { authorize: mocks.authorize },
 }));
 vi.mock("@/services/entitlement.service", () => ({
-  EntitlementService: { assertBranchEntitlement: mocks.assertBranchEntitlement },
+  EntitlementService: {
+    assertBranchEntitlement: mocks.assertBranchEntitlement,
+    assertBranchWritable: mocks.assertBranchWritable,
+  },
 }));
 vi.mock("@/ai/orchestrator/branchAI.orchestrator", () => ({
   runBranchAI: mocks.runBranchAI,
@@ -30,6 +34,7 @@ describe("AI route subscription entitlements", () => {
     mocks.assertBranchEntitlement.mockRejectedValue(
       new Error("Unauthorized: ai access requires an upgraded subscription plan")
     );
+    mocks.assertBranchWritable.mockResolvedValue({ canWrite: true });
   });
 
   it("returns 403 before generating a Basic-plan AI report", async () => {
@@ -54,5 +59,45 @@ describe("AI route subscription entitlements", () => {
     expect(response.status).toBe(403);
     expect(mocks.assertBranchEntitlement).toHaveBeenCalledWith("branch_1", "AI_ACCESS");
     expect(mocks.draftOverdueMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not generate a report when billing makes the branch read-only", async () => {
+    mocks.assertBranchEntitlement.mockResolvedValue({ entitlements: ["AI_ACCESS"] });
+    mocks.assertBranchWritable.mockRejectedValue(new Error("Unauthorized: restore billing to make changes"));
+
+    const { GET } = await import("@/app/api/ai/branch/[branchId]/route");
+    const response = await GET(
+      new Request("http://test.local/api/ai/branch/branch_1"),
+      { params: Promise.resolve({ branchId: "branch_1" }) }
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.assertBranchWritable).toHaveBeenCalledWith("branch_1");
+    expect(mocks.runBranchAI).not.toHaveBeenCalled();
+  });
+
+  it("allows cached draft reads but blocks regeneration in read-only mode", async () => {
+    mocks.assertBranchEntitlement.mockResolvedValue({ entitlements: ["AI_ACCESS"] });
+    mocks.assertBranchWritable.mockRejectedValue(new Error("Unauthorized: restore billing to make changes"));
+    mocks.draftOverdueMessages.mockResolvedValue({ items: [], meta: {} });
+
+    const route = await import("@/app/api/ai/branch/[branchId]/messages/route");
+    const params = { params: Promise.resolve({ branchId: "branch_1" }) };
+    const readResponse = await route.GET(
+      new Request("http://test.local/api/ai/branch/branch_1/messages") as never,
+      params
+    );
+    const writeResponse = await route.POST(
+      new Request("http://test.local/api/ai/branch/branch_1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentIds: ["student_1"] }),
+      }) as never,
+      { params: Promise.resolve({ branchId: "branch_1" }) }
+    );
+
+    expect(readResponse.status).toBe(200);
+    expect(writeResponse.status).toBe(403);
+    expect(mocks.draftOverdueMessages).toHaveBeenCalledTimes(1);
   });
 });

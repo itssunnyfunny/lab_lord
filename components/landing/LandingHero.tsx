@@ -121,12 +121,12 @@ function HeroDashboardScene() {
             <div className="p-5">
               <div className="mb-4 flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Live command center</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Sample command center</p>
                   <h2 className="mt-1 text-2xl font-semibold tracking-tight text-[color:var(--text-primary)]">Branch Overview</h2>
                 </div>
                 <div className="landing-live-pulse flex items-center gap-2 rounded-full border border-[color:var(--ui-badge-success-border)] bg-[color:var(--ui-badge-success-bg)] px-3 py-1.5 text-xs font-semibold text-[color:var(--ui-badge-success-text)]">
                   <CheckCircle2 size={13} />
-                  9:00 AM shift live
+                  Sample 9:00 AM shift
                 </div>
               </div>
 
@@ -228,9 +228,11 @@ function HeroDashboardScene() {
 export function LandingHero({
   isSignedIn,
   onWorkspaceClick,
+  onTourClick,
 }: {
   isSignedIn: boolean;
   onWorkspaceClick: (source: string) => void;
+  onTourClick: (source: string) => void;
 }) {
   return (
     <section className="relative z-10 overflow-hidden border-b border-[color:var(--ui-panel-header-border)]">
@@ -264,10 +266,14 @@ export function LandingHero({
               {isSignedIn ? "Open workspace" : "Start with your branch"}
               <ArrowRight size={16} />
             </button>
-            <button type="button" onClick={() => onWorkspaceClick("landing_hero_secondary")} className={landingSecondaryButtonClass}>
+            <a
+              href="#product-tour"
+              onClick={() => onTourClick("landing_hero_product_tour")}
+              className={landingSecondaryButtonClass}
+            >
               <CalendarClock size={16} />
-              View live workspace
-            </button>
+              See product tour
+            </a>
           </div>
         </div>
 
@@ -280,7 +286,13 @@ export function LandingHero({
           ))}
         </div>
 
-        <div className="landing-reveal mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-medium text-[color:var(--text-muted)] [animation-delay:820ms]">
+        <div
+          className="landing-reveal mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-medium text-[color:var(--text-secondary)] [animation-delay:820ms]"
+          aria-label="Sample workspace metrics"
+        >
+          <span className="inline-flex min-h-7 items-center rounded-full border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] px-2.5 text-xs font-semibold text-[color:var(--ui-badge-cyan-text)]">
+            Sample workspace data
+          </span>
           <span className="inline-flex items-center gap-2">
             <Users size={14} className="text-[color:var(--ui-tone-success-text)]" />
             248 active students

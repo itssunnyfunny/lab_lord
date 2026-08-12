@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { OrganizationService } from "@/services/organization.service";
 import { getSessionUser } from "@/lib/auth";
+import { BillingReadOnlyError } from "@/services/entitlement.service";
 
 /**
  * GET /api/organizations/[orgId]
@@ -15,7 +16,7 @@ export async function GET(
         if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
         const { orgId } = await context.params;
-        const org = await OrganizationService.getOrganizationForOwner(orgId, user.id);
+        const org = await OrganizationService.getOrganizationForOwnerAccess(orgId, user.id);
 
         return NextResponse.json(org);
     } catch (error: unknown) {
@@ -45,6 +46,9 @@ export async function PATCH(
         return NextResponse.json(updated);
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "Internal Server Error";
+        if (error instanceof BillingReadOnlyError) {
+            return NextResponse.json({ error: message, code: error.code }, { status: 403 });
+        }
         const status = message.includes("not found") ? 404
             : message.includes("Unauthorized") ? 403
                 : message.includes("Unknown") || message.includes("must") || message.includes("required") || message.includes("supported") ? 400

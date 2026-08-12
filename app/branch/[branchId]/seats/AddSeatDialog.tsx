@@ -1,17 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Hash, Loader2, Plus, X } from "lucide-react";
+import { Hash, Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
 import {
     SeatNumberingBuilder,
     createRangeSeatNumbering,
 } from "@/components/seats/SeatNumberingBuilder";
 import {
     formControlClass,
-    formDialogFooterClass,
-    formDialogHeaderClass,
-    formDialogPanelClass,
     formErrorBannerClass,
     formHelpTextClass,
     formLabelClass,
@@ -107,27 +105,43 @@ export function AddSeatDialog({ isOpen, onClose, onSuccess, branchId }: AddSeatD
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-[color:var(--ui-form-overlay-bg)] p-3 backdrop-blur-sm animate-in fade-in duration-200 sm:items-center sm:p-4">
-            <div
-                className={cn("flex max-h-[calc(100dvh-1.5rem)] w-full max-w-md flex-col animate-in zoom-in-95 duration-200", formDialogPanelClass)}
-                onClick={(e) => e.stopPropagation()}
-            >
-                <div className={cn("flex flex-shrink-0 items-center justify-between px-4 py-4 sm:px-6", formDialogHeaderClass)}>
-                    <h2 className="text-lg font-semibold text-[color:var(--ui-dialog-title)]">Add Seats</h2>
-                    <button type="button" onClick={onClose} className={cn("cursor-pointer transition-colors hover:text-[color:var(--ui-table-text)]", formHelpTextClass)}>
-                        <X size={20} />
-                    </button>
-                </div>
-
-                <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
-                    <form id="add-seat-form" onSubmit={handleSubmit} className="space-y-6">
+        <Dialog
+            open={isOpen}
+            onClose={onClose}
+            title="Add seats"
+            description="Create one seat or generate a numbered set."
+            closeLabel="Close add seats dialog"
+            closeDisabled={isLoading}
+            className="max-w-md"
+            footer={(
+                <>
+                    <Button type="button" variant="ghost" onClick={onClose} disabled={isLoading}>
+                        Cancel
+                    </Button>
+                    <Button type="submit" form="add-seat-form" disabled={isLoading} className="min-w-[120px]">
+                        {isLoading ? (
+                            <><Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> Saving...</>
+                        ) : (
+                            mode === "single" ? "Create Seat" : "Generate Seats"
+                        )}
+                    </Button>
+                </>
+            )}
+        >
+                    <form
+                        id="add-seat-form"
+                        onSubmit={handleSubmit}
+                        aria-describedby={error ? "add-seat-submit-error" : undefined}
+                        noValidate
+                        className="space-y-6"
+                    >
                         {error && (
-                            <div className={cn("p-3 text-sm", formErrorBannerClass)}>
+                            <div id="add-seat-submit-error" role="alert" className={cn("p-3 text-sm", formErrorBannerClass)}>
                                 {error}
                             </div>
                         )}
 
-                        <div className="flex flex-wrap gap-2">
+                        <div className="flex flex-wrap gap-2" role="group" aria-label="Seat creation mode">
                             <button
                                 type="button"
                                 disabled={isLoading}
@@ -140,7 +154,7 @@ export function AddSeatDialog({ isOpen, onClose, onSuccess, branchId }: AddSeatD
                                 )}
                                 aria-pressed={mode === "single"}
                             >
-                                <Plus size={15} />
+                                <Plus size={15} aria-hidden="true" />
                                 Single seat
                             </button>
                             <button
@@ -155,18 +169,18 @@ export function AddSeatDialog({ isOpen, onClose, onSuccess, branchId }: AddSeatD
                                 )}
                                 aria-pressed={mode === "generate"}
                             >
-                                <Hash size={15} />
+                                <Hash size={15} aria-hidden="true" />
                                 Generate seats
                             </button>
                         </div>
 
                         {mode === "single" ? (
                             <div className="space-y-2">
-                                <label htmlFor="label" className={formLabelClass}>
+                                <label htmlFor="add-seat-label" className={formLabelClass}>
                                     Seat Label <span className={formRequiredClass}>*</span>
                                 </label>
                                 <input
-                                    id="label"
+                                    id="add-seat-label"
                                     type="text"
                                     disabled={isLoading}
                                     value={label}
@@ -174,7 +188,7 @@ export function AddSeatDialog({ isOpen, onClose, onSuccess, branchId }: AddSeatD
                                     onBlur={() => markTouched("label")}
                                     className={cn(formControlClass, "px-3 py-2", fieldErrorClass(labelError))}
                                     placeholder="e.g. S-01, Row A - 12"
-                                    autoFocus
+                                    data-dialog-initial-focus
                                     maxLength={FORM_LIMITS.seatLabelMax}
                                     {...fieldErrorProps("add-seat-label-error", labelError)}
                                 />
@@ -185,9 +199,14 @@ export function AddSeatDialog({ isOpen, onClose, onSuccess, branchId }: AddSeatD
                             </div>
                         ) : (
                             <div className="space-y-2">
-                                <label className={formLabelClass}>
+                                <div
+                                    role="group"
+                                    aria-labelledby="generate-seat-numbering-label"
+                                    aria-describedby={seatNumberingError ? "generate-seat-numbering-error" : undefined}
+                                >
+                                <p id="generate-seat-numbering-label" className={formLabelClass}>
                                     Seat numbering <span className={formRequiredClass}>*</span>
-                                </label>
+                                </p>
                                 <SeatNumberingBuilder
                                     value={seatNumbering}
                                     onChange={(next) => {
@@ -198,24 +217,10 @@ export function AddSeatDialog({ isOpen, onClose, onSuccess, branchId }: AddSeatD
                                     disabled={isLoading}
                                 />
                                 <FieldError id="generate-seat-numbering-error" error={seatNumberingError} />
+                                </div>
                             </div>
                         )}
                     </form>
-                </div>
-
-                <div className={cn("flex flex-shrink-0 flex-col-reverse gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-6", formDialogFooterClass)}>
-                    <Button type="button" variant="ghost" onClick={onClose} disabled={isLoading}>
-                        Cancel
-                    </Button>
-                    <Button type="submit" form="add-seat-form" disabled={isLoading} className="min-w-[120px]">
-                        {isLoading ? (
-                            <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...</>
-                        ) : (
-                            mode === "single" ? "Create Seat" : "Generate Seats"
-                        )}
-                    </Button>
-                </div>
-            </div>
-        </div>
+        </Dialog>
     );
 }

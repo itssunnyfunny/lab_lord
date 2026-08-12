@@ -2,16 +2,13 @@
 
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/Button";
-import { X, Loader2, AlertCircle, User, Phone, IndianRupee } from "lucide-react";
+import { Dialog } from "@/components/ui/Dialog";
+import { Loader2, AlertCircle, User, Phone, IndianRupee } from "lucide-react";
 import type { Student } from "@/app/generated/prisma/browser";
 import { FORM_LIMITS, parseIntegerField, validateRequiredPhone, validateRequiredText } from "@/lib/formValidation";
 import {
     formCompactLabelClass,
     formControlClass,
-    formDialogFooterClass,
-    formDialogHeaderClass,
-    formDialogOverlayClass,
-    formDialogPanelClass,
     formErrorBannerClass,
     formHelpTextClass,
     formIconClass,
@@ -136,35 +133,46 @@ export function EditStudentDialog({
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-4">
-            <div className={cn("cursor-pointer", formDialogOverlayClass)} onClick={handleClose} />
-
-            <div className={cn("relative flex max-h-[calc(100dvh-1.5rem)] w-full max-w-sm flex-col", formDialogPanelClass)}>
-                {/* Header */}
-                <div className={cn("flex items-center justify-between px-4 py-4 sm:px-6", formDialogHeaderClass)}>
-                    <div>
-                        <h2 className="text-base font-bold text-[color:var(--ui-dialog-title)]">Edit Student</h2>
-                        <p className={cn("mt-0.5 text-xs", formHelpTextClass)}>Update profile details</p>
-                    </div>
-                    <button type="button" onClick={handleClose} disabled={loading} className={cn("cursor-pointer transition-colors hover:text-[color:var(--ui-table-text)] disabled:cursor-not-allowed", formHelpTextClass)}>
-                        <X size={18} />
-                    </button>
-                </div>
-
-                {/* Body */}
-                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+        <Dialog
+            open={isOpen}
+            onClose={handleClose}
+            title="Edit student"
+            description="Update profile details."
+            closeLabel="Close edit student dialog"
+            closeDisabled={loading}
+            className="max-w-sm"
+            footer={(
+                <>
+                    <Button variant="ghost" onClick={handleClose} disabled={loading} className="h-11 px-3 text-sm lg:h-8">
+                        Cancel
+                    </Button>
+                    <Button
+                        onClick={handleSave}
+                        disabled={loading || !hasChanges}
+                        className="h-11 min-w-[90px] justify-center px-4 text-sm lg:h-8"
+                    >
+                        {loading
+                            ? <><Loader2 size={12} className="mr-1.5 animate-spin" aria-hidden="true" /> Saving...</>
+                            : "Save Changes"
+                        }
+                    </Button>
+                </>
+            )}
+        >
+                <div className="space-y-4" aria-describedby={error ? "edit-student-submit-error" : undefined}>
                     {/* Name */}
                     <div className="space-y-1.5">
-                        <label className={formCompactLabelClass}>Full Name *</label>
+                        <label htmlFor="edit-student-name" className={formCompactLabelClass}>Full Name *</label>
                         <div className="relative">
-                            <User size={14} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} />
+                            <User size={14} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} aria-hidden="true" />
                             <input
+                                id="edit-student-name"
                                 type="text"
                                 value={name}
                                 onChange={e => { setName(e.target.value); setError(null); }}
                                 onBlur={() => markTouched("name")}
                                 placeholder="Student's full name"
-                                autoFocus
+                                data-dialog-initial-focus
                                 maxLength={FORM_LIMITS.nameMax}
                                 className={cn(formControlClass, "py-2.5 pl-9 pr-4 text-sm", fieldErrorClass(nameError))}
                                 {...fieldErrorProps("edit-student-name-error", nameError)}
@@ -175,10 +183,11 @@ export function EditStudentDialog({
 
                     {/* Phone */}
                     <div className="space-y-1.5">
-                        <label className={formCompactLabelClass}>Phone Number *</label>
+                        <label htmlFor="edit-student-phone" className={formCompactLabelClass}>Phone Number *</label>
                         <div className="relative">
-                            <Phone size={14} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} />
+                            <Phone size={14} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} aria-hidden="true" />
                             <input
+                                id="edit-student-phone"
                                 type="tel"
                                 value={phone}
                                 onChange={e => { setPhone(e.target.value); setError(null); }}
@@ -196,7 +205,7 @@ export function EditStudentDialog({
                     {/* Monthly Fee */}
                     <div className="space-y-1.5">
                         <div className="flex items-center justify-between gap-3">
-                            <label className={formCompactLabelClass}>Monthly Fee</label>
+                            <label htmlFor="edit-student-monthly-fee" className={formCompactLabelClass}>Monthly Fee</label>
                             {linkedFeeSource && (
                                 <span className="rounded-full border border-[color:var(--ui-badge-cyan-border)] bg-[color:var(--ui-badge-cyan-bg)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[color:var(--ui-badge-cyan-text)]">
                                     Linked
@@ -204,8 +213,9 @@ export function EditStudentDialog({
                             )}
                         </div>
                         <div className="relative">
-                            <IndianRupee size={14} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} />
+                            <IndianRupee size={14} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} aria-hidden="true" />
                             <input
+                                id="edit-student-monthly-fee"
                                 type="number"
                                 min={0}
                                 max={FORM_LIMITS.moneyMax}
@@ -217,40 +227,26 @@ export function EditStudentDialog({
                                 placeholder="e.g. 1500"
                                 className={cn(formControlClass, "py-2.5 pl-9 pr-4 text-sm", fieldErrorClass(monthlyFeeError))}
                                 {...fieldErrorProps("edit-student-monthly-fee-error", monthlyFeeError)}
+                                aria-describedby={[
+                                    monthlyFeeError ? "edit-student-monthly-fee-error" : null,
+                                    linkedFeeSource ? "edit-student-monthly-fee-help" : null,
+                                ].filter(Boolean).join(" ") || undefined}
                             />
                         </div>
                         <FieldError id="edit-student-monthly-fee-error" error={monthlyFeeError} />
                         {linkedFeeSource && (
-                            <p className={cn("text-[11px] leading-relaxed", formHelpTextClass)}>
+                            <p id="edit-student-monthly-fee-help" className={cn("text-[11px] leading-relaxed", formHelpTextClass)}>
                                 Currently linked to {linkedFeeSource}. Editing this amount will switch the student to a manual fee.
                             </p>
                         )}
                     </div>
 
                     {error && (
-                        <div className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
-                            <AlertCircle size={13} /> {error}
+                        <div id="edit-student-submit-error" role="alert" className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
+                            <AlertCircle size={13} aria-hidden="true" /> {error}
                         </div>
                     )}
                 </div>
-
-                {/* Footer */}
-                <div className={cn("flex flex-col-reverse gap-3 px-4 py-4 sm:flex-row sm:justify-end sm:px-6", formDialogFooterClass)}>
-                    <Button variant="ghost" onClick={handleClose} disabled={loading} className="text-sm h-8 px-3">
-                        Cancel
-                    </Button>
-                    <Button
-                        onClick={handleSave}
-                        disabled={loading || !hasChanges}
-                        className="text-sm h-8 px-4 min-w-[90px] justify-center"
-                    >
-                        {loading
-                            ? <><Loader2 size={12} className="animate-spin mr-1.5" /> Saving...</>
-                            : "Save Changes"
-                        }
-                    </Button>
-                </div>
-            </div>
-        </div>
+        </Dialog>
     );
 }

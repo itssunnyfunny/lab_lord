@@ -13,6 +13,7 @@ import {
 import type { AIBranchReportSnapshot, AIStructuredBranchReport } from "@/ai/contracts/structuredReport.contract";
 import { Badge } from "@/components/ui/Badge";
 import { AppButton, AppPanel, SkeletonBlock } from "@/components/ui";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { cn } from "@/lib/utils";
 import { formWarningActionClass, formWarningBannerClass } from "@/components/ui/formSurface";
 import {
@@ -72,23 +73,43 @@ function formatHealthScore(score: string) {
     return score.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function formatCurrency(value: number) {
-    return new Intl.NumberFormat("en-IN", {
-        style: "currency",
-        currency: "INR",
-        maximumFractionDigits: 0,
-    }).format(value);
+type NumberFormatter = (value: number, options?: Intl.NumberFormatOptions) => string;
+
+const currencyFormatOptions: Intl.NumberFormatOptions = {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+};
+
+const percentFormatOptions: Intl.NumberFormatOptions = {
+    style: "percent",
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+};
+
+const countdownFormatOptions: Intl.NumberFormatOptions = {
+    minimumIntegerDigits: 2,
+    useGrouping: false,
+};
+
+function formatCurrency(value: number, formatNumber: NumberFormatter) {
+    return formatNumber(value, currencyFormatOptions);
+}
+
+function formatPercent(value: number, formatNumber: NumberFormatter) {
+    return formatNumber(value / 100, percentFormatOptions);
 }
 
 function buildSummary(
     report: AIStructuredBranchReport,
-    snapshot?: AIBranchReportSnapshot | null,
-    branchName?: string
+    snapshot: AIBranchReportSnapshot | null | undefined,
+    branchName: string | undefined,
+    formatNumber: NumberFormatter
 ) {
     if (report.executiveSummary) return report.executiveSummary;
     if (!snapshot) return "This report highlights the branch's financial, seat utilization, and student activity signals.";
 
-    return `${branchName ?? snapshot.branchName} is at ${snapshot.seats.utilizationPercent.toFixed(1)}% utilization with ${snapshot.students.active} active students and ${snapshot.payments.overdueCount} overdue payments.`;
+    return `${branchName ?? snapshot.branchName} is at ${formatPercent(snapshot.seats.utilizationPercent, formatNumber)} utilization with ${formatNumber(snapshot.students.active)} active students and ${formatNumber(snapshot.payments.overdueCount)} overdue payments.`;
 }
 
 function buildPriority(report: AIStructuredBranchReport, snapshot?: AIBranchReportSnapshot | null) {
@@ -100,15 +121,19 @@ function buildPriority(report: AIStructuredBranchReport, snapshot?: AIBranchRepo
     return "Keep monitoring the current operating rhythm.";
 }
 
-function buildFindings(report: AIStructuredBranchReport, snapshot?: AIBranchReportSnapshot | null) {
+function buildFindings(
+    report: AIStructuredBranchReport,
+    snapshot: AIBranchReportSnapshot | null | undefined,
+    formatNumber: NumberFormatter
+) {
     const reportFindings = report.keyFindings?.filter(Boolean).slice(0, 3);
     if (reportFindings && reportFindings.length > 0) return reportFindings;
     if (!snapshot) return [buildPriority(report, snapshot)];
 
     return [
-        `${snapshot.seats.occupied}/${snapshot.seats.total} shift slots are occupied.`,
-        `${snapshot.students.active} active students against ${snapshot.students.inactive} inactive students.`,
-        `${snapshot.payments.overdueCount} overdue payments totaling ${formatCurrency(snapshot.payments.overdueAmount)}.`,
+        `${formatNumber(snapshot.seats.occupied)}/${formatNumber(snapshot.seats.total)} shift slots are occupied.`,
+        `${formatNumber(snapshot.students.active)} active students against ${formatNumber(snapshot.students.inactive)} inactive students.`,
+        `${formatNumber(snapshot.payments.overdueCount)} overdue payments totaling ${formatCurrency(snapshot.payments.overdueAmount, formatNumber)}.`,
     ];
 }
 
@@ -121,6 +146,7 @@ export function BranchHealthPanel({
     nextAllowedCallAt,
     onRefresh,
 }: BranchHealthPanelProps) {
+    const { formatDateTime, formatNumber } = useUserPreferences();
     const [timeLeft, setTimeLeft] = useState("");
 
     useEffect(() => {
@@ -136,11 +162,11 @@ export function BranchHealthPanel({
 
             const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
             const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-            setTimeLeft(`${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`);
+            setTimeLeft(`${formatNumber(minutes, countdownFormatOptions)}:${formatNumber(seconds, countdownFormatOptions)}`);
         }, 1000);
 
         return () => clearInterval(interval);
-    }, [nextAllowedCallAt]);
+    }, [formatNumber, nextAllowedCallAt]);
 
     if (isLoading) {
         return (
@@ -187,12 +213,12 @@ export function BranchHealthPanel({
         },
     ];
 
-    const findings = buildFindings(report, snapshot);
+    const findings = buildFindings(report, snapshot, formatNumber);
     const generatedTag = (
         <div className="flex flex-col items-start gap-2 sm:items-end">
             <span className={cn("flex items-center gap-2 px-3 py-1.5 text-xs", pageInsetSurfaceClass, readableTextClass)}>
                 <CalendarClock className="h-3.5 w-3.5 text-[color:var(--ui-tone-info-text)]" />
-                Generated {new Date(report.generatedAt).toLocaleString()}
+                Generated {formatDateTime(report.generatedAt)}
             </span>
             {getHealthBadge(report.healthScore)}
         </div>
@@ -248,7 +274,7 @@ export function BranchHealthPanel({
                         </div>
 
                         <p className={cn("mt-4 text-sm leading-6", readableTextClass)}>
-                            {buildSummary(report, snapshot, branchName)}
+                            {buildSummary(report, snapshot, branchName, formatNumber)}
                         </p>
 
                         <div className={cn("mt-4 flex gap-3 p-3", pageInsetSurfaceClass)}>

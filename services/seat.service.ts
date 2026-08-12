@@ -6,6 +6,67 @@ import { validateSeatLabel } from "@/lib/formValidation";
 import { generateSeatLabels, sortSeatsByLabel, validateSeatNumberingConfig } from "@/lib/seatNumbering";
 import { endOfDay } from "date-fns";
 import { EntitlementService } from "@/services/entitlement.service";
+import {
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    pageFromRows,
+    PaginationInputError,
+    type DateIdCursor,
+} from "@/lib/cursorPagination";
+import type { Prisma } from "@/app/generated/prisma/client";
+
+export type SeatListOptions = {
+    shiftId?: string;
+    cursor?: DateIdCursor | null;
+    limit?: number;
+    all?: boolean;
+};
+
+type ShiftWindow = {
+    id: string;
+    startTime: string | null;
+    endTime: string | null;
+};
+
+type ParsedShiftWindow = {
+    id: string;
+    start: number | null;
+    end: number | null;
+};
+
+type SeatConflictAllocation = {
+    shiftId: string;
+    multiShiftId?: string | null;
+};
+
+function parseShiftWindow(shift: ShiftWindow): ParsedShiftWindow {
+    return {
+        id: shift.id,
+        start: parseNullableTime(shift.startTime),
+        end: parseNullableTime(shift.endTime),
+    };
+}
+
+function allocationConflictsWithScope(
+    allocation: SeatConflictAllocation,
+    targetShiftIds: ReadonlySet<string>,
+    targetWindows: readonly ParsedShiftWindow[],
+    activeShiftWindows: ReadonlyMap<string, ParsedShiftWindow>,
+    multiShiftId?: string,
+) {
+    if (multiShiftId && allocation.multiShiftId === multiShiftId) return true;
+    if (targetShiftIds.has(allocation.shiftId)) return true;
+
+    const allocationWindow = activeShiftWindows.get(allocation.shiftId);
+    if (!allocationWindow) return false;
+
+    return targetWindows.some(target => timesOverlap(
+        allocationWindow.start,
+        allocationWindow.end,
+        target.start,
+        target.end,
+    ));
+}
 
 function isUniqueConstraintError(error: unknown) {
     return typeof error === "object"
@@ -122,18 +183,36 @@ export class SeatService {
         }
     }
 
-    static async listSeats(userId: string, branchId: string, shiftId?: string) {
+    static async listSeats(userId: string, branchId: string, options: SeatListOptions | string = {}) {
         await this.assertBranchAccess(userId, branchId, "seat_allocation");
 
-        const seats = await prisma.seat.findMany({
-            where: {
-                branchId,
-            },
+        const resolved = typeof options === "string" ? { shiftId: options } : options;
+        const limit = resolved.limit ?? DEFAULT_PAGE_SIZE;
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE) {
+            throw new PaginationInputError(`limit must be between 1 and ${MAX_PAGE_SIZE}`);
+        }
+
+        const baseWhere: Prisma.SeatWhereInput = { branchId };
+        const pageWhere: Prisma.SeatWhereInput = resolved.cursor
+            ? {
+                ...baseWhere,
+                OR: [
+                    { createdAt: { lt: resolved.cursor.sort } },
+                    {
+                        createdAt: resolved.cursor.sort,
+                        id: { lt: resolved.cursor.id },
+                    },
+                ],
+            }
+            : baseWhere;
+
+        const query = {
+            where: resolved.all ? baseWhere : pageWhere,
             include: {
                 seatAllocations: {
                     where: {
-                        endDate: null, // Only active allocations
-                        ...(shiftId ? { shiftId } : {}),
+                        endDate: null,
+                        ...(resolved.shiftId ? { shiftId: resolved.shiftId } : {}),
                     },
                     include: {
                         student: {
@@ -163,12 +242,26 @@ export class SeatService {
                     },
                 },
             },
-            orderBy: {
-                label: "asc",
-            },
-        });
+            orderBy: [
+                { createdAt: "desc" as const },
+                { id: "desc" as const },
+            ],
+            ...(resolved.all ? {} : { take: limit + 1 }),
+        } satisfies Prisma.SeatFindManyArgs;
 
-        return sortSeatsByLabel(seats);
+        const [seats, total] = await Promise.all([
+            prisma.seat.findMany(query),
+            prisma.seat.count({ where: baseWhere }),
+        ]);
+
+        if (resolved.all) {
+            return { items: seats, nextCursor: null, total };
+        }
+
+        return pageFromRows(seats, limit, total, seat => ({
+            sort: seat.createdAt,
+            id: seat.id,
+        }));
     }
 
     static async generateOccupancySnapshot(branchId: string, asOf?: Date): Promise<SeatOccupancySnapshot> {
@@ -290,48 +383,57 @@ export class SeatService {
             const ms = await prisma.multiShift.findUnique({
                 where: { id: multiShiftId },
                 include: {
-                    components: { select: { shiftId: true } },
+                    components: {
+                        include: {
+                            shift: { select: { id: true, startTime: true, endTime: true } },
+                        },
+                    },
                 },
             });
             if (!ms || ms.branchId !== branchId) throw new Error("Multi-shift not found");
             if (ms.components.length === 0) throw new Error("Multi-shift has no component shifts");
 
-            // Set of exact component shift IDs for fast membership check
             const componentShiftIds = new Set(ms.components.map(c => c.shiftId));
+            const componentWindows = ms.components.map(component => parseShiftWindow(component.shift));
 
-            const allShifts = await prisma.shift.findMany({
-                where: { branchId, status: "ACTIVE" },
-                select: { id: true, startTime: true, endTime: true },
-            });
-            const shiftTimeMap = new Map(allShifts.map(s => [s.id, s]));
-
-            const seats = sortSeatsByLabel(await prisma.seat.findMany({
-                where: { branchId },
-                include: {
-                    seatAllocations: {
-                        where: {
-                            endDate: null,
-                            ...(excludeAllocationIds?.length
-                                ? { id: { notIn: excludeAllocationIds } }
-                                : {}),
+            const [allShifts, rawSeats] = await Promise.all([
+                prisma.shift.findMany({
+                    where: { branchId, status: "ACTIVE" },
+                    select: { id: true, startTime: true, endTime: true },
+                }),
+                prisma.seat.findMany({
+                    where: { branchId },
+                    include: {
+                        seatAllocations: {
+                            where: {
+                                endDate: null,
+                                ...(excludeAllocationIds?.length
+                                    ? { id: { notIn: excludeAllocationIds } }
+                                    : {}),
+                            },
+                            include: { student: { select: { name: true } } },
                         },
-                        include: { student: { select: { name: true } } },
                     },
-                },
-                orderBy: { label: "asc" },
+                    orderBy: { label: "asc" },
+                }),
+            ]);
+            const activeShiftWindows = new Map(allShifts.map(activeShift => {
+                const parsed = parseShiftWindow(activeShift);
+                return [parsed.id, parsed] as const;
             }));
-
-            for (const componentId of componentShiftIds) {
-                const s = shiftTimeMap.get(componentId);
-                parseNullableTime(s?.startTime);
-                parseNullableTime(s?.endTime);
-            }
+            const seats = sortSeatsByLabel(rawSeats);
 
             const totalSeats = seats.length;
             let occupiedCount = 0;
 
             const mappedSeats = seats.map(s => {
-                const alloc = s.seatAllocations.find(a => componentShiftIds.has(a.shiftId));
+                const alloc = s.seatAllocations.find(allocation => allocationConflictsWithScope(
+                    allocation,
+                    componentShiftIds,
+                    componentWindows,
+                    activeShiftWindows,
+                    multiShiftId,
+                ));
                 const occupiedBy = alloc ? alloc.student.name : null;
 
                 if (occupiedBy) occupiedCount++;
@@ -383,10 +485,12 @@ export class SeatService {
         if (!shift || shift.branchId !== branchId) throw new Error("Shift not found");
 
         // Determine the time window of the requested shift utilizing robust logic that respects full-day mappings
-        const requestedStart = parseNullableTime(shift.startTime);
-        const requestedEnd = parseNullableTime(shift.endTime);
-
-        const shiftTimeMap = new Map(allShifts.map(s => [s.id, s]));
+        const activeShiftWindows = new Map(allShifts.map(activeShift => {
+            const parsed = parseShiftWindow(activeShift);
+            return [parsed.id, parsed] as const;
+        }));
+        const targetShiftIds = new Set([shift.id]);
+        const targetWindows = [parseShiftWindow(shift)];
 
         const sortedSeats = sortSeatsByLabel(seats);
         const totalSeats = sortedSeats.length;
@@ -398,20 +502,14 @@ export class SeatService {
 
             for (const alloc of s.seatAllocations) {
                 // Exact shift match — always occupied
-                if (alloc.shiftId === shiftId) {
+                if (allocationConflictsWithScope(
+                    alloc,
+                    targetShiftIds,
+                    targetWindows,
+                    activeShiftWindows,
+                )) {
                     occupiedBy = alloc.student.name;
                     break;
-                }
-
-                // Time-overlap match combining robust parseNullableTime and timesOverlap
-                const existingShift = shiftTimeMap.get(alloc.shiftId);
-                if (existingShift) {
-                    const es = parseNullableTime(existingShift.startTime);
-                    const ee = parseNullableTime(existingShift.endTime);
-                    if (timesOverlap(requestedStart, requestedEnd, es, ee)) {
-                        occupiedBy = alloc.student.name;
-                        break;
-                    }
                 }
             }
 
@@ -445,13 +543,23 @@ export class SeatService {
         await this.assertBranchAccess(userId, branchId, "seat_allocation");
 
         // ⚡ Bolt: Fetch total seats, active shifts, and optionally student's allocations concurrently
-        const [totalSeats, shifts, rawAllocations] = await Promise.all([
-            prisma.seat.count({ where: { branchId } }),
+        const [seats, shifts, rawAllocations] = await Promise.all([
+            prisma.seat.findMany({
+                where: { branchId },
+                select: {
+                    seatAllocations: {
+                        where: {
+                            endDate: null,
+                            ...(excludeAllocationIds?.length
+                                ? { id: { notIn: excludeAllocationIds } }
+                                : {}),
+                        },
+                        select: { shiftId: true, multiShiftId: true },
+                    },
+                },
+            }),
             prisma.shift.findMany({
                 where: { branchId, status: "ACTIVE" },
-                include: {
-                    _count: { select: { seatAllocations: { where: { endDate: null } } } },
-                },
                 orderBy: { name: "asc" },
             }),
             studentId ? prisma.seatAllocation.findMany({
@@ -465,6 +573,11 @@ export class SeatService {
                 include: { shift: { select: { id: true, startTime: true, endTime: true } } },
             }) : Promise.resolve([])
         ]);
+        const totalSeats = seats.length;
+        const activeShiftWindows = new Map(shifts.map(activeShift => {
+            const parsed = parseShiftWindow(activeShift);
+            return [parsed.id, parsed] as const;
+        }));
 
         // Load student's current allocations with their shift times
         type AllocWithTime = { shiftId: string; startTime: string | null; endTime: string | null };
@@ -480,7 +593,16 @@ export class SeatService {
         }
 
         return shifts.map(shift => {
-            const used = shift._count.seatAllocations;
+            const targetShiftIds = new Set([shift.id]);
+            const targetWindows = [parseShiftWindow(shift)];
+            const used = seats.reduce((count, seat) => count + Number(seat.seatAllocations.some(allocation => (
+                allocationConflictsWithScope(
+                    allocation,
+                    targetShiftIds,
+                    targetWindows,
+                    activeShiftWindows,
+                )
+            ))), 0);
             const available = Math.max(0, totalSeats - used);
             const occupancyPercent = totalSeats === 0 ? 0 : (used / totalSeats) * 100;
 
@@ -531,25 +653,60 @@ export class SeatService {
         const primaryItems = await this.getShiftsCapacity(userId, branchId, studentId, excludeAllocationIds);
         const primaryMap = new Map(primaryItems.map(p => [p.shiftId, p]));
 
-        const multiShifts = await prisma.multiShift.findMany({
-            where: { branchId },
-            include: {
-                components: {
-                    include: { shift: { select: { id: true, name: true, startTime: true, endTime: true } } },
-                    orderBy: { order: "asc" },
+        const [multiShifts, seats, allShifts] = await Promise.all([
+            prisma.multiShift.findMany({
+                where: { branchId },
+                include: {
+                    components: {
+                        include: { shift: { select: { id: true, name: true, startTime: true, endTime: true } } },
+                        orderBy: { order: "asc" },
+                    },
                 },
-            },
-            orderBy: { name: "asc" },
-        });
+                orderBy: { name: "asc" },
+            }),
+            prisma.seat.findMany({
+                where: { branchId },
+                select: {
+                    seatAllocations: {
+                        where: {
+                            endDate: null,
+                            ...(excludeAllocationIds?.length
+                                ? { id: { notIn: excludeAllocationIds } }
+                                : {}),
+                        },
+                        select: { shiftId: true, multiShiftId: true },
+                    },
+                },
+            }),
+            prisma.shift.findMany({
+                where: { branchId, status: "ACTIVE" },
+                select: { id: true, startTime: true, endTime: true },
+            }),
+        ]);
+        const activeShiftWindows = new Map(allShifts.map(activeShift => {
+            const parsed = parseShiftWindow(activeShift);
+            return [parsed.id, parsed] as const;
+        }));
 
         const multiItems = multiShifts.map(ms => {
             const componentShiftIds = ms.components.map(c => c.shiftId);
             const componentShiftNames = ms.components.map(c => c.shift.name);
             const validComponents = componentShiftIds.map(id => primaryMap.get(id)).filter(Boolean) as typeof primaryItems[number][];
-
-            const available = validComponents.length > 0 ? Math.min(...validComponents.map(c => c.available)) : 0;
-            const used = validComponents.length > 0 ? Math.max(...validComponents.map(c => c.used)) : 0;
-            const totalSeats = validComponents[0]?.totalSeats ?? 0;
+            const componentIdSet = new Set(componentShiftIds);
+            const componentWindows = ms.components.map(component => parseShiftWindow(component.shift));
+            const totalSeats = seats.length;
+            const used = componentWindows.length === 0
+                ? 0
+                : seats.reduce((count, seat) => count + Number(seat.seatAllocations.some(allocation => (
+                    allocationConflictsWithScope(
+                        allocation,
+                        componentIdSet,
+                        componentWindows,
+                        activeShiftWindows,
+                        ms.id,
+                    )
+                ))), 0);
+            const available = componentWindows.length === 0 ? 0 : Math.max(0, totalSeats - used);
             const occupancyPercent = totalSeats === 0 ? 0 : (used / totalSeats) * 100;
             const isFull = available === 0;
             const studentAlreadyAllocated = validComponents.some(c => c.studentAlreadyAllocated);

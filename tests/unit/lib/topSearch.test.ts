@@ -91,7 +91,93 @@ describe("buildTopSearchResults", () => {
         expect(payments).toHaveLength(1);
         expect(payments[0]).toMatchObject({
             title: "Unknown student",
-            href: `/branch/${branchId}/payments`,
+            href: `/branch/${branchId}/payments?paymentId=p1&status=DUE`,
         });
+    });
+
+    it("builds destination-aware record links", () => {
+        const groups = buildTopSearchResults({
+            branchId,
+            query: "rahul",
+            access: {
+                permissions: permissions(["students", "view_payments", "seat_allocation", "manage_branch"]),
+            },
+            students: [{ id: "s1", name: "Rahul", status: "INACTIVE" }],
+            payments: [{
+                id: "p1",
+                amount: 1200,
+                status: "PAID",
+                type: "MONTHLY",
+                dueDate: "2026-03-10T00:00:00.000Z",
+                student: { name: "Rahul" },
+            }],
+            seats: [{ id: "seat1", label: "A1", seatAllocations: [{ student: { name: "Rahul" } }] }],
+            staff: [{ id: "staff1", role: "STAFF", user: { name: "Rahul" } }],
+        });
+
+        const hrefs = groups.flatMap(group => group.results.map(result => result.href));
+        expect(hrefs).toContain(`/branch/${branchId}/students?studentId=s1&status=INACTIVE`);
+        expect(hrefs).toContain(`/branch/${branchId}/payments?paymentId=p1&month=2026-03&status=PAID`);
+        expect(hrefs).toContain(`/branch/${branchId}/seats?seatId=seat1`);
+        expect(hrefs).toContain(`/branch/${branchId}/staff?staffId=staff1`);
+    });
+
+    it("keeps DUE results on the current month and resolves completed-payment months in India time", () => {
+        const groups = buildTopSearchResults({
+            branchId,
+            query: "boundary",
+            access: { permissions: permissions(["view_payments"]) },
+            payments: [
+                {
+                    id: "due-boundary",
+                    studentId: "student-due",
+                    status: "DUE",
+                    dueDate: "2026-03-31T20:00:00.000Z",
+                    student: { name: "Boundary Due" },
+                },
+                {
+                    id: "paid-boundary",
+                    studentId: "student-paid",
+                    status: "PAID",
+                    dueDate: "2026-03-31T20:00:00.000Z",
+                    student: { name: "Boundary Paid" },
+                },
+                {
+                    id: "waived-boundary",
+                    studentId: "student-waived",
+                    status: "WAIVED",
+                    dueDate: "2026-03-31T20:00:00.000Z",
+                    student: { name: "Boundary Waived" },
+                },
+            ],
+        });
+
+        const hrefs = groups.flatMap(group => group.results.map(result => result.href));
+        expect(hrefs).toContain(
+            `/branch/${branchId}/payments?paymentId=due-boundary&studentId=student-due&status=DUE`
+        );
+        expect(hrefs).toContain(
+            `/branch/${branchId}/payments?paymentId=paid-boundary&studentId=student-paid&month=2026-04&status=PAID`
+        );
+        expect(hrefs).toContain(
+            `/branch/${branchId}/payments?paymentId=waived-boundary&studentId=student-waived&month=2026-04&status=WAIVED`
+        );
+    });
+
+    it("only exposes payment generation when both page and action permissions are available", () => {
+        const generateOnly = buildTopSearchResults({
+            branchId,
+            query: "generate",
+            access: { permissions: permissions(["generate_payments"]) },
+        });
+        expect(generateOnly.flatMap(group => group.results)).toHaveLength(0);
+
+        const permitted = buildTopSearchResults({
+            branchId,
+            query: "generate",
+            access: { permissions: permissions(["view_payments", "generate_payments"]) },
+        });
+        expect(permitted.flatMap(group => group.results)[0]?.href)
+            .toBe(`/branch/${branchId}/payments?generate=1`);
     });
 });

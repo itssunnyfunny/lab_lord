@@ -5,7 +5,6 @@ export type BillingFeatureKey =
   | "ORG_ANALYTICS"
   | "BRANCH_ANALYTICS"
   | "STAFF_CONTROLS"
-  | "AI_INSIGHTS"
   | "AI_REPORTS"
   | "AI_MESSAGES";
 
@@ -33,12 +32,6 @@ export const BILLING_FEATURE_POLICIES: Record<BillingFeatureKey, FeaturePolicy> 
     benefit: "Invite managers and control staff permissions across your workspace.",
     entitlement: "STAFF_MANAGEMENT",
     permission: "manage_branch",
-  },
-  AI_INSIGHTS: {
-    label: "AI Insights",
-    benefit: "Turn branch activity into prioritized operational insights.",
-    entitlement: "AI_ACCESS",
-    permission: "analytics",
   },
   AI_REPORTS: {
     label: "AI Reports",

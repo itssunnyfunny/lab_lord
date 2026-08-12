@@ -6,6 +6,7 @@ import { SeatService } from "@/services/seat.service";
 import { ShiftService } from "@/services/shift.service";
 import { StaffService } from "@/services/staff.service";
 import { StudentService } from "@/services/student.service";
+import { EntitlementService } from "@/services/entitlement.service";
 import type { CommitMode, ImportCommitResult, ImportMappingState, ImportNormalizedRow } from "@/importing/contracts/import-session.contract";
 import { promoteKnownMultiShiftAllocation } from "@/importing/utils/shift-alias-resolver";
 import { buildImportPlanChecks, createImportPlanVersion, getBlockingImportPlanChecks } from "@/importing/utils/import-plan-checks";
@@ -171,6 +172,7 @@ export class ImportCommitService {
         }
 
         await StaffService.authorize(userId, branchId, "students");
+        await EntitlementService.assertBranchWritable(branchId);
         const currentSession = await prisma.importSession.findFirst({
             where: { id: sessionId, branchId },
             select: { status: true, updatedAt: true },

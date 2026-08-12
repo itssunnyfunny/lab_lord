@@ -1,22 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
-import { AppButton, PageLoadingSkeleton, PageShell } from "@/components/ui";
+import { AppButton, AppSelect, Dialog, PageLoadingSkeleton, PageShell, useToast } from "@/components/ui";
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { RowActionsMenu, type RowActionsMenuItem } from "@/components/ui/RowActionsMenu";
 import {
     formCompactLabelClass,
     formControlClass,
-    formDialogFooterClass,
-    formDialogHeaderClass,
-    formDialogOverlayClass,
-    formDialogPanelClass,
     formErrorBannerClass,
     formHelpTextClass,
     formIconClass,
-    formSuccessBannerClass,
     formSurfaceClass,
     formWarningActionClass,
     formWarningBannerClass,
@@ -46,7 +42,7 @@ import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
 import {
     Pencil, Trash2,
     Loader2, AlertCircle, Clock, IndianRupee,
-    CheckCircle2, X, AlertTriangle,
+    CheckCircle2, AlertTriangle,
     Users, ArrowRight, RefreshCw, Ban, Layers,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -59,6 +55,9 @@ import {
 } from "@/lib/formValidation";
 import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
 import { getPermissionHelpText } from "@/lib/permissionMessages";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
+import type { CapabilityDecision } from "@/types";
 
 function formatMins(mins: number) {
     let raw = mins;
@@ -67,10 +66,6 @@ function formatMins(mins: number) {
     const h = Math.floor(raw / 60);
     const m = raw % 60;
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
-
-function formatPrice(value: number) {
-    return `Rs ${value.toLocaleString("en-IN")}`;
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -272,41 +267,54 @@ function ShiftDialog({ isOpen, mode, initial, branchId, existingShifts, onClose,
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-4">
-            <div className={cn("cursor-pointer", formDialogOverlayClass)} onClick={onClose} />
-            <div className={cn("relative flex max-h-[calc(100dvh-1.5rem)] w-full max-w-sm flex-col", formDialogPanelClass)}>
-                {/* Header */}
-                <div className={cn("flex flex-shrink-0 items-center justify-between px-4 py-4 sm:px-6", formDialogHeaderClass)}>
-                    <div>
-                        <h2 className="text-base font-bold text-[color:var(--ui-dialog-title)]">{mode === "add" ? "Add Shift" : "Edit Shift"}</h2>
-                        <p className={cn("mt-0.5 text-xs", formHelpTextClass)}>{mode === "add" ? "Create a new time window" : "Update shift details"}</p>
-                    </div>
-                    <button onClick={onClose} disabled={loading} className={cn("transition-colors hover:text-[color:var(--ui-table-text)]", formHelpTextClass)}>
-                        <X size={18} />
-                    </button>
-                </div>
-
-                {/* Body */}
-                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+        <Dialog
+            open={isOpen}
+            onClose={onClose}
+            title={mode === "add" ? "Add shift" : "Edit shift"}
+            description={mode === "add" ? "Create a new time window." : "Update this shift's details."}
+            closeDisabled={loading}
+            className="max-w-sm"
+            footer={(
+                <>
+                    <Button type="button" variant="ghost" onClick={onClose} disabled={loading} className="h-11 px-4 text-sm">
+                        Cancel
+                    </Button>
+                    <Button
+                        type="button"
+                        onClick={handleSubmit}
+                        disabled={loading}
+                        className="h-11 min-w-[100px] justify-center px-4 text-sm"
+                    >
+                        {loading
+                            ? <><Loader2 size={12} className="mr-1.5 animate-spin" aria-hidden="true" /> {mode === "add" ? "Adding..." : "Saving..."}</>
+                            : mode === "add" ? "Add shift" : "Save changes"
+                        }
+                    </Button>
+                </>
+            )}
+        >
+                <div className="space-y-4" aria-describedby={error ? "shift-submit-error" : undefined}>
                     <div className="space-y-1.5">
-                        <label className={formCompactLabelClass}>Shift Name *</label>
+                        <label htmlFor="shift-name" className={formCompactLabelClass}>Shift name *</label>
                         <input
-                                type="text"
-                                value={name}
-                                onChange={e => { setName(e.target.value); setError(null); }}
-                                onBlur={() => markTouched("name")}
-                                placeholder="e.g. Morning, Afternoon"
-                                autoFocus
+                            id="shift-name"
+                            type="text"
+                            value={name}
+                            onChange={e => { setName(e.target.value); setError(null); }}
+                            onBlur={() => markTouched("name")}
+                            placeholder="e.g. Morning, Afternoon"
+                            data-dialog-initial-focus
                             className={cn(formControlClass, "px-4 py-2.5 text-sm", fieldErrorClass(nameError))}
-                                {...fieldErrorProps("shift-name-error", nameError)}
+                            {...fieldErrorProps("shift-name-error", nameError)}
                         />
                         <FieldError id="shift-name-error" error={nameError} />
                     </div>
 
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div className="space-y-1.5">
-                            <label className={formCompactLabelClass}>Start Time</label>
+                            <label htmlFor="shift-start-time" className={formCompactLabelClass}>Start time</label>
                             <input
+                                id="shift-start-time"
                                 type="time"
                                 value={startTime}
                                 onChange={e => { setStartTime(e.target.value); setTimesTouched(true); setError(null); markTouched("timePair"); markTouched("overlap"); }}
@@ -316,8 +324,9 @@ function ShiftDialog({ isOpen, mode, initial, branchId, existingShifts, onClose,
                             />
                         </div>
                         <div className="space-y-1.5">
-                            <label className={formCompactLabelClass}>End Time</label>
+                            <label htmlFor="shift-end-time" className={formCompactLabelClass}>End time</label>
                             <input
+                                id="shift-end-time"
                                 type="time"
                                 value={endTime}
                                 onChange={e => { setEndTime(e.target.value); setTimesTouched(true); setError(null); markTouched("timePair"); markTouched("overlap"); }}
@@ -330,10 +339,11 @@ function ShiftDialog({ isOpen, mode, initial, branchId, existingShifts, onClose,
                     <FieldError id="shift-time-error" error={timeGroupError} />
 
                     <div className="space-y-1.5">
-                        <label className={formCompactLabelClass}>Monthly price</label>
+                        <label htmlFor="shift-price" className={formCompactLabelClass}>Monthly price</label>
                         <div className="relative">
-                            <IndianRupee size={13} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} />
+                            <IndianRupee size={13} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} aria-hidden="true" />
                             <input
+                                id="shift-price"
                                 type="number"
                                 value={price}
                                 onChange={e => { setPrice(e.target.value); setError(null); }}
@@ -353,10 +363,15 @@ function ShiftDialog({ isOpen, mode, initial, branchId, existingShifts, onClose,
                     {/* Reserved toggle */}
                     <div className="flex items-center justify-between py-1">
                         <div>
-                            <p className="text-sm font-medium text-[color:var(--text-primary)]">Reserved shift</p>
-                            <p className={cn("text-xs", formHelpTextClass)}>Seats in this shift require manual allocation</p>
+                            <p id="shift-reserved-label" className="text-sm font-medium text-[color:var(--text-primary)]">Reserved shift</p>
+                            <p id="shift-reserved-help" className={cn("text-xs", formHelpTextClass)}>Seats in this shift require manual allocation</p>
                         </div>
                         <button
+                            type="button"
+                            role="switch"
+                            aria-checked={isReserved}
+                            aria-labelledby="shift-reserved-label"
+                            aria-describedby="shift-reserved-help"
                             onClick={() => setIsReserved(v => !v)}
                             className={cn(
                                 "w-10 h-5 rounded-full relative transition-colors",
@@ -371,47 +386,29 @@ function ShiftDialog({ isOpen, mode, initial, branchId, existingShifts, onClose,
                     </div>
 
                     {error && (
-                        <div className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
-                            <AlertCircle size={13} /> {error}
+                        <div id="shift-submit-error" role="alert" className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
+                            <AlertCircle size={13} aria-hidden="true" /> {error}
                         </div>
                     )}
 
                     {overlapWith && (
-                        <div className={cn("mt-2 flex flex-col gap-1.5 px-3 py-2 text-xs", formWarningBannerClass)}>
+                        <div role="alert" className={cn("mt-2 flex flex-col gap-1.5 px-3 py-2 text-xs", formWarningBannerClass)}>
                             <div className="flex items-center gap-1.5">
-                                <AlertTriangle size={13} />
+                                <AlertTriangle size={13} aria-hidden="true" />
                                 <span>Time overlaps with &ldquo;{overlapWith.name}&rdquo; ({overlapWith.startTime} - {overlapWith.endTime}).</span>
                             </div>
                             <div className="flex flex-col gap-1 mt-1">
-                                <button onClick={() => setEndTime(formatMins(parseNullableTime(overlapWith.startTime)! - 1))} className={cn("px-2 py-1.5 text-left", formWarningActionClass)}>
+                                <button type="button" onClick={() => setEndTime(formatMins(parseNullableTime(overlapWith.startTime)! - 1))} className={cn("px-2 py-1.5 text-left", formWarningActionClass)}>
                                     Set End Time to {formatMins(parseNullableTime(overlapWith.startTime)! - 1)}
                                 </button>
-                                <button onClick={() => setStartTime(formatMins(parseNullableTime(overlapWith.endTime)! + 1))} className={cn("px-2 py-1.5 text-left", formWarningActionClass)}>
+                                <button type="button" onClick={() => setStartTime(formatMins(parseNullableTime(overlapWith.endTime)! + 1))} className={cn("px-2 py-1.5 text-left", formWarningActionClass)}>
                                     Set Start Time to {formatMins(parseNullableTime(overlapWith.endTime)! + 1)}
                                 </button>
                             </div>
                         </div>
                     )}
                 </div>
-
-                {/* Footer */}
-                <div className={cn("flex flex-shrink-0 flex-col-reverse gap-3 px-4 py-4 sm:flex-row sm:justify-end sm:px-6", formDialogFooterClass)}>
-                    <Button variant="ghost" onClick={onClose} disabled={loading} className="text-sm h-8 px-3">
-                        Cancel
-                    </Button>
-                    <Button
-                        onClick={handleSubmit}
-                        disabled={loading}
-                        className="text-sm h-8 px-4 min-w-[100px] justify-center"
-                    >
-                        {loading
-                            ? <><Loader2 size={12} className="animate-spin mr-1.5" /> {mode === "add" ? "Adding..." : "Saving..."}</>
-                            : mode === "add" ? "Add Shift" : "Save Changes"
-                        }
-                    </Button>
-                </div>
-            </div>
-        </div>
+        </Dialog>
     );
 }
 
@@ -614,32 +611,21 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
         : false;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-4">
-            <div className={cn(submitting ? "cursor-not-allowed" : "cursor-pointer", formDialogOverlayClass)} onClick={submitting ? undefined : onClose} />
-            <div className={cn("relative max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto sm:max-h-[90vh]", formDialogPanelClass)}>
-
-                {/* Header */}
-                <div className={cn("sticky top-0 z-10 flex items-center justify-between px-4 py-4 sm:px-6", formDialogHeaderClass)}>
-                    <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center">
-                            <Trash2 size={15} className="text-red-400" />
-                        </div>
-                        <div>
-                            <h2 className="text-sm font-bold text-[color:var(--ui-dialog-title)]">Delete &ldquo;{shift.name}&rdquo;</h2>
-                            <p className={cn("text-xs", formHelpTextClass)}>Resolve before removing this shift</p>
-                        </div>
-                    </div>
-                    {!submitting && (
-                        <button onClick={onClose} className={cn("transition-colors hover:text-[color:var(--ui-table-text)]", formHelpTextClass)}>
-                            <X size={18} />
-                        </button>
-                    )}
-                </div>
+        <Dialog
+            open
+            onClose={onClose}
+            title={<>Delete &ldquo;{shift.name}&rdquo;</>}
+            description="Review the impact and choose what happens to active allocations before removing this shift."
+            icon={<Trash2 size={20} className="text-red-400" />}
+            role="alertdialog"
+            closeDisabled={submitting}
+            className="max-w-lg"
+        >
 
                 {/* ── Loading state */}
                 {step === "loading" && (
-                    <div className="flex flex-col items-center justify-center gap-3 py-16 text-[color:var(--ui-form-label)]">
-                        <Loader2 size={28} className="animate-spin text-cyan-500" />
+                    <div role="status" aria-live="polite" className="flex flex-col items-center justify-center gap-3 py-16 text-[color:var(--ui-form-label)]">
+                        <Loader2 size={28} className="animate-spin text-cyan-500" aria-hidden="true" />
                         <p className="text-sm">Analyzing shift impact...</p>
                     </div>
                 )}
@@ -647,8 +633,8 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                 {/* ── Blocked: last active shift */}
                 {step === "blocked" && (
                     <div className="p-4 space-y-4 sm:p-6">
-                        <div className={cn("flex items-start gap-3 p-4", formWarningBannerClass)}>
-                            <Ban size={18} className="text-amber-400 mt-0.5 shrink-0" />
+                        <div role="alert" className={cn("flex items-start gap-3 p-4", formWarningBannerClass)}>
+                            <Ban size={18} className="text-amber-400 mt-0.5 shrink-0" aria-hidden="true" />
                             <div>
                                 <p className="text-sm font-semibold text-amber-300">Cannot delete this shift</p>
                                 <p className="text-xs text-amber-400/80 mt-1">
@@ -658,7 +644,7 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                             </div>
                         </div>
                         <div className="flex justify-end">
-                            <Button onClick={onClose} variant="ghost" className="text-sm h-8 px-4">Close</Button>
+                            <Button type="button" onClick={onClose} variant="ghost" className="h-11 px-4 text-sm">Close</Button>
                         </div>
                     </div>
                 )}
@@ -670,18 +656,19 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                             This shift has <span className="font-semibold text-[color:var(--text-primary)]">no active students</span>. It will be removed permanently.
                         </p>
                         {submitError && (
-                            <div className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
-                                <AlertCircle size={13} /> {submitError}
+                            <div role="alert" className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
+                                <AlertCircle size={13} aria-hidden="true" /> {submitError}
                             </div>
                         )}
                         <div className="flex justify-end gap-3">
-                            <Button variant="ghost" onClick={onClose} disabled={submitting} className="text-sm h-8 px-3">Cancel</Button>
+                            <Button type="button" variant="ghost" onClick={onClose} disabled={submitting} className="h-11 px-4 text-sm">Cancel</Button>
                             <Button
+                                type="button"
                                 onClick={handleDelete}
                                 disabled={submitting}
                                 className="text-sm h-8 px-4 bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 min-w-[100px] justify-center"
                             >
-                                {submitting ? <><Loader2 size={12} className="animate-spin mr-1.5" /> Deleting...</> : "Delete Shift"}
+                                {submitting ? <><Loader2 size={12} className="animate-spin mr-1.5" aria-hidden="true" /> Deleting...</> : "Delete Shift"}
                             </Button>
                         </div>
                     </div>
@@ -746,23 +733,19 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                 >
                                     {mode === "REALLOCATE_BULK" && (
                                         <div className="mt-3">
-                                            <label className={cn("mb-1.5 block text-xs", formHelpTextClass)}>Select target shift</label>
-                                            <select
+                                            <label htmlFor="delete-shift-bulk-target" className={cn("mb-1.5 block text-xs", formHelpTextClass)}>Select target shift</label>
+                                            <AppSelect
+                                                id="delete-shift-bulk-target"
                                                 value={bulkTargetId}
-                                                onChange={e => setBulkTargetId(e.target.value)}
-                                                style={{ colorScheme: 'dark' }}
-                                                className={cn(formControlClass, "px-3 py-2 text-sm")}
-                                            >
-                                                <option value="" disabled className="bg-[color:var(--ui-form-input-select-bg)] text-white">Choose a shift…</option>
-                                                {analysis.otherShifts
+                                                onValueChange={setBulkTargetId}
+                                                placeholder="Choose a shift…"
+                                                options={analysis.otherShifts
                                                     .filter(s => analysis.shiftsWithEnoughCapacity.includes(s.shiftId))
-                                                    .map(s => (
-                                                        <option key={s.shiftId} value={s.shiftId} className="bg-[color:var(--ui-form-input-select-bg)] text-white">
-                                                            {s.name} — {s.emptySeats} empty seat{s.emptySeats !== 1 ? "s" : ""}
-                                                        </option>
-                                                    ))
-                                                }
-                                            </select>
+                                                    .map(s => ({
+                                                        value: s.shiftId,
+                                                        label: `${s.name} — ${s.emptySeats} empty seat${s.emptySeats !== 1 ? "s" : ""}`,
+                                                    }))}
+                                            />
                                         </div>
                                     )}
                                 </OptionCard>
@@ -790,32 +773,31 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                                         <p className="truncate text-xs font-medium text-[color:var(--text-primary)]">{alloc.studentName}</p>
                                                         <p className="text-[10px] text-[color:var(--ui-table-subtle)]">Seat {alloc.seatLabel}</p>
                                                     </div>
-                                                    <select
+                                                    <AppSelect
+                                                        aria-label={`Target shift for ${alloc.studentName}`}
                                                         value={chosenId}
-                                                        onChange={e => setManualAssignments(prev => ({
+                                                        onValueChange={value => setManualAssignments(prev => ({
                                                             ...prev,
-                                                            [alloc.allocationId]: e.target.value,
+                                                            [alloc.allocationId]: value,
                                                         }))}
-                                                        style={{ colorScheme: 'dark' }}
+                                                        placeholder="Select shift…"
+                                                        options={analysis.otherShifts.map(s => ({
+                                                            value: s.shiftId,
+                                                            label: `${s.name} (${s.emptySeats} empty)`,
+                                                            disabled: s.emptySeats === 0,
+                                                        }))}
+                                                        containerClassName="w-full sm:min-w-[160px] sm:w-auto"
                                                         className={cn(
-                                                            formControlClass,
                                                             "px-2 py-1.5 text-xs sm:min-w-[160px]",
-                                                            wouldOverflow && "border-[color:var(--ui-form-error-border)] focus:border-[color:var(--ui-form-error-focus-border)]"
+                                                            wouldOverflow && "border-[color:var(--ui-form-error-border)] focus-visible:border-[color:var(--ui-form-error-focus-border)]"
                                                         )}
-                                                    >
-                                                        <option value="" disabled className="bg-[color:var(--ui-form-input-select-bg)] text-white">Select shift…</option>
-                                                        {analysis.otherShifts.map(s => (
-                                                            <option key={s.shiftId} value={s.shiftId} disabled={s.emptySeats === 0} className="bg-[color:var(--ui-form-input-select-bg)] text-white">
-                                                                {s.name} ({s.emptySeats} empty)
-                                                            </option>
-                                                        ))}
-                                                    </select>
+                                                    />
                                                 </div>
                                             );
                                         })}
                                         {manualOverflow && (
-                                            <p className="text-xs text-red-400 flex items-center gap-1 mt-1">
-                                                <AlertTriangle size={11} /> One or more shifts would overflow. Reassign those students.
+                                            <p role="alert" className="text-xs text-red-400 flex items-center gap-1 mt-1">
+                                                <AlertTriangle size={11} aria-hidden="true" /> One or more shifts would overflow. Reassign those students.
                                             </p>
                                         )}
                                     </div>
@@ -835,8 +817,9 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                     return (
                                         <div className="mt-3 space-y-3">
                                             <div>
-                                                <label className={cn("mb-1 block text-xs", formHelpTextClass)}>New name</label>
+                                                <label htmlFor="rename-shift-name" className={cn("mb-1 block text-xs", formHelpTextClass)}>New name</label>
                                                 <input
+                                                    id="rename-shift-name"
                                                     type="text"
                                                     value={renameName}
                                                     onChange={e => { setRenameName(e.target.value); setSubmitError(null); }}
@@ -848,8 +831,9 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                             </div>
                                             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                                 <div>
-                                                    <label className={cn("mb-1 block text-xs", formHelpTextClass)}>Start time</label>
+                                                    <label htmlFor="rename-shift-start-time" className={cn("mb-1 block text-xs", formHelpTextClass)}>Start time</label>
                                                     <input
+                                                        id="rename-shift-start-time"
                                                         type="time"
                                                         value={renameStart}
                                                         onChange={e => { setRenameStart(e.target.value); markTouched("renameTimePair"); markTouched("renameOverlap"); }}
@@ -859,8 +843,9 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                                     />
                                                 </div>
                                                 <div>
-                                                    <label className={cn("mb-1 block text-xs", formHelpTextClass)}>End time</label>
+                                                    <label htmlFor="rename-shift-end-time" className={cn("mb-1 block text-xs", formHelpTextClass)}>End time</label>
                                                     <input
+                                                        id="rename-shift-end-time"
                                                         type="time"
                                                         value={renameEnd}
                                                         onChange={e => { setRenameEnd(e.target.value); markTouched("renameTimePair"); markTouched("renameOverlap"); }}
@@ -872,8 +857,8 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                             </div>
                                             <FieldError id="rename-shift-time-error" error={renameTimeGroupError} />
                                             {renameOverlapWith && (
-                                                <div className={cn("flex items-center gap-2 px-3 py-2 text-xs", formWarningBannerClass)}>
-                                                    <AlertTriangle size={13} />
+                                                <div role="alert" className={cn("flex items-center gap-2 px-3 py-2 text-xs", formWarningBannerClass)}>
+                                                    <AlertTriangle size={13} aria-hidden="true" />
                                                     <span>Time overlaps with &ldquo;{renameOverlapWith.name}&rdquo; ({renameOverlapWith.startTime}&nbsp;–&nbsp;{renameOverlapWith.endTime}). Adjust the times before saving.</span>
                                                 </div>
                                             )}
@@ -887,26 +872,28 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
 
                         {/* Submit error */}
                         {submitError && (
-                            <div className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
-                                <AlertCircle size={13} /> {submitError}
+                            <div role="alert" className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
+                                <AlertCircle size={13} aria-hidden="true" /> {submitError}
                             </div>
                         )}
 
                         {/* Footer actions */}
                         <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
-                            <Button variant="ghost" onClick={onClose} disabled={submitting} className="text-sm h-8 px-3">
+                            <Button type="button" variant="ghost" onClick={onClose} disabled={submitting} className="h-11 px-4 text-sm">
                                 Cancel
                             </Button>
                             {mode === "RENAME" ? (
                                 <Button
+                                    type="button"
                                     onClick={handleRename}
                                     disabled={submitting}
                                     className="text-sm h-8 px-4 min-w-[130px] justify-center"
                                 >
-                                    {submitting ? <><Loader2 size={12} className="animate-spin mr-1.5" />Saving...</> : "Save Changes"}
+                                    {submitting ? <><Loader2 size={12} className="animate-spin mr-1.5" aria-hidden="true" />Saving...</> : "Save Changes"}
                                 </Button>
                             ) : (
                                 <Button
+                                    type="button"
                                     onClick={handleDelete}
                                     disabled={
                                         submitting ||
@@ -919,7 +906,7 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                     )}
                                 >
                                     {submitting
-                                        ? <><Loader2 size={12} className="animate-spin mr-1.5" />Processing...</>
+                                        ? <><Loader2 size={12} className="animate-spin mr-1.5" aria-hidden="true" />Processing...</>
                                         : mode === "END_ALL" ? "End All & Delete"
                                             : mode === "REALLOCATE_BULK" ? "Move All & Delete"
                                                 : "Assign & Delete"
@@ -929,8 +916,7 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                         </div>
                     </div>
                 )}
-            </div>
-        </div>
+        </Dialog>
     );
 }
 
@@ -955,26 +941,30 @@ function OptionCard({ selected, onClick, icon, title, description, variant, chil
 
     return (
         <div
-            onClick={onClick}
             className={cn(
-                "cursor-pointer p-4 transition-all",
+                "p-4 transition-all",
                 selected ? cn("rounded-[var(--ui-radius-control)] border", selectedSurface) : cn(pageInsetSurfaceClass, pageInsetHoverClass)
             )}
         >
-            <div className="flex items-start gap-3">
-                <div className="mt-0.5 shrink-0">{icon}</div>
+            <button
+                type="button"
+                onClick={onClick}
+                aria-pressed={selected}
+                className="flex min-h-11 w-full items-start gap-3 rounded-[var(--ui-radius-control)] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]"
+            >
+                <div className="mt-0.5 shrink-0" aria-hidden="true">{icon}</div>
                 <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-[color:var(--text-primary)]">{title}</p>
                     <p className={cn("mt-0.5 text-xs leading-relaxed", pageSubtleTextClass)}>{description}</p>
-                    {children}
                 </div>
-                <div className={cn(
+                <span aria-hidden="true" className={cn(
                     "w-4 h-4 rounded-full border shrink-0 mt-0.5 transition-all flex items-center justify-center",
                     selected ? "border-[color:var(--ui-form-accent)] bg-[color:var(--ui-form-accent)]" : "border-[color:var(--ui-form-input-border)]"
                 )}>
-                    {selected && <div className="h-1.5 w-1.5 rounded-full bg-[color:var(--bg-app)]" />}
-                </div>
-            </div>
+                    {selected && <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--bg-app)]" />}
+                </span>
+            </button>
+            {children}
         </div>
     );
 }
@@ -999,26 +989,22 @@ function TypePickerDialog({ isOpen, onClose, onSelect }: TypePickerDialogProps) 
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-4">
-            <div className={cn("cursor-pointer", formDialogOverlayClass)} onClick={onClose} />
-            <div className={cn("relative w-full max-w-md animate-in zoom-in-95 duration-200", formDialogPanelClass)}>
-                <div className={cn("flex items-center justify-between px-4 py-4 sm:px-6", formDialogHeaderClass)}>
-                    <div>
-                        <h2 className="text-base font-bold text-[color:var(--ui-dialog-title)]">What type of shift?</h2>
-                        <p className={cn("mt-0.5 text-xs", formHelpTextClass)}>Select the type of window to create</p>
-                    </div>
-                    <button onClick={onClose} className={cn("transition-colors hover:text-[color:var(--ui-table-text)]", formHelpTextClass)}>
-                        <X size={18} />
-                    </button>
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 sm:gap-4 sm:p-6">
+        <Dialog
+            open={isOpen}
+            onClose={onClose}
+            title="What type of shift?"
+            description="Select the kind of allocation window to create."
+            className="max-w-md"
+        >
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4">
                     <button
+                        type="button"
                         onClick={() => onSelect("primary")}
-                        className={cn("group flex cursor-pointer flex-col items-center gap-3 p-6", pageGridCardClass, pageGridCardHoverClass)}
+                        data-dialog-initial-focus
+                        className={cn("group flex min-h-11 cursor-pointer flex-col items-center gap-3 p-6", pageGridCardClass, pageGridCardHoverClass)}
                     >
                         <div className="flex h-12 w-12 items-center justify-center rounded-[var(--ui-radius-control)] bg-[color:var(--ui-tone-warning-bg)] text-[color:var(--ui-tone-warning-text)] transition-transform group-hover:scale-105">
-                            <Clock size={24} />
+                            <Clock size={24} aria-hidden="true" />
                         </div>
                         <div className="text-center">
                             <p className="text-sm font-semibold text-[color:var(--text-primary)]">Primary</p>
@@ -1027,11 +1013,12 @@ function TypePickerDialog({ isOpen, onClose, onSelect }: TypePickerDialogProps) 
                     </button>
 
                     <button
+                        type="button"
                         onClick={() => onSelect("multi")}
-                        className={cn("group flex cursor-pointer flex-col items-center gap-3 p-6", pageGridCardClass, pageGridCardHoverClass)}
+                        className={cn("group flex min-h-11 cursor-pointer flex-col items-center gap-3 p-6", pageGridCardClass, pageGridCardHoverClass)}
                     >
                         <div className="flex h-12 w-12 items-center justify-center rounded-[var(--ui-radius-control)] bg-[color:var(--ui-tone-info-bg)] text-[color:var(--ui-tone-info-text)] transition-transform group-hover:scale-105">
-                            <Layers size={24} />
+                            <Layers size={24} aria-hidden="true" />
                         </div>
                         <div className="text-center">
                             <p className="text-sm font-semibold text-[color:var(--text-primary)]">Multi-shift</p>
@@ -1039,8 +1026,7 @@ function TypePickerDialog({ isOpen, onClose, onSelect }: TypePickerDialogProps) 
                         </div>
                     </button>
                 </div>
-            </div>
-        </div>
+        </Dialog>
     );
 }
 
@@ -1159,28 +1145,38 @@ function MultiShiftDialog({ isOpen, mode, initial, branchId, primaryShifts, exis
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-4">
-            <div className={cn("cursor-pointer", formDialogOverlayClass)} onClick={onClose} />
-            <div className={cn("relative flex max-h-[calc(100dvh-1.5rem)] w-full max-w-md flex-col", formDialogPanelClass)}>
-                <div className={cn("flex flex-shrink-0 items-center justify-between px-4 py-4 sm:px-6", formDialogHeaderClass)}>
-                    <div>
-                        <h2 className="text-base font-bold text-[color:var(--ui-dialog-title)]">{mode === "add" ? "Add Multi-Shift" : "Edit Multi-Shift"}</h2>
-                        <p className={cn("mt-0.5 text-xs", formHelpTextClass)}>Bundle of primary shifts</p>
-                    </div>
-                    <button onClick={onClose} className={cn("transition-colors hover:text-[color:var(--ui-table-text)]", formHelpTextClass)}>
-                        <X size={18} />
-                    </button>
-                </div>
-
-                <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
+        <Dialog
+            open={isOpen}
+            onClose={onClose}
+            title={mode === "add" ? "Add multi-shift" : "Edit multi-shift"}
+            description="Bundle two or more primary shifts under one monthly price."
+            closeDisabled={loading}
+            className="max-w-md"
+            footer={(
+                <>
+                    <Button type="button" variant="ghost" onClick={onClose} disabled={loading} className="h-11 px-4 text-sm">Cancel</Button>
+                    <Button
+                        type="button"
+                        onClick={handleSubmit}
+                        disabled={loading}
+                        className="h-11 min-w-[100px] justify-center border border-orange-500/30 bg-orange-500/20 px-4 text-sm text-orange-300 hover:bg-orange-500/30"
+                    >
+                        {loading ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : mode === "add" ? "Create bundle" : "Save changes"}
+                    </Button>
+                </>
+            )}
+        >
+                <div className="space-y-5" aria-describedby={error ? "multi-shift-submit-error" : undefined}>
                     <div className="space-y-1.5">
-                        <label className={formCompactLabelClass}>Bundle Name *</label>
+                        <label htmlFor="multi-shift-name" className={formCompactLabelClass}>Bundle name *</label>
                         <input
+                            id="multi-shift-name"
                             type="text"
                             value={name}
                             onChange={e => { setName(e.target.value); setError(null); }}
                             onBlur={() => markTouched("name")}
                             placeholder="e.g. Full Time"
+                            data-dialog-initial-focus
                             className={cn(formControlClass, "px-4 py-2.5 text-sm focus:border-orange-500/50", fieldErrorClass(nameError))}
                             {...fieldErrorProps("multi-shift-name-error", nameError)}
                         />
@@ -1188,10 +1184,11 @@ function MultiShiftDialog({ isOpen, mode, initial, branchId, primaryShifts, exis
                     </div>
 
                     <div className="space-y-1.5">
-                        <label className={formCompactLabelClass}>Bundle monthly price</label>
+                        <label htmlFor="multi-shift-price" className={formCompactLabelClass}>Bundle monthly price</label>
                         <div className="relative">
-                            <IndianRupee size={13} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} />
+                            <IndianRupee size={13} className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} aria-hidden="true" />
                             <input
+                                id="multi-shift-price"
                                 type="number"
                                 value={price}
                                 onChange={e => { setPrice(e.target.value); setError(null); }}
@@ -1207,13 +1204,15 @@ function MultiShiftDialog({ isOpen, mode, initial, branchId, primaryShifts, exis
                         <FieldError id="multi-shift-price-error" error={priceError} />
                     </div>
 
-                    <div className="space-y-2.5">
-                        <label className={cn("block", formCompactLabelClass)}>Component Shifts *</label>
-                        <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-1">
+                    <div role="group" aria-labelledby="multi-shift-components-label" aria-describedby={componentsError ? "multi-shift-components-error" : undefined} className="space-y-2.5">
+                        <p id="multi-shift-components-label" className={cn("block", formCompactLabelClass)}>Component shifts *</p>
+                        <div className="grid max-h-48 grid-cols-1 gap-2 overflow-y-auto pr-1">
                             {primaryShifts.map(s => (
                                 <button
                                     key={s.id}
+                                    type="button"
                                     onClick={() => toggleShift(s.id)}
+                                    aria-pressed={selectedShiftIds.includes(s.id)}
                                     className={cn(
                                         "flex cursor-pointer items-center justify-between rounded-[var(--ui-radius-control)] border px-3 py-2 text-left transition-all",
                                         selectedShiftIds.includes(s.id)
@@ -1231,7 +1230,7 @@ function MultiShiftDialog({ isOpen, mode, initial, branchId, primaryShifts, exis
                                             ? "border-[color:var(--ui-tone-warning-progress)] bg-[color:var(--ui-tone-warning-progress)]"
                                             : "border-[color:var(--ui-form-input-border)]"
                                     )}>
-                                        {selectedShiftIds.includes(s.id) && <CheckCircle2 size={10} className="text-[color:var(--bg-app)]" />}
+                                        {selectedShiftIds.includes(s.id) && <CheckCircle2 size={10} className="text-[color:var(--bg-app)]" aria-hidden="true" />}
                                     </div>
                                 </button>
                             ))}
@@ -1240,24 +1239,12 @@ function MultiShiftDialog({ isOpen, mode, initial, branchId, primaryShifts, exis
                     </div>
 
                     {error && (
-                        <div className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
-                            <AlertCircle size={13} /> {error}
+                        <div id="multi-shift-submit-error" role="alert" className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
+                            <AlertCircle size={13} aria-hidden="true" /> {error}
                         </div>
                     )}
                 </div>
-
-                <div className={cn("flex flex-shrink-0 flex-col-reverse gap-3 px-4 py-4 sm:flex-row sm:justify-end sm:px-6", formDialogFooterClass)}>
-                    <Button variant="ghost" onClick={onClose} disabled={loading} className="text-sm h-8 px-3">Cancel</Button>
-                    <Button
-                        onClick={handleSubmit}
-                        disabled={loading}
-                        className="text-sm h-8 px-4 bg-orange-500/20 border border-orange-500/30 text-orange-300 hover:bg-orange-500/30 min-w-[100px] justify-center"
-                    >
-                        {loading ? <Loader2 size={14} className="animate-spin" /> : mode === "add" ? "Create Bundle" : "Save Changes"}
-                    </Button>
-                </div>
-            </div>
-        </div>
+        </Dialog>
     );
 }
 
@@ -1272,7 +1259,7 @@ export default function ShiftsPage() {
             {access => (
                 <ShiftsContent
                     branchId={branchId}
-                    canManageBranch={access.permissions.manage_branch}
+                    manageDecision={getBranchCapabilityDecision(access, "shiftsManage")}
                 />
             )}
         </BranchAccessGuard>
@@ -1281,17 +1268,27 @@ export default function ShiftsPage() {
 
 function ShiftsContent({
     branchId,
-    canManageBranch,
+    manageDecision,
 }: {
     branchId: string;
-    canManageBranch: boolean;
+    manageDecision: CapabilityDecision;
 }) {
-    const shiftManageHelpText = getPermissionHelpText("manage_branch");
+    const searchParams = useSearchParams();
+    const targetShiftId = searchParams.get("shiftId");
+    const { formatNumber } = useUserPreferences();
+    const formatPrice = (value: number) => formatNumber(value, {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0,
+    });
+    const canManageBranch = manageDecision.allowed;
+    const showManageActions = manageDecision.blocker !== "permission";
+    const shiftManageHelpText = manageDecision.reason ?? getPermissionHelpText("manage_branch");
+    const toastApi = useToast();
     const [shifts, setShifts] = useState<Shift[]>([]);
     const [multiShifts, setMultiShifts] = useState<MultiShift[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
 
     // Dialog state
     const [dialog, setDialog] = useState<{
@@ -1305,10 +1302,11 @@ function ShiftsContent({
 
     // Delete dialog state
     const [deleteTarget, setDeleteTarget] = useState<Shift | null>(null);
+    const [deleteMultiTarget, setDeleteMultiTarget] = useState<MultiShift | null>(null);
+    const [deletingMultiShift, setDeletingMultiShift] = useState(false);
 
     const showToast = (msg: string, type: "success" | "error" = "success") => {
-        setToast({ msg, type });
-        setTimeout(() => setToast(null), 3500);
+        toastApi.show({ title: msg, tone: type });
     };
 
     const loadShifts = useCallback(async () => {
@@ -1338,6 +1336,26 @@ function ShiftsContent({
     }, [branchId]);
 
     useEffect(() => { loadShifts(); }, [loadShifts]);
+
+    useEffect(() => {
+        if (loading || !targetShiftId) return;
+
+        const desktop = window.matchMedia("(min-width: 768px)").matches;
+        const destinationIds = desktop
+            ? [`shift-row-${targetShiftId}`, `shift-card-${targetShiftId}`]
+            : [`shift-card-${targetShiftId}`, `shift-row-${targetShiftId}`];
+        const target = destinationIds
+            .map(id => document.getElementById(id))
+            .find((element): element is HTMLElement => element !== null);
+        if (!target) return;
+
+        const focusFrame = window.requestAnimationFrame(() => {
+            const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+            target.focus({ preventScroll: true });
+        });
+        return () => window.cancelAnimationFrame(focusFrame);
+    }, [loading, multiShifts, shifts, targetShiftId]);
 
     const handleDialogSuccess = (saved: Shift) => {
         setShifts(prev => {
@@ -1370,13 +1388,29 @@ function ShiftsContent({
         </div>
     );
 
-    const handleDeleteMultiShift = (ms: MultiShift) => {
-        if (confirm("Delete this multi-shift bundle? Student allocations will remain but grouping will be lost.")) {
-            fetch(`/api/branches/${branchId}/multi-shifts/${ms.id}`, { method: "DELETE" })
-                .then(() => {
-                    setMultiShifts(prev => prev.filter(x => x.id !== ms.id));
-                    showToast(`"${ms.name}" deleted.`);
-                });
+    const handleDeleteMultiShift = async () => {
+        if (!deleteMultiTarget) return;
+        if (!manageDecision.allowed) {
+            showToast(manageDecision.reason ?? "Shift changes are unavailable.", "error");
+            return;
+        }
+
+        setDeletingMultiShift(true);
+        try {
+            const res = await fetch(`/api/branches/${branchId}/multi-shifts/${deleteMultiTarget.id}`, { method: "DELETE" });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.error || "Failed to delete multi-shift bundle.");
+            }
+
+            const deletedName = deleteMultiTarget.name;
+            setMultiShifts(prev => prev.filter(x => x.id !== deleteMultiTarget.id));
+            setDeleteMultiTarget(null);
+            showToast(`"${deletedName}" deleted.`);
+        } catch (err: unknown) {
+            showToast(getErrorMessage(err, "Failed to delete multi-shift bundle."), "error");
+        } finally {
+            setDeletingMultiShift(false);
         }
     };
 
@@ -1385,12 +1419,16 @@ function ShiftsContent({
             label: "Edit",
             icon: Pencil,
             onClick: () => setDialog({ open: true, mode: "edit-primary", shift }),
+            disabled: !canManageBranch,
+            description: canManageBranch ? undefined : shiftManageHelpText,
         },
         {
             label: "Delete",
             icon: Trash2,
             variant: "danger",
             onClick: () => setDeleteTarget(shift),
+            disabled: !canManageBranch,
+            description: canManageBranch ? undefined : shiftManageHelpText,
         },
     ];
 
@@ -1399,19 +1437,34 @@ function ShiftsContent({
             label: "Edit",
             icon: Pencil,
             onClick: () => setDialog({ open: true, mode: "edit-multi", multiShift: ms }),
+            disabled: !canManageBranch,
+            description: canManageBranch ? undefined : shiftManageHelpText,
         },
         {
             label: "Delete",
             icon: Trash2,
             variant: "danger",
-            onClick: () => handleDeleteMultiShift(ms),
+            onClick: () => setDeleteMultiTarget(ms),
+            disabled: !canManageBranch,
+            description: canManageBranch ? undefined : shiftManageHelpText,
         },
     ];
 
     const shiftCards = (
         <div className="grid gap-4">
             {shifts.map(shift => (
-                <div key={shift.id} className={cn(pageGridCardClass, pageGridCardHoverClass)}>
+                <div
+                    key={shift.id}
+                    id={`shift-card-${shift.id}`}
+                    tabIndex={targetShiftId === shift.id ? -1 : undefined}
+                    aria-current={targetShiftId === shift.id ? "true" : undefined}
+                    aria-label={targetShiftId === shift.id ? `${shift.name}, selected search result` : undefined}
+                    className={cn(
+                        pageGridCardClass,
+                        pageGridCardHoverClass,
+                        targetShiftId === shift.id && "border-cyan-400/50 bg-cyan-400/[0.05] outline outline-2 outline-cyan-300/60"
+                    )}
+                >
                     <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                             <p className="truncate font-medium text-[color:var(--text-primary)]">{shift.name}</p>
@@ -1421,7 +1474,7 @@ function ShiftsContent({
                                 </Badge>
                             </div>
                         </div>
-                        {canManageBranch ? (
+                        {showManageActions ? (
                             <RowActions actions={primaryShiftActions(shift)} />
                         ) : (
                             <span className={cn("text-xs", pageSubtleTextClass)} title={shiftManageHelpText}>
@@ -1450,7 +1503,18 @@ function ShiftsContent({
             ))}
 
             {multiShifts.map(ms => (
-                <div key={ms.id} className={cn(pageGridCardClass, pageGridCardHoverClass)}>
+                <div
+                    key={ms.id}
+                    id={`shift-card-${ms.id}`}
+                    tabIndex={targetShiftId === ms.id ? -1 : undefined}
+                    aria-current={targetShiftId === ms.id ? "true" : undefined}
+                    aria-label={targetShiftId === ms.id ? `${ms.name}, selected search result` : undefined}
+                    className={cn(
+                        pageGridCardClass,
+                        pageGridCardHoverClass,
+                        targetShiftId === ms.id && "border-cyan-400/50 bg-cyan-400/[0.05] outline outline-2 outline-cyan-300/60"
+                    )}
+                >
                     <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                             <p className="truncate font-medium text-[color:var(--text-primary)]">{ms.name}</p>
@@ -1460,7 +1524,7 @@ function ShiftsContent({
                                 </Badge>
                             </div>
                         </div>
-                        {canManageBranch ? (
+                        {showManageActions ? (
                             <RowActions actions={multiShiftActions(ms)} />
                         ) : (
                             <span className={cn("text-xs", pageSubtleTextClass)} title={shiftManageHelpText}>
@@ -1494,17 +1558,6 @@ function ShiftsContent({
 
     return (
         <PageShell className="relative">
-            {/* Toast */}
-            {toast && (
-                <div className={cn(
-                    "fixed bottom-4 left-4 right-4 z-50 flex items-center gap-2 px-4 py-3 text-sm shadow-[var(--ui-dialog-shadow)] animate-in fade-in slide-in-from-bottom-2 sm:bottom-6 sm:left-auto sm:right-6 sm:w-auto",
-                    toast.type === "success" ? formSuccessBannerClass : formErrorBannerClass
-                )}>
-                    {toast.type === "success" ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
-                    {toast.msg}
-                </div>
-            )}
-
             <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div className="min-w-0">
                     <p className={pageEyebrowClass}>Branch setup</p>
@@ -1517,8 +1570,14 @@ function ShiftsContent({
                     <span className={pageMetaPillClass}>
                         {shifts.length} primary / {multiShifts.length} bundle{multiShifts.length === 1 ? "" : "s"}
                     </span>
-                    {canManageBranch && (
-                        <AppButton variant="primary" icon={Clock} onClick={() => setDialog({ open: true, mode: "type-picker" })}>
+                    {showManageActions && (
+                        <AppButton
+                            variant="primary"
+                            icon={Clock}
+                            onClick={() => setDialog({ open: true, mode: "type-picker" })}
+                            disabled={!canManageBranch}
+                            title={canManageBranch ? undefined : shiftManageHelpText}
+                        >
                             Add shift
                         </AppButton>
                     )}
@@ -1528,6 +1587,14 @@ function ShiftsContent({
             {!canManageBranch && (
                 <div className={cn("px-4 py-3 text-sm", formWarningBannerClass)}>
                     Shift changes are disabled. {shiftManageHelpText}
+                    {manageDecision.recoveryHref ? (
+                        <a
+                            href={manageDecision.recoveryHref}
+                            className="ml-2 inline-flex min-h-11 items-center font-semibold underline underline-offset-4"
+                        >
+                            Review billing
+                        </a>
+                    ) : null}
                 </div>
             )}
 
@@ -1535,12 +1602,14 @@ function ShiftsContent({
                 <div className={pageEmptyStateClass}>
                     <Clock size={36} className="mx-auto mb-3 opacity-30" />
                     <p>No shifts found.</p>
-                    {canManageBranch && (
+                    {showManageActions && (
                         <AppButton
                             variant="secondary"
                             size="sm"
                             icon={Clock}
                             onClick={() => setDialog({ open: true, mode: "type-picker" })}
+                            disabled={!canManageBranch}
+                            title={canManageBranch ? undefined : shiftManageHelpText}
                             className="mt-3"
                         >
                             Add your first shift
@@ -1551,27 +1620,44 @@ function ShiftsContent({
                 <>
                 <div className="md:hidden">{shiftCards}</div>
                 <div className={cn("hidden overflow-visible md:block", pageTableShellClass)}>
-                    <div className="w-full overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                    <div
+                        className="w-full overflow-x-auto"
+                        role="region"
+                        aria-label="Branch shifts"
+                        tabIndex={0}
+                    >
                     <table className="w-full min-w-[54rem] text-left text-sm">
+                        <caption className="sr-only">Primary shifts and multi-shift bundles for this branch</caption>
                         <thead className={pageTableHeadClass}>
                             <tr className="border-b border-[color:var(--ui-table-divider)] text-[color:var(--ui-table-muted)]">
-                                <th className="px-6 py-4 font-semibold">Shift Name</th>
-                                <th className="px-6 py-4 font-semibold">Type</th>
-                                <th className="px-6 py-4 font-semibold">Time Window</th>
-                                <th className="px-6 py-4 font-semibold">Price</th>
-                                <th className="px-6 py-4 text-right font-semibold">Actions</th>
+                                <th scope="col" className="px-6 py-4 font-semibold">Shift Name</th>
+                                <th scope="col" className="px-6 py-4 font-semibold">Type</th>
+                                <th scope="col" className="px-6 py-4 font-semibold">Time Window</th>
+                                <th scope="col" className="px-6 py-4 font-semibold">Price</th>
+                                <th scope="col" className="px-6 py-4 text-right font-semibold">Actions</th>
                             </tr>
                         </thead>
                         <tbody className={pageTableBodyDividerClass}>
                             {/* Primary Shifts */}
                             {shifts.map(shift => (
-                                <tr key={shift.id} className={cn("group", pageTableRowClass)}>
-                                    <td className="px-6 py-4 font-medium text-[color:var(--ui-table-text)]">{shift.name}</td>
-                                    <td className="px-6 py-4">
+                                <tr
+                                    key={shift.id}
+                                    id={`shift-row-${shift.id}`}
+                                    tabIndex={targetShiftId === shift.id ? -1 : undefined}
+                                    aria-current={targetShiftId === shift.id ? "true" : undefined}
+                                    aria-label={targetShiftId === shift.id ? `${shift.name}, selected search result` : undefined}
+                                    className={cn(
+                                        "group",
+                                        pageTableRowClass,
+                                        targetShiftId === shift.id && "bg-cyan-400/[0.05] outline outline-2 outline-cyan-300/60"
+                                    )}
+                                >
+                                    <th scope="row" className="px-6 py-4 text-left font-medium text-[color:var(--ui-table-text)]">{shift.name}</th>
+                                    <th scope="row" className="px-6 py-4 text-left font-normal">
                                         <Badge variant="warning" className="bg-yellow-500/10 text-yellow-300 border-yellow-500/20 font-bold tracking-wider text-[10px]">
                                             PRIMARY
                                         </Badge>
-                                    </td>
+                                    </th>
                                     <td className="px-6 py-4 text-[color:var(--ui-table-muted)]">
                                         {shift.startTime && shift.endTime ? (
                                             <span className="font-mono flex items-center gap-1.5">
@@ -1584,7 +1670,7 @@ function ShiftsContent({
                                     </td>
                                     <td className="px-6 py-4 font-medium text-[color:var(--ui-table-text)]">{formatPrice(shift.price)}</td>
                                     <td className="px-6 py-4 text-right">
-                                        {canManageBranch ? (
+                                        {showManageActions ? (
                                             <RowActions actions={primaryShiftActions(shift)} />
                                         ) : (
                                             <span className="text-xs text-[color:var(--ui-table-subtle)]" title={shiftManageHelpText}>
@@ -1597,7 +1683,18 @@ function ShiftsContent({
 
                             {/* Multi Shifts */}
                             {multiShifts.map(ms => (
-                                <tr key={ms.id} className={cn("group", pageTableRowClass)}>
+                                <tr
+                                    key={ms.id}
+                                    id={`shift-row-${ms.id}`}
+                                    tabIndex={targetShiftId === ms.id ? -1 : undefined}
+                                    aria-current={targetShiftId === ms.id ? "true" : undefined}
+                                    aria-label={targetShiftId === ms.id ? `${ms.name}, selected search result` : undefined}
+                                    className={cn(
+                                        "group",
+                                        pageTableRowClass,
+                                        targetShiftId === ms.id && "bg-cyan-400/[0.05] outline outline-2 outline-cyan-300/60"
+                                    )}
+                                >
                                     <td className="px-6 py-4">
                                         <div className="flex flex-col">
                                             <span className="font-medium text-[color:var(--ui-table-text)]">{ms.name}</span>
@@ -1622,7 +1719,7 @@ function ShiftsContent({
                                     </td>
                                     <td className="px-6 py-4 font-medium text-[color:var(--ui-table-text)]">{formatPrice(ms.price)}</td>
                                     <td className="px-6 py-4 text-right">
-                                        {canManageBranch ? (
+                                        {showManageActions ? (
                                             <RowActions actions={multiShiftActions(ms)} />
                                         ) : (
                                             <span className="text-xs text-[color:var(--ui-table-subtle)]" title={shiftManageHelpText}>
@@ -1683,6 +1780,22 @@ function ShiftsContent({
                             onRenamed={handleRenamed}
                         />
                     )}
+
+                    <ConfirmDialog
+                        isOpen={deleteMultiTarget !== null}
+                        onClose={() => {
+                            if (!deletingMultiShift) setDeleteMultiTarget(null);
+                        }}
+                        onConfirm={handleDeleteMultiShift}
+                        title="Delete multi-shift bundle?"
+                        description={deleteMultiTarget
+                            ? <>&ldquo;{deleteMultiTarget.name}&rdquo; will be removed. Student allocations remain, but their bundle grouping will be lost.</>
+                            : "This multi-shift bundle will be removed."
+                        }
+                        confirmText="Delete bundle"
+                        loading={deletingMultiShift}
+                        variant="danger"
+                    />
                 </>
             )}
         </PageShell>

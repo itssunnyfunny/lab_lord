@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
 import { X, MapPin, Loader2, Phone, Plus, AlertCircle, AlertTriangle } from "lucide-react";
 import {
     SeatNumberingBuilder,
@@ -11,10 +12,6 @@ import {
 } from "@/components/seats/SeatNumberingBuilder";
 import {
     formControlClass,
-    formDialogFooterClass,
-    formDialogHeaderClass,
-    formDialogOverlayClass,
-    formDialogPanelClass,
     formErrorBannerClass,
     formHelpTextClass,
     formIconClass,
@@ -314,48 +311,55 @@ export function CreateBranchDialog({
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-4">
+        <>
             <RazorpayCheckoutScript
                 onReady={() => setCheckoutScriptReady(true)}
                 onError={() => setCheckoutScriptReady(false)}
             />
-            {/* Backdrop */}
-            <div className={formDialogOverlayClass} onClick={handleClose} />
-
-            {/* Dialog */}
-            <div className={cn("relative flex max-h-[calc(100dvh-1.5rem)] w-full max-w-lg flex-col sm:max-h-[90vh]", formDialogPanelClass)}>
-                {/* Header */}
-                <div className={cn("flex flex-shrink-0 items-center justify-between p-4 sm:p-6", formDialogHeaderClass)}>
-                    <div>
-                        <h2 className="text-lg font-bold text-[color:var(--ui-dialog-title)]">Create New Branch</h2>
-                        <p className={cn("mt-0.5 text-sm", formHelpTextClass)}>Set up a new location under this organization.</p>
-                    </div>
-                    <button
-                        onClick={handleClose}
-                        disabled={loading}
-                        className={cn("transition-colors hover:text-[color:var(--ui-table-text)]", formHelpTextClass)}
-                    >
-                        <X size={20} />
-                    </button>
-                </div>
-
-                {/* Body */}
-                <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
+            <Dialog
+                open={isOpen}
+                onClose={handleClose}
+                title="Create new branch"
+                description="Set up a new location under this organization."
+                closeLabel="Close create branch dialog"
+                closeDisabled={loading}
+                className="max-w-lg"
+                footer={(
+                    <>
+                        <Button variant="ghost" onClick={handleClose} disabled={loading}>
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleSubmit}
+                            disabled={loading}
+                            className="min-w-[130px] justify-center"
+                        >
+                            {loading ? (
+                                <><Loader2 size={14} className="mr-2 animate-spin" aria-hidden="true" /> Creating...</>
+                            ) : (
+                                "Create Branch"
+                            )}
+                        </Button>
+                    </>
+                )}
+            >
+                <div className="space-y-5" aria-describedby={error ? "create-branch-submit-error" : undefined}>
                     {/* Branch Name */}
                     <div className="space-y-1.5">
-                        <label className={formLabelClass}>
+                        <label htmlFor="create-branch-name" className={formLabelClass}>
                             Branch Name <span className={formRequiredClass}>*</span>
                         </label>
                         <div className="relative">
-                            <MapPin className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} size={16} />
+                            <MapPin className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} size={16} aria-hidden="true" />
                             <input
+                                id="create-branch-name"
                                 type="text"
                                 name="name"
                                 value={formData.name}
                                 onChange={handleChange}
                                 onBlur={() => markTouched("name")}
                                 placeholder="e.g. Main Branch, Downtown"
-                                autoFocus
+                                data-dialog-initial-focus
                                 maxLength={120}
                                 className={cn(formControlClass, "py-2.5 pl-9 pr-4 text-sm", fieldErrorClass(nameError))}
                                 {...fieldErrorProps("create-branch-name-error", nameError)}
@@ -365,12 +369,13 @@ export function CreateBranchDialog({
                     </div>
 
                     <div className="space-y-1.5">
-                        <label className={formLabelClass}>
+                        <label htmlFor="create-branch-contact-phone" className={formLabelClass}>
                             Contact Phone <span className={formRequiredClass}>*</span>
                         </label>
                         <div className="relative">
-                            <Phone className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} size={16} />
+                            <Phone className={cn("absolute left-3 top-1/2 -translate-y-1/2", formIconClass)} size={16} aria-hidden="true" />
                             <input
+                                id="create-branch-contact-phone"
                                 type="tel"
                                 name="contactPhone"
                                 value={formData.contactPhone}
@@ -387,10 +392,11 @@ export function CreateBranchDialog({
                     {/* City + Seats */}
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                         <div className="space-y-1.5">
-                            <label className={formLabelClass}>
+                            <label htmlFor="create-branch-city" className={formLabelClass}>
                                 City / Area <span className={formHelpTextClass}>(Optional)</span>
                             </label>
                             <input
+                                id="create-branch-city"
                                 type="text"
                                 name="city"
                                 value={formData.city}
@@ -404,10 +410,11 @@ export function CreateBranchDialog({
                             <FieldError id="create-branch-city-error" error={cityError} />
                         </div>
                         <div className="space-y-1.5">
-                            <label className={formLabelClass}>
+                            <label htmlFor="create-branch-seat-count" className={formLabelClass}>
                                 Total Seats <span className={formRequiredClass}>*</span>
                             </label>
                             <input
+                                id="create-branch-seat-count"
                                 type="number"
                                 name="seatCount"
                                 value={formData.seatCount}
@@ -425,8 +432,13 @@ export function CreateBranchDialog({
                         </div>
                     </div>
 
-                    <div className="space-y-2">
-                        <label className={formLabelClass}>Seat numbering</label>
+                    <div
+                        className="space-y-2"
+                        role="group"
+                        aria-labelledby="create-branch-seat-numbering-label"
+                        aria-describedby={seatNumberingError ? "create-branch-seat-numbering-error" : undefined}
+                    >
+                        <p id="create-branch-seat-numbering-label" className={formLabelClass}>Seat numbering</p>
                         <SeatNumberingBuilder
                             value={formData.seatNumbering as SeatNumberingConfig}
                             expectedCount={seatCountPreview}
@@ -441,12 +453,13 @@ export function CreateBranchDialog({
 
                     {/* Default Monthly Fee */}
                     <div className="space-y-1.5">
-                        <label className={formLabelClass}>
+                        <label htmlFor="create-branch-default-fee" className={formLabelClass}>
                             Default Monthly Fee <span className={formHelpTextClass}>(Optional)</span>
                         </label>
                         <div className="relative">
                             <span className={cn("absolute left-3 top-1/2 -translate-y-1/2 text-sm", formIconClass)}>₹</span>
                             <input
+                                id="create-branch-default-fee"
                                 type="number"
                                 name="defaultFee"
                                 value={formData.defaultFee}
@@ -465,14 +478,20 @@ export function CreateBranchDialog({
                     </div>
 
                     {/* Shifts */}
-                    <div className="space-y-2">
+                    <div
+                        className="space-y-2"
+                        role="group"
+                        aria-labelledby="create-branch-shifts-label"
+                        aria-describedby={shiftsError ? "create-branch-shifts-error" : undefined}
+                    >
                         <div className="flex items-center justify-between">
-                            <label className={formLabelClass}>Shifts & Pricing</label>
+                            <p id="create-branch-shifts-label" className={formLabelClass}>Shifts & Pricing</p>
                             <button
+                                type="button"
                                 onClick={addShift}
                                 className="flex items-center gap-1 text-xs text-[color:var(--ui-form-accent)] transition-colors hover:text-[color:var(--ui-form-accent-hover)]"
                             >
-                                <Plus size={12} /> Add Shift
+                                <Plus size={12} aria-hidden="true" /> Add Shift
                             </button>
                         </div>
 
@@ -484,6 +503,7 @@ export function CreateBranchDialog({
                                         <div className="col-span-2 sm:col-span-4">
                                             <input
                                                 type="text"
+                                                aria-label={`Shift ${idx + 1} name`}
                                                 placeholder="Name"
                                                 value={shift.name}
                                                 onChange={(e) => handleShiftChange(idx, "name", e.target.value)}
@@ -493,6 +513,7 @@ export function CreateBranchDialog({
                                         <div className="col-span-1 sm:col-span-3">
                                             <input
                                                 type="time"
+                                                aria-label={`Shift ${idx + 1} start time`}
                                                 value={shift.startTime}
                                                 onChange={(e) => handleShiftChange(idx, "startTime", e.target.value)}
                                                 className={cn(formInlineControlClass, "py-1 text-xs")}
@@ -501,6 +522,7 @@ export function CreateBranchDialog({
                                         <div className="col-span-1 sm:col-span-3">
                                             <input
                                                 type="time"
+                                                aria-label={`Shift ${idx + 1} end time`}
                                                 value={shift.endTime}
                                                 onChange={(e) => handleShiftChange(idx, "endTime", e.target.value)}
                                                 className={cn(formInlineControlClass, "py-1 text-xs")}
@@ -510,6 +532,7 @@ export function CreateBranchDialog({
                                             <span className={cn("absolute left-0 top-1 text-xs", formIconClass)}>₹</span>
                                             <input
                                                 type="number"
+                                                aria-label={`Shift ${idx + 1} monthly price`}
                                                 placeholder="0"
                                                 value={shift.price}
                                                 onChange={(e) => handleShiftChange(idx, "price", e.target.value)}
@@ -523,24 +546,26 @@ export function CreateBranchDialog({
                                     </div>
                                     {shifts.length > 1 && (
                                         <button
+                                            type="button"
                                             onClick={() => removeShift(idx)}
+                                            aria-label={`Remove shift ${shift.name || idx + 1}`}
                                             className={cn("flex-shrink-0 self-end transition-colors hover:text-[color:var(--ui-form-error-text)] sm:ml-1 sm:self-auto", formHelpTextClass)}
                                         >
-                                            <X size={14} />
+                                            <X size={14} aria-hidden="true" />
                                         </button>
                                     )}
                                 </div>
                                 {overlaps.has(idx) && (
                                     <div className={cn("mt-1 flex flex-col gap-1.5 px-3 py-2 text-xs", formWarningBannerClass)}>
                                         <div className="flex items-center gap-1.5">
-                                            <AlertTriangle size={12} />
+                                            <AlertTriangle size={12} aria-hidden="true" />
                                             <span>{overlaps.get(idx)!.text}</span>
                                         </div>
                                         <div className="flex flex-col gap-2 sm:flex-row">
-                                            <button onClick={() => handleShiftChange(overlaps.get(idx)!.fix1.idx, overlaps.get(idx)!.fix1.field, overlaps.get(idx)!.fix1.val)} className={cn("px-2 py-1", formWarningActionClass)}>
+                                            <button type="button" onClick={() => handleShiftChange(overlaps.get(idx)!.fix1.idx, overlaps.get(idx)!.fix1.field, overlaps.get(idx)!.fix1.val)} className={cn("px-2 py-1", formWarningActionClass)}>
                                                 {overlaps.get(idx)!.fix1.label}
                                             </button>
-                                            <button onClick={() => handleShiftChange(overlaps.get(idx)!.fix2.idx, overlaps.get(idx)!.fix2.field, overlaps.get(idx)!.fix2.val)} className={cn("px-2 py-1", formWarningActionClass)}>
+                                            <button type="button" onClick={() => handleShiftChange(overlaps.get(idx)!.fix2.idx, overlaps.get(idx)!.fix2.field, overlaps.get(idx)!.fix2.val)} className={cn("px-2 py-1", formWarningActionClass)}>
                                                 {overlaps.get(idx)!.fix2.label}
                                             </button>
                                         </div>
@@ -554,31 +579,13 @@ export function CreateBranchDialog({
 
                     {/* Error */}
                     {error && (
-                        <div className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
-                            <AlertCircle size={14} />
+                        <div id="create-branch-submit-error" role="alert" className={cn("flex items-center gap-2 px-3 py-2 text-sm", formErrorBannerClass)}>
+                            <AlertCircle size={14} aria-hidden="true" />
                             {error}
                         </div>
                     )}
                 </div>
-
-                {/* Footer */}
-                <div className={cn("flex flex-shrink-0 flex-col-reverse gap-3 p-4 sm:flex-row sm:justify-end sm:p-6", formDialogFooterClass)}>
-                    <Button variant="ghost" onClick={handleClose} disabled={loading}>
-                        Cancel
-                    </Button>
-                    <Button
-                        onClick={handleSubmit}
-                        disabled={loading}
-                        className="min-w-[130px] justify-center"
-                    >
-                        {loading ? (
-                            <><Loader2 size={14} className="animate-spin mr-2" /> Creating...</>
-                        ) : (
-                            "Create Branch"
-                        )}
-                    </Button>
-                </div>
-            </div>
-        </div>
+            </Dialog>
+        </>
     );
 }

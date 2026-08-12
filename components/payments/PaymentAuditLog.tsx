@@ -2,14 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { payments, AuditLogEntry } from "@/lib/api/payments";
-import { format } from "date-fns";
-import { ShieldCheck, X, AlertCircle, History } from "lucide-react";
-import { createPortal } from "react-dom";
-import { SkeletonBlock } from "@/components/ui";
+import { ShieldCheck, AlertCircle, History } from "lucide-react";
+import { Dialog, SkeletonBlock } from "@/components/ui";
+import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import {
-    formDialogHeaderClass,
-    formDialogOverlayClass,
-    formDialogPanelClass,
     formErrorBannerClass,
     formHelpTextClass,
     formIconClass,
@@ -40,6 +36,7 @@ export function PaymentAuditLog({
     isOpen,
     onClose,
 }: PaymentAuditLogProps) {
+    const { formatDateTime, formatNumber } = useUserPreferences();
     const [logs, setLogs] = useState<AuditLogEntry[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -58,43 +55,28 @@ export function PaymentAuditLog({
             .finally(() => setLoading(false));
     }, [isOpen, paymentId]);
 
-    if (!isOpen || typeof document === "undefined") return null;
-
     const formatCurrency = (amount: number) =>
-        new Intl.NumberFormat("en-IN", {
+        formatNumber(amount, {
             style: "currency",
             currency: "INR",
             maximumFractionDigits: 0,
-        }).format(amount);
+        });
 
-    const content = (
-        <div className="fixed inset-0 z-[100] flex items-end justify-center p-3 sm:items-center sm:p-4">
-            {/* Backdrop */}
-            <div className={formDialogOverlayClass} onClick={onClose} />
-
-            {/* Panel */}
-            <div className={cn("relative flex max-h-[calc(100dvh-1.5rem)] w-full max-w-md flex-col animate-in fade-in zoom-in-95 duration-200", formDialogPanelClass)}>
-                {/* Header */}
-                <div className={cn("flex flex-shrink-0 items-start justify-between p-4 sm:p-5", formDialogHeaderClass)}>
-                    <div className="flex items-center gap-3">
-                        <div className="p-2 rounded-full bg-violet-500/10">
-                            <History className="w-4 h-4 text-violet-400" />
-                        </div>
-                        <div>
-                            <h2 className="text-sm font-bold text-[color:var(--ui-dialog-title)]">Payment History</h2>
-                            <p className={cn("mt-0.5 text-xs", formHelpTextClass)}>{studentName}</p>
-                        </div>
-                    </div>
-                    <button
-                        onClick={onClose}
-                        className={cn("rounded-lg p-1.5 transition-colors hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--ui-table-text)]", formHelpTextClass)}
-                    >
-                        <X className="w-4 h-4" />
-                    </button>
+    return (
+        <Dialog
+            open={isOpen}
+            onClose={onClose}
+            title="Payment history"
+            description={studentName}
+            closeLabel="Close payment history"
+            className="max-w-md"
+            icon={(
+                <div className="rounded-full bg-violet-500/10 p-2">
+                    <History className="h-4 w-4 text-violet-400" aria-hidden="true" />
                 </div>
-
-                {/* Body */}
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 sm:p-5">
+            )}
+        >
+                <div className="space-y-3">
                     {loading && (
                         <div role="status" aria-live="polite" className="space-y-3">
                             <span className="sr-only">Loading payment history</span>
@@ -115,15 +97,15 @@ export function PaymentAuditLog({
                     )}
 
                     {error && !loading && (
-                        <div className={cn("flex items-center justify-center gap-2 px-3 py-6 text-sm", formErrorBannerClass)}>
-                            <AlertCircle className="w-4 h-4" />
+                        <div role="alert" className={cn("flex items-center justify-center gap-2 px-3 py-6 text-sm", formErrorBannerClass)}>
+                            <AlertCircle className="h-4 w-4" aria-hidden="true" />
                             {error}
                         </div>
                     )}
 
                     {!loading && !error && logs.length === 0 && (
                         <div className={cn("py-10 text-center text-sm", formHelpTextClass)}>
-                            <ShieldCheck className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                            <ShieldCheck className="mx-auto mb-2 h-8 w-8 opacity-30" aria-hidden="true" />
                             No recorded actions for this payment.
                         </div>
                     )}
@@ -134,7 +116,7 @@ export function PaymentAuditLog({
                             className={cn("flex items-start gap-3 p-3", formSurfaceClass)}
                         >
                             <div className="mt-0.5">
-                                <ShieldCheck className={cn("h-4 w-4", formIconClass)} />
+                                <ShieldCheck className={cn("h-4 w-4", formIconClass)} aria-hidden="true" />
                             </div>
                             <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 flex-wrap">
@@ -161,7 +143,7 @@ export function PaymentAuditLog({
                                     </span>
                                     <span>·</span>
                                     <span>
-                                        {format(new Date(log.createdAt), "dd MMM yyyy, hh:mm a")}
+                                        {formatDateTime(log.createdAt)}
                                     </span>
                                 </div>
                                 <div className="mt-1 flex flex-col gap-0.5 text-[10px] text-[color:var(--ui-table-subtle)]">
@@ -176,9 +158,6 @@ export function PaymentAuditLog({
                         </div>
                     ))}
                 </div>
-            </div>
-        </div>
+        </Dialog>
     );
-
-    return createPortal(content, document.body);
 }

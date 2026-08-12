@@ -1,9 +1,47 @@
 import { prisma } from "@/lib/prisma";
 import { StaffService } from "@/services/staff.service";
 import { StudentStatus, SeatAllocationFilters } from "@/types";
-import type { SeatAllocation } from "@/app/generated/prisma/client";
+import type { Prisma, SeatAllocation } from "@/app/generated/prisma/client";
 import { parseNullableTime, timesOverlap } from "@/utils/shiftTime";
 import { EntitlementService } from "@/services/entitlement.service";
+import {
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    pageFromRows,
+    PaginationInputError,
+    type DateIdCursor,
+} from "@/lib/cursorPagination";
+
+export type SeatAllocationListOptions = {
+    cursor?: DateIdCursor | null;
+    limit?: number;
+    all?: boolean;
+};
+
+const SERIALIZABLE_TRANSACTION_RETRIES = 3;
+
+function isRetryableTransactionConflict(error: unknown) {
+    return typeof error === "object"
+        && error !== null
+        && "code" in error
+        && error.code === "P2034";
+}
+
+async function runSerializableTransaction<T>(
+    operation: (tx: Prisma.TransactionClient) => Promise<T>
+): Promise<T> {
+    for (let attempt = 1; attempt <= SERIALIZABLE_TRANSACTION_RETRIES; attempt++) {
+        try {
+            return await prisma.$transaction(operation, { isolationLevel: "Serializable" });
+        } catch (error) {
+            if (!isRetryableTransactionConflict(error) || attempt === SERIALIZABLE_TRANSACTION_RETRIES) {
+                throw error;
+            }
+        }
+    }
+
+    throw new Error("Allocation transaction could not be completed.");
+}
 
 export class SeatAllocationService {
     private static async getSeatBranchId(seatId: string) {
@@ -57,7 +95,7 @@ export class SeatAllocationService {
         await StaffService.authorize(userId, authorizedBranchId, "seat_allocation");
         await EntitlementService.assertBranchWritable(authorizedBranchId);
 
-        return prisma.$transaction(async (tx) => {
+        return runSerializableTransaction(async (tx) => {
             // 1. Fetch seat and resolve branch scope
             const seat = await tx.seat.findUnique({
                 where: { id: seatId },
@@ -78,9 +116,19 @@ export class SeatAllocationService {
 
             // 3b. Validate multiShiftId if provided
             if (multiShiftId) {
-                const ms = await tx.multiShift.findUnique({ where: { id: multiShiftId } });
+                const ms = await tx.multiShift.findUnique({
+                    where: { id: multiShiftId },
+                    include: { components: { select: { shiftId: true } } },
+                });
                 if (!ms) throw new Error("Multi-shift not found");
                 if (ms.branchId !== branchId) throw new Error("Multi-shift does not belong to this branch");
+                const componentIds = ms.components.map(component => component.shiftId);
+                if (
+                    componentIds.length !== uniqueShiftIds.length
+                    || componentIds.some(componentId => !uniqueShiftIds.includes(componentId))
+                ) {
+                    throw new Error("All component shifts of the selected multi-shift are required.");
+                }
             }
 
             // 4. Fetch and validate all requested shifts
@@ -146,13 +194,11 @@ export class SeatAllocationService {
                     if (alloc.shiftId === requestedShift.id) {
                         throw new Error(`Seat is already assigned in shift "${requestedShift.name}".`);
                     }
-                    if (!multiShiftId) {
-                        const existing = shiftTimeMap.get(alloc.shiftId);
-                        if (existing && timesOverlap(newStart, newEnd, parseNullableTime(existing.startTime), parseNullableTime(existing.endTime))) {
-                            throw new Error(
-                                `Seat is already occupied during this time (conflict with "${existing.name}")`
-                            );
-                        }
+                    const existing = shiftTimeMap.get(alloc.shiftId);
+                    if (existing && timesOverlap(newStart, newEnd, parseNullableTime(existing.startTime), parseNullableTime(existing.endTime))) {
+                        throw new Error(
+                            `Seat is already occupied during this time (conflict with "${existing.name}")`
+                        );
                     }
                 }
 
@@ -161,13 +207,11 @@ export class SeatAllocationService {
                     if (alloc.shiftId === requestedShift.id) {
                         throw new Error(`Student already has a seat in shift "${requestedShift.name}".`);
                     }
-                    if (!multiShiftId) {
-                        const existing = shiftTimeMap.get(alloc.shiftId);
-                        if (existing && timesOverlap(newStart, newEnd, parseNullableTime(existing.startTime), parseNullableTime(existing.endTime))) {
-                            throw new Error(
-                                `Student is already allocated in an overlapping shift ("${existing.name}")`
-                            );
-                        }
+                    const existing = shiftTimeMap.get(alloc.shiftId);
+                    if (existing && timesOverlap(newStart, newEnd, parseNullableTime(existing.startTime), parseNullableTime(existing.endTime))) {
+                        throw new Error(
+                            `Student is already allocated in an overlapping shift ("${existing.name}")`
+                        );
                     }
                 }
 
@@ -217,14 +261,15 @@ export class SeatAllocationService {
     /**
      * Unassign (Release) a seat.
      * Sets the endDate to now, marking it as inactive (history).
-     * Does NOT delete the record.
+     * Does NOT delete the record. Releasing one component of a multi-shift
+     * releases the complete student + seat + bundle allocation.
      */
     static async unassignSeat(userId: string, allocationId: string) {
         const allocation = await this.getAllocationWithBranch(allocationId);
         await StaffService.authorize(userId, allocation.seat.branchId, "seat_allocation");
         await EntitlementService.assertBranchWritable(allocation.seat.branchId);
 
-        return prisma.$transaction(async (tx) => {
+        return runSerializableTransaction(async (tx) => {
             const scopedAllocation = await tx.seatAllocation.findUnique({
                 where: { id: allocationId },
                 include: { seat: true },
@@ -233,9 +278,19 @@ export class SeatAllocationService {
             if (!scopedAllocation) throw new Error("Allocation not found");
             if (scopedAllocation.endDate !== null) throw new Error("Allocation is already ended.");
 
-            const updatedAllocation = await tx.seatAllocation.update({
-                where: { id: allocationId },
-                data: { endDate: new Date() },
+            const endedAt = new Date();
+            const releaseWhere: Prisma.SeatAllocationWhereInput = scopedAllocation.multiShiftId
+                ? {
+                    seatId: scopedAllocation.seatId,
+                    studentId: scopedAllocation.studentId,
+                    multiShiftId: scopedAllocation.multiShiftId,
+                    endDate: null,
+                }
+                : { id: allocationId, endDate: null };
+
+            await tx.seatAllocation.updateMany({
+                where: releaseWhere,
+                data: { endDate: endedAt },
             });
 
             await tx.branch.update({
@@ -243,7 +298,10 @@ export class SeatAllocationService {
                 data: { lastDataChange: new Date() },
             });
 
-            return updatedAllocation;
+            return {
+                ...scopedAllocation,
+                endDate: endedAt,
+            };
         });
     }
 
@@ -267,6 +325,9 @@ export class SeatAllocationService {
     ) {
         if (allocationIds.length === 0) {
             throw new Error("At least one allocation is required.");
+        }
+        if (newShiftIds.length === 0) {
+            throw new Error("At least one new shift is required.");
         }
 
         // Fetch one allocation to get the studentId (validation)
@@ -309,15 +370,59 @@ export class SeatAllocationService {
             throw new Error("Seat does not belong to this branch.");
         }
 
-        // End all old allocations + create new ones in one transaction
-        return prisma.$transaction(async (tx) => {
-            // End old records
-            await tx.seatAllocation.updateMany({
-                where: { id: { in: uniqueAllocationIds }, endDate: null },
-                data: { endDate: new Date() },
-            });
+        const uniqueNewShiftIds = [...new Set(newShiftIds)];
 
-            // Re-check branch scope inside the write transaction.
+        // Validate the complete replacement before ending any existing row.
+        return runSerializableTransaction(async (tx) => {
+            let replacementAllocationIds = uniqueAllocationIds;
+            let activeOldAllocations = await tx.seatAllocation.findMany({
+                where: { id: { in: uniqueAllocationIds }, endDate: null },
+                include: { seat: { select: { branchId: true } } },
+            });
+            if (activeOldAllocations.length !== uniqueAllocationIds.length) {
+                throw new Error("One or more allocations are no longer active.");
+            }
+            for (const allocation of activeOldAllocations) {
+                if (allocation.studentId !== studentId) throw new Error("Student mismatch.");
+                if (allocation.seat.branchId !== branchId) {
+                    throw new Error("Allocations must belong to the same branch.");
+                }
+            }
+
+            // Resolve bundle siblings inside the serializable transaction so
+            // concurrent component writes cannot leave a partial old bundle.
+            const bundleScopes = activeOldAllocations
+                .filter((allocation) => allocation.multiShiftId !== null)
+                .map((allocation) => ({
+                    studentId: allocation.studentId,
+                    seatId: allocation.seatId,
+                    multiShiftId: allocation.multiShiftId!,
+                    endDate: null,
+                }));
+            if (bundleScopes.length > 0) {
+                const bundleSiblings = await tx.seatAllocation.findMany({
+                    where: { OR: bundleScopes },
+                    select: { id: true },
+                });
+                replacementAllocationIds = [...new Set([
+                    ...replacementAllocationIds,
+                    ...bundleSiblings.map((allocation) => allocation.id),
+                ])];
+                activeOldAllocations = await tx.seatAllocation.findMany({
+                    where: { id: { in: replacementAllocationIds }, endDate: null },
+                    include: { seat: { select: { branchId: true } } },
+                });
+                if (activeOldAllocations.length !== replacementAllocationIds.length) {
+                    throw new Error("One or more allocations are no longer active.");
+                }
+                for (const allocation of activeOldAllocations) {
+                    if (allocation.studentId !== studentId) throw new Error("Student mismatch.");
+                    if (allocation.seat.branchId !== branchId) {
+                        throw new Error("Allocations must belong to the same branch.");
+                    }
+                }
+            }
+
             const seat = await tx.seat.findUnique({
                 where: { id: newSeatId },
                 select: { branchId: true },
@@ -326,31 +431,131 @@ export class SeatAllocationService {
             if (seat.branchId !== branchId)
                 throw new Error("Seat does not belong to this branch.");
 
+            const student = await tx.student.findUnique({
+                where: { id: studentId },
+                select: { branchId: true, status: true },
+            });
+            if (!student) throw new Error("Student not found.");
+            if (student.branchId !== branchId) throw new Error("Student does not belong to this branch.");
+            if (student.status !== StudentStatus.ACTIVE) {
+                throw new Error("Only ACTIVE students can be assigned a seat");
+            }
+
             if (newMultiShiftId) {
                 const multiShift = await tx.multiShift.findUnique({
                     where: { id: newMultiShiftId },
-                    select: { branchId: true },
+                    select: {
+                        branchId: true,
+                        components: { select: { shiftId: true } },
+                    },
                 });
                 if (!multiShift) throw new Error("Multi-shift not found.");
                 if (multiShift.branchId !== branchId)
                     throw new Error("Multi-shift does not belong to this branch.");
+                const componentIds = multiShift.components.map((component) => component.shiftId);
+                if (
+                    componentIds.length !== uniqueNewShiftIds.length
+                    || componentIds.some((componentId) => !uniqueNewShiftIds.includes(componentId))
+                ) {
+                    throw new Error("All component shifts of the selected multi-shift are required.");
+                }
             }
 
             // Validate new shifts
             const shifts = await tx.shift.findMany({
-                where: { id: { in: newShiftIds } },
+                where: { id: { in: uniqueNewShiftIds } },
             });
-            if (shifts.length !== newShiftIds.length)
+            if (shifts.length !== uniqueNewShiftIds.length)
                 throw new Error("One or more new shifts were not found.");
             for (const s of shifts) {
                 if (s.status !== "ACTIVE") throw new Error(`Shift "${s.name}" is not active.`);
                 if (s.branchId !== branchId) throw new Error(`Shift "${s.name}" does not belong to this branch.`);
             }
 
-            // ⚡ Bolt: Optimizing bulk allocation creation
-            // Impact: Replaced N queries (Promise.all + create) with a single createManyAndReturn bulk operation
-            // This reduces DB roundtrips while preserving the returned records.
-            const payload = newShiftIds.map((shiftId) => ({
+            if (!newMultiShiftId) {
+                for (let i = 0; i < shifts.length; i++) {
+                    for (let j = i + 1; j < shifts.length; j++) {
+                        const a = shifts[i];
+                        const b = shifts[j];
+                        if (timesOverlap(
+                            parseNullableTime(a.startTime),
+                            parseNullableTime(a.endTime),
+                            parseNullableTime(b.startTime),
+                            parseNullableTime(b.endTime)
+                        )) {
+                            throw new Error(
+                                `Selected shifts "${a.name}" and "${b.name}" overlap with each other. You cannot assign both.`
+                            );
+                        }
+                    }
+                }
+            }
+
+            const allBranchShifts = await tx.shift.findMany({
+                where: { branchId },
+                select: { id: true, name: true, startTime: true, endTime: true },
+            });
+            const shiftTimeMap = new Map(allBranchShifts.map((shift) => [shift.id, shift]));
+            const activeSeatAllocations = await tx.seatAllocation.findMany({
+                where: {
+                    seatId: newSeatId,
+                    endDate: null,
+                    id: { notIn: replacementAllocationIds },
+                },
+            });
+            const activeStudentAllocations = await tx.seatAllocation.findMany({
+                where: {
+                    studentId,
+                    endDate: null,
+                    id: { notIn: replacementAllocationIds },
+                },
+            });
+
+            for (const requestedShift of shifts) {
+                const requestedStart = parseNullableTime(requestedShift.startTime);
+                const requestedEnd = parseNullableTime(requestedShift.endTime);
+
+                for (const allocation of activeSeatAllocations) {
+                    const existingShift = shiftTimeMap.get(allocation.shiftId);
+                    if (
+                        allocation.shiftId === requestedShift.id
+                        || (existingShift && timesOverlap(
+                            requestedStart,
+                            requestedEnd,
+                            parseNullableTime(existingShift.startTime),
+                            parseNullableTime(existingShift.endTime)
+                        ))
+                    ) {
+                        throw new Error(
+                            `Seat is already occupied during this time${existingShift ? ` (conflict with "${existingShift.name}")` : ""}`
+                        );
+                    }
+                }
+
+                for (const allocation of activeStudentAllocations) {
+                    const existingShift = shiftTimeMap.get(allocation.shiftId);
+                    if (
+                        allocation.shiftId === requestedShift.id
+                        || (existingShift && timesOverlap(
+                            requestedStart,
+                            requestedEnd,
+                            parseNullableTime(existingShift.startTime),
+                            parseNullableTime(existingShift.endTime)
+                        ))
+                    ) {
+                        throw new Error(
+                            `Student is already allocated in an overlapping shift${existingShift ? ` ("${existingShift.name}")` : ""}`
+                        );
+                    }
+                }
+            }
+
+            await tx.seatAllocation.updateMany({
+                where: { id: { in: replacementAllocationIds }, endDate: null },
+                data: { endDate: new Date() },
+            });
+
+            const payload = uniqueNewShiftIds.map((shiftId) => ({
                 seatId: newSeatId,
                 studentId,
                 shiftId,
@@ -376,26 +581,81 @@ export class SeatAllocationService {
     static async listAllocations(
         userId: string,
         branchId: string,
-        filters?: SeatAllocationFilters
+        filters: SeatAllocationFilters = {},
+        options: SeatAllocationListOptions = {}
     ) {
         await StaffService.authorize(userId, branchId, "seat_allocation");
 
-        return prisma.seatAllocation.findMany({
-            where: {
-                seat: { branchId }, // Strictly scoped to branch via seat
-                studentId: filters?.studentId,
-                shiftId: filters?.shiftId,
-                endDate: filters?.activeOnly ? null : undefined,
-            },
+        if (filters.shiftId && filters.multiShiftId) {
+            throw new Error("shiftId and multiShiftId cannot be combined");
+        }
+        if (filters.multiShiftId) {
+            const multiShift = await prisma.multiShift.findUnique({
+                where: { id: filters.multiShiftId },
+                select: { branchId: true },
+            });
+            if (!multiShift || multiShift.branchId !== branchId) {
+                throw new Error("Multi-shift not found");
+            }
+        }
+
+        const limit = options.limit ?? DEFAULT_PAGE_SIZE;
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE) {
+            throw new PaginationInputError(`limit must be between 1 and ${MAX_PAGE_SIZE}`);
+        }
+
+        const endDate = filters.status === "ACTIVE" || filters.activeOnly
+            ? null
+            : filters.status === "ENDED"
+                ? { not: null }
+                : undefined;
+        const baseWhere: Prisma.SeatAllocationWhereInput = {
+            seat: { branchId },
+            studentId: filters.studentId,
+            shiftId: filters.shiftId,
+            multiShiftId: filters.multiShiftId,
+            endDate,
+        };
+        const pageWhere: Prisma.SeatAllocationWhereInput = options.cursor
+            ? {
+                ...baseWhere,
+                OR: [
+                    { startDate: { lt: options.cursor.sort } },
+                    {
+                        startDate: options.cursor.sort,
+                        id: { lt: options.cursor.id },
+                    },
+                ],
+            }
+            : baseWhere;
+
+        const query = {
+            where: options.all ? baseWhere : pageWhere,
             include: {
                 seat: true,
                 student: true,
                 shift: true,
                 multiShift: { select: { id: true, name: true } },
             },
-            orderBy: {
-                startDate: "desc",
-            },
-        });
+            orderBy: [
+                { startDate: "desc" as const },
+                { id: "desc" as const },
+            ],
+            ...(options.all ? {} : { take: limit + 1 }),
+        } satisfies Prisma.SeatAllocationFindManyArgs;
+
+        const [allocations, total] = await Promise.all([
+            prisma.seatAllocation.findMany(query),
+            prisma.seatAllocation.count({ where: baseWhere }),
+        ]);
+
+        if (options.all) {
+            return { items: allocations, nextCursor: null, total };
+        }
+
+        return pageFromRows(allocations, limit, total, allocation => ({
+            sort: allocation.startDate,
+            id: allocation.id,
+        }));
     }
 }

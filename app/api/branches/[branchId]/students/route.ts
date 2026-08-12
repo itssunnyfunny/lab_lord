@@ -10,6 +10,11 @@ import {
     validateRequiredPhone,
     validateRequiredText,
 } from "@/lib/formValidation";
+import {
+    decodeDateIdCursor,
+    PaginationInputError,
+    parsePageLimit,
+} from "@/lib/cursorPagination";
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Something went wrong";
@@ -78,14 +83,62 @@ export async function GET(
 
         const { branchId } = await params;
         const { searchParams } = new URL(req.url);
-        const status = searchParams.get("status") as StudentStatus | undefined;
+        const statusParam = searchParams.get("status");
+        if (statusParam && !Object.values(StudentStatus).includes(statusParam as StudentStatus)) {
+            return NextResponse.json({ error: "Invalid student status" }, { status: 400 });
+        }
+        const status = statusParam ? statusParam as StudentStatus : undefined;
         const shiftId = searchParams.get("shiftId") || undefined;
+        const multiShiftId = searchParams.get("multiShiftId") || undefined;
+        if (shiftId && multiShiftId) {
+            return NextResponse.json(
+                { error: "shiftId and multiShiftId cannot be combined" },
+                { status: 400 }
+            );
+        }
+        const query = searchParams.get("q")?.trim() || undefined;
+        if (query && query.length > 200) {
+            return NextResponse.json({ error: "Search query must be 200 characters or fewer" }, { status: 400 });
+        }
+        const allParam = searchParams.get("all");
+        if (allParam !== null && allParam !== "true" && allParam !== "false") {
+            throw new PaginationInputError("all must be true or false");
+        }
+        const all = allParam === "true";
+        const cursorValue = searchParams.get("cursor");
+        const limitValue = searchParams.get("limit");
+        if (all && (searchParams.has("cursor") || searchParams.has("limit"))) {
+            throw new PaginationInputError("all cannot be combined with cursor or limit");
+        }
+        const limit = all ? undefined : parsePageLimit(limitValue);
+        const cursor = all ? null : decodeDateIdCursor(cursorValue);
 
-        const students = await StudentService.getStudentsByBranch(user.id, branchId, { status, shiftId });
-        return NextResponse.json(students);
+        if (all) {
+            const items = await StudentService.getStudentsByBranch(user.id, branchId, {
+                status,
+                shiftId,
+                multiShiftId,
+                query,
+            });
+            return NextResponse.json({ items, nextCursor: null, total: items.length });
+        }
+
+        const page = await StudentService.getStudentsByBranch(user.id, branchId, {
+            status,
+            shiftId,
+            multiShiftId,
+            query,
+            limit: limit!,
+            cursor,
+        });
+        return NextResponse.json(page);
     } catch (error: unknown) {
         const message = getErrorMessage(error);
+        if (error instanceof PaginationInputError) {
+            return NextResponse.json({ error: message }, { status: 400 });
+        }
         if (message.includes("Unauthorized")) return NextResponse.json({ error: message }, { status: 403 });
+        if (message.includes("not found")) return NextResponse.json({ error: message }, { status: 404 });
         return NextResponse.json({ error: message }, { status: 500 });
     }
 }

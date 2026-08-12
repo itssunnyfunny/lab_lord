@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
     AlertCircle,
@@ -30,7 +30,8 @@ import {
 } from "@/lib/branchNotifications";
 import { cn } from "@/lib/utils";
 import { formWarningBannerClass } from "@/components/ui/formSurface";
-import { SkeletonBlock } from "@/components/ui";
+import { Dialog, SkeletonBlock } from "@/components/ui";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import {
     chromeCompactIconButtonClass,
     chromeEmptyStateClass,
@@ -93,6 +94,144 @@ function NotificationSkeleton() {
                 </div>
             ))}
         </div>
+    );
+}
+
+function NotificationPanel({
+    loading,
+    loaded,
+    loadErrors,
+    notifications,
+    unreadNotifications,
+    readKeys,
+    titleId,
+    mobile = false,
+    onRefresh,
+    onMarkRead,
+    onOpen,
+}: {
+    loading: boolean;
+    loaded: boolean;
+    loadErrors: string[];
+    notifications: BranchNotification[];
+    unreadNotifications: BranchNotification[];
+    readKeys: ReadonlySet<string>;
+    titleId?: string;
+    mobile?: boolean;
+    onRefresh: () => void;
+    onMarkRead: (notifications: BranchNotification[]) => void;
+    onOpen: (notification: BranchNotification) => void;
+}) {
+    return (
+        <>
+            <div className={cn(chromePopoverHeaderClass, mobile && "justify-end px-0 pt-0")}>
+                {!mobile ? (
+                    <div>
+                        <h2 id={titleId} className="text-sm font-bold text-[color:var(--text-primary)]">Notifications</h2>
+                        <p className={cn("text-xs", chromeSubtleTextClass)}>Current branch alerts</p>
+                    </div>
+                ) : null}
+                <button
+                    type="button"
+                    onClick={onRefresh}
+                    disabled={loading}
+                    className={chromeCompactIconButtonClass}
+                    aria-label="Refresh notifications"
+                >
+                    {loading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+                </button>
+            </div>
+
+            <div className={chromePopoverScrollClass}>
+                {loadErrors.length > 0 && (
+                    <div className={cn("mx-3 mb-2 flex items-start gap-2 px-3 py-2 text-xs leading-5", formWarningBannerClass)}>
+                        <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                        <span>Some alerts could not load: {loadErrors.join(", ")}.</span>
+                    </div>
+                )}
+
+                {loading && !loaded ? <NotificationSkeleton /> : null}
+
+                {!loading && loaded && notifications.length === 0 && loadErrors.length > 0 && (
+                    <div className={chromeEmptyStateClass} role="status">
+                        <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-amber-500/20 bg-amber-500/10 text-amber-300">
+                            <AlertCircle size={20} aria-hidden="true" />
+                        </div>
+                        <p className="text-sm font-semibold text-[color:var(--text-primary)]">Alert status incomplete</p>
+                        <p className={cn("mt-1 text-xs leading-5", chromeSubtleTextClass)}>
+                            No loaded alerts are visible, but some sources failed. Refresh before treating this branch as clear.
+                        </p>
+                    </div>
+                )}
+
+                {!loading && loaded && notifications.length === 0 && loadErrors.length === 0 && (
+                    <div className={chromeEmptyStateClass}>
+                        <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-300">
+                            <CheckCircle2 size={20} />
+                        </div>
+                        <p className="text-sm font-semibold text-[color:var(--text-primary)]">All clear</p>
+                        <p className={cn("mt-1 text-xs leading-5", chromeSubtleTextClass)}>
+                            No overdue payments, seating gaps, capacity alerts, or active invites need attention.
+                        </p>
+                    </div>
+                )}
+
+                {!loading && loaded && notifications.length > 0 && (
+                    <div className="space-y-1.5 px-2">
+                        <div className="flex min-h-11 items-center justify-between gap-3 px-1 pb-1">
+                            <span className={cn("text-xs", chromeSubtleTextClass)}>
+                                {unreadNotifications.length > 0
+                                    ? `${unreadNotifications.length} unread`
+                                    : "All current alerts read"}
+                            </span>
+                            {unreadNotifications.length > 0 ? (
+                                <button
+                                    type="button"
+                                    onClick={() => onMarkRead(unreadNotifications)}
+                                    className="min-h-11 rounded-[var(--ui-radius-control)] px-2 py-1 text-xs font-medium text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--text-primary)]"
+                                >
+                                    Mark all read
+                                </button>
+                            ) : null}
+                        </div>
+                        {notifications.map(notification => {
+                            const Icon = KIND_ICONS[notification.kind];
+                            const read = readKeys.has(notification.readKey);
+
+                            return (
+                                <button
+                                    key={notification.id}
+                                    type="button"
+                                    onClick={() => onOpen(notification)}
+                                    className={cn(
+                                        chromeListItemClass,
+                                        "min-h-11 items-start py-3",
+                                        read && "opacity-65"
+                                    )}
+                                    aria-label={`${notification.title}${read ? ", read" : ", unread"}`}
+                                >
+                                    <span className={cn(
+                                        "mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border",
+                                        SEVERITY_STYLES[notification.severity]
+                                    )}>
+                                        <Icon size={16} />
+                                    </span>
+                                    <span className="min-w-0 flex-1">
+                                        <span className="flex items-center gap-2 text-sm font-semibold text-[color:var(--text-primary)]">
+                                            <span className="min-w-0 flex-1">{notification.title}</span>
+                                            {!read ? <span className="h-2 w-2 shrink-0 rounded-full bg-cyan-300" aria-hidden="true" /> : null}
+                                        </span>
+                                        <span className={cn("mt-0.5 block text-xs leading-5", chromeSubtleTextClass)}>
+                                            {notification.message}
+                                        </span>
+                                    </span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        </>
     );
 }
 
@@ -172,6 +311,11 @@ export function BranchNotifications() {
     const { access, loading: accessLoading, error: accessError } = useBranchAccess(branchId);
 
     const rootRef = useRef<HTMLDivElement>(null);
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    const popoverRef = useRef<HTMLDivElement>(null);
+    const popoverId = useId();
+    const popoverTitleId = useId();
+    const compactLayout = useMediaQuery("(max-width: 1023px)", true);
     const loadSeq = useRef(0);
     const [openBranchId, setOpenBranchId] = useState<string | null>(null);
     const [loadingBranchId, setLoadingBranchId] = useState<string | null>(null);
@@ -244,13 +388,13 @@ export function BranchNotifications() {
             staffInvites,
         ] = await Promise.all([
             read("overdue payments", Boolean(access.permissions.view_payments), () =>
-                fetchJson<OverduePaymentNotificationData>(`/api/branches/${branchId}/payments/overdue`)
+                fetchJson<OverduePaymentNotificationData>(`/api/branches/${branchId}/payments/overdue?all=true`)
             ),
             read("students", Boolean(access.permissions.students && access.permissions.seat_allocation), () =>
                 branches.getStudents(branchId) as Promise<StudentNotificationRecord[]>
             ),
             read("allocations", Boolean(access.permissions.students && access.permissions.seat_allocation), () =>
-                seats.listAllocations(branchId, { activeOnly: true }) as Promise<AllocationNotificationRecord[]>
+                seats.listAllAllocations<AllocationNotificationRecord>(branchId, { activeOnly: true })
             ),
             read("shift capacity", Boolean(access.permissions.seat_allocation), () =>
                 fetchJson<ShiftCapacityNotificationRecord[]>(`/api/branches/${branchId}/shifts/capacity`)
@@ -286,7 +430,7 @@ export function BranchNotifications() {
     }, [access, branchId, loadNotifications]);
 
     useEffect(() => {
-        if (!open) return;
+        if (!open || compactLayout) return;
 
         const handleMouseDown = (event: MouseEvent) => {
             if (!rootRef.current?.contains(event.target as Node)) {
@@ -294,9 +438,24 @@ export function BranchNotifications() {
             }
         };
 
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            setOpenBranchId(null);
+            triggerRef.current?.focus();
+        };
+
         document.addEventListener("mousedown", handleMouseDown);
-        return () => document.removeEventListener("mousedown", handleMouseDown);
-    }, [open]);
+        document.addEventListener("keydown", handleKeyDown);
+        const frame = window.requestAnimationFrame(() => {
+            popoverRef.current?.querySelector<HTMLElement>("button:not([disabled]), a[href]")?.focus();
+        });
+        return () => {
+            window.cancelAnimationFrame(frame);
+            document.removeEventListener("mousedown", handleMouseDown);
+            document.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [compactLayout, open]);
 
     if (!branchId) return <DisabledBell />;
 
@@ -321,6 +480,7 @@ export function BranchNotifications() {
     return (
         <div ref={rootRef} className="relative">
             <button
+                ref={triggerRef}
                 type="button"
                 disabled={disabled}
                 onClick={() => {
@@ -334,6 +494,9 @@ export function BranchNotifications() {
                     disabled && "cursor-not-allowed opacity-60"
                 )}
                 aria-label={alertCount > 0 ? `${alertCount} branch notifications` : "Branch notifications"}
+                aria-expanded={open}
+                aria-haspopup="dialog"
+                aria-controls={open && !compactLayout ? popoverId : undefined}
             >
                 <Bell size={20} />
                 {loading && !loaded && (
@@ -346,18 +509,25 @@ export function BranchNotifications() {
                 )}
             </button>
 
-            {open && !disabled && (
-                <div className={cn(chromePopoverClass, "sm:absolute sm:left-auto sm:right-0 sm:top-12 sm:w-[22rem]")}>
+            {open && !disabled && !compactLayout && (
+                <div
+                    ref={popoverRef}
+                    id={popoverId}
+                    role="dialog"
+                    aria-modal="false"
+                    aria-labelledby={popoverTitleId}
+                    className={cn(chromePopoverClass, "sm:absolute sm:left-auto sm:right-0 sm:top-12 sm:w-[22rem]")}
+                >
                     <div className={chromePopoverHeaderClass}>
                         <div>
-                            <h2 className="text-sm font-bold text-[color:var(--text-primary)]">Notifications</h2>
+                            <h2 id={popoverTitleId} className="text-sm font-bold text-[color:var(--text-primary)]">Notifications</h2>
                             <p className={cn("text-xs", chromeSubtleTextClass)}>Current branch alerts</p>
                         </div>
                         <button
                             type="button"
                             onClick={() => void loadNotifications({ force: true })}
                             disabled={loading}
-                            className={cn("h-8 w-8", chromeCompactIconButtonClass)}
+                            className={chromeCompactIconButtonClass}
                             aria-label="Refresh notifications"
                         >
                             {loading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
@@ -376,7 +546,19 @@ export function BranchNotifications() {
                             <NotificationSkeleton />
                         )}
 
-                        {!loading && loaded && notifications.length === 0 && (
+                        {!loading && loaded && notifications.length === 0 && loadErrors.length > 0 && (
+                            <div className={chromeEmptyStateClass} role="status">
+                                <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-amber-500/20 bg-amber-500/10 text-amber-300">
+                                    <AlertCircle size={20} aria-hidden="true" />
+                                </div>
+                                <p className="text-sm font-semibold text-[color:var(--text-primary)]">Alert status incomplete</p>
+                                <p className={cn("mt-1 text-xs leading-5", chromeSubtleTextClass)}>
+                                    No loaded alerts are visible, but some sources failed. Refresh before treating this branch as clear.
+                                </p>
+                            </div>
+                        )}
+
+                        {!loading && loaded && notifications.length === 0 && loadErrors.length === 0 && (
                             <div className={chromeEmptyStateClass}>
                                 <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-300">
                                     <CheckCircle2 size={20} />
@@ -388,38 +570,39 @@ export function BranchNotifications() {
                             </div>
                         )}
 
-                        {!loading && loaded && notifications.length > 0 && unreadNotifications.length === 0 && (
-                            <div className={chromeEmptyStateClass}>
-                                <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-500/20 bg-cyan-500/10 text-cyan-300">
-                                    <CheckCircle2 size={20} />
-                                </div>
-                                <p className="text-sm font-semibold text-[color:var(--text-primary)]">No new notifications</p>
-                                <p className={cn("mt-1 text-xs leading-5", chromeSubtleTextClass)}>
-                                    You already opened the current alerts. They will return when branch data changes.
-                                </p>
-                            </div>
-                        )}
-
-                        {unreadNotifications.length > 0 && (
+                        {!loading && loaded && notifications.length > 0 && (
                             <div className="space-y-1.5 px-2">
-                                <div className="flex justify-end px-1 pb-1">
-                                    <button
-                                        type="button"
-                                        onClick={() => markRead(unreadNotifications)}
-                                        className="rounded-[var(--ui-radius-control)] px-2 py-1 text-xs font-medium text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--text-primary)]"
-                                    >
-                                        Mark all read
-                                    </button>
+                                <div className="flex min-h-11 items-center justify-between gap-3 px-1 pb-1">
+                                    <span className={cn("text-xs", chromeSubtleTextClass)}>
+                                        {unreadNotifications.length > 0
+                                            ? `${unreadNotifications.length} unread`
+                                            : "All current alerts read"}
+                                    </span>
+                                    {unreadNotifications.length > 0 ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => markRead(unreadNotifications)}
+                                            className="min-h-11 rounded-[var(--ui-radius-control)] px-2 py-1 text-xs font-medium text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--ui-form-surface-hover-bg)] hover:text-[color:var(--text-primary)]"
+                                        >
+                                            Mark all read
+                                        </button>
+                                    ) : null}
                                 </div>
-                                {unreadNotifications.map(notification => {
+                                {notifications.map(notification => {
                                     const Icon = KIND_ICONS[notification.kind];
+                                    const read = readKeys.has(notification.readKey);
 
                                     return (
                                         <button
                                             key={notification.id}
                                             type="button"
                                             onClick={() => openNotification(notification)}
-                                            className={cn(chromeListItemClass, "items-start py-3")}
+                                            className={cn(
+                                                chromeListItemClass,
+                                                "min-h-11 items-start py-3",
+                                                read && "opacity-65"
+                                            )}
+                                            aria-label={`${notification.title}${read ? ", read" : ", unread"}`}
                                         >
                                             <span className={cn(
                                                 "mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border",
@@ -428,8 +611,9 @@ export function BranchNotifications() {
                                                 <Icon size={16} />
                                             </span>
                                             <span className="min-w-0 flex-1">
-                                                <span className="block text-sm font-semibold text-[color:var(--text-primary)]">
-                                                    {notification.title}
+                                                <span className="flex items-center gap-2 text-sm font-semibold text-[color:var(--text-primary)]">
+                                                    <span className="min-w-0 flex-1">{notification.title}</span>
+                                                    {!read ? <span className="h-2 w-2 shrink-0 rounded-full bg-cyan-300" aria-hidden="true" /> : null}
                                                 </span>
                                                 <span className={cn("mt-0.5 block text-xs leading-5", chromeSubtleTextClass)}>
                                                     {notification.message}
@@ -443,6 +627,28 @@ export function BranchNotifications() {
                     </div>
                 </div>
             )}
+
+            <Dialog
+                open={open && !disabled && compactLayout}
+                onClose={() => setOpenBranchId(null)}
+                title="Notifications"
+                description="Current branch alerts"
+                placement="bottom"
+                className="max-w-none px-3"
+            >
+                <NotificationPanel
+                    mobile
+                    loading={loading}
+                    loaded={loaded}
+                    loadErrors={loadErrors}
+                    notifications={notifications}
+                    unreadNotifications={unreadNotifications}
+                    readKeys={readKeys}
+                    onRefresh={() => void loadNotifications({ force: true })}
+                    onMarkRead={markRead}
+                    onOpen={openNotification}
+                />
+            </Dialog>
         </div>
     );
 }

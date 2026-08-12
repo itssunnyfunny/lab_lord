@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { branches } from "@/lib/api/branches";
 import type { BranchAccess, StaffAction } from "@/types";
+import {
+    getBranchCapabilityDecision,
+    type BranchCapabilityKey,
+} from "@/lib/branchCapabilities";
 
 export function useBranchAccess(branchId: string | undefined) {
     const [state, setState] = useState<{
@@ -48,5 +52,10 @@ export function useBranchAccess(branchId: string | undefined) {
         return (action: StaffAction) => access?.permissions[action] ?? false;
     }, [access]);
 
-    return { access, loading, error, can };
+    const decide = useMemo(() => {
+        return (capability: BranchCapabilityKey) =>
+            getBranchCapabilityDecision(access, capability);
+    }, [access]);
+
+    return { access, loading, error, can, decide };
 }

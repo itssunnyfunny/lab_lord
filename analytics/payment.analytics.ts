@@ -5,7 +5,15 @@ import {
   daysPastDue,
   dueAsOfCutoff,
   isOverdue,
+  overdueCutoff,
 } from "@/lib/utils/paymentStatus"
+import {
+  type DateIdCursor,
+  pageFromRows,
+  PaginationInputError,
+  parsePageLimit,
+} from "@/lib/cursorPagination"
+import type { Prisma } from "@/app/generated/prisma/client"
 import { endOfMonth, startOfMonth } from "date-fns"
 
 type AsOf = Date | undefined
@@ -50,9 +58,10 @@ export async function getOpenPaymentLedger(
         },
       },
     },
-    orderBy: {
-      dueDate: "asc",
-    },
+    orderBy: [
+      { dueDate: "asc" },
+      { id: "asc" },
+    ],
   })
 
   const duePayments = rows.map((payment) => {
@@ -212,19 +221,93 @@ export async function getOverduePayments(
   branchId: string,
   asOf?: AsOf
 ) {
-  const ledger = await getOpenPaymentLedger(branchId, asOf)
+  const page = await getOverduePaymentsPage(branchId, { asOf, all: true })
 
   return {
-    count: ledger.overduePayments.length,
-    payments: ledger.overduePayments.map(p => ({
-      paymentId: p.paymentId,
-      studentId: p.studentId,
-      studentName: p.studentName,
-      phone: p.phone,
-      dueDate: p.dueDate,
-      amount: p.amount,
-      daysOverdue: p.daysOverdue,
-    }))
+    count: page.total,
+    payments: page.items,
+  }
+}
+
+export type OverduePaymentPageOptions = {
+  asOf?: AsOf
+  cursor?: DateIdCursor | null
+  limit?: number
+  all?: boolean
+}
+
+/**
+ * Stable, bounded overdue queue for browser/API consumers.
+ * Analytics and AI callers use getOverduePayments(), which explicitly requests
+ * the complete queue so aggregate counts and generated drafts are never clipped.
+ */
+export async function getOverduePaymentsPage(
+  branchId: string,
+  options: OverduePaymentPageOptions = {}
+) {
+  if (options.all && options.cursor) {
+    throw new PaginationInputError("all cannot be combined with cursor")
+  }
+
+  const date = resolveAsOf(options.asOf)
+  const limit = parsePageLimit(
+    options.limit == null ? undefined : String(options.limit)
+  )
+  const baseWhere: Prisma.PaymentWhereInput = {
+    branchId,
+    status: "DUE",
+    dueDate: { lt: overdueCutoff(date) },
+  }
+  const cursor = options.cursor ?? null
+  const where: Prisma.PaymentWhereInput = cursor
+    ? {
+        ...baseWhere,
+        OR: [
+          { dueDate: { gt: cursor.sort } },
+          { dueDate: cursor.sort, id: { gt: cursor.id } },
+        ],
+      }
+    : baseWhere
+
+  const [rows, total] = await Promise.all([
+    prisma.payment.findMany({
+      where,
+      select: {
+        id: true,
+        studentId: true,
+        dueDate: true,
+        amount: true,
+        student: {
+          select: {
+            name: true,
+            phone: true,
+          },
+        },
+      },
+      orderBy: [
+        { dueDate: "asc" },
+        { id: "asc" },
+      ],
+      ...(options.all ? {} : { take: limit + 1 }),
+    }),
+    prisma.payment.count({ where: baseWhere }),
+  ])
+
+  const page = options.all
+    ? { items: rows, nextCursor: null, total }
+    : pageFromRows(rows, limit, total, row => ({ sort: row.dueDate, id: row.id }))
+
+  return {
+    ...page,
+    items: page.items.map(payment => ({
+      paymentId: payment.id,
+      studentId: payment.studentId,
+      studentName: payment.student.name,
+      phone: payment.student.phone,
+      dueDate: payment.dueDate,
+      amount: payment.amount,
+      daysOverdue: daysPastDue(payment.dueDate, date),
+    })),
   }
 }
 

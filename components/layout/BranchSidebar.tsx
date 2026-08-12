@@ -12,13 +12,13 @@ import {
     LucideIcon,
     MessageSquare,
     Settings,
-    Sparkles,
     TriangleAlert,
     UserCircle,
     Users,
     UploadCloud,
 } from "lucide-react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
+import Link from "next/link";
 import { SidebarItem } from "./SidebarItem";
 import { useBranchAccess } from "@/hooks/useBranchAccess";
 import type { StaffAction } from "@/types";
@@ -43,8 +43,6 @@ type BranchNavItem = {
 
 export function BranchSidebar() {
     const pathname = usePathname();
-    const router = useRouter();
-
     const segments = pathname?.split("/") || [];
     const branchId = segments[2];
     const basePath = `/branch/${branchId}`;
@@ -76,7 +74,6 @@ export function BranchSidebar() {
     ];
 
     const intelligenceItems: BranchNavItem[] = [
-        { icon: Sparkles, label: "AI Insights", href: `${basePath}/ai/insights`, permission: "analytics", feature: "AI_INSIGHTS", active: current => current === `${basePath}/ai/insights` },
         { icon: FileText, label: "AI Reports", href: `${basePath}/ai/reports`, permission: "analytics", feature: "AI_REPORTS", active: current => current === `${basePath}/ai/reports` },
         { icon: MessageSquare, label: "AI Messages", href: `${basePath}/ai/messages`, permission: "analytics", feature: "AI_MESSAGES", active: current => current === `${basePath}/ai/messages` },
     ];
@@ -87,7 +84,7 @@ export function BranchSidebar() {
             icon={item.icon}
             label={item.label}
             isActive={item.active(pathname)}
-            onClick={() => router.push(item.href)}
+            href={item.href}
             density="compact"
             locked={!featureAvailable(item.feature)}
             badge={!featureAvailable(item.feature) ? "Standard" : undefined}
@@ -107,16 +104,15 @@ export function BranchSidebar() {
     };
 
     return (
-        <div className={chromeSidebarClass}>
+        <aside className={chromeSidebarClass} aria-label="Branch navigation">
             <div className={chromeSidebarHeaderClass}>
-                <button
-                    type="button"
-                    onClick={() => router.push("/")}
+                <Link
+                    href="/app"
                     className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--ui-radius-control)] transition-transform hover:scale-[1.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ui-focus-ring)]"
-                    aria-label="Back to home"
+                    aria-label="Open workspace home"
                 >
                     <LogoMark className="h-10 w-10" title="" />
-                </button>
+                </Link>
                 <div className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold leading-tight text-[color:var(--text-primary)]">{access?.branchName ?? "Loading..."}</span>
                     <span className="block truncate text-[10px] font-semibold uppercase tracking-wider text-[color:var(--ui-form-accent)]">
@@ -141,7 +137,7 @@ export function BranchSidebar() {
                                 icon={ArrowLeft}
                                 label="Back to organization"
                                 isActive={false}
-                                onClick={() => router.push(`/org/${access.organizationId}`)}
+                                href={`/org/${access.organizationId}`}
                                 density="compact"
                             />
                         )}
@@ -150,13 +146,13 @@ export function BranchSidebar() {
                                 icon={Settings}
                                 label="Branch Settings"
                                 isActive={pathname === `${basePath}/settings`}
-                                onClick={() => router.push(`${basePath}/settings`)}
+                                href={`${basePath}/settings`}
                                 density="compact"
                             />
                         )}
                     </div>
                 </div>
             )}
-        </div>
+        </aside>
     );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, Loader2, RotateCcw } from "lucide-react";
 import { AppButton, AppPanel, PageShell } from "@/components/ui";
@@ -8,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/utils";
 import { importSessions } from "@/lib/api/importSessions";
+import type { CapabilityDecision } from "@/types";
 import type { CommitMode, ImportColumnMapping, ImportNormalizedRow, ImportOptions } from "@/importing/contracts/import-session.contract";
 import {
     draftFromImportRowWithFallback,
@@ -45,6 +47,7 @@ import type { ImportDetail, ImportRow, PaymentDraft, Preview, RowDraft, RowFilte
 type ImportSessionWizardProps = {
     branchId: string;
     sessionId: string;
+    importDecision: CapabilityDecision;
 };
 
 function detectedPaymentValuesFrom(detail: ImportDetail | null, rows: ImportRow[]) {
@@ -88,7 +91,7 @@ function sessionStatusFromCommit(status: string) {
     return "COMMITTING";
 }
 
-export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizardProps) {
+export function ImportSessionWizard({ branchId, sessionId, importDecision }: ImportSessionWizardProps) {
     const router = useRouter();
     const [detail, setDetail] = useState<ImportDetail | null>(null);
     const [rowFilter, setRowFilter] = useState<RowFilter>("attention");
@@ -111,6 +114,13 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
     const [questionDrafts, setQuestionDrafts] = useState<Record<string, string>>({});
     const [paymentDraft, setPaymentDraft] = useState<PaymentDraft>({ paid: "", unpaid: "", waived: "", defaultMethod: "" });
     const analysisStartedRef = useRef(false);
+    const mutationsDisabled = !importDecision.allowed;
+    const mutationBlockReason = importDecision.allowed ? null : importDecision.reason;
+    const guardMutation = useCallback(() => {
+        if (!mutationsDisabled) return true;
+        setError(mutationBlockReason ?? "Import changes are unavailable.");
+        return false;
+    }, [mutationBlockReason, mutationsDisabled]);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -135,7 +145,7 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
     }, [load]);
 
     useEffect(() => {
-        if (!detail || detail.status !== "UPLOADED" || analysisStartedRef.current) return;
+        if (mutationsDisabled || !detail || detail.status !== "UPLOADED" || analysisStartedRef.current) return;
         analysisStartedRef.current = true;
         setAnalyzing(true);
         setError(null);
@@ -148,7 +158,11 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
                 setError(analyzeError instanceof Error ? analyzeError.message : "Failed to analyze import session.");
             })
             .finally(() => setAnalyzing(false));
-    }, [branchId, detail, load, sessionId]);
+    }, [branchId, detail, load, mutationsDisabled, sessionId]);
+
+    useEffect(() => {
+        if (mutationsDisabled) setConfirmOpen(false);
+    }, [mutationsDisabled]);
 
     const rows = useMemo(() => detail?.rows ?? [], [detail?.rows]);
     const mapping = useMemo(() => detail?.mapping?.columnMappings ?? [], [detail?.mapping?.columnMappings]);
@@ -241,6 +255,7 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
     }, [branchId, selectedNormalized, selectedNormalizedKey, selectedRow, sessionId]);
 
     const saveMapping = async (columnMappings: ImportColumnMapping[], importOptions?: Partial<ImportOptions>) => {
+        if (!guardMutation()) return;
         setSaving(true);
         setError(null);
         setNotice(null);
@@ -307,6 +322,7 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
     };
 
     const saveSelectedRow = async (overrideNormalizedData?: ImportNormalizedRow) => {
+        if (!guardMutation()) return;
         if (!selectedRow || (!selectedDraft && !overrideNormalizedData)) return;
         setSaving(true);
         setError(null);
@@ -344,6 +360,7 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
     };
 
     const skipSelectedRow = async () => {
+        if (!guardMutation()) return;
         if (!selectedRow) return;
         setSaving(true);
         setError(null);
@@ -363,6 +380,7 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
     };
 
     const answerQuestion = async (questionId: string, answer: unknown) => {
+        if (!guardMutation()) return;
         setSaving(true);
         setError(null);
         setNotice(null);
@@ -417,6 +435,10 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
     }, [branchId, commitMode, sessionId]);
 
     const commit = async () => {
+        if (!guardMutation()) {
+            setConfirmOpen(false);
+            return;
+        }
         if (!preview?.planVersion) {
             setConfirmOpen(false);
             setError("Refresh the final preview before importing.");
@@ -508,8 +530,19 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
             </div>
 
             {error && (
-                <div className="rounded-[8px] border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">
+                <div className="rounded-[8px] border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">
                     {error}
+                </div>
+            )}
+
+            {mutationBlockReason && importDecision.blocker !== "permission" && (
+                <div id="import-session-mutation-blocker" className="flex flex-col gap-2 rounded-[8px] border border-amber-400/25 bg-amber-400/10 px-4 py-3 text-sm text-amber-100 sm:flex-row sm:items-center sm:justify-between" role="status">
+                    <span>Import changes are disabled. {mutationBlockReason}</span>
+                    {importDecision.recoveryHref ? (
+                        <Link href={importDecision.recoveryHref} className="shrink-0 font-semibold underline underline-offset-4">
+                            Resolve access
+                        </Link>
+                    ) : null}
                 </div>
             )}
 
@@ -569,6 +602,7 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
                         <ColumnsStep
                             detail={detail}
                             saving={saving}
+                            mutationsDisabled={mutationsDisabled}
                             onSave={columnMappings => saveMapping(columnMappings)}
                         />
                     )}
@@ -585,6 +619,7 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
                             rowPreview={rowPreview}
                             rowPreviewLoading={rowPreviewLoading}
                             saving={saving}
+                            mutationsDisabled={mutationsDisabled}
                             onFilterChange={filter => {
                                 setRowFilter(filter);
                                 setSelectedRowId(null);
@@ -610,6 +645,7 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
                             questions={questions}
                             questionDrafts={questionDrafts}
                             saving={saving}
+                            mutationsDisabled={mutationsDisabled}
                             onDraftChange={(questionId, value) => setQuestionDrafts(prev => ({ ...prev, [questionId]: value }))}
                             onAnswer={answerQuestion}
                             onDeferAllocations={() => updateOption(deferAllocationOptions())}
@@ -623,6 +659,7 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
                             detectedPaymentValues={detectedPaymentValues}
                             paymentDraft={paymentDraft}
                             saving={saving}
+                            mutationsDisabled={mutationsDisabled}
                             onPaymentDraftChange={setPaymentDraft}
                             onUpdateOptions={updateOption}
                         />
@@ -634,12 +671,15 @@ export function ImportSessionWizard({ branchId, sessionId }: ImportSessionWizard
                             importOptions={options}
                             commitMode={commitMode}
                             saving={saving}
+                            mutationsDisabled={mutationsDisabled}
                             onModeChange={mode => {
                                 setCommitMode(mode);
                                 setPreview(null);
                             }}
                             onRefreshPreview={loadPreview}
-                            onConfirmImport={() => setConfirmOpen(true)}
+                            onConfirmImport={() => {
+                                if (guardMutation()) setConfirmOpen(true);
+                            }}
                         />
                     )}
 

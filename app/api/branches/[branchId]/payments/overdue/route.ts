@@ -1,8 +1,13 @@
 
 import { NextRequest, NextResponse } from "next/server"
-import { getOverduePayments } from "@/analytics/payment.analytics"
+import { getOverduePaymentsPage } from "@/analytics/payment.analytics"
 import { getSessionUser } from "@/lib/auth"
 import { PaymentService } from "@/services/payment.service"
+import {
+    decodeDateIdCursor,
+    PaginationInputError,
+    parsePageLimit,
+} from "@/lib/cursorPagination"
 
 export async function GET(
     req: NextRequest,
@@ -16,15 +21,35 @@ export async function GET(
         }
 
         await PaymentService.assertBranchAccess(user.id, branchId, "view_payments")
-        const result = await getOverduePayments(branchId)
+        const allParam = req.nextUrl.searchParams.get("all")
+        if (allParam !== null && allParam !== "true" && allParam !== "false") {
+            throw new PaginationInputError("all must be true or false")
+        }
+        const all = allParam === "true"
+        if (all && (req.nextUrl.searchParams.has("cursor") || req.nextUrl.searchParams.has("limit"))) {
+            throw new PaginationInputError("all cannot be combined with cursor or limit")
+        }
+
+        const cursor = all
+            ? null
+            : decodeDateIdCursor(req.nextUrl.searchParams.get("cursor"))
+        const limit = all
+            ? undefined
+            : parsePageLimit(req.nextUrl.searchParams.get("limit"))
+        const result = await getOverduePaymentsPage(branchId, { cursor, limit, all })
 
         return NextResponse.json(result)
     } catch (error) {
         console.error("Failed to fetch overdue payments", error)
         const message = error instanceof Error ? error.message : "Failed to fetch overdue payments"
+        const status = error instanceof PaginationInputError
+            ? 400
+            : message.includes("Unauthorized")
+                ? 403
+                : 500
         return NextResponse.json(
             { error: message },
-            { status: message.includes("Unauthorized") ? 403 : 500 }
+            { status }
         )
     }
 }

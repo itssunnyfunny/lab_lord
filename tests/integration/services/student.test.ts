@@ -481,5 +481,47 @@ describe("StudentService Integration", () => {
       expect(results).toHaveLength(1);
       expect(results[0].name).toBe("Morning Student");
     });
+
+    it("multiShiftId filter returns only students allocated through that exact bundle", async () => {
+      const { user, branch, shift: morning, seat } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "16:00",
+        endTime: "20:00",
+      });
+      const fullDay = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+      const bundleStudent = await createStudent({ branchId: branch.id, name: "Bundle Student" });
+      const morningOnlyStudent = await createStudent({ branchId: branch.id, name: "Morning Only" });
+      const morningOnlySeat = await createSeat({ branchId: branch.id, label: "M1" });
+
+      await testPrisma.seatAllocation.createMany({
+        data: [
+          { seatId: seat.id, studentId: bundleStudent.id, shiftId: morning.id, multiShiftId: fullDay.id },
+          { seatId: seat.id, studentId: bundleStudent.id, shiftId: evening.id, multiShiftId: fullDay.id },
+          { seatId: morningOnlySeat.id, studentId: morningOnlyStudent.id, shiftId: morning.id },
+        ],
+      });
+
+      const results = await StudentService.getStudentsByBranch(user.id, branch.id, {
+        multiShiftId: fullDay.id,
+      });
+
+      expect(results.map(student => student.name)).toEqual(["Bundle Student"]);
+    });
   });
 });

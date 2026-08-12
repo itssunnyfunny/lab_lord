@@ -8,11 +8,10 @@ import {
     pageSubtleTextClass,
 } from "@/components/ui/pageSurface";
 import { useBranchAccess } from "@/hooks/useBranchAccess";
-import { getPermissionHelpText } from "@/lib/permissionMessages";
+import type { BranchCapabilityKey } from "@/lib/branchCapabilities";
 import { cn } from "@/lib/utils";
-import type { StaffAction } from "@/types";
 import { ArrowRight, CalendarCheck, CreditCard, Grid, LockKeyhole, LucideIcon, MessageSquareText, TriangleAlert, UploadCloud, UserPlus } from "lucide-react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 interface Action {
     label: string;
@@ -20,7 +19,7 @@ interface Action {
     icon: LucideIcon;
     route: string;
     tone: string;
-    permission: StaffAction;
+    capability: BranchCapabilityKey;
 }
 
 const actions: Action[] = [
@@ -30,7 +29,7 @@ const actions: Action[] = [
         icon: TriangleAlert,
         route: "/overdue",
         tone: "text-rose-300 bg-rose-400/10",
-        permission: "view_payments",
+        capability: "overdueView",
     },
     {
         label: "Draft follow-ups",
@@ -38,7 +37,7 @@ const actions: Action[] = [
         icon: MessageSquareText,
         route: "/ai/messages",
         tone: "text-indigo-300 bg-indigo-400/10",
-        permission: "analytics",
+        capability: "aiUse",
     },
     {
         label: "Record payment",
@@ -46,7 +45,7 @@ const actions: Action[] = [
         icon: CreditCard,
         route: "/payments",
         tone: "text-emerald-300 bg-emerald-400/10",
-        permission: "mark_payment_paid",
+        capability: "paymentsRecord",
     },
     {
         label: "Add student",
@@ -54,7 +53,7 @@ const actions: Action[] = [
         icon: UserPlus,
         route: "/students",
         tone: "text-cyan-300 bg-cyan-400/10",
-        permission: "students",
+        capability: "studentsManage",
     },
     {
         label: "Assign seat",
@@ -62,7 +61,7 @@ const actions: Action[] = [
         icon: Grid,
         route: "/allocations",
         tone: "text-violet-300 bg-violet-400/10",
-        permission: "seat_allocation",
+        capability: "allocationsManage",
     },
     {
         label: "Import records",
@@ -70,29 +69,33 @@ const actions: Action[] = [
         icon: UploadCloud,
         route: "/onboarding/import",
         tone: "text-sky-300 bg-sky-400/10",
-        permission: "students",
+        capability: "importStudents",
     },
     {
-        label: "Manage shifts",
+        label: "Review shifts",
         description: "Review capacity and schedules",
         icon: CalendarCheck,
         route: "/shifts",
         tone: "text-amber-300 bg-amber-400/10",
-        permission: "manage_branch",
+        capability: "shiftsView",
     },
 ];
 
 export function QuickActions({ branchId }: { branchId: string }) {
-    const router = useRouter();
-    const { access, loading } = useBranchAccess(branchId);
-    const visibleActions = actions.filter((action) => access?.permissions[action.permission]);
-    const unavailableActions = access ? actions.filter((action) => !access.permissions[action.permission]) : [];
+    const { access, loading, decide } = useBranchAccess(branchId);
+    const evaluatedActions = access
+        ? actions.map(action => ({ action, decision: decide(action.capability) }))
+        : [];
+    const visibleActions = evaluatedActions.filter(item => item.decision.allowed);
+    const unavailableActions = evaluatedActions.filter(
+        item => !item.decision.allowed && item.decision.blocker !== "permission"
+    );
 
     return (
         <AppPanel
             title="Next actions"
             description="Shortcuts for common branch operations."
-            contentClassName="max-h-[312px] overflow-y-auto p-2 scrollbar-thin"
+            contentClassName="p-2"
             className="h-full"
         >
             {loading && (
@@ -109,11 +112,10 @@ export function QuickActions({ branchId }: { branchId: string }) {
 
             {!loading && (
                 <div className="space-y-1">
-                    {visibleActions.map((action) => (
-                        <button
+                    {visibleActions.map(({ action }) => (
+                        <Link
                             key={action.label}
-                            type="button"
-                            onClick={() => router.push(`/branch/${branchId}${action.route}`)}
+                            href={`/branch/${branchId}${action.route}`}
                             className={cn("group flex w-full items-center gap-3 rounded-[var(--ui-radius-control)] border border-transparent px-3 py-2.5 text-left", pageInsetHoverClass)}
                         >
                             <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px]", action.tone)}>
@@ -124,12 +126,11 @@ export function QuickActions({ branchId }: { branchId: string }) {
                                 <p className={cn("truncate text-xs", pageSubtleTextClass)}>{action.description}</p>
                             </div>
                             <ArrowRight size={14} className="shrink-0 text-[color:var(--text-muted)] transition-colors group-hover:text-[color:var(--text-secondary)]" />
-                        </button>
+                        </Link>
                     ))}
 
-                    {unavailableActions.map((action) => {
-                        const helpText = getPermissionHelpText(action.permission);
-
+                    {unavailableActions.map(({ action, decision }) => {
+                        const helpText = decision.allowed ? "" : decision.reason;
                         return (
                             <div
                                 key={`${action.label}-disabled`}
@@ -145,6 +146,14 @@ export function QuickActions({ branchId }: { branchId: string }) {
                                     <p className={cn("truncate text-xs", pageSubtleTextClass)}>{helpText}</p>
                                 </div>
                                 <LockKeyhole size={14} className="shrink-0 text-[color:var(--text-muted)]" />
+                                {!decision.allowed && decision.recoveryHref && (
+                                    <Link
+                                        href={decision.recoveryHref}
+                                        className="shrink-0 text-xs font-semibold text-cyan-300 underline-offset-4 hover:underline"
+                                    >
+                                        Restore
+                                    </Link>
+                                )}
                             </div>
                         );
                     })}

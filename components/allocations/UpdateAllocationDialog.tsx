@@ -1,14 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X, Loader2, ArrowRightLeft } from "lucide-react";
+import { Loader2, ArrowRightLeft } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
 import {
     formCheckboxClass,
     formControlClass,
-    formDialogFooterClass,
-    formDialogHeaderClass,
-    formDialogPanelClass,
     formErrorBannerClass,
     formHelpTextClass,
     formIconClass,
@@ -217,30 +215,34 @@ export function UpdateAllocationDialog({
             : "Update";
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-[color:var(--ui-form-overlay-bg)] p-3 backdrop-blur-sm sm:items-center sm:p-4">
-            <div
-                className={cn("flex max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col animate-in zoom-in-95 duration-200 sm:max-h-[90vh]", formDialogPanelClass)}
-                onClick={e => e.stopPropagation()}
-            >
-                <div className={cn("flex flex-shrink-0 items-center justify-between px-4 py-4 sm:px-6", formDialogHeaderClass)}>
-                    <div>
-                        <div className="flex items-center gap-2">
-                            <ArrowRightLeft size={15} className="text-[color:var(--ui-badge-cyan-text)]" />
-                            <h2 className="text-base font-semibold text-[color:var(--ui-dialog-title)]">Change Seat / Shift</h2>
-                        </div>
-                        <p className={cn("mt-0.5 text-xs", formHelpTextClass)}>
-                            for <span className="text-[color:var(--ui-form-label-strong)]">{studentName}</span>
-                            {selectedShiftNames.length > 0 && (
-                                <> / <span className={selectedMultiShiftId ? "text-[color:var(--ui-badge-warning-text)]" : "text-[color:var(--ui-badge-cyan-text)]"}>{selectedShiftNames.join(", ")}</span></>
-                            )}
-                        </p>
-                    </div>
-                    <button type="button" onClick={onClose} className={cn("cursor-pointer transition-colors hover:text-[color:var(--ui-table-text)]", formHelpTextClass)}>
-                        <X size={18} />
-                    </button>
-                </div>
-
-                <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+        <Dialog
+            open={isOpen}
+            onClose={onClose}
+            title="Change seat or shift"
+            description={`Update the allocation for ${studentName}${selectedShiftNames.length > 0 ? ` / ${selectedShiftNames.join(", ")}` : ""}.`}
+            closeLabel="Close change allocation dialog"
+            closeDisabled={submitting}
+            className="max-w-2xl"
+            icon={<ArrowRightLeft size={18} className="text-[color:var(--ui-badge-cyan-text)]" aria-hidden="true" />}
+            footer={(
+                <>
+                    <Button variant="ghost" onClick={onClose} disabled={submitting} className="h-8 px-4 text-sm">
+                        Cancel
+                    </Button>
+                    <Button onClick={handleConfirm} disabled={submitting} className="h-8 px-5 text-sm">
+                        {submitting
+                            ? <><Loader2 size={12} className="mr-1.5 animate-spin" aria-hidden="true" /> Updating...</>
+                            : confirmLabel
+                        }
+                    </Button>
+                </>
+            )}
+        >
+                <div
+                    role="group"
+                    aria-label="Seat and shift selection"
+                    aria-describedby={selectionError ? "update-allocation-selection-error" : undefined}
+                >
                     <SeatPicker
                         branchId={branchId}
                         studentId={studentId}
@@ -257,15 +259,16 @@ export function UpdateAllocationDialog({
                     {feeLinkLabel && (
                         <div className={cn("mt-5 space-y-3 p-4", formSurfaceClass)}>
                             <div className="flex items-center gap-3">
-                                <span className={cn("whitespace-nowrap text-xs", formHelpTextClass)}>
+                                <label htmlFor="update-allocation-fee" className={cn("whitespace-nowrap text-xs", formHelpTextClass)}>
                                     Monthly fee:{" "}
                                     <span className="font-medium text-[color:var(--ui-form-label-strong)]">
                                         {currentFee != null ? `Rs.${currentFee}` : "--"}
                                     </span>
-                                </span>
+                                </label>
                                 <div className="relative flex-1">
                                     <span className={cn("absolute left-3 top-1/2 -translate-y-1/2 select-none text-sm", formIconClass)}>Rs.</span>
                                     <input
+                                        id="update-allocation-fee"
                                         type="number"
                                         min={0}
                                         max={FORM_LIMITS.moneyMax}
@@ -296,28 +299,13 @@ export function UpdateAllocationDialog({
                             </label>
                         </div>
                     )}
-                </div>
-
-                <div className={cn("flex-shrink-0 space-y-3 px-4 py-4 sm:px-6", formDialogFooterClass)}>
-                    <div className="flex items-center justify-end gap-3">
-                        <Button variant="ghost" onClick={onClose} disabled={submitting} className="text-sm h-8 px-4">
-                            Cancel
-                        </Button>
-                        <Button onClick={handleConfirm} disabled={submitting} className="text-sm h-8 px-5">
-                            {submitting
-                                ? <><Loader2 size={12} className="animate-spin mr-1.5" /> Updating...</>
-                                : confirmLabel
-                            }
-                        </Button>
-                    </div>
 
                     {submitError && (
-                        <div className={cn("p-3 text-sm", formErrorBannerClass)}>
+                        <div role="alert" className={cn("mt-4 p-3 text-sm", formErrorBannerClass)}>
                             {submitError}
                         </div>
                     )}
                 </div>
-            </div>
-        </div>
+        </Dialog>
     );
 }

@@ -1,11 +1,11 @@
 import { Loader2, Pencil, RotateCcw, Save, UserRoundCheck } from "lucide-react";
-import { AppButton, AppPanel } from "@/components/ui";
+import { AppButton, AppPanel, AppSelect } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import { importRowFieldValue } from "@/importing/utils/manual-row-draft";
 import { pageInsetSurfaceClass, pageMutedTextClass, pageTableBodyDividerClass, pageTableHeadClass, pageTableRowClass } from "@/components/ui/pageSurface";
 import { pickerSectionLabelClass } from "@/components/ui/pickerSurface";
-import { formatAmount, importFieldClass, importOptionClass, importSelectClass, IssueList, rowFilterLabels, StatusBadge } from "./shared";
+import { AccessibleTableScroll, formatAmount, importFieldClass, IssueList, rowFilterLabels, StatusBadge } from "./shared";
 import { CompactImportAllocationPicker } from "./CompactImportAllocationPicker";
 import type { ImportDetail, ImportRow, RowDraft, RowFilter, RowPreview } from "./types";
 
@@ -20,6 +20,7 @@ type RowsStepProps = {
     rowPreview: RowPreview | null;
     rowPreviewLoading: boolean;
     saving: boolean;
+    mutationsDisabled: boolean;
     onFilterChange: (filter: RowFilter) => void;
     onSelectRow: (rowId: string) => void;
     onLoadMore: () => void;
@@ -56,6 +57,7 @@ export function RowsStep({
     rowPreview,
     rowPreviewLoading,
     saving,
+    mutationsDisabled,
     onFilterChange,
     onSelectRow,
     onLoadMore,
@@ -82,17 +84,16 @@ export function RowsStep({
                 title="Rows"
                 description={detail.rowPage ? `${detail.rowPage.returnedRows} of ${detail.rowPage.filteredRows}` : "Paged staging rows"}
                 action={
-                    <select
+                    <AppSelect
+                        aria-label="Filter import rows"
                         value={rowFilter}
-                        onChange={event => onFilterChange(event.target.value as RowFilter)}
-                        className={cn("h-8 px-2 py-0 text-xs", importSelectClass)}
-                    >
-                        {(["attention", "ready", "all", "skipped"] as RowFilter[]).map(filter => (
-                            <option key={filter} value={filter} className={importOptionClass}>
-                                {rowFilterLabels[filter]}
-                            </option>
-                        ))}
-                    </select>
+                        onValueChange={value => onFilterChange(value as RowFilter)}
+                        options={(["attention", "ready", "all", "skipped"] as RowFilter[]).map(filter => ({
+                            value: filter,
+                            label: rowFilterLabels[filter],
+                        }))}
+                        className="h-11 min-h-11 px-2 py-0 text-xs lg:h-8 lg:min-h-8"
+                    />
                 }
                 contentClassName="p-0"
             >
@@ -147,7 +148,15 @@ export function RowsStep({
                     description={selectedRow ? rowTitle(selectedRow) : "Choose a row from the left list."}
                     action={selectedRow && selectedDraft ? (
                         <div className="flex flex-wrap gap-2">
-                            <AppButton size="sm" variant="primary" icon={Save} onClick={onSaveRow} isLoading={saving}>
+                            <AppButton
+                                size="sm"
+                                variant="primary"
+                                icon={Save}
+                                onClick={onSaveRow}
+                                disabled={mutationsDisabled}
+                                aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
+                                isLoading={saving}
+                            >
                                 Save
                             </AppButton>
                             <AppButton size="sm" variant="quiet" icon={RotateCcw} onClick={onResetRow} disabled={saving}>
@@ -211,23 +220,31 @@ export function RowsStep({
                                     </label>
                                     <label className="space-y-2">
                                         <span className={pickerSectionLabelClass}>Payment status</span>
-                                        <select value={selectedDraft.paymentStatus} onChange={event => onDraftChange(selectedRow.id, "paymentStatus", event.target.value)} className={cn("w-full", importSelectClass)}>
-                                            {hasCustomPaymentStatus && <option value={currentPaymentStatus} className={importOptionClass}>Raw: {currentPaymentStatus}</option>}
-                                            <option value="" className={importOptionClass}>No row status</option>
-                                            <option value="DUE" className={importOptionClass}>Due</option>
-                                            <option value="PAID" className={importOptionClass}>Paid</option>
-                                            <option value="WAIVED" className={importOptionClass}>Waived</option>
-                                            <option value="UNCLEAR" className={importOptionClass}>Unclear</option>
-                                        </select>
+                                        <AppSelect
+                                            value={selectedDraft.paymentStatus}
+                                            onValueChange={value => onDraftChange(selectedRow.id, "paymentStatus", value)}
+                                            options={[
+                                                ...(hasCustomPaymentStatus ? [{ value: currentPaymentStatus, label: `Raw: ${currentPaymentStatus}` }] : []),
+                                                { value: "", label: "No row status" },
+                                                { value: "DUE", label: "Due" },
+                                                { value: "PAID", label: "Paid" },
+                                                { value: "WAIVED", label: "Waived" },
+                                                { value: "UNCLEAR", label: "Unclear" },
+                                            ]}
+                                        />
                                     </label>
                                     <label className="space-y-2">
                                         <span className={pickerSectionLabelClass}>Method</span>
-                                        <select value={selectedDraft.paymentMethod} onChange={event => onDraftChange(selectedRow.id, "paymentMethod", event.target.value)} className={cn("w-full", importSelectClass)}>
-                                            <option value="" className={importOptionClass}>No method</option>
-                                            <option value="CASH" className={importOptionClass}>Cash</option>
-                                            <option value="UPI" className={importOptionClass}>UPI</option>
-                                            <option value="BANK_TRANSFER" className={importOptionClass}>Bank transfer</option>
-                                        </select>
+                                        <AppSelect
+                                            value={selectedDraft.paymentMethod}
+                                            onValueChange={value => onDraftChange(selectedRow.id, "paymentMethod", value)}
+                                            options={[
+                                                { value: "", label: "No method" },
+                                                { value: "CASH", label: "Cash" },
+                                                { value: "UPI", label: "UPI" },
+                                                { value: "BANK_TRANSFER", label: "Bank transfer" },
+                                            ]}
+                                        />
                                     </label>
                                     <label className="space-y-2">
                                         <span className={pickerSectionLabelClass}>Reference</span>
@@ -237,13 +254,34 @@ export function RowsStep({
                             </details>
 
                             <div className="flex flex-wrap items-center gap-3 border-t border-[color:var(--ui-form-section-divider)] pt-4">
-                                <AppButton variant="primary" icon={Save} onClick={onSaveRow} isLoading={saving}>
+                                <AppButton
+                                    variant="primary"
+                                    icon={Save}
+                                    onClick={onSaveRow}
+                                    disabled={mutationsDisabled}
+                                    aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
+                                    isLoading={saving}
+                                >
                                     Save row
                                 </AppButton>
-                                <AppButton variant="secondary" icon={UserRoundCheck} onClick={onImportStudentOnly} isLoading={saving}>
+                                <AppButton
+                                    variant="secondary"
+                                    icon={UserRoundCheck}
+                                    onClick={onImportStudentOnly}
+                                    disabled={mutationsDisabled}
+                                    aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
+                                    isLoading={saving}
+                                >
                                     Import student only
                                 </AppButton>
-                                <AppButton variant="quiet" icon={Pencil} onClick={onSkipRow} isLoading={saving}>
+                                <AppButton
+                                    variant="quiet"
+                                    icon={Pencil}
+                                    onClick={onSkipRow}
+                                    disabled={mutationsDisabled}
+                                    aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
+                                    isLoading={saving}
+                                >
                                     {selectedRow.skipped ? "Unskip row" : "Skip row"}
                                 </AppButton>
                                 {rowPreviewLoading && (
@@ -257,7 +295,7 @@ export function RowsStep({
                     )}
                 </AppPanel>
 
-                <AppPanel title="Row checks" description="Live checks for the selected row.">
+                <AppPanel title="Row checks" description="Validation checks for the selected row.">
                     <IssueList issues={liveIssues} />
                 </AppPanel>
 
@@ -289,24 +327,28 @@ export function RowsStep({
                     {!selectedRow ? (
                         <p className={pageMutedTextClass}>Select a row.</p>
                     ) : (
-                        <div className="overflow-hidden rounded-[8px] border border-[color:var(--ui-table-border)]">
+                        <AccessibleTableScroll
+                            label={`Raw source values for row ${selectedRow.rowNumber}`}
+                            className="rounded-[8px] border border-[color:var(--ui-table-border)]"
+                        >
                             <table className="w-full min-w-[540px] text-left text-xs">
+                                <caption className="sr-only">Raw source values for row {selectedRow.rowNumber}</caption>
                                 <thead className={pageTableHeadClass}>
                                     <tr>
-                                        <th className="p-2">Column</th>
-                                        <th className="p-2">Value</th>
+                                        <th scope="col" className="p-2">Column</th>
+                                        <th scope="col" className="p-2">Value</th>
                                     </tr>
                                 </thead>
                                 <tbody className={pageTableBodyDividerClass}>
                                     {Object.entries(selectedRow.rawData).map(([key, value]) => (
                                         <tr key={key} className={pageTableRowClass}>
-                                            <td className="p-2 font-semibold text-[color:var(--text-primary)]">{key}</td>
+                                            <th scope="row" className="p-2 text-left font-semibold text-[color:var(--text-primary)]">{key}</th>
                                             <td className={cn("p-2", pageMutedTextClass)}>{value || "-"}</td>
                                         </tr>
                                     ))}
                                 </tbody>
                             </table>
-                        </div>
+                        </AccessibleTableScroll>
                     )}
                 </AppPanel>
             </div>

@@ -11,6 +11,7 @@ type DecisionsStepProps = {
     questions: ImportQuestion[];
     questionDrafts: Record<string, string>;
     saving: boolean;
+    mutationsDisabled: boolean;
     onDraftChange: (questionId: string, value: string) => void;
     onAnswer: (questionId: string, answer: unknown) => void;
     onDeferAllocations: () => void;
@@ -21,6 +22,7 @@ export function DecisionsStep({
     questions,
     questionDrafts,
     saving,
+    mutationsDisabled,
     onDraftChange,
     onAnswer,
     onDeferAllocations,
@@ -35,7 +37,14 @@ export function DecisionsStep({
                 title="Decisions"
                 description="Answer only the decisions needed for this import. Unclear seat, shift, and payment data can be deferred."
                 action={
-                    <AppButton variant="secondary" icon={Link2Off} onClick={onDeferAllocations} isLoading={saving}>
+                    <AppButton
+                        variant="secondary"
+                        icon={Link2Off}
+                        onClick={onDeferAllocations}
+                        disabled={mutationsDisabled}
+                        aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
+                        isLoading={saving}
+                    >
                         Defer seat/shift mapping
                     </AppButton>
                 }
@@ -61,7 +70,14 @@ export function DecisionsStep({
                                 Defers seat/shift mapping and skips payments for this import while keeping valid student rows importable.
                             </p>
                         </div>
-                        <AppButton variant="primary" icon={UserRoundCheck} onClick={onStudentsOnly} isLoading={saving}>
+                        <AppButton
+                            variant="primary"
+                            icon={UserRoundCheck}
+                            onClick={onStudentsOnly}
+                            disabled={mutationsDisabled}
+                            aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
+                            isLoading={saving}
+                        >
                             Use students-only mode
                         </AppButton>
                     </div>
@@ -92,6 +108,8 @@ export function DecisionsStep({
                                                         size="sm"
                                                         variant="secondary"
                                                         onClick={() => onAnswer(question.id, option)}
+                                                        disabled={mutationsDisabled}
+                                                        aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
                                                         isLoading={saving}
                                                     >
                                                         {labelImportOption(option)}
@@ -110,7 +128,8 @@ export function DecisionsStep({
                                                 variant="primary"
                                                 size="sm"
                                                 icon={Save}
-                                                disabled={!questionDrafts[question.id]?.trim()}
+                                                disabled={mutationsDisabled || !questionDrafts[question.id]?.trim()}
+                                                aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
                                                 onClick={() => onAnswer(question.id, questionDrafts[question.id])}
                                                 isLoading={saving}
                                             >

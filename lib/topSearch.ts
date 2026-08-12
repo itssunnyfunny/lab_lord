@@ -119,7 +119,7 @@ type ActionDefinition = {
     title: string;
     subtitle: string;
     path: string;
-    permission: StaffAction;
+    permissions: StaffAction[];
     keywords: string[];
 };
 
@@ -129,7 +129,7 @@ const ACTIONS: ActionDefinition[] = [
         title: "Add Student",
         subtitle: "Create a new student record",
         path: "students",
-        permission: "students",
+        permissions: ["students"],
         keywords: ["student", "add", "admit", "new", "register"],
     },
     {
@@ -137,7 +137,7 @@ const ACTIONS: ActionDefinition[] = [
         title: "Assign Seat",
         subtitle: "Open seat allocation workflow",
         path: "allocations",
-        permission: "seat_allocation",
+        permissions: ["seat_allocation"],
         keywords: ["seat", "assign", "allocation", "book"],
     },
     {
@@ -145,7 +145,7 @@ const ACTIONS: ActionDefinition[] = [
         title: "Seats & Maps",
         subtitle: "View branch seating and occupancy",
         path: "seats",
-        permission: "seat_allocation",
+        permissions: ["seat_allocation"],
         keywords: ["seat", "map", "occupancy", "available"],
     },
     {
@@ -153,15 +153,15 @@ const ACTIONS: ActionDefinition[] = [
         title: "Payments",
         subtitle: "Review dues, paid payments, and history",
         path: "payments",
-        permission: "view_payments",
+        permissions: ["view_payments"],
         keywords: ["payment", "payments", "due", "paid", "fees"],
     },
     {
         id: "generate-payments",
         title: "Generate Payments",
         subtitle: "Create due payments for active students",
-        path: "payments",
-        permission: "generate_payments",
+        path: "payments?generate=1",
+        permissions: ["view_payments", "generate_payments"],
         keywords: ["generate", "billing", "due", "fees", "payments"],
     },
     {
@@ -169,7 +169,7 @@ const ACTIONS: ActionDefinition[] = [
         title: "Staff",
         subtitle: "Manage branch team and permissions",
         path: "staff",
-        permission: "manage_branch",
+        permissions: ["manage_branch"],
         keywords: ["staff", "team", "manager", "permissions"],
     },
     {
@@ -177,7 +177,7 @@ const ACTIONS: ActionDefinition[] = [
         title: "Analytics",
         subtitle: "Open branch performance dashboards",
         path: "analytics",
-        permission: "analytics",
+        permissions: ["analytics"],
         keywords: ["analytics", "dashboard", "trends", "reports"],
     },
     {
@@ -185,7 +185,7 @@ const ACTIONS: ActionDefinition[] = [
         title: "AI Reports",
         subtitle: "Review generated branch reports",
         path: "ai/reports",
-        permission: "analytics",
+        permissions: ["analytics"],
         keywords: ["ai", "reports", "insights", "analysis"],
     },
     {
@@ -193,7 +193,7 @@ const ACTIONS: ActionDefinition[] = [
         title: "AI Messages",
         subtitle: "Draft overdue payment messages",
         path: "ai/messages",
-        permission: "analytics",
+        permissions: ["analytics"],
         keywords: ["ai", "messages", "reminders", "overdue"],
     },
 ];
@@ -266,6 +266,31 @@ function href(branchId: string, path: string) {
     return `/branch/${branchId}/${path}`;
 }
 
+function paymentCalendarMonth(value: Date | string | null | undefined) {
+    if (!value) return undefined;
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return undefined;
+
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Kolkata",
+        year: "numeric",
+        month: "2-digit",
+    }).formatToParts(date);
+    const year = parts.find(part => part.type === "year")?.value;
+    const month = parts.find(part => part.type === "month")?.value;
+
+    return year && month ? `${year}-${month}` : undefined;
+}
+
+function hrefWithQuery(branchId: string, path: string, params: Record<string, string | null | undefined>) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+        if (value) query.set(key, value);
+    }
+    const suffix = query.toString();
+    return `${href(branchId, path)}${suffix ? `?${suffix}` : ""}`;
+}
+
 function sortAndLimit(results: TopSearchResult[], limit: number) {
     return [...results]
         .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
@@ -276,7 +301,7 @@ function actionsFor(input: BuildTopSearchResultsInput, normalizedQuery: string):
     if (!input.access) return [];
 
     return ACTIONS.flatMap((action, actionIndex) => {
-        if (!can(input.access, action.permission)) return [];
+        if (!action.permissions.every(permission => can(input.access, permission))) return [];
 
         const fields = [action.title, action.subtitle, ...action.keywords];
         const score = normalizedQuery ? scoreFields(normalizedQuery, fields) : 100 - actionIndex;
@@ -315,7 +340,10 @@ export function buildTopSearchResults(input: BuildTopSearchResultsInput): TopSea
                 group: "students" as const,
                 title,
                 subtitle: compact([student.status, student.phone]).join(" - ") || "Student record",
-                href: href(input.branchId, "students"),
+                href: hrefWithQuery(input.branchId, "students", {
+                    studentId: student.id,
+                    status: student.status ?? undefined,
+                }),
                 keywords: compact(fields),
                 score,
             }];
@@ -325,6 +353,7 @@ export function buildTopSearchResults(input: BuildTopSearchResultsInput): TopSea
     if (normalizedQuery && can(input.access, "view_payments")) {
         groups.payments = (input.payments ?? []).flatMap(payment => {
             const studentName = payment.student?.name?.trim() || "Unknown student";
+            const paymentStatus = payment.status?.toUpperCase();
             const fields = [
                 studentName,
                 payment.student?.phone,
@@ -347,7 +376,14 @@ export function buildTopSearchResults(input: BuildTopSearchResultsInput): TopSea
                     formatMoney(payment.amount),
                     `Due ${formatDate(payment.dueDate)}`,
                 ]).join(" - "),
-                href: href(input.branchId, "payments"),
+                href: hrefWithQuery(input.branchId, "payments", {
+                    paymentId: payment.id,
+                    studentId: payment.studentId ?? undefined,
+                    month: paymentStatus === "PAID" || paymentStatus === "WAIVED"
+                        ? paymentCalendarMonth(payment.dueDate)
+                        : undefined,
+                    status: paymentStatus,
+                }),
                 keywords: compact(fields),
                 score,
             }];
@@ -371,7 +407,7 @@ export function buildTopSearchResults(input: BuildTopSearchResultsInput): TopSea
                 group: "seats" as const,
                 title: `Seat ${label}`,
                 subtitle: status,
-                href: href(input.branchId, "seats"),
+                href: hrefWithQuery(input.branchId, "seats", { seatId: seat.id }),
                 keywords: compact(fields),
                 score,
             }];
@@ -390,7 +426,7 @@ export function buildTopSearchResults(input: BuildTopSearchResultsInput): TopSea
                 group: "shifts" as const,
                 title,
                 subtitle: compact([time, formatMoney(shift.price)]).join(" - "),
-                href: href(input.branchId, "shifts"),
+                href: hrefWithQuery(input.branchId, "shifts", { shiftId: shift.id }),
                 keywords: compact(fields),
                 score,
             }];
@@ -412,7 +448,7 @@ export function buildTopSearchResults(input: BuildTopSearchResultsInput): TopSea
                 group: "staff" as const,
                 title,
                 subtitle: compact([member.role, email && name ? email : null]).join(" - ") || "Staff member",
-                href: href(input.branchId, "staff"),
+                href: hrefWithQuery(input.branchId, "staff", { staffId: member.id }),
                 keywords: compact(fields),
                 score,
             }];

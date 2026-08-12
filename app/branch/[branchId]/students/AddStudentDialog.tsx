@@ -1,23 +1,23 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X, Loader2 } from "lucide-react";
+import Link from "next/link";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
 import {
     formCheckboxClass,
     formControlClass,
-    formDialogFooterClass,
-    formDialogHeaderClass,
-    formDialogPanelClass,
     formErrorBannerClass,
     formLabelClass,
     formRequiredClass,
     formSuccessBannerClass,
     formSurfaceClass,
+    formWarningBannerClass,
 } from "@/components/ui/formSurface";
 import { FieldError, fieldErrorClass, fieldErrorProps, useInlineFieldErrors } from "@/components/ui/InlineFieldError";
 import { students } from "@/lib/api/students";
-import { CreateStudentDto } from "@/types";
+import type { CapabilityDecision, CreateStudentDto } from "@/types";
 import { SeatPicker } from "@/components/allocations/SeatPicker";
 import { FORM_LIMITS, parseIntegerField, validateRequiredPhone, validateRequiredText } from "@/lib/formValidation";
 import { cn } from "@/lib/utils";
@@ -27,9 +27,16 @@ interface AddStudentDialogProps {
     onClose: () => void;
     onSuccess: (student: unknown) => void;
     branchId: string;
+    allocationDecision: CapabilityDecision;
 }
 
-export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddStudentDialogProps) {
+export function AddStudentDialog({
+    isOpen,
+    onClose,
+    onSuccess,
+    branchId,
+    allocationDecision,
+}: AddStudentDialogProps) {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [formData, setFormData] = useState<CreateStudentDto>({
@@ -85,6 +92,16 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
         loadBranchDefaults();
     }, [branchId, isOpen]);
 
+    useEffect(() => {
+        if (allocationDecision.allowed) return;
+
+        setWantsAllocation(false);
+        setSelectedShiftIds([]);
+        setSelectedMultiShiftId(null);
+        setSelectedSeatId(null);
+        setLinkFeeToSelection(false);
+    }, [allocationDecision.allowed]);
+
     const feeLinkLabel = selectedMultiShiftId
         ? "selected multi-shift"
         : selectedShiftIds.length === 1
@@ -128,7 +145,7 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
             }
         }
 
-        if (wantsAllocation && (selectedShiftIds.length === 0 || !selectedSeatId)) {
+        if (wantsAllocation && allocationDecision.allowed && (selectedShiftIds.length === 0 || !selectedSeatId)) {
             errors.allocation = "Select at least one shift and a seat, or uncheck allocation.";
         }
 
@@ -147,6 +164,11 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
         markSubmitted();
         setError(null);
 
+        if (wantsAllocation && !allocationDecision.allowed) {
+            setError(allocationDecision.reason);
+            return;
+        }
+
         const result = validateForm();
         if (Object.values(result.errors).some(Boolean)) {
             return;
@@ -164,13 +186,13 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
                 if (!payload) throw new Error("Student details are required.");
                 const studentPayload: CreateStudentDto = {
                     ...payload,
-                    ...(linkFeeToSelection && selectedMultiShiftId
+                    ...(wantsAllocation && allocationDecision.allowed && linkFeeToSelection && selectedMultiShiftId
                         ? {
                             monthlyFee: undefined,
                             feeLinkedShiftId: null,
                             feeLinkedMultiShiftId: selectedMultiShiftId,
                         }
-                        : linkFeeToSelection && selectedShiftIds.length === 1
+                        : wantsAllocation && allocationDecision.allowed && linkFeeToSelection && selectedShiftIds.length === 1
                             ? {
                                 monthlyFee: undefined,
                                 feeLinkedShiftId: selectedShiftIds[0],
@@ -188,7 +210,7 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
             }
 
             // 2. Allocate seat if toggled
-            if (wantsAllocation && selectedShiftIds.length > 0 && selectedSeatId && studentToAllocateTo) {
+            if (wantsAllocation && allocationDecision.allowed && selectedShiftIds.length > 0 && selectedSeatId && studentToAllocateTo) {
                 const res = await fetch(`/api/branches/${branchId}/seat-allocations`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -218,33 +240,53 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-[color:var(--ui-form-overlay-bg)] p-3 backdrop-blur-sm animate-in fade-in duration-200 sm:items-center sm:p-4">
-            <div
-                className={cn("flex max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col animate-in zoom-in-95 duration-200 sm:max-h-[90vh]", formDialogPanelClass)}
-                onClick={(e) => e.stopPropagation()}
-            >
-                <div className={cn("flex flex-shrink-0 items-center justify-between px-4 py-4 sm:px-6", formDialogHeaderClass)}>
-                    <h2 className="text-lg font-semibold text-[color:var(--ui-dialog-title)]">Add New Student</h2>
-                    <button type="button" onClick={onClose} className="cursor-pointer text-[color:var(--ui-form-help)] transition-colors hover:text-[color:var(--ui-table-text)]">
-                        <X size={20} />
-                    </button>
-                </div>
-
-                <div className="min-h-0 flex-1 overflow-y-auto p-4 custom-scrollbar sm:p-6">
-                    <form id="add-student-form" onSubmit={handleSubmit} noValidate className="space-y-6">
+        <Dialog
+            open={isOpen}
+            onClose={onClose}
+            title="Add new student"
+            description={allocationDecision.blocker === "permission"
+                ? "Create the student profile."
+                : "Create the student profile and optionally allocate a seat."}
+            closeLabel="Close add student dialog"
+            closeDisabled={isLoading}
+            className="max-w-2xl"
+            footer={(
+                <>
+                    <Button type="button" variant="ghost" onClick={onClose} disabled={isLoading}>
+                        Cancel
+                    </Button>
+                    <Button type="submit" form="add-student-form" disabled={isLoading} className="min-w-[140px]">
+                        {isLoading ? (
+                            <><Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> Saving...</>
+                        ) : wantsAllocation && allocationDecision.allowed ? (
+                            "Save & Allocate"
+                        ) : (
+                            "Add Student"
+                        )}
+                    </Button>
+                </>
+            )}
+        >
+                    <form
+                        id="add-student-form"
+                        onSubmit={handleSubmit}
+                        noValidate
+                        aria-describedby={error ? "add-student-submit-error" : undefined}
+                        className="space-y-6"
+                    >
                         {error && (
-                            <div className={cn("p-3 text-sm", formErrorBannerClass)}>
+                            <div id="add-student-submit-error" role="alert" className={cn("p-3 text-sm", formErrorBannerClass)}>
                                 {error}
                             </div>
                         )}
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="space-y-2">
-                                <label htmlFor="name" className={formLabelClass}>
+                                <label htmlFor="add-student-name" className={formLabelClass}>
                                     Full Name <span className={formRequiredClass}>*</span>
                                 </label>
                                 <input
-                                    id="name"
+                                    id="add-student-name"
                                     type="text"
                                     disabled={!!createdStudentId || isLoading}
                                     value={formData.name}
@@ -252,7 +294,7 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
                                     onBlur={() => markTouched("name")}
                                     className={cn(formControlClass, "px-3 py-2", fieldErrorClass(nameError))}
                                     placeholder="e.g. John Doe"
-                                    autoFocus
+                                    data-dialog-initial-focus
                                     maxLength={FORM_LIMITS.nameMax}
                                     {...fieldErrorProps("add-student-name-error", nameError)}
                                 />
@@ -260,11 +302,11 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
                             </div>
 
                             <div className="space-y-2">
-                                <label htmlFor="phone" className={formLabelClass}>
+                                <label htmlFor="add-student-phone" className={formLabelClass}>
                                     Phone Number <span className={formRequiredClass}>*</span>
                                 </label>
                                 <input
-                                    id="phone"
+                                    id="add-student-phone"
                                     type="tel"
                                     disabled={!!createdStudentId || isLoading}
                                     value={formData.phone || ""}
@@ -280,11 +322,11 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
                             </div>
 
                             <div className="space-y-2">
-                                <label htmlFor="monthlyFee" className={formLabelClass}>
+                                <label htmlFor="add-student-monthly-fee" className={formLabelClass}>
                                     Monthly Fee
                                 </label>
                                 <input
-                                    id="monthlyFee"
+                                    id="add-student-monthly-fee"
                                     type="number"
                                     disabled={!!createdStudentId || isLoading || linkFeeToSelection}
                                     value={formData.monthlyFee ?? ""}
@@ -308,11 +350,11 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
                             </div>
 
                             <div className="space-y-2">
-                                <label htmlFor="admissionFee" className={formLabelClass}>
+                                <label htmlFor="add-student-admission-fee" className={formLabelClass}>
                                     Admission Fee
                                 </label>
                                 <input
-                                    id="admissionFee"
+                                    id="add-student-admission-fee"
                                     type="number"
                                     disabled={!!createdStudentId || isLoading}
                                     value={formData.admissionFee ?? ""}
@@ -337,92 +379,110 @@ export function AddStudentDialog({ isOpen, onClose, onSuccess, branchId }: AddSt
                         </div>
 
                         {createdStudentId && (
-                            <div className={cn("p-3 text-sm", formSuccessBannerClass)}>
+                            <div role="status" className={cn("p-3 text-sm", formSuccessBannerClass)}>
                                 Student profile saved. Pick a different seat and try allocating again.
                             </div>
                         )}
 
-                        <hr className="border-[color:var(--ui-form-section-divider)]" />
+                        {allocationDecision.blocker !== "permission" && (
+                            <>
+                                <hr className="border-[color:var(--ui-form-section-divider)]" />
 
-                        <div className="space-y-4">
-                            <label className="group flex w-max cursor-pointer items-center gap-3">
-                                <input
-                                    type="checkbox"
-                                    checked={wantsAllocation}
-                                    onChange={(e) => { setWantsAllocation(e.target.checked); markTouched("allocation"); }}
-                                    className={formCheckboxClass}
-                                />
-                                <span className="text-sm font-medium text-[color:var(--ui-form-label-strong)] transition-colors group-hover:text-[color:var(--ui-form-accent-hover)]">
-                                    Allocate seat now (Optional)
-                                </span>
-                            </label>
-
-                            {wantsAllocation && (
-                                <div className={cn("mt-4 p-3 sm:p-5", formSurfaceClass)}>
-                                    <SeatPicker
-                                        branchId={branchId}
-                                        selectedShiftIds={selectedShiftIds}
-                                        selectedSeatId={selectedSeatId}
-                                        onToggleShift={(s) => {
-                                            markTouched("allocation");
-                                            setSelectedSeatId(null);
-                                            if (s.type === "MULTISHIFT") {
-                                                // Toggle multi-shift: expand to component primary shift IDs
-                                                if (selectedMultiShiftId === s.shiftId) {
-                                                    setSelectedMultiShiftId(null);
-                                                    setSelectedShiftIds([]);
-                                                } else {
-                                                    setSelectedMultiShiftId(s.shiftId);
-                                                    setSelectedShiftIds(s.componentShiftIds ?? []);
-                                                }
-                                            } else {
-                                                // Primary shift toggle - clear any active multi-shift
-                                                setSelectedMultiShiftId(null);
-                                                setSelectedShiftIds(prev =>
-                                                    prev.includes(s.shiftId)
-                                                        ? prev.filter(id => id !== s.shiftId)
-                                                        : [...prev, s.shiftId]
-                                                );
-                                            }
-                                        }}
-                                        onSelectSeat={(seatId) => { markTouched("allocation"); setSelectedSeatId(seatId); }}
-                                    />
-                                    <FieldError id="add-student-allocation-error" error={allocationError} />
-
-                                    {feeLinkLabel && (
-                                        <label className={cn("group mt-4 flex w-max cursor-pointer items-center gap-3 px-4 py-3", formSurfaceClass)}>
+                                <div className="space-y-4">
+                                    {allocationDecision.allowed ? (
+                                        <label className="group flex w-max cursor-pointer items-center gap-3">
                                             <input
                                                 type="checkbox"
-                                                checked={linkFeeToSelection}
-                                                onChange={(e) => setLinkFeeToSelection(e.target.checked)}
+                                                checked={wantsAllocation}
+                                                onChange={(e) => { setWantsAllocation(e.target.checked); markTouched("allocation"); }}
                                                 className={formCheckboxClass}
                                             />
                                             <span className="text-sm font-medium text-[color:var(--ui-form-label-strong)] transition-colors group-hover:text-[color:var(--ui-form-accent-hover)]">
-                                                Link monthly fee to {feeLinkLabel} price
+                                                Allocate seat now (Optional)
                                             </span>
                                         </label>
+                                    ) : (
+                                        <div className={cn("space-y-2 p-3 text-sm", formWarningBannerClass)}>
+                                            <label className="flex cursor-not-allowed items-center gap-3">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={false}
+                                                    disabled
+                                                    aria-describedby="add-student-allocation-unavailable"
+                                                    className={formCheckboxClass}
+                                                />
+                                                <span className="font-medium">Allocate seat now (Optional)</span>
+                                            </label>
+                                            <p id="add-student-allocation-unavailable">
+                                                {allocationDecision.reason}
+                                            </p>
+                                            {allocationDecision.recoveryHref && (
+                                                <Link
+                                                    href={allocationDecision.recoveryHref}
+                                                    className="inline-flex min-h-11 items-center font-semibold underline underline-offset-4"
+                                                >
+                                                    Resolve access
+                                                </Link>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {wantsAllocation && allocationDecision.allowed && (
+                                        <div
+                                            className={cn("mt-4 p-3 sm:p-5", formSurfaceClass)}
+                                            role="group"
+                                            aria-label="Seat allocation"
+                                            aria-describedby={allocationError ? "add-student-allocation-error" : undefined}
+                                        >
+                                            <SeatPicker
+                                                branchId={branchId}
+                                                selectedShiftIds={selectedShiftIds}
+                                                selectedSeatId={selectedSeatId}
+                                                onToggleShift={(s) => {
+                                                    markTouched("allocation");
+                                                    setSelectedSeatId(null);
+                                                    if (s.type === "MULTISHIFT") {
+                                                        // Toggle multi-shift: expand to component primary shift IDs
+                                                        if (selectedMultiShiftId === s.shiftId) {
+                                                            setSelectedMultiShiftId(null);
+                                                            setSelectedShiftIds([]);
+                                                        } else {
+                                                            setSelectedMultiShiftId(s.shiftId);
+                                                            setSelectedShiftIds(s.componentShiftIds ?? []);
+                                                        }
+                                                    } else {
+                                                        // Primary shift toggle - clear any active multi-shift
+                                                        setSelectedMultiShiftId(null);
+                                                        setSelectedShiftIds(prev =>
+                                                            prev.includes(s.shiftId)
+                                                                ? prev.filter(id => id !== s.shiftId)
+                                                                : [...prev, s.shiftId]
+                                                        );
+                                                    }
+                                                }}
+                                                onSelectSeat={(seatId) => { markTouched("allocation"); setSelectedSeatId(seatId); }}
+                                            />
+                                            <FieldError id="add-student-allocation-error" error={allocationError} />
+
+                                            {feeLinkLabel && (
+                                                <label className={cn("group mt-4 flex w-max cursor-pointer items-center gap-3 px-4 py-3", formSurfaceClass)}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={linkFeeToSelection}
+                                                        onChange={(e) => setLinkFeeToSelection(e.target.checked)}
+                                                        className={formCheckboxClass}
+                                                    />
+                                                    <span className="text-sm font-medium text-[color:var(--ui-form-label-strong)] transition-colors group-hover:text-[color:var(--ui-form-accent-hover)]">
+                                                        Link monthly fee to {feeLinkLabel} price
+                                                    </span>
+                                                </label>
+                                            )}
+                                        </div>
                                     )}
                                 </div>
-                            )}
-                        </div>
-                    </form>
-                </div>
-
-                <div className={cn("flex flex-shrink-0 flex-col-reverse gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-6", formDialogFooterClass)}>
-                    <Button type="button" variant="ghost" onClick={onClose} disabled={isLoading}>
-                        Cancel
-                    </Button>
-                    <Button type="submit" form="add-student-form" disabled={isLoading} className="min-w-[140px]">
-                        {isLoading ? (
-                            <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...</>
-                        ) : wantsAllocation ? (
-                            "Save & Allocate"
-                        ) : (
-                            "Add Student"
+                            </>
                         )}
-                    </Button>
-                </div>
-            </div>
-        </div>
+                    </form>
+        </Dialog>
     );
 }
