@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
-import { AppButton, Dialog, PageLoadingSkeleton, PageShell, useToast } from "@/components/ui";
+import { AppButton, AppSelect, Dialog, PageLoadingSkeleton, PageShell, useToast } from "@/components/ui";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { RowActionsMenu, type RowActionsMenuItem } from "@/components/ui/RowActionsMenu";
@@ -734,23 +734,18 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                     {mode === "REALLOCATE_BULK" && (
                                         <div className="mt-3">
                                             <label htmlFor="delete-shift-bulk-target" className={cn("mb-1.5 block text-xs", formHelpTextClass)}>Select target shift</label>
-                                            <select
+                                            <AppSelect
                                                 id="delete-shift-bulk-target"
                                                 value={bulkTargetId}
-                                                onChange={e => setBulkTargetId(e.target.value)}
-                                                style={{ colorScheme: 'dark' }}
-                                                className={cn(formControlClass, "px-3 py-2 text-sm")}
-                                            >
-                                                <option value="" disabled className="bg-[color:var(--ui-form-input-select-bg)] text-white">Choose a shift…</option>
-                                                {analysis.otherShifts
+                                                onValueChange={setBulkTargetId}
+                                                placeholder="Choose a shift…"
+                                                options={analysis.otherShifts
                                                     .filter(s => analysis.shiftsWithEnoughCapacity.includes(s.shiftId))
-                                                    .map(s => (
-                                                        <option key={s.shiftId} value={s.shiftId} className="bg-[color:var(--ui-form-input-select-bg)] text-white">
-                                                            {s.name} — {s.emptySeats} empty seat{s.emptySeats !== 1 ? "s" : ""}
-                                                        </option>
-                                                    ))
-                                                }
-                                            </select>
+                                                    .map(s => ({
+                                                        value: s.shiftId,
+                                                        label: `${s.name} — ${s.emptySeats} empty seat${s.emptySeats !== 1 ? "s" : ""}`,
+                                                    }))}
+                                            />
                                         </div>
                                     )}
                                 </OptionCard>
@@ -778,27 +773,25 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                                         <p className="truncate text-xs font-medium text-[color:var(--text-primary)]">{alloc.studentName}</p>
                                                         <p className="text-[10px] text-[color:var(--ui-table-subtle)]">Seat {alloc.seatLabel}</p>
                                                     </div>
-                                                    <select
+                                                    <AppSelect
                                                         aria-label={`Target shift for ${alloc.studentName}`}
                                                         value={chosenId}
-                                                        onChange={e => setManualAssignments(prev => ({
+                                                        onValueChange={value => setManualAssignments(prev => ({
                                                             ...prev,
-                                                            [alloc.allocationId]: e.target.value,
+                                                            [alloc.allocationId]: value,
                                                         }))}
-                                                        style={{ colorScheme: 'dark' }}
+                                                        placeholder="Select shift…"
+                                                        options={analysis.otherShifts.map(s => ({
+                                                            value: s.shiftId,
+                                                            label: `${s.name} (${s.emptySeats} empty)`,
+                                                            disabled: s.emptySeats === 0,
+                                                        }))}
+                                                        containerClassName="w-full sm:min-w-[160px] sm:w-auto"
                                                         className={cn(
-                                                            formControlClass,
                                                             "px-2 py-1.5 text-xs sm:min-w-[160px]",
-                                                            wouldOverflow && "border-[color:var(--ui-form-error-border)] focus:border-[color:var(--ui-form-error-focus-border)]"
+                                                            wouldOverflow && "border-[color:var(--ui-form-error-border)] focus-visible:border-[color:var(--ui-form-error-focus-border)]"
                                                         )}
-                                                    >
-                                                        <option value="" disabled className="bg-[color:var(--ui-form-input-select-bg)] text-white">Select shift…</option>
-                                                        {analysis.otherShifts.map(s => (
-                                                            <option key={s.shiftId} value={s.shiftId} disabled={s.emptySeats === 0} className="bg-[color:var(--ui-form-input-select-bg)] text-white">
-                                                                {s.name} ({s.emptySeats} empty)
-                                                            </option>
-                                                        ))}
-                                                    </select>
+                                                    />
                                                 </div>
                                             );
                                         })}

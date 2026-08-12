@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { AppSelect, type AppSelectItem } from "@/components/ui";
 import { workspaces } from "@/lib/api/workspaces";
 import type { WorkspaceDirectory } from "@/types";
 import { cn } from "@/lib/utils";
@@ -47,6 +48,46 @@ export function getWorkspaceSwitcherModel(directory: WorkspaceDirectory) {
     };
 }
 
+export function getWorkspaceSwitcherOptions(
+    directory: WorkspaceDirectory | null,
+    error = false
+): AppSelectItem[] {
+    const destinations = directory ? getWorkspaceSwitcherModel(directory).destinations : [];
+    const groups = destinations.reduce<Map<string, WorkspaceDestination[]>>((result, destination) => {
+        const group = result.get(destination.group) ?? [];
+        group.push(destination);
+        result.set(destination.group, group);
+        return result;
+    }, new Map());
+    const workspaceOptions: AppSelectItem[] = [...groups.entries()].map(([group, groupDestinations]) => ({
+        label: group,
+        options: groupDestinations.map(destination => ({
+            value: destination.href,
+            label: destination.label,
+        })),
+    }));
+    const statusLabel = error
+        ? "Workspaces unavailable"
+        : directory
+            ? "No workspaces available"
+            : "Loading workspaces";
+
+    return [
+        ...workspaceOptions,
+        ...(workspaceOptions.length === 0
+            ? [{ value: "__workspace_status__", label: statusLabel, disabled: true }]
+            : []),
+        {
+            label: "Account",
+            options: [{
+                value: "/account",
+                label: "Account settings",
+                description: "Profile, locale, and preferences",
+            }],
+        },
+    ];
+}
+
 export function WorkspaceSwitcherControl({
     directory,
     error = false,
@@ -60,7 +101,6 @@ export function WorkspaceSwitcherControl({
     className?: string;
     onNavigate: (href: string) => void;
 }) {
-    const controlId = useId();
     const model = useMemo(
         () => directory ? getWorkspaceSwitcherModel(directory) : null,
         [directory]
@@ -75,62 +115,29 @@ export function WorkspaceSwitcherControl({
         : model?.destinations[0]?.href;
     const value = availableHrefs.has(currentHref) ? currentHref : fallbackHref;
     const label = model?.label ?? "Workspace";
-    const destinations = model?.destinations ?? [];
-
-    if (directory && destinations.length === 1) {
-        return (
-            <div className={cn("min-w-0", className)}>
-                <span className="block text-[10px] font-semibold uppercase leading-4 tracking-[0.12em] text-[color:var(--text-muted)]">
-                    {label}
-                </span>
-                <div
-                    aria-label={`${label}: ${destinations[0].label}`}
-                    title={destinations[0].label}
-                    className="flex h-11 min-w-0 items-center rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-input-border)] bg-[color:var(--ui-form-input-bg)] px-3 text-sm font-semibold text-[color:var(--text-primary)]"
-                >
-                    <span className="truncate">{destinations[0].label}</span>
-                </div>
-            </div>
-        );
-    }
-
-    const groups = destinations.reduce<Map<string, WorkspaceDestination[]>>((result, destination) => {
-        const group = result.get(destination.group) ?? [];
-        group.push(destination);
-        result.set(destination.group, group);
-        return result;
-    }, new Map());
+    const statusLabel = error
+        ? "Workspaces unavailable"
+        : directory
+            ? "No workspaces available"
+            : "Loading workspaces";
+    const selectOptions = useMemo(
+        () => getWorkspaceSwitcherOptions(directory, error),
+        [directory, error]
+    );
+    const currentValue = pathname?.startsWith("/account") ? "/account" : (value ?? "");
 
     return (
-        <div className={cn("min-w-0", className)}>
-            <label
-                htmlFor={controlId}
-                className="block text-[10px] font-semibold uppercase leading-4 tracking-[0.12em] text-[color:var(--text-muted)]"
-            >
-                {label}
-            </label>
-            <select
-                id={controlId}
-                aria-label={`Switch ${label.toLowerCase()}`}
-                value={value ?? ""}
-                disabled={!directory || error || destinations.length === 0}
-                title={error ? "Workspace list is temporarily unavailable" : `Switch ${label.toLowerCase()}`}
-                onChange={event => onNavigate(event.target.value)}
-                className="h-11 w-full min-w-0 max-w-56 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-input-border)] bg-[color:var(--ui-form-input-bg)] px-2 text-sm font-semibold text-[color:var(--text-primary)] outline-none transition-colors focus-visible:border-[color:var(--ui-form-input-focus-border)] focus-visible:ring-2 focus-visible:ring-[color:var(--ui-form-input-focus-ring)] disabled:opacity-60 sm:px-3"
-            >
-                {!directory && <option>{error ? "Workspaces unavailable" : "Loading workspaces"}</option>}
-                {directory && destinations.length === 0 && <option>No workspaces available</option>}
-                {[...groups.entries()].map(([group, options]) => (
-                    <optgroup key={group} label={group}>
-                        {options.map(destination => (
-                            <option key={destination.href} value={destination.href}>
-                                {destination.label}
-                            </option>
-                        ))}
-                    </optgroup>
-                ))}
-            </select>
-        </div>
+        <AppSelect
+            value={currentValue}
+            options={selectOptions}
+            onValueChange={onNavigate}
+            label={label}
+            aria-label={`Switch ${label.toLowerCase()} or open account settings`}
+            placeholder={statusLabel}
+            containerClassName={cn("min-w-0", className)}
+            labelClassName="mb-0 text-[10px] font-semibold uppercase leading-4 tracking-[0.12em] text-[color:var(--text-muted)]"
+            className="max-w-56 px-2 font-semibold sm:px-3"
+        />
     );
 }
 

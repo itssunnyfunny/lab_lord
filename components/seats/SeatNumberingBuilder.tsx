@@ -1,6 +1,7 @@
 "use client";
 
 import { Hash, Plus, Trash2 } from "lucide-react";
+import { AppSelect } from "@/components/ui";
 import {
     formControlClass,
     formHelpTextClass,
@@ -247,18 +248,16 @@ export function SeatNumberingBuilder({
                                     />
                                 </div>
                                 <div className="sm:col-span-2">
-                                    <label className={cn("mb-1 block text-[10px] uppercase", formHelpTextClass)}>Separator</label>
-                                    <select
+                                    <label htmlFor={`seat-range-${index}-separator`} className={cn("mb-1 block text-[10px] uppercase", formHelpTextClass)}>Separator</label>
+                                    <AppSelect
+                                        id={`seat-range-${index}-separator`}
                                         aria-label={`Range ${index + 1} separator`}
                                         disabled={disabled}
                                         value={range.separator ?? ""}
-                                        onChange={(event) => updateRange(index, { separator: event.target.value as SeatNumberingSeparator })}
-                                        className={cn(formInlineControlClass, "py-1 text-xs")}
-                                    >
-                                        {SEPARATOR_OPTIONS.map(option => (
-                                            <option key={option.value || "none"} value={option.value}>{option.label}</option>
-                                        ))}
-                                    </select>
+                                        onValueChange={value => updateRange(index, { separator: value as SeatNumberingSeparator })}
+                                        options={SEPARATOR_OPTIONS}
+                                        className={cn(formInlineControlClass, "rounded-none border-x-0 border-t-0 bg-transparent px-0 py-1 text-xs lg:min-h-9")}
+                                    />
                                 </div>
                                 <div className="flex items-end justify-end sm:col-span-1">
                                     <button

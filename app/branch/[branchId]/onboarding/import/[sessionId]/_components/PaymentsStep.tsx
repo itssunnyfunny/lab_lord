@@ -1,5 +1,5 @@
 import { CheckCircle2, CreditCard } from "lucide-react";
-import { AppButton, AppPanel } from "@/components/ui";
+import { AppButton, AppPanel, AppSelect } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import type { ImportOptions } from "@/importing/contracts/import-session.contract";
@@ -12,7 +12,7 @@ import {
 } from "@/importing/utils/import-wizard-view-model";
 import { pageInsetSurfaceClass, pageMutedTextClass } from "@/components/ui/pageSurface";
 import { pickerGroupLabelClass, pickerSectionLabelClass } from "@/components/ui/pickerSurface";
-import { importFieldClass, importOptionClass, importSelectClass, StepNotice } from "./shared";
+import { importFieldClass, StepNotice } from "./shared";
 import type { PaymentDraft } from "./types";
 
 const paymentHistoryOptions: Array<{ value: NonNullable<ImportOptions["paymentHistoryMode"]>; label: string }> = [
@@ -87,32 +87,29 @@ export function PaymentsStep({
                     <div className="grid gap-4 lg:grid-cols-2">
                         <label className="space-y-2">
                             <span className={pickerSectionLabelClass}>Payment history</span>
-                            <select
+                            <AppSelect
                                 value={options.paymentHistoryMode ?? "START_CURRENT_JOINED_CYCLE"}
-                                onChange={event => updatePaymentHistory(event.target.value as ImportOptions["paymentHistoryMode"])}
-                                className={cn("w-full", importSelectClass)}
+                                onValueChange={value => updatePaymentHistory(value as ImportOptions["paymentHistoryMode"])}
+                                options={paymentHistoryOptions}
                                 disabled={mutationsDisabled || skipPayments}
                                 aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
-                            >
-                                {paymentHistoryOptions.map(option => (
-                                    <option key={option.value} value={option.value} className={importOptionClass}>{option.label}</option>
-                                ))}
-                            </select>
+                            />
                         </label>
                         <label className="space-y-2">
                             <span className={pickerSectionLabelClass}>After student import</span>
-                            <select
+                            <AppSelect
                                 value={options.paymentAction ?? ""}
-                                onChange={event => updatePaymentAction(event.target.value as ImportOptions["paymentAction"] | "")}
-                                className={cn("w-full", importSelectClass)}
+                                onValueChange={value => updatePaymentAction(value as ImportOptions["paymentAction"] | "")}
+                                options={[
+                                    { value: "", label: "Choose action" },
+                                    { value: "GENERATE_DUE", label: "Generate due payments" },
+                                    { value: "IMPORT_PAID_UNPAID", label: "Import paid/unpaid status" },
+                                    { value: "SKIP_PAYMENTS", label: "Skip payments" },
+                                ]}
+                                placeholder="Choose action"
                                 disabled={mutationsDisabled}
                                 aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
-                            >
-                                <option value="" className={importOptionClass}>Choose action</option>
-                                <option value="GENERATE_DUE" className={importOptionClass}>Generate due payments</option>
-                                <option value="IMPORT_PAID_UNPAID" className={importOptionClass}>Import paid/unpaid status</option>
-                                <option value="SKIP_PAYMENTS" className={importOptionClass}>Skip payments</option>
-                            </select>
+                            />
                         </label>
                     </div>
 
@@ -175,16 +172,16 @@ export function PaymentsStep({
                             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                                 <label className="space-y-2">
                                     <span className={pickerSectionLabelClass}>Default paid method</span>
-                                    <select
+                                    <AppSelect
                                         value={paymentDraft.defaultMethod}
-                                        onChange={event => onPaymentDraftChange({ ...paymentDraft, defaultMethod: event.target.value })}
-                                        className={cn("w-full", importSelectClass)}
-                                    >
-                                        <option value="" className={importOptionClass}>No default method</option>
-                                        <option value="CASH" className={importOptionClass}>Cash</option>
-                                        <option value="UPI" className={importOptionClass}>UPI</option>
-                                        <option value="BANK_TRANSFER" className={importOptionClass}>Bank transfer</option>
-                                    </select>
+                                        onValueChange={value => onPaymentDraftChange({ ...paymentDraft, defaultMethod: value })}
+                                        options={[
+                                            { value: "", label: "No default method" },
+                                            { value: "CASH", label: "Cash" },
+                                            { value: "UPI", label: "UPI" },
+                                            { value: "BANK_TRANSFER", label: "Bank transfer" },
+                                        ]}
+                                    />
                                 </label>
                                 <AppButton
                                     variant="primary"

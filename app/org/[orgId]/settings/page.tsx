@@ -814,10 +814,17 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                                 <SettingsInput value={form.legalName ?? ""} onChange={e => updateForm("legalName", e.target.value)} onBlur={() => markTouched("legalName")} placeholder="Registered business name" error={legalNameError} errorId="org-legal-name-error" />
                             </SettingsField>
                             <SettingsField label="Business type" error={businessTypeError} errorId="org-business-type-error">
-                                <SettingsSelect value={form.businessType ?? ""} onChange={e => updateForm("businessType", e.target.value)} onBlur={() => markTouched("businessType")} error={businessTypeError} errorId="org-business-type-error">
-                                    <option value="">Not set</option>
-                                    {BUSINESS_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
-                                </SettingsSelect>
+                                <SettingsSelect
+                                    value={form.businessType ?? ""}
+                                    onValueChange={value => updateForm("businessType", value)}
+                                    onBlur={() => markTouched("businessType")}
+                                    error={businessTypeError}
+                                    errorId="org-business-type-error"
+                                    options={[
+                                        { value: "", label: "Not set" },
+                                        ...BUSINESS_TYPES.map(type => ({ value: type, label: type })),
+                                    ]}
+                                />
                             </SettingsField>
                         </>
                     ) : (
@@ -855,16 +862,24 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                     {isEditing && organizationCanEdit ? (
                         <>
                             <SettingsField label="Timezone">
-                                <SettingsSelect value={form.timezone} onChange={e => updateForm("timezone", e.target.value)}>
-                                    <option value="Asia/Kolkata">Asia/Kolkata</option>
-                                    <option value="UTC">UTC</option>
-                                </SettingsSelect>
+                                <SettingsSelect
+                                    value={form.timezone}
+                                    onValueChange={value => updateForm("timezone", value)}
+                                    options={[
+                                        { value: "Asia/Kolkata", label: "Asia/Kolkata" },
+                                        { value: "UTC", label: "UTC" },
+                                    ]}
+                                />
                             </SettingsField>
                             <SettingsField label="Currency">
-                                <SettingsSelect value={form.currency} onChange={e => updateForm("currency", e.target.value)}>
-                                    <option value="INR">INR</option>
-                                    <option value="USD">USD</option>
-                                </SettingsSelect>
+                                <SettingsSelect
+                                    value={form.currency}
+                                    onValueChange={value => updateForm("currency", value)}
+                                    options={[
+                                        { value: "INR", label: "INR" },
+                                        { value: "USD", label: "USD" },
+                                    ]}
+                                />
                             </SettingsField>
                             <SettingsField label="Week starts on">
                                 <SegmentedControl

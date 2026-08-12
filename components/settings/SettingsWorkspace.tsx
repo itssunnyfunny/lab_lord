@@ -2,7 +2,7 @@
 
 import { ReactNode, createContext, useContext, useEffect, useId, useRef } from "react";
 import { CheckCircle2, AlertCircle, LucideIcon } from "lucide-react";
-import { AppButton, PageShell } from "@/components/ui";
+import { AppButton, AppSelect, PageShell, type AppSelectProps } from "@/components/ui";
 import {
     formControlClass,
     formHelpTextClass,
@@ -258,18 +258,17 @@ export function SettingsSelect({
     errorId,
     className,
     ...props
-}: React.SelectHTMLAttributes<HTMLSelectElement> & { error?: string | null; errorId?: string }) {
+}: AppSelectProps) {
     const field = useContext(SettingsFieldContext);
     const describedBy = mergeDescribedBy(props["aria-describedby"], field?.describedBy, error ? errorId : undefined);
     return (
-        <select
+        <AppSelect
             {...props}
-            {...(errorId ? fieldErrorProps(errorId, error) : {})}
             id={props.id ?? field?.controlId}
+            aria-labelledby={props["aria-labelledby"] ?? field?.labelId}
             aria-describedby={describedBy}
+            aria-invalid={Boolean(error)}
             className={cn(
-                formControlClass,
-                "bg-[color:var(--ui-form-input-select-bg)] px-3 py-2 text-sm",
                 fieldErrorClass(error),
                 className
             )}

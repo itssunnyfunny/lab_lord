@@ -1,12 +1,12 @@
 import { RotateCcw, UploadCloud } from "lucide-react";
-import { AppButton, AppPanel } from "@/components/ui";
+import { AppButton, AppPanel, AppSelect } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
 import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { cn } from "@/lib/utils";
 import type { CommitMode, ImportOptions } from "@/importing/contracts/import-session.contract";
 import { isPaymentSkipped, isPreviewFresh } from "@/importing/utils/import-wizard-view-model";
 import { pageInsetSurfaceClass, pageMutedTextClass, pageTableBodyDividerClass, pageTableHeadClass, pageTableRowClass } from "@/components/ui/pageSurface";
-import { AccessibleTableScroll, PlanCheckBadge, StepNotice, previewSummaryLabels, StatusBadge, importOptionClass, importSelectClass } from "./shared";
+import { AccessibleTableScroll, PlanCheckBadge, StepNotice, previewSummaryLabels, StatusBadge } from "./shared";
 import type { Preview } from "./types";
 
 type PreviewStepProps = {
@@ -83,15 +83,16 @@ export function PreviewStep({
                 action={
                     <div className="flex flex-wrap gap-2">
                         <label htmlFor="import-commit-mode" className="sr-only">Import mode</label>
-                        <select
+                        <AppSelect
                             id="import-commit-mode"
                             value={commitMode}
-                            onChange={event => onModeChange(event.target.value as CommitMode)}
-                            className={cn("h-10 px-3 py-0", importSelectClass)}
-                        >
-                            <option value="SAFE_PARTIAL" className={importOptionClass}>Safe partial</option>
-                            <option value="STRICT_ALL_OR_NOTHING" className={importOptionClass}>Strict all or nothing</option>
-                        </select>
+                            onValueChange={value => onModeChange(value as CommitMode)}
+                            options={[
+                                { value: "SAFE_PARTIAL", label: "Safe partial" },
+                                { value: "STRICT_ALL_OR_NOTHING", label: "Strict all or nothing" },
+                            ]}
+                            className="h-11 min-h-11 px-3 py-0 lg:h-10 lg:min-h-10"
+                        />
                         <AppButton
                             variant="secondary"
                             icon={RotateCcw}

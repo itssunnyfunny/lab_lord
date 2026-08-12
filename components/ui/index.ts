@@ -1,4 +1,12 @@
 export { AppButton, type AppButtonProps } from "./AppButton";
+export {
+    AppSelect,
+    flattenAppSelectOptions,
+    type AppSelectGroup,
+    type AppSelectItem,
+    type AppSelectOption,
+    type AppSelectProps,
+} from "./AppSelect";
 export { Button, type ButtonProps } from "./Button";
 export { AppPanel } from "./AppPanel";
 export { Dialog, type DialogProps } from "./Dialog";

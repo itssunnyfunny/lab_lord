@@ -1,9 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  getWorkspaceSwitcherOptions,
   getWorkspaceSwitcherModel,
   WorkspaceSwitcherControl,
 } from "@/components/layout/WorkspaceSwitcher";
+import { flattenAppSelectOptions } from "@/components/ui/AppSelect";
 import type { WorkspaceDirectory, WorkspaceDirectoryBranch } from "@/types";
 
 const permissions = {
@@ -26,7 +28,7 @@ function branch(overrides: Partial<WorkspaceDirectoryBranch> = {}): WorkspaceDir
 }
 
 describe("WorkspaceSwitcher", () => {
-  it("labels owner destinations as Org / Branch and excludes Account", () => {
+  it("labels owner destinations as Org / Branch and includes Account settings", () => {
     const ownerBranch = branch({ role: "OWNER" });
     const directory: WorkspaceDirectory = {
       organizations: [{
@@ -41,6 +43,8 @@ describe("WorkspaceSwitcher", () => {
     };
 
     const model = getWorkspaceSwitcherModel(directory);
+    const optionValues = flattenAppSelectOptions(getWorkspaceSwitcherOptions(directory))
+      .map(option => option.value);
     const markup = renderToStaticMarkup(
       <WorkspaceSwitcherControl
         directory={directory}
@@ -55,13 +59,10 @@ describe("WorkspaceSwitcher", () => {
       "/branch/branch_1",
     ]);
     expect(markup).toContain("Org / Branch");
-    expect(markup).toContain("North Star Labs overview");
-    expect(markup).toContain("Central Branch");
-    expect(markup).not.toContain("Account settings");
-    expect(markup).not.toContain('value="/account"');
+    expect(optionValues).toEqual(["/org/org_1", "/branch/branch_1", "/account"]);
   });
 
-  it("renders a single branch-only destination as static context", () => {
+  it("keeps a single branch-only destination in an expandable account menu", () => {
     const directory: WorkspaceDirectory = {
       organizations: [],
       staffBranches: [branch()],
@@ -75,10 +76,41 @@ describe("WorkspaceSwitcher", () => {
         onNavigate={() => undefined}
       />
     );
+    const optionValues = flattenAppSelectOptions(getWorkspaceSwitcherOptions(directory))
+      .map(option => option.value);
 
     expect(markup).toContain("Branch");
     expect(markup).toContain("Central Branch — North Star Labs");
+    expect(optionValues).toEqual(["/branch/branch_1", "/account"]);
+    expect(markup).toContain('role="combobox"');
     expect(markup).not.toContain("<select");
+  });
+
+  it("keeps account settings available while workspaces are loading or unavailable", () => {
+    const loadingMarkup = renderToStaticMarkup(
+      <WorkspaceSwitcherControl
+        directory={null}
+        pathname="/app"
+        onNavigate={() => undefined}
+      />
+    );
+    const errorMarkup = renderToStaticMarkup(
+      <WorkspaceSwitcherControl
+        directory={null}
+        error
+        pathname="/app"
+        onNavigate={() => undefined}
+      />
+    );
+    const loadingOptions = flattenAppSelectOptions(getWorkspaceSwitcherOptions(null));
+    const errorOptions = flattenAppSelectOptions(getWorkspaceSwitcherOptions(null, true));
+
+    expect(loadingMarkup).toContain("Loading workspaces");
+    expect(errorMarkup).toContain("Workspaces unavailable");
+    expect(loadingOptions.map(option => option.value)).toEqual(["__workspace_status__", "/account"]);
+    expect(errorOptions.map(option => option.value)).toEqual(["__workspace_status__", "/account"]);
+    expect(loadingOptions.find(option => option.value === "/account")?.label).toBe("Account settings");
+    expect(errorOptions.find(option => option.value === "/account")?.label).toBe("Account settings");
   });
 
   it("shows only permission-backed staff branch destinations", () => {

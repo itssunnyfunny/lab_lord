@@ -99,6 +99,62 @@ for (const session of roleSessions) {
       ).toEqual([]);
     });
 
+    test("workspace menu supports keyboard selection, dismissal, and viewport-safe placement", async ({ page }) => {
+      await page.goto(`/branch/${branchId}`);
+      const workspace = page.locator("header").getByRole("combobox", {
+        name: /^(Org \/ Branch|Branch|Workspace)$/,
+      });
+      await expect(workspace).toBeVisible();
+      await expect(workspace).not.toContainText(/Loading workspaces|Workspaces unavailable/);
+
+      await workspace.focus();
+      await page.keyboard.press("End");
+      const listbox = page.getByRole("listbox", { name: /^(Org \/ Branch|Branch|Workspace)$/ });
+      const accountOption = listbox.getByRole("option", { name: /Account settings/i });
+      await expect(listbox).toBeVisible();
+      await expect(accountOption).toBeVisible();
+      await expect(workspace).toHaveAttribute("aria-activedescendant", await accountOption.getAttribute("id") ?? "");
+
+      const enabledOptions = listbox.locator('[role="option"]:not([aria-disabled="true"])');
+      const firstOptionId = await enabledOptions.first().getAttribute("id");
+      const secondOptionId = await enabledOptions.nth(1).getAttribute("id");
+      await page.keyboard.press("Home");
+      await expect(workspace).toHaveAttribute("aria-activedescendant", firstOptionId ?? "");
+      await page.keyboard.press("ArrowDown");
+      await expect(workspace).toHaveAttribute("aria-activedescendant", secondOptionId ?? "");
+      await page.keyboard.press("End");
+      await expect(workspace).toHaveAttribute("aria-activedescendant", await accountOption.getAttribute("id") ?? "");
+
+      const menuBox = await listbox.boundingBox();
+      const viewport = page.viewportSize();
+      expect(menuBox).not.toBeNull();
+      expect(viewport).not.toBeNull();
+      expect(menuBox!.x).toBeGreaterThanOrEqual(0);
+      expect(menuBox!.y).toBeGreaterThanOrEqual(0);
+      expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(viewport!.width);
+      expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(viewport!.height);
+
+      await page.keyboard.press("Escape");
+      await expect(listbox).toBeHidden();
+      await expect(workspace).toBeFocused();
+
+      await workspace.click();
+      await page.keyboard.press("Tab");
+      await expect(listbox).toBeHidden();
+
+      await workspace.click();
+      await expect(listbox).toBeVisible();
+      await page.getByRole("heading", { level: 1 }).click();
+      await expect(listbox).toBeHidden();
+
+      await workspace.focus();
+      await workspace.click();
+      await page.keyboard.type("account");
+      await expect(workspace).toHaveAttribute("aria-activedescendant", await accountOption.getAttribute("id") ?? "");
+      await page.keyboard.press("Enter");
+      await expect(page).toHaveURL(/\/account(?:\?|$)/);
+    });
+
     test("branch search follows the combobox keyboard pattern", async ({ page }, testInfo) => {
       await page.route(`**/api/branches/${branchId}/search?**`, route => route.fulfill({
         contentType: "application/json",

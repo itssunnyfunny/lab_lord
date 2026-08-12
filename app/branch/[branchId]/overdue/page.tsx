@@ -20,8 +20,8 @@ import {
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
 import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 import { Badge } from "@/components/ui/Badge";
-import { AppButton, AppPanel, PageLoadingSkeleton, PageShell } from "@/components/ui";
-import { formControlClass, formHelpTextClass, formWarningBannerClass } from "@/components/ui/formSurface";
+import { AppButton, AppPanel, AppSelect, PageLoadingSkeleton, PageShell } from "@/components/ui";
+import { formHelpTextClass, formWarningBannerClass } from "@/components/ui/formSurface";
 import {
     pageCountBadgeClass,
     pageDescriptionClass,
@@ -387,15 +387,17 @@ function OverdueContent({ branchId, recordDecision }: { branchId: string; record
                             description="Oldest dues load first. Filters and bulk selection apply to the rows currently loaded."
                             action={
                                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                                    <select
+                                    <AppSelect
                                         aria-label="Reminder language"
-                                        className={cn(formControlClass, "h-11 w-full bg-[color:var(--ui-form-input-select-bg)] px-3 text-xs sm:w-32 lg:h-9")}
+                                        className="h-11 w-full text-xs sm:w-32 lg:min-h-9 lg:h-9"
+                                        containerClassName="w-full sm:w-32"
                                         value={language}
-                                        onChange={(event) => setLanguage(event.target.value as MessageLanguage)}
-                                    >
-                                        <option value="EN">English</option>
-                                        <option value="HI">Hindi</option>
-                                    </select>
+                                        onValueChange={value => setLanguage(value as MessageLanguage)}
+                                        options={[
+                                            { value: "EN", label: "English" },
+                                            { value: "HI", label: "Hindi" },
+                                        ]}
+                                    />
                                     <AppButton
                                         size="sm"
                                         variant="primary"

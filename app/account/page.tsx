@@ -327,23 +327,35 @@ export default function AccountPage() {
                     {isEditing ? (
                         <>
                             <SettingsField label="Timezone">
-                                <SettingsSelect value={form.timezone} onChange={e => updateForm("timezone", e.target.value)}>
-                                    <option value="Asia/Kolkata">Asia/Kolkata</option>
-                                    <option value="UTC">UTC</option>
-                                </SettingsSelect>
+                                <SettingsSelect
+                                    value={form.timezone}
+                                    onValueChange={value => updateForm("timezone", value)}
+                                    options={[
+                                        { value: "Asia/Kolkata", label: "Asia/Kolkata" },
+                                        { value: "UTC", label: "UTC" },
+                                    ]}
+                                />
                             </SettingsField>
                             <SettingsField label="Locale">
-                                <SettingsSelect value={form.locale} onChange={e => updateForm("locale", e.target.value)}>
-                                    <option value="en-IN">English India</option>
-                                    <option value="en-US">English US</option>
-                                </SettingsSelect>
+                                <SettingsSelect
+                                    value={form.locale}
+                                    onValueChange={value => updateForm("locale", value)}
+                                    options={[
+                                        { value: "en-IN", label: "English India" },
+                                        { value: "en-US", label: "English US" },
+                                    ]}
+                                />
                             </SettingsField>
                             <SettingsField label="Date format">
-                                <SettingsSelect value={form.dateFormat} onChange={e => updateForm("dateFormat", e.target.value)}>
-                                    <option value="dd MMM yyyy">dd MMM yyyy</option>
-                                    <option value="MMM dd, yyyy">MMM dd, yyyy</option>
-                                    <option value="yyyy-MM-dd">yyyy-MM-dd</option>
-                                </SettingsSelect>
+                                <SettingsSelect
+                                    value={form.dateFormat}
+                                    onValueChange={value => updateForm("dateFormat", value)}
+                                    options={[
+                                        { value: "dd MMM yyyy", label: "dd MMM yyyy" },
+                                        { value: "MMM dd, yyyy", label: "MMM dd, yyyy" },
+                                        { value: "yyyy-MM-dd", label: "yyyy-MM-dd" },
+                                    ]}
+                                />
                             </SettingsField>
                             <SettingsField label="Density">
                                 <SegmentedControl

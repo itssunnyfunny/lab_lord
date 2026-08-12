@@ -1,11 +1,11 @@
 import { Loader2, Pencil, RotateCcw, Save, UserRoundCheck } from "lucide-react";
-import { AppButton, AppPanel } from "@/components/ui";
+import { AppButton, AppPanel, AppSelect } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import { importRowFieldValue } from "@/importing/utils/manual-row-draft";
 import { pageInsetSurfaceClass, pageMutedTextClass, pageTableBodyDividerClass, pageTableHeadClass, pageTableRowClass } from "@/components/ui/pageSurface";
 import { pickerSectionLabelClass } from "@/components/ui/pickerSurface";
-import { AccessibleTableScroll, formatAmount, importFieldClass, importOptionClass, importSelectClass, IssueList, rowFilterLabels, StatusBadge } from "./shared";
+import { AccessibleTableScroll, formatAmount, importFieldClass, IssueList, rowFilterLabels, StatusBadge } from "./shared";
 import { CompactImportAllocationPicker } from "./CompactImportAllocationPicker";
 import type { ImportDetail, ImportRow, RowDraft, RowFilter, RowPreview } from "./types";
 
@@ -84,18 +84,16 @@ export function RowsStep({
                 title="Rows"
                 description={detail.rowPage ? `${detail.rowPage.returnedRows} of ${detail.rowPage.filteredRows}` : "Paged staging rows"}
                 action={
-                    <select
+                    <AppSelect
                         aria-label="Filter import rows"
                         value={rowFilter}
-                        onChange={event => onFilterChange(event.target.value as RowFilter)}
-                        className={cn("h-8 px-2 py-0 text-xs", importSelectClass)}
-                    >
-                        {(["attention", "ready", "all", "skipped"] as RowFilter[]).map(filter => (
-                            <option key={filter} value={filter} className={importOptionClass}>
-                                {rowFilterLabels[filter]}
-                            </option>
-                        ))}
-                    </select>
+                        onValueChange={value => onFilterChange(value as RowFilter)}
+                        options={(["attention", "ready", "all", "skipped"] as RowFilter[]).map(filter => ({
+                            value: filter,
+                            label: rowFilterLabels[filter],
+                        }))}
+                        className="h-11 min-h-11 px-2 py-0 text-xs lg:h-8 lg:min-h-8"
+                    />
                 }
                 contentClassName="p-0"
             >
@@ -222,23 +220,31 @@ export function RowsStep({
                                     </label>
                                     <label className="space-y-2">
                                         <span className={pickerSectionLabelClass}>Payment status</span>
-                                        <select value={selectedDraft.paymentStatus} onChange={event => onDraftChange(selectedRow.id, "paymentStatus", event.target.value)} className={cn("w-full", importSelectClass)}>
-                                            {hasCustomPaymentStatus && <option value={currentPaymentStatus} className={importOptionClass}>Raw: {currentPaymentStatus}</option>}
-                                            <option value="" className={importOptionClass}>No row status</option>
-                                            <option value="DUE" className={importOptionClass}>Due</option>
-                                            <option value="PAID" className={importOptionClass}>Paid</option>
-                                            <option value="WAIVED" className={importOptionClass}>Waived</option>
-                                            <option value="UNCLEAR" className={importOptionClass}>Unclear</option>
-                                        </select>
+                                        <AppSelect
+                                            value={selectedDraft.paymentStatus}
+                                            onValueChange={value => onDraftChange(selectedRow.id, "paymentStatus", value)}
+                                            options={[
+                                                ...(hasCustomPaymentStatus ? [{ value: currentPaymentStatus, label: `Raw: ${currentPaymentStatus}` }] : []),
+                                                { value: "", label: "No row status" },
+                                                { value: "DUE", label: "Due" },
+                                                { value: "PAID", label: "Paid" },
+                                                { value: "WAIVED", label: "Waived" },
+                                                { value: "UNCLEAR", label: "Unclear" },
+                                            ]}
+                                        />
                                     </label>
                                     <label className="space-y-2">
                                         <span className={pickerSectionLabelClass}>Method</span>
-                                        <select value={selectedDraft.paymentMethod} onChange={event => onDraftChange(selectedRow.id, "paymentMethod", event.target.value)} className={cn("w-full", importSelectClass)}>
-                                            <option value="" className={importOptionClass}>No method</option>
-                                            <option value="CASH" className={importOptionClass}>Cash</option>
-                                            <option value="UPI" className={importOptionClass}>UPI</option>
-                                            <option value="BANK_TRANSFER" className={importOptionClass}>Bank transfer</option>
-                                        </select>
+                                        <AppSelect
+                                            value={selectedDraft.paymentMethod}
+                                            onValueChange={value => onDraftChange(selectedRow.id, "paymentMethod", value)}
+                                            options={[
+                                                { value: "", label: "No method" },
+                                                { value: "CASH", label: "Cash" },
+                                                { value: "UPI", label: "UPI" },
+                                                { value: "BANK_TRANSFER", label: "Bank transfer" },
+                                            ]}
+                                        />
                                     </label>
                                     <label className="space-y-2">
                                         <span className={pickerSectionLabelClass}>Reference</span>

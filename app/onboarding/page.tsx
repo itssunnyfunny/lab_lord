@@ -3,7 +3,7 @@
 import type { ChangeEvent } from "react";
 import { use, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AppButton } from "@/components/ui";
+import { AppButton, AppSelect } from "@/components/ui";
 import {
     SeatNumberingBuilder,
     createSimpleSeatNumbering,
@@ -536,24 +536,30 @@ export default function OnboardingPage({
                                 </div>
 
                                 <div>
-                                    <label className={cn("mb-2 block", formLabelClass)}>
+                                    <label htmlFor="onboarding-business-type" className={cn("mb-2 block", formLabelClass)}>
                                         Business Type <span className={formHelpTextClass}>(Optional)</span>
                                     </label>
-                                    <select
+                                    <AppSelect
+                                        id="onboarding-business-type"
                                         name="businessType"
                                         value={formData.businessType}
-                                        onChange={handleInputChange}
+                                        onValueChange={value => {
+                                            setFormData(prev => ({ ...prev, businessType: value }));
+                                            setError(null);
+                                        }}
                                         onBlur={() => markTouched("businessType")}
-                                        className={cn(formControlClass, "appearance-none px-4 py-3", fieldErrorClass(businessTypeError))}
+                                        placeholder="Select type..."
+                                        options={[
+                                            { value: "", label: "Select type..." },
+                                            { value: "Study Hall", label: "Study Hall" },
+                                            { value: "Library", label: "Library" },
+                                            { value: "Coaching Center", label: "Coaching Center" },
+                                            { value: "Tuition", label: "Tuition" },
+                                            { value: "Other", label: "Other" },
+                                        ]}
+                                        className={cn("px-4 py-3", fieldErrorClass(businessTypeError))}
                                         {...fieldErrorProps("onboarding-business-type-error", businessTypeError)}
-                                    >
-                                        <option value="" className="bg-[color:var(--ui-form-input-select-bg)] text-[color:var(--ui-form-help)]">Select type...</option>
-                                        <option value="Study Hall" className="bg-[color:var(--ui-form-input-select-bg)]">Study Hall</option>
-                                        <option value="Library" className="bg-[color:var(--ui-form-input-select-bg)]">Library</option>
-                                        <option value="Coaching Center" className="bg-[color:var(--ui-form-input-select-bg)]">Coaching Center</option>
-                                        <option value="Tuition" className="bg-[color:var(--ui-form-input-select-bg)]">Tuition</option>
-                                        <option value="Other" className="bg-[color:var(--ui-form-input-select-bg)]">Other</option>
-                                    </select>
+                                    />
                                     <FieldError id="onboarding-business-type-error" error={businessTypeError} />
                                 </div>
 

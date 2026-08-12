@@ -537,11 +537,17 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                                 </fieldset>
                             </SettingsField>
                             <SettingsField label="Reminder tone">
-                                <SettingsSelect disabled={mutationsDisabled} aria-describedby={mutationDescriptionId} value={form.reminderTone} onChange={e => updateForm("reminderTone", e.target.value as BranchForm["reminderTone"])}>
-                                    <option value="polite">Polite</option>
-                                    <option value="friendly">Friendly</option>
-                                    <option value="firm">Firm</option>
-                                </SettingsSelect>
+                                <SettingsSelect
+                                    disabled={mutationsDisabled}
+                                    aria-describedby={mutationDescriptionId}
+                                    value={form.reminderTone}
+                                    onValueChange={value => updateForm("reminderTone", value as BranchForm["reminderTone"])}
+                                    options={[
+                                        { value: "polite", label: "Polite" },
+                                        { value: "friendly", label: "Friendly" },
+                                        { value: "firm", label: "Firm" },
+                                    ]}
+                                />
                             </SettingsField>
                         </>
                     ) : (

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Brain, Save } from "lucide-react";
-import { AppButton, AppPanel } from "@/components/ui";
+import { AppButton, AppPanel, AppSelect } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import { IMPORT_TARGET_FIELDS, type ImportColumnMapping } from "@/importing/contracts/import-session.contract";
 import { aiAssistanceState } from "@/importing/utils/import-wizard-view-model";
 import { pageInsetSurfaceClass, pageMutedTextClass, pageTableBodyDividerClass, pageTableHeadClass, pageTableRowClass } from "@/components/ui/pageSurface";
-import { AccessibleTableScroll, importOptionClass, importSelectClass, StepNotice } from "./shared";
+import { AccessibleTableScroll, StepNotice } from "./shared";
 import type { ImportDetail } from "./types";
 
 type ColumnsStepProps = {
@@ -114,20 +114,15 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
                                     <label htmlFor={selectId} className="mt-4 block text-xs font-semibold text-[color:var(--text-secondary)]">
                                         ERP field
                                     </label>
-                                    <select
+                                    <AppSelect
                                         id={selectId}
                                         value={item.targetField}
                                         disabled={mutationsDisabled}
                                         aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
-                                        onChange={event => updateTargetField(index, event.target.value as ImportColumnMapping["targetField"])}
-                                        className={cn("mt-2 w-full", importSelectClass)}
-                                    >
-                                        {IMPORT_TARGET_FIELDS.map(field => (
-                                            <option key={field} value={field} className={importOptionClass}>
-                                                {field}
-                                            </option>
-                                        ))}
-                                    </select>
+                                        onValueChange={value => updateTargetField(index, value as ImportColumnMapping["targetField"])}
+                                        options={IMPORT_TARGET_FIELDS.map(field => ({ value: field, label: field }))}
+                                        containerClassName="mt-2 w-full"
+                                    />
 
                                     <dl className="mt-4 grid gap-3 text-xs">
                                         <div className="flex items-center justify-between gap-3">
@@ -181,20 +176,14 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
                                                 {item.needsReview && <Badge className="mt-2" variant="warning">review</Badge>}
                                             </th>
                                             <td className="p-3">
-                                                <select
+                                                <AppSelect
                                                     aria-label={`ERP field for ${item.sourceColumn}`}
                                                     value={item.targetField}
                                                     disabled={mutationsDisabled}
                                                     aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
-                                                    onChange={event => updateTargetField(index, event.target.value as ImportColumnMapping["targetField"])}
-                                                    className={cn("w-full", importSelectClass)}
-                                                >
-                                                    {IMPORT_TARGET_FIELDS.map(field => (
-                                                        <option key={field} value={field} className={importOptionClass}>
-                                                            {field}
-                                                        </option>
-                                                    ))}
-                                                </select>
+                                                    onValueChange={value => updateTargetField(index, value as ImportColumnMapping["targetField"])}
+                                                    options={IMPORT_TARGET_FIELDS.map(field => ({ value: field, label: field }))}
+                                                />
                                             </td>
                                             <td className="p-3">
                                                 <Badge variant={item.confidence >= 85 ? "success" : item.confidence >= 60 ? "warning" : "default"}>

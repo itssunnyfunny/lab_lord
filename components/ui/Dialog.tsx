@@ -146,7 +146,7 @@ export function Dialog({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       const dialog = dialogRef.current;
-      if (!dialog) return;
+      if (!dialog || event.defaultPrevented) return;
 
       if (event.key === "Escape" && dismissOnEscape && !closeDisabled) {
         event.preventDefault();
