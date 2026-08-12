@@ -131,10 +131,22 @@ const DECLINE_REASONS = new Set([
   "card_not_supported",
   "card_mandate_card_not_supported",
   "transaction_limit_exceeded",
+  "authorization_failed",
+  "bank_declined",
+  "emandate_registration_failed",
+  "mandate_declined",
+  "mandate_not_authorized",
+  "upi_autopay_declined",
+  "upi_mandate_declined",
 ]);
 
 const CUSTOMER_CANCEL_REASONS = new Set([
+  "customer_cancelled",
+  "mandate_cancelled",
   "payment_cancelled",
+  "upi_autopay_cancelled",
+  "upi_mandate_cancelled",
+  "upi_transaction_cancelled",
 ]);
 
 const TECHNICAL_REASONS = new Set([
@@ -177,12 +189,22 @@ export function classifyRazorpayFailure(failure: RazorpayFailureDetails): Razorp
 
   // Razorpay documents payment_cancelled as a customer cancellation/back action.
   // It is a completed Checkout outcome, not an authorization that needs polling.
-  if (reason && CUSTOMER_CANCEL_REASONS.has(reason)) {
+  if (
+    (reason && (
+      CUSTOMER_CANCEL_REASONS.has(reason)
+      || (reason.includes("cancel") && /(payment|mandate|upi|customer)/.test(reason))
+    ))
+    || (source === "customer" && description?.includes("cancel"))
+  ) {
     return "ABANDONED";
   }
 
   if (
-    (reason && (DECLINE_REASONS.has(reason) || reason.includes("declin")))
+    (reason && (
+      DECLINE_REASONS.has(reason)
+      || reason.includes("declin")
+      || reason.includes("not_authorized")
+    ))
     || description?.includes("declin")
   ) {
     return "DECLINED";
@@ -243,13 +265,13 @@ export function openRazorpayCheckout({
     key: payload.keyId,
     name: payload.name ?? "Lab Lords",
     description: payload.description
-      ?? (mode === "RECOVERY" ? "Update card and retry subscription payment" : "Authorize your Lab Lords subscription"),
+      ?? (mode === "RECOVERY" ? "Update payment method and retry subscription payment" : "Authorize your Lab Lords subscription"),
     subscription_id: payload.subscriptionId,
     // Do not opt the payer into Razorpay's saved-card/one-click experience.
     // Subscription authorization remains provider-managed and the issuer
     // independently decides where its bank/3-D Secure OTP is sent.
     remember_customer: false,
-    ...(mode === "RECOVERY" || payload.subscription_card_change
+    ...(payload.subscription_card_change
       ? { subscription_card_change: true as const }
       : {}),
     prefill: payload.prefill,

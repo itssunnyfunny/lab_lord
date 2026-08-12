@@ -76,12 +76,12 @@ export function isBillingOperationTerminal(status: BillingOperationDto["operatio
   return TERMINAL_OPERATION_STATUSES.has(status);
 }
 
-function copyFor(operation: BillingOperationDto | null, timedOut: boolean) {
+export function getBillingProcessingCopy(operation: BillingOperationDto | null, timedOut: boolean) {
   if (!operation) return { title: "Checking your billing update", body: "We are securely checking Razorpay for confirmation." };
   if (operation.operationStatus === "APPLIED") return { title: "Billing update confirmed", body: "Your account now reflects the provider-confirmed change." };
   if (operation.operationStatus === "SCHEDULED") return { title: "Change scheduled", body: "Your current access stays in place until the effective date shown in billing settings." };
   if (operation.operationStatus === "ABANDONED") return { title: "Payment was not completed", body: "Your current plan or trial has not been changed." };
-  if (operation.operationStatus === "DECLINED") return { title: "Authorization was not confirmed", body: "You can retry with a supported card. Check your bank statement before retrying if the provider response was unclear." };
+  if (operation.operationStatus === "DECLINED") return { title: "Authorization was not confirmed", body: "You can retry with another supported recurring payment method. Check your bank statement before retrying if the provider response was unclear." };
   if (operation.operationStatus === "FAILED") return { title: "We could not apply the billing update", body: operation.message || "Your existing access remains unchanged. You can safely retry." };
   if (timedOut) return { title: "Confirmation is taking longer than usual", body: "You can leave this page. We will keep reconciling the provider state and show the result in billing settings." };
   return { title: "Verifying with Razorpay", body: "Keep this page open while we confirm the subscription, payment, and paid period." };
@@ -189,7 +189,7 @@ export default function BillingProcessingPage({ params }: { params: Promise<{ or
     };
   }, [applyOperation, changeId, orgId, pollGeneration, reconcileIfDue]);
 
-  const content = useMemo(() => copyFor(operation, timedOut), [operation, timedOut]);
+  const content = useMemo(() => getBillingProcessingCopy(operation, timedOut), [operation, timedOut]);
   const successful = operation?.operationStatus === "APPLIED" || operation?.operationStatus === "SCHEDULED";
   const failed = operation && ["DECLINED", "ABANDONED", "FAILED"].includes(operation.operationStatus);
   const returnPath = operation?.returnPath || `/org/${encodeURIComponent(orgId)}/settings#billing`;

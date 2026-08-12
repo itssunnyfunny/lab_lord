@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { X, MapPin, Loader2, Phone, Plus, AlertCircle, AlertTriangle } from "lucide-react";
@@ -33,6 +34,17 @@ import {
 } from "@/lib/formValidation";
 import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 import { cn } from "@/lib/utils";
+import { billing } from "@/lib/api/billing";
+import {
+    resolveBranchBillingAction,
+    type BranchCreationResponse,
+} from "@/lib/api/branches";
+import {
+    isRazorpayCheckoutPayload,
+    isRazorpayCheckoutReady,
+    openRazorpayCheckout,
+    RazorpayCheckoutScript,
+} from "@/components/billing/RazorpayCheckoutLauncher";
 
 function formatMins(mins: number) {
     let raw = mins;
@@ -72,6 +84,7 @@ export function CreateBranchDialog({
     organizationId,
     onSuccess,
 }: CreateBranchDialogProps) {
+    const router = useRouter();
     const [formData, setFormData] = useState({
         name: "",
         contactPhone: "",
@@ -83,6 +96,9 @@ export function CreateBranchDialog({
     const [shifts, setShifts] = useState<ShiftDraft[]>(DEFAULT_SHIFTS);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [checkoutScriptReady, setCheckoutScriptReady] = useState(
+        () => isRazorpayCheckoutReady()
+    );
     const submitIdempotencyKeyRef = useRef<string | null>(null);
     const {
         markTouched,
@@ -239,7 +255,38 @@ export function CreateBranchDialog({
                 throw new Error(data.error || "Failed to create branch");
             }
 
-            const branch = await res.json();
+            const branch = await res.json() as BranchCreationResponse;
+            const billingAction = resolveBranchBillingAction(branch);
+            if (billingAction === "CHECKOUT_REQUIRED") {
+                if (branch.checkout && isRazorpayCheckoutPayload(branch.checkout) && (checkoutScriptReady || isRazorpayCheckoutReady())) {
+                    const checkout = branch.checkout;
+                    openRazorpayCheckout({
+                        payload: checkout,
+                        mode: "AUTHORIZATION",
+                        verify: response => billing.verifySubscription(organizationId, {
+                            changeId: checkout.changeId,
+                            razorpay_subscription_id: response.razorpay_subscription_id ?? checkout.subscriptionId,
+                            razorpay_payment_id: response.razorpay_payment_id,
+                            razorpay_signature: response.razorpay_signature,
+                        }),
+                        recordEvent: async result => {
+                            await billing.recordCheckoutEvent(
+                                organizationId,
+                                checkout.changeId,
+                                result.event,
+                                result.failure
+                            );
+                        },
+                        navigate: processingUrl => router.push(processingUrl),
+                    });
+                } else if (branch.processingUrl) {
+                    router.push(branch.processingUrl);
+                } else {
+                    throw new Error("The branch was created, but payment-method authorization could not be opened. Retry activation from the branch page.");
+                }
+            } else if (billingAction === "PROCESSING" && branch.processingUrl) {
+                router.push(branch.processingUrl);
+            }
             // Reset form
             setFormData({ name: "", contactPhone: "", city: "", seatCount: "", seatNumbering: createSimpleSeatNumbering(), defaultFee: "" });
             setShifts(DEFAULT_SHIFTS);
@@ -264,33 +311,38 @@ export function CreateBranchDialog({
     };
 
     return (
-        <Dialog
-            open={isOpen}
-            onClose={handleClose}
-            title="Create new branch"
-            description="Set up a new location under this organization."
-            closeLabel="Close create branch dialog"
-            closeDisabled={loading}
-            className="max-w-lg"
-            footer={(
-                <>
-                    <Button variant="ghost" onClick={handleClose} disabled={loading}>
-                        Cancel
-                    </Button>
-                    <Button
-                        onClick={handleSubmit}
-                        disabled={loading}
-                        className="min-w-[130px] justify-center"
-                    >
-                        {loading ? (
-                            <><Loader2 size={14} className="mr-2 animate-spin" aria-hidden="true" /> Creating...</>
-                        ) : (
-                            "Create Branch"
-                        )}
-                    </Button>
-                </>
-            )}
-        >
+        <>
+            <RazorpayCheckoutScript
+                onReady={() => setCheckoutScriptReady(true)}
+                onError={() => setCheckoutScriptReady(false)}
+            />
+            <Dialog
+                open={isOpen}
+                onClose={handleClose}
+                title="Create new branch"
+                description="Set up a new location under this organization."
+                closeLabel="Close create branch dialog"
+                closeDisabled={loading}
+                className="max-w-lg"
+                footer={(
+                    <>
+                        <Button variant="ghost" onClick={handleClose} disabled={loading}>
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleSubmit}
+                            disabled={loading}
+                            className="min-w-[130px] justify-center"
+                        >
+                            {loading ? (
+                                <><Loader2 size={14} className="mr-2 animate-spin" aria-hidden="true" /> Creating...</>
+                            ) : (
+                                "Create Branch"
+                            )}
+                        </Button>
+                    </>
+                )}
+            >
                 <div className="space-y-5" aria-describedby={error ? "create-branch-submit-error" : undefined}>
                     {/* Branch Name */}
                     <div className="space-y-1.5">
@@ -533,6 +585,7 @@ export function CreateBranchDialog({
                         </div>
                     )}
                 </div>
-        </Dialog>
+            </Dialog>
+        </>
     );
 }

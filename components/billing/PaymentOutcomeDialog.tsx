@@ -17,63 +17,103 @@ type PaymentOutcomeDialogProps = {
   onClose: () => void;
 };
 
-const OUTCOME_COPY: Record<PaymentOutcome["status"], { title: string; body: string; retryLabel: string }> = {
+type PaymentOutcomeCopy = {
+  title: string;
+  body: string;
+  nextStep: string;
+  retryLabel: string;
+};
+
+const OUTCOME_COPY: Record<PaymentOutcome["status"], PaymentOutcomeCopy> = {
   ABANDONED: {
     title: "Authorization was not completed",
-    body: "Your trial or current confirmed plan remains unchanged. You can authorize the selected plan whenever you are ready.",
+    body: "Your trial or current confirmed plan remains unchanged. No billing change was applied.",
+    nextStep: "Return to Razorpay when you are ready to authorize the selected plan.",
     retryLabel: "Retry authorization",
   },
   DECLINED: {
-    title: "The card authorization was declined",
-    body: "Check the card details or try another supported card. Your trial or current confirmed plan remains unchanged.",
-    retryLabel: "Try another card",
+    title: "The payment authorization was declined",
+    body: "Your trial or current confirmed plan remains unchanged. No billing change was applied.",
+    nextStep: "Check your payment details or try another supported recurring payment method in Razorpay.",
+    retryLabel: "Try another payment method",
   },
   FAILED: {
     title: "Razorpay could not complete the authorization",
     body: "A bank, network, or provider error interrupted the request. No confirmed billing change was applied.",
+    nextStep: "Try again. Razorpay will show the recurring methods currently eligible for this payment.",
     retryLabel: "Retry authorization",
   },
   AWAITING_PROVIDER_CONFIRMATION: {
-    title: "Confirmation is taking longer than usual",
-    body: "We are checking Razorpay before changing any billing state. You can continue to the confirmation page safely.",
+    title: "Waiting for Razorpay confirmation",
+    body: "We have not changed your billing state while Razorpay confirms the authorization.",
+    nextStep: "Check the confirmation again shortly. Do not start another authorization while this one is being verified.",
     retryLabel: "Check confirmation",
   },
 };
 
 const RECOVERY_OUTCOME_COPY: typeof OUTCOME_COPY = {
   ABANDONED: {
-    title: "Card update was not completed",
-    body: "Your current confirmed access remains unchanged. You can update the payment card whenever you are ready.",
-    retryLabel: "Update card",
+    title: "Payment method update not completed",
+    body: "Your current confirmed access and recurring payment method remain unchanged.",
+    nextStep: "Return to Razorpay when you are ready to reauthorize the recurring payment mandate.",
+    retryLabel: "Update payment method",
   },
   DECLINED: {
-    title: "The card update was declined",
-    body: "Check the card details or try another supported card. Access is restored only after Razorpay confirms the renewal payment.",
-    retryLabel: "Try another card",
+    title: "Payment method update declined",
+    body: "The unconfirmed change was not applied. Access is restored only after Razorpay confirms the renewal payment.",
+    nextStep: "In Razorpay, review the selected method or choose another eligible recurring payment method.",
+    retryLabel: "Try another payment method",
   },
   FAILED: {
-    title: "Razorpay could not update the card",
+    title: "Payment method update interrupted",
     body: "A bank, network, or provider error interrupted recovery. No unconfirmed access change was applied.",
-    retryLabel: "Retry card update",
+    nextStep: "Try the update again. Razorpay will show the recurring methods currently eligible for recovery.",
+    retryLabel: "Retry payment method update",
   },
   AWAITING_PROVIDER_CONFIRMATION: {
-    title: "Recovery confirmation is taking longer than usual",
-    body: "We are checking Razorpay for the card update and renewal payment before restoring access.",
+    title: "Waiting for recovery confirmation",
+    body: "We are checking Razorpay for the mandate update and renewal payment before restoring access.",
+    nextStep: "Check the confirmation again shortly. Do not start another recovery attempt while this one is being verified.",
     retryLabel: "Check confirmation",
   },
 };
 
+export function getPaymentOutcomeCopy(
+  status: PaymentOutcome["status"],
+  mode: RazorpayCheckoutMode = "AUTHORIZATION"
+) {
+  return (mode === "RECOVERY" ? RECOVERY_OUTCOME_COPY : OUTCOME_COPY)[status];
+}
+
 export function PaymentOutcomeDialog({ outcome, mode = "AUTHORIZATION", retrying, onRetry, onClose }: PaymentOutcomeDialogProps) {
-  const copy = outcome ? (mode === "RECOVERY" ? RECOVERY_OUTCOME_COPY : OUTCOME_COPY)[outcome.status] : null;
+  const copy = outcome ? getPaymentOutcomeCopy(outcome.status, mode) : null;
   const Icon = outcome?.status === "AWAITING_PROVIDER_CONFIRMATION" ? Clock3 : AlertCircle;
+  const isAwaitingConfirmation = outcome?.status === "AWAITING_PROVIDER_CONFIRMATION";
 
   return (
     <Dialog
       open={Boolean(outcome)}
       onClose={onClose}
-      title={copy?.title ?? "Billing result"}
-      description={outcome?.message || copy?.body}
-      icon={<Icon className="mt-0.5 h-6 w-6 shrink-0 text-amber-500" />}
+      title={copy ? (
+        <>
+          <span className="block text-xs font-medium uppercase tracking-wide text-[color:var(--ui-text-muted)]">
+            {mode === "RECOVERY" ? "Payment recovery" : "Payment authorization"}
+          </span>
+          <span className="mt-1 block">{copy.title}</span>
+        </>
+      ) : "Billing result"}
+      description={copy?.body}
+      icon={(
+        <div
+          className={`rounded-full p-2 ${
+            isAwaitingConfirmation
+              ? "bg-[color:var(--ui-badge-cyan-bg)] text-[color:var(--ui-badge-cyan-text)]"
+              : "bg-amber-500/10 text-amber-500"
+          }`}
+        >
+          <Icon className="h-5 w-5" />
+        </div>
+      )}
       role="alertdialog"
       closeLabel="Close billing result"
       closeDisabled={retrying}
@@ -85,11 +125,25 @@ export function PaymentOutcomeDialog({ outcome, mode = "AUTHORIZATION", retrying
         </>
       ) : undefined}
     >
-      {outcome?.status === "DECLINED" && (
-        <p className="text-xs text-[color:var(--ui-text-muted)]">
-          If the provider response was unclear, check your bank statement before retrying.
-        </p>
-      )}
+      {copy && outcome ? (
+        <>
+          {outcome.message && outcome.message !== copy.body ? (
+            <div className="rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)] p-3">
+              <p className="text-xs font-semibold text-[color:var(--ui-text)]">Provider detail</p>
+              <p className="mt-1 text-xs leading-5 text-[color:var(--ui-dialog-description)]">{outcome.message}</p>
+            </div>
+          ) : null}
+          <div className="mt-4 border-t border-[color:var(--ui-form-surface-border)] pt-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--ui-text-muted)]">Next step</p>
+            <p className="mt-1 text-sm leading-6 text-[color:var(--ui-dialog-description)]">{copy.nextStep}</p>
+            {outcome.status === "DECLINED" ? (
+              <p className="mt-2 text-xs text-[color:var(--ui-text-muted)]">
+                If the provider response was unclear, check recent bank activity before retrying.
+              </p>
+            ) : null}
+          </div>
+        </>
+      ) : null}
     </Dialog>
   );
 }

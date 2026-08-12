@@ -3,17 +3,29 @@ import {
   getRazorpayClient,
   resolveRazorpayMode,
   type RazorpayInvoice,
+  type RazorpayInvoices,
   type RazorpayPayment,
   type RazorpaySubscription,
 } from "@/lib/razorpay";
 import {
-  BillingPaymentMethodService,
+  isSupportedProviderPaymentMethod,
   normalizeProviderPaymentMethod,
 } from "@/services/billingPaymentMethod.service";
-import type { SaasSubscriptionStatus } from "@/app/generated/prisma/client";
+import type {
+  OrganizationSubscription,
+  SaasSubscriptionStatus,
+} from "@/app/generated/prisma/client";
+
+type BillingReconciliationResult = {
+  subscription: OrganizationSubscription;
+  confirmedPaidPeriod: boolean;
+  payment: RazorpayPayment | null;
+  invoices: RazorpayInvoices;
+};
 
 const SUBSCRIPTION_STATUSES = new Set([
-  "CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "CANCELLED", "COMPLETED", "EXPIRED",
+  "CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "PAUSED",
+  "CANCELLED", "COMPLETED", "EXPIRED",
 ]);
 
 function status(value: string): SaasSubscriptionStatus {
@@ -45,7 +57,7 @@ function hasConfirmedPaidPeriod(
   const periodEnd = date(subscription.current_end);
   const captured = payment?.status === "captured" && payment.captured !== false;
   return Boolean(
-    periodStart && periodEnd && periodStart <= now && periodEnd > periodStart
+    periodStart && periodEnd && periodStart <= now && periodEnd > now && periodEnd > periodStart
     && invoice
     && invoice.status === "paid"
     && invoiceBelongsToCurrentPeriod(subscription, invoice)
@@ -61,15 +73,18 @@ export class BillingReconciliationService {
     organizationId: string,
     options: { paymentId?: string | null; now?: Date } = {}
   ) {
-    const local = await prisma.organizationSubscription.findUnique({ where: { organizationId } });
+    const local = await prisma.organizationSubscription.findUnique({
+      where: { currentOrganizationId: organizationId },
+    });
     if (!local) throw new Error("Subscription not found");
     return this.reconcileProviderSubscription(local.razorpaySubscriptionId, options);
   }
 
   static async reconcileProviderSubscription(
     razorpaySubscriptionId: string,
-    options: { paymentId?: string | null; now?: Date } = {}
-  ) {
+    options: { paymentId?: string | null; now?: Date } = {},
+    staleRetry = 0
+  ): Promise<BillingReconciliationResult> {
     const now = options.now ?? new Date();
     const localBeforeFetch = await prisma.organizationSubscription.findUnique({
       where: { razorpaySubscriptionId },
@@ -87,6 +102,9 @@ export class BillingReconciliationService {
       razorpay.fetchSubscriptionInvoices(razorpaySubscriptionId),
       options.paymentId ? razorpay.fetchPayment(options.paymentId) : Promise.resolve(null),
     ]);
+    if (providerSubscription.id !== razorpaySubscriptionId) {
+      throw new Error("Razorpay subscription response mismatch during reconciliation");
+    }
     if (explicitPayment && explicitPayment.subscription_id !== razorpaySubscriptionId) {
       throw new Error("Razorpay payment does not belong to this subscription");
     }
@@ -107,30 +125,102 @@ export class BillingReconciliationService {
     const confirmedPayment = explicitPayment
       ?? (paidInvoice?.payment_id ? await razorpay.fetchPayment(paidInvoice.payment_id) : null);
     const confirmedMethod = normalizeProviderPaymentMethod(confirmedPayment?.method);
-    const confirmedPaidPeriod = confirmedMethod === "CARD" && hasConfirmedPaidPeriod(
+    const providerSubscriptionMethod = normalizeProviderPaymentMethod(
+      providerSubscription.payment_method
+    );
+    const confirmedPaidPeriod = isSupportedProviderPaymentMethod(confirmedMethod)
+      && hasConfirmedPaidPeriod(
       providerSubscription,
       confirmedPayment,
       paidInvoice,
       now
-    );
+      );
 
     const reconciliation = await prisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Organization" WHERE "id" = ${localBeforeFetch.organizationId} FOR UPDATE
+      `;
       const local = await tx.organizationSubscription.findUnique({
         where: { razorpaySubscriptionId },
       });
       if (!local) throw new Error("Subscription not found");
-      await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id" FROM "Organization" WHERE "id" = ${local.organizationId} FOR UPDATE
-      `;
+      if (local.updatedAt.getTime() !== localBeforeFetch.updatedAt.getTime()) {
+        return { stale: true as const };
+      }
 
+      const linkedReplacementChange = local.pendingReplacementOrganizationId
+        ? await tx.organizationBillingChange.findUnique({
+            where: { replacementSubscriptionId: local.id },
+          })
+        : null;
       const providerPlan = await tx.saasRazorpayPlan.findFirst({
         where: {
           razorpayPlanId: providerSubscription.plan_id,
           providerMode,
         },
       });
-      if (providerSubscription.plan_id !== local.razorpayPlanId && !providerPlan) {
+      const unrecognizedReplacementPlan = providerSubscription.plan_id !== local.razorpayPlanId
+        && !providerPlan
+        && linkedReplacementChange != null;
+      if (providerSubscription.plan_id !== local.razorpayPlanId
+        && !providerPlan
+        && !linkedReplacementChange) {
         throw new Error("Razorpay subscription references an unrecognized plan in this provider mode");
+      }
+      const linkedSourceReplacementChange = linkedReplacementChange
+        ? null
+        : await tx.organizationBillingChange.findFirst({
+            where: {
+              organizationSubscriptionId: local.id,
+              replacementSubscriptionId: { not: null },
+              status: { in: ["AWAITING_PAYMENT", "SCHEDULED", "FAILED"] },
+            },
+            orderBy: { sequence: "desc" },
+          });
+      const providerQuantity = providerSubscription.quantity ?? local.quantity;
+      const replacementTargetMismatch = Boolean(
+        linkedReplacementChange
+        && (
+          unrecognizedReplacementPlan
+          ||
+          providerSubscription.plan_id !== local.razorpayPlanId
+          || providerQuantity !== (linkedReplacementChange.toQuantity ?? local.quantity)
+          || (linkedReplacementChange.toPlan != null
+            && providerPlan?.plan != null
+            && linkedReplacementChange.toPlan !== providerPlan.plan)
+        )
+      );
+      if (replacementTargetMismatch && linkedReplacementChange) {
+        await tx.organizationBillingChange.update({
+          where: { id: linkedReplacementChange.id },
+          data: {
+            status: "FAILED",
+            operationStatus: "FAILED",
+            failureCategory: "MANUAL_REVIEW_REQUIRED",
+            lastError: "Razorpay replacement no longer matches the authorized plan and quantity",
+            failedAt: now,
+            accessRevokedAt: linkedReplacementChange.accessGrantedAt
+              && !linkedReplacementChange.accessRevokedAt
+              ? now
+              : undefined,
+          },
+        });
+        if (linkedReplacementChange.accessGrantedAt
+          && !linkedReplacementChange.accessRevokedAt
+          && linkedReplacementChange.branchId) {
+          if (linkedReplacementChange.type === "QUANTITY_INCREASE") {
+            await tx.branch.updateMany({
+              where: { id: linkedReplacementChange.branchId, billingStatus: "ACTIVE" },
+              data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
+            });
+          }
+          if (linkedReplacementChange.type === "BRANCH_REACTIVATION") {
+            await tx.branch.updateMany({
+              where: { id: linkedReplacementChange.branchId, billingStatus: "ACTIVE" },
+              data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
+            });
+          }
+        }
       }
       const pendingAuthorization = await tx.organizationBillingChange.findFirst({
         where: {
@@ -153,6 +243,8 @@ export class BillingReconciliationService {
         ? await tx.organizationBillingChange.findFirst({
             where: {
               organizationId: local.organizationId,
+              organizationSubscriptionId: local.id,
+              replacementSubscriptionId: null,
               status: { in: ["AWAITING_PAYMENT", "SCHEDULED"] },
             },
             orderBy: { sequence: "asc" },
@@ -224,10 +316,17 @@ export class BillingReconciliationService {
         ? providerPaidThrough
         : local.paidThrough;
       const providerSubscriptionStatus = status(providerSubscription.status);
-      const providerQuantity = providerSubscription.quantity ?? local.quantity;
+      const providerScheduledAt = date(providerSubscription.change_scheduled_at);
+      const sourceCancellationConfirmed = Boolean(
+        linkedSourceReplacementChange?.effectiveAt
+        && providerSubscription.has_scheduled_changes === true
+        && providerScheduledAt
+        && providerScheduledAt.getTime() === linkedSourceReplacementChange.effectiveAt.getTime()
+      );
       const futureAuthorizationQuantitySynchronized = local.paidThrough == null
         && providerSubscriptionStatus === "AUTHENTICATED";
       const confirmedQuantity = providerQuantity === local.quantity
+        || linkedReplacementChange != null
         || futureAuthorizationQuantitySynchronized
         || (confirmedPaidPeriod && (!pendingChange || providerMatchesChange))
         ? providerQuantity
@@ -241,20 +340,39 @@ export class BillingReconciliationService {
           currency: confirmedPlanChange?.currency,
           period: confirmedPlanChange?.period,
           interval: confirmedPlanChange?.interval,
-          razorpayPlanId: confirmedPlanChange?.razorpayPlanId,
+          razorpayPlanId: linkedReplacementChange
+            ? providerSubscription.plan_id
+            : confirmedPlanChange?.razorpayPlanId,
+          ...(linkedReplacementChange && providerPlan
+            ? {
+                plan: providerPlan.plan,
+                amount: providerPlan.amount,
+                amountSubunits: providerPlan.amountSubunits,
+                currency: providerPlan.currency,
+                period: providerPlan.period,
+                interval: providerPlan.interval,
+              }
+            : {}),
           status: providerSubscriptionStatus,
           quantity: confirmedQuantity,
           providerStartAt: date(providerSubscription.start_at),
           authorizationExpiresAt: date(providerSubscription.expire_by),
-          providerPaymentMethod: confirmedPayment
-            ? normalizeProviderPaymentMethod(confirmedPayment.method)
-            : normalizeProviderPaymentMethod(providerSubscription.payment_method) === "UNKNOWN"
-              ? local.providerPaymentMethod
-              : normalizeProviderPaymentMethod(providerSubscription.payment_method),
+          providerPaymentMethod: isSupportedProviderPaymentMethod(confirmedMethod)
+            ? confirmedMethod
+            : isSupportedProviderPaymentMethod(providerSubscriptionMethod)
+              ? providerSubscriptionMethod
+              : local.providerPaymentMethod,
           currentStart: date(providerSubscription.current_start),
           currentEnd: date(providerSubscription.current_end),
           chargeAt: date(providerSubscription.charge_at),
           endedAt: date(providerSubscription.ended_at),
+          cancelAtCycleEnd: sourceCancellationConfirmed ? true : undefined,
+          cancellationRequestedAt: sourceCancellationConfirmed
+            ? local.cancellationRequestedAt ?? now
+            : undefined,
+          cancellationScheduledAt: sourceCancellationConfirmed
+            ? providerScheduledAt
+            : undefined,
           paidThrough,
           lastConfirmedInvoiceId: confirmedPaidPeriod ? paidInvoice?.id ?? local.lastConfirmedInvoiceId : undefined,
           lastConfirmedPaymentId: confirmedPaidPeriod ? confirmedPayment?.id ?? local.lastConfirmedPaymentId : undefined,
@@ -330,22 +448,26 @@ export class BillingReconciliationService {
         }
       }
 
-      return { subscription: stored, confirmedPaidPeriod, payment: confirmedPayment, invoices };
+      return {
+        stale: false as const,
+        subscription: stored,
+        confirmedPaidPeriod,
+        payment: confirmedPayment,
+        invoices,
+      };
     });
 
-    const cardOnly = await BillingPaymentMethodService.enforceCardOnly({
-      organizationId: reconciliation.subscription.organizationId,
-      organizationSubscriptionId: reconciliation.subscription.id,
-      razorpaySubscriptionId: reconciliation.subscription.razorpaySubscriptionId,
-      paymentMethod: reconciliation.subscription.providerPaymentMethod,
-      paymentId: reconciliation.payment?.id,
-      now,
-    });
-    if (!cardOnly.enforced) return reconciliation;
-
-    const subscription = await prisma.organizationSubscription.findUniqueOrThrow({
-      where: { id: reconciliation.subscription.id },
-    });
-    return { ...reconciliation, subscription };
+    if (reconciliation.stale) {
+      if (staleRetry >= 2) {
+        throw new Error("Subscription changed repeatedly while provider reconciliation was in flight");
+      }
+      return this.reconcileProviderSubscription(razorpaySubscriptionId, options, staleRetry + 1);
+    }
+    return {
+      subscription: reconciliation.subscription,
+      confirmedPaidPeriod: reconciliation.confirmedPaidPeriod,
+      payment: reconciliation.payment,
+      invoices: reconciliation.invoices,
+    };
   }
 }

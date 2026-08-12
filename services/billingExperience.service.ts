@@ -4,6 +4,8 @@ import { deriveWorkspaceBillingState } from "@/lib/billingState";
 import type { BillingExperience, BillingExperienceOperation } from "@/types/billingExperience";
 import type { OrganizationBillingChange } from "@/app/generated/prisma/client";
 import { resolveRazorpayMode } from "@/lib/razorpay";
+import { deriveAuthorizedReplacementOverride } from "@/services/billingReplacement.service";
+import { isSupportedRecurringPaymentMethod } from "@/services/billingReplacementPolicy";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_OPERATION_STATUSES = [
@@ -39,7 +41,7 @@ function selectedPlan(subscription: {
   providerPaymentMethod: string;
   status: string;
 } | null) {
-  if (!subscription || subscription.providerPaymentMethod !== "CARD") return null;
+  if (!subscription || !isSupportedRecurringPaymentMethod(subscription.providerPaymentMethod)) return null;
   if (["CREATED", "EXPIRED", "CANCELLED", "COMPLETED"].includes(subscription.status)) return null;
   const plan = experiencePlan(subscription.plan);
   return plan === "STANDARD" || plan === "BASIC" ? plan : null;
@@ -78,14 +80,15 @@ function customerPresentation(input: {
     return { state: "PAYMENT_NOT_COMPLETED" as const, message: input.trialActive ? "Payment was not completed. Your Standard trial continues." : "Payment was not completed. Your current plan remains unchanged." };
   }
   if (input.operationStatus === "DECLINED") {
-    return { state: "PAYMENT_DECLINED" as const, message: "The card authorization was declined. Check the card details or try another supported card." };
+    return { state: "PAYMENT_DECLINED" as const, message: "The recurring payment authorization was declined. Try another method supported by Razorpay." };
   }
   if (input.operationStatus === "FAILED") {
     return { state: "PAYMENT_FAILED" as const, message: "We could not complete the billing change. Your confirmed plan and quantity remain unchanged." };
   }
-  if (input.trialActive) return { state: "TRIAL_ACTIVE" as const, message: "Your no-card Standard trial is active." };
+  if (input.trialActive) return { state: "TRIAL_ACTIVE" as const, message: "Your Standard trial is active without a plan charge." };
   if (input.providerStatus === "PENDING") return { state: "PAYMENT_RETRYING" as const, message: "Your renewal payment is being retried. Access remains available." };
-  if (input.providerStatus === "HALTED") return { state: "PAYMENT_HALTED" as const, message: "Payment retries are exhausted. Update your card to restore full access after payment confirmation." };
+  if (input.providerStatus === "PAUSED") return { state: "PAYMENT_RETRYING" as const, message: "The recurring mandate is paused. Resume it in your UPI app when available, or authorize a replacement payment method." };
+  if (input.providerStatus === "HALTED") return { state: "PAYMENT_HALTED" as const, message: "Payment retries are exhausted. Recover the mandate or authorize another payment method to restore full access after confirmation." };
   if (input.effectivePlan === "STANDARD") return { state: "STANDARD_ACTIVE" as const, message: "Standard is active for this workspace." };
   if (input.effectivePlan === "BASIC") return { state: "BASIC_ACTIVE" as const, message: "Basic is active for this workspace." };
   if (["CANCELLED", "COMPLETED", "EXPIRED"].includes(input.providerStatus ?? "")) return { state: "ACCESS_ENDED" as const, message: "The paid access period has ended. Your data is preserved." };
@@ -93,7 +96,7 @@ function customerPresentation(input: {
     state: "AUTHORIZATION_REQUIRED" as const,
     message: input.postTrialPlanSelected
       ? "Authorize the selected plan to activate billing for this workspace."
-      : "Choose a plan and authorize a card to activate billing for this workspace.",
+      : "Choose a plan and authorize a supported recurring payment method for this workspace.",
   };
 }
 
@@ -104,6 +107,9 @@ export class BillingExperienceService {
       where: { id: organizationId },
       include: {
         subscription: true,
+        pendingSubscriptionReplacement: {
+          include: { replacementBillingChange: true },
+        },
         ownerTrialGrant: true,
         branches: {
           where: { billingStatus: { not: "ARCHIVED" } },
@@ -115,6 +121,36 @@ export class BillingExperienceService {
     const providerMode = organization.subscription ? resolveRazorpayMode() : null;
     const subscription = organization.subscription?.providerMode === providerMode
       ? organization.subscription
+      : null;
+    const pendingReplacement = organization.pendingSubscriptionReplacement?.providerMode === providerMode
+      ? organization.pendingSubscriptionReplacement
+      : null;
+    const replacementChange = pendingReplacement?.replacementBillingChange;
+    const replacementOverride = subscription && pendingReplacement && replacementChange
+      ? deriveAuthorizedReplacementOverride({
+          changeType: replacementChange.type,
+          changeStatus: replacementChange.status,
+          failureCategory: replacementChange.failureCategory,
+          sourceSubscriptionId: subscription.id,
+          changeSourceSubscriptionId: replacementChange.organizationSubscriptionId,
+          candidateSubscriptionId: pendingReplacement.id,
+          changeCandidateSubscriptionId: replacementChange.replacementSubscriptionId,
+          sourcePlan: subscription.plan,
+          sourceQuantity: subscription.quantity,
+          candidatePlan: pendingReplacement.plan,
+          candidateQuantity: pendingReplacement.quantity,
+          candidateStatus: pendingReplacement.status,
+          candidatePaymentMethod: pendingReplacement.providerPaymentMethod,
+          accessGrantedAt: replacementChange.accessGrantedAt,
+          accessRevokedAt: replacementChange.accessRevokedAt,
+          effectiveAt: replacementChange.effectiveAt,
+          accessGraceEndsAt: replacementChange.accessGraceEndsAt,
+          now,
+        })
+      : null;
+    const authorizedReplacement = replacementOverride
+      && getBillingPlan(replacementOverride.plan)
+      ? { ...replacementOverride, plan: replacementOverride.plan as "BASIC" | "PRO" }
       : null;
     const isOwner = organization.ownerId === userId;
     if (!isOwner) {
@@ -173,6 +209,7 @@ export class BillingExperienceService {
           subscription: subscription
             ? { status: subscription.status, plan: subscription.plan, paidThrough: subscription.paidThrough }
             : null,
+          authorizedReplacement,
         })
       : {
           accessMode: "FULL" as const,
@@ -228,7 +265,7 @@ export class BillingExperienceService {
       ? "CONTINUE_CHECKOUT" as const
       : ["VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"].includes(activeOperation?.operationStatus ?? "")
         ? "WAIT_FOR_CONFIRMATION" as const
-        : ["PENDING", "HALTED"].includes(subscription?.status ?? "")
+        : ["PENDING", "HALTED", "PAUSED"].includes(subscription?.status ?? "")
           ? "UPDATE_CARD" as const
           : latestFailed && latestOperation?.type === "SUBSCRIPTION_AUTHORIZATION"
             ? "RETRY_AUTHORIZATION" as const

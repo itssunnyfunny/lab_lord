@@ -1,5 +1,11 @@
+import {
+  SUPPORTED_RECURRING_PAYMENT_METHODS,
+  type SupportedRecurringPaymentMethod,
+} from "@/lib/billingPaymentMethods";
+
 export const WORKSPACE_BILLING_FLAG = "WORKSPACE_BRANCH_BILLING_V2_ENABLED" as const;
 export const RAZORPAY_BILLING_WRITES_FLAG = "RAZORPAY_BILLING_WRITES_ENABLED" as const;
+export const RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG = "RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED" as const;
 
 export class BillingWritesDisabledError extends Error {
   readonly code = "BILLING_WRITES_DISABLED";
@@ -12,6 +18,32 @@ export class BillingWritesDisabledError extends Error {
 
 export function isWorkspaceBillingEnabled() {
   return process.env[WORKSPACE_BILLING_FLAG]?.trim().toLowerCase() === "true";
+}
+
+export function areRazorpayMultiMethodSubscriptionsEnabled() {
+  return process.env[RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG]?.trim().toLowerCase() === "true";
+}
+
+export type RazorpayCheckoutMethodAvailability = {
+  mode: "CARD_ONLY" | "PROVIDER_MANAGED";
+  potentialMethods: SupportedRecurringPaymentMethod[];
+  providerControlsVisibility: boolean;
+};
+
+export function getRazorpayCheckoutMethodAvailability(): RazorpayCheckoutMethodAvailability {
+  if (!areRazorpayMultiMethodSubscriptionsEnabled()) {
+    return {
+      mode: "CARD_ONLY",
+      potentialMethods: ["CARD"],
+      providerControlsVisibility: false,
+    };
+  }
+
+  return {
+    mode: "PROVIDER_MANAGED",
+    potentialMethods: [...SUPPORTED_RECURRING_PAYMENT_METHODS],
+    providerControlsVisibility: true,
+  };
 }
 
 export function isWorkspaceBillingEnabledFor(
