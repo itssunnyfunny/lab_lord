@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ImportCommitService } from "@/importing/services/import-commit.service";
 import { ImportPreviewService } from "@/importing/services/import-preview.service";
+import { ImportSessionService } from "@/importing/services/import-session.service";
 import { markManualNormalizedData } from "@/importing/pipeline/import-extraction.pipeline";
 import { createSeat, createTestWorld } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
@@ -90,6 +91,7 @@ describe("Import commit flow integration", () => {
             },
         });
 
+        await ImportSessionService.revalidateSession(user.id, branch.id, session.id);
         const preview = await ImportPreviewService.getPreview(user.id, branch.id, session.id, "SAFE_PARTIAL");
         expect(preview.canCommit).toBe(true);
         expect(preview.summary.createStudents).toBe(1);
