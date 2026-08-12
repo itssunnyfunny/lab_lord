@@ -399,6 +399,54 @@ describe("SeatService Integration", () => {
       expect(entry!.occupied).toBe(false);
       expect(entry!.occupiedBy).toBeNull();
     });
+
+    it("blocks active non-component shifts that overlap a component", async () => {
+      const { user, branch, shift: morning } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "17:00",
+        endTime: "22:00",
+      });
+      const fullDay = await createShift({
+        branchId: branch.id,
+        name: "Open all day",
+        startTime: null,
+        endTime: null,
+      });
+      const overnight = await createShift({
+        branchId: branch.id,
+        name: "Overnight",
+        startTime: "22:00",
+        endTime: "07:00",
+      });
+      const multiShift = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          price: 0,
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+      const fullDaySeat = await createSeat({ branchId: branch.id, label: "FD" });
+      const overnightSeat = await createSeat({ branchId: branch.id, label: "ON" });
+      const student = await createStudent({ branchId: branch.id, name: "Conflict" });
+      await createAllocation({ seatId: fullDaySeat.id, studentId: student.id, shiftId: fullDay.id });
+      await createAllocation({ seatId: overnightSeat.id, studentId: student.id, shiftId: overnight.id });
+
+      const map = await SeatService.getSeatMap(user.id, branch.id, morning.id, multiShift.id);
+
+      expect(map.seats.find(seat => seat.seatId === fullDaySeat.id)?.occupied).toBe(true);
+      expect(map.seats.find(seat => seat.seatId === overnightSeat.id)?.occupied).toBe(true);
+    });
   });
 
   // ─── getShiftsCapacity ─────────────────────────────────────────────────────
@@ -457,6 +505,83 @@ describe("SeatService Integration", () => {
       const eveningEntry = capacities.find(c => c.shiftId === evening.id);
       // Evening does NOT overlap Morning
       expect(eveningEntry!.studentAlreadyAllocated).toBe(false);
+    });
+  });
+
+  describe("getShiftsCapacityWithMulti", () => {
+    it("uses the physical-seat intersection instead of component minimums", async () => {
+      const { user, branch, shift: morning, seat: morningSeat } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "17:00",
+        endTime: "22:00",
+      });
+      const eveningSeat = await createSeat({ branchId: branch.id, label: "E1" });
+      const morningStudent = await createStudent({ branchId: branch.id, name: "Morning student" });
+      const eveningStudent = await createStudent({ branchId: branch.id, name: "Evening student" });
+      await createAllocation({ seatId: morningSeat.id, studentId: morningStudent.id, shiftId: morning.id });
+      await createAllocation({ seatId: eveningSeat.id, studentId: eveningStudent.id, shiftId: evening.id });
+      const multiShift = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          price: 0,
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+
+      const capacities = await SeatService.getShiftsCapacityWithMulti(user.id, branch.id);
+      const fullDay = capacities.find(item => item.multiShiftId === multiShift.id);
+
+      expect(fullDay).toMatchObject({ totalSeats: 2, used: 2, available: 0, isFull: true });
+    });
+
+    it("honors excluded allocation IDs in the shared availability calculation", async () => {
+      const { user, branch, shift: morning, seat } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "17:00",
+        endTime: "22:00",
+      });
+      const student = await createStudent({ branchId: branch.id });
+      const allocation = await createAllocation({ seatId: seat.id, studentId: student.id, shiftId: morning.id });
+      const multiShift = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          price: 0,
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+
+      const capacities = await SeatService.getShiftsCapacityWithMulti(
+        user.id,
+        branch.id,
+        student.id,
+        [allocation.id],
+      );
+      const fullDay = capacities.find(item => item.multiShiftId === multiShift.id);
+
+      expect(fullDay).toMatchObject({ used: 0, available: 1, isFull: false });
+      expect(fullDay?.studentAlreadyAllocated).toBe(false);
     });
   });
 });

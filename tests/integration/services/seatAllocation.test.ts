@@ -196,6 +196,244 @@ describe("SeatAllocationService Integration", () => {
 
   // ─── listAllocations ─────────────────────────────────────────────────────
 
+  describe("multi-shift mutation integrity", () => {
+    it("releases every active component of the same bundle", async () => {
+      const { user, branch, seat, shift: morning } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "16:00",
+        endTime: "20:00",
+      });
+      const fullDay = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+      const student = await createStudent({ branchId: branch.id });
+      const allocations = await testPrisma.seatAllocation.createManyAndReturn({
+        data: [
+          { seatId: seat.id, studentId: student.id, shiftId: morning.id, multiShiftId: fullDay.id },
+          { seatId: seat.id, studentId: student.id, shiftId: evening.id, multiShiftId: fullDay.id },
+        ],
+      });
+
+      await SeatAllocationService.unassignSeat(user.id, allocations[0].id);
+
+      expect(await testPrisma.seatAllocation.count({
+        where: { studentId: student.id, seatId: seat.id, multiShiftId: fullDay.id, endDate: null },
+      })).toBe(0);
+    });
+
+    it("rejects a target-seat overlap without ending the current allocation", async () => {
+      const { user, branch, seat: currentSeat, shift: morning } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "11:00",
+      });
+      const targetSeat = await createSeat({ branchId: branch.id, label: "Target" });
+      const overlap = await createShift({
+        branchId: branch.id,
+        name: "Overlap",
+        startTime: "09:00",
+        endTime: "14:00",
+      });
+      const student = await createStudent({ branchId: branch.id, name: "Moving" });
+      const blocker = await createStudent({ branchId: branch.id, name: "Blocking" });
+      const current = await createAllocation({
+        seatId: currentSeat.id,
+        studentId: student.id,
+        shiftId: morning.id,
+      });
+      await createAllocation({ seatId: targetSeat.id, studentId: blocker.id, shiftId: overlap.id });
+
+      await expect(SeatAllocationService.updateAllocation(
+        user.id,
+        [current.id],
+        targetSeat.id,
+        student.id,
+        [morning.id]
+      )).rejects.toThrow(/occupied|conflict/i);
+
+      expect((await testPrisma.seatAllocation.findUnique({ where: { id: current.id } }))?.endDate).toBeNull();
+      expect(await testPrisma.seatAllocation.count({
+        where: { studentId: student.id, endDate: null },
+      })).toBe(1);
+    });
+
+    it("rejects a student overlap without ending the current allocation", async () => {
+      const { user, branch, seat: currentSeat, shift: currentShift } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "08:00",
+      });
+      const targetSeat = await createSeat({ branchId: branch.id, label: "Target" });
+      const otherSeat = await createSeat({ branchId: branch.id, label: "Existing" });
+      const requestedShift = await createShift({
+        branchId: branch.id,
+        name: "Requested",
+        startTime: "09:00",
+        endTime: "14:00",
+      });
+      const existingShift = await createShift({
+        branchId: branch.id,
+        name: "Existing",
+        startTime: "12:00",
+        endTime: "16:00",
+      });
+      const student = await createStudent({ branchId: branch.id });
+      const current = await createAllocation({
+        seatId: currentSeat.id,
+        studentId: student.id,
+        shiftId: currentShift.id,
+      });
+      await createAllocation({ seatId: otherSeat.id, studentId: student.id, shiftId: existingShift.id });
+
+      await expect(SeatAllocationService.updateAllocation(
+        user.id,
+        [current.id],
+        targetSeat.id,
+        student.id,
+        [requestedShift.id]
+      )).rejects.toThrow(/student.*overlap|already allocated/i);
+
+      expect((await testPrisma.seatAllocation.findUnique({ where: { id: current.id } }))?.endDate).toBeNull();
+    });
+
+    it("requires the exact component set and leaves old rows active on rejection", async () => {
+      const { user, branch, seat, shift: morning } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const targetSeat = await createSeat({ branchId: branch.id, label: "Target" });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "16:00",
+        endTime: "20:00",
+      });
+      const fullDay = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+      const student = await createStudent({ branchId: branch.id });
+      const current = await createAllocation({ seatId: seat.id, studentId: student.id, shiftId: morning.id });
+
+      await expect(SeatAllocationService.updateAllocation(
+        user.id,
+        [current.id],
+        targetSeat.id,
+        student.id,
+        [morning.id, morning.id],
+        fullDay.id
+      )).rejects.toThrow(/all component shifts/i);
+
+      expect((await testPrisma.seatAllocation.findUnique({ where: { id: current.id } }))?.endDate).toBeNull();
+    });
+
+    it("expands one selected bundle row and recreates the complete bundle once", async () => {
+      const { user, branch, seat, shift: morning } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const targetSeat = await createSeat({ branchId: branch.id, label: "Target" });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "16:00",
+        endTime: "20:00",
+      });
+      const fullDay = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+      const student = await createStudent({ branchId: branch.id });
+      const oldRows = await testPrisma.seatAllocation.createManyAndReturn({
+        data: [
+          { seatId: seat.id, studentId: student.id, shiftId: morning.id, multiShiftId: fullDay.id },
+          { seatId: seat.id, studentId: student.id, shiftId: evening.id, multiShiftId: fullDay.id },
+        ],
+      });
+
+      const created = await SeatAllocationService.updateAllocation(
+        user.id,
+        [oldRows[0].id],
+        targetSeat.id,
+        student.id,
+        [morning.id, evening.id, evening.id],
+        fullDay.id
+      );
+
+      expect(created).toHaveLength(2);
+      expect(new Set(created.map((allocation) => allocation.shiftId))).toEqual(new Set([morning.id, evening.id]));
+      expect(await testPrisma.seatAllocation.count({
+        where: { id: { in: oldRows.map((allocation) => allocation.id) }, endDate: null },
+      })).toBe(0);
+      expect(await testPrisma.seatAllocation.count({
+        where: { seatId: targetSeat.id, studentId: student.id, multiShiftId: fullDay.id, endDate: null },
+      })).toBe(2);
+    });
+
+    it("treats a full-day target as overlapping an overnight allocation", async () => {
+      const { user, branch, seat, shift: currentShift } = await createTestWorld({
+        shiftStart: "08:00",
+        shiftEnd: "12:00",
+      });
+      const targetSeat = await createSeat({ branchId: branch.id, label: "Target" });
+      const overnight = await createShift({
+        branchId: branch.id,
+        name: "Overnight",
+        startTime: "22:00",
+        endTime: "06:00",
+      });
+      const fullDay = await testPrisma.shift.create({
+        data: {
+          branchId: branch.id,
+          name: "All Day",
+          startTime: null,
+          endTime: null,
+        },
+      });
+      const student = await createStudent({ branchId: branch.id, name: "Moving" });
+      const blocker = await createStudent({ branchId: branch.id, name: "Blocking" });
+      const current = await createAllocation({ seatId: seat.id, studentId: student.id, shiftId: currentShift.id });
+      await createAllocation({ seatId: targetSeat.id, studentId: blocker.id, shiftId: overnight.id });
+
+      await expect(SeatAllocationService.updateAllocation(
+        user.id,
+        [current.id],
+        targetSeat.id,
+        student.id,
+        [fullDay.id]
+      )).rejects.toThrow(/occupied|conflict/i);
+      expect((await testPrisma.seatAllocation.findUnique({ where: { id: current.id } }))?.endDate).toBeNull();
+    });
+  });
+
   describe("listAllocations", () => {
     it("{ activeOnly: true } returns only allocations with endDate === null", async () => {
       const { user, branch, seat, shift } = await createTestWorld();
