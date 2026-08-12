@@ -3,6 +3,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { AnalyticsProvider } from "@/components/analytics/AnalyticsProvider";
 import { getGoogleAnalyticsBootstrapScript } from "@/lib/tracking";
 import { absoluteUrl, siteConfig } from "@/lib/site";
+import { clerkRouting } from "@/lib/clerkRouting";
 import { Geist_Mono, Inter, Manrope } from "next/font/google";
 import Script from "next/script";
 import { Suspense } from "react";
@@ -111,6 +112,8 @@ export default function RootLayout({
       >
         <ClerkProvider
           appearance={clerkAppAppearance}
+          signInUrl={clerkRouting.signInUrl}
+          signUpUrl={clerkRouting.signUpUrl}
           signInFallbackRedirectUrl="/app"
           signUpFallbackRedirectUrl="/app"
           afterSignOutUrl="/"

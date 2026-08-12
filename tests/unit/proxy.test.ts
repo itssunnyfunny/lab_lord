@@ -2,8 +2,16 @@ import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 import { config, isProtectedRoute } from "@/proxy";
+import { clerkRouting } from "@/lib/clerkRouting";
 
 describe("proxy matcher", () => {
+  it("keeps protected-route authentication on the local themed entry routes", () => {
+    expect(clerkRouting).toEqual({
+      signInUrl: "/sign-in",
+      signUpUrl: "/sign-up",
+    });
+  });
+
   it.each([
     "https://lablords.in/sitemap.xml",
     "https://lablords.in/robots.txt",
