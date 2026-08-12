@@ -1628,7 +1628,7 @@ function ShiftsContent({
                 <div className="md:hidden">{shiftCards}</div>
                 <div className={cn("hidden overflow-visible md:block", pageTableShellClass)}>
                     <div
-                        className="w-full overflow-x-auto scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50"
+                        className="w-full overflow-x-auto"
                         role="region"
                         aria-label="Branch shifts"
                         tabIndex={0}

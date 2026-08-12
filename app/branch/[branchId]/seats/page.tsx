@@ -780,7 +780,7 @@ function ShiftFilterPanel({
                 <p className={cn("text-xs font-medium", pageMutedTextClass)}>{selectedLabel}</p>
             </div>
             <div className={cn("p-1.5", pageFilterShellClass)}>
-                <div className="flex gap-1.5 overflow-x-auto scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50">
+                <div className="flex gap-1.5 overflow-x-auto">
                 <ShiftFilterChip
                     active={selectedShift === ""}
                     label="All shifts"

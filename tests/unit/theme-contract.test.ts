@@ -103,7 +103,7 @@ describe("UI theme contract", () => {
     for (const selector of [
       ".text-textSecondary",
       ".text-textMuted",
-      ".scrollbar-thin",
+      ".scrollbar-none",
       ".animate-shimmer",
       ".ui-dialog-enter",
     ]) {
@@ -188,6 +188,23 @@ describe("UI theme contract", () => {
     expect(reducedMotionBlock).toContain("animation-duration: 0.01ms !important");
     expect(reducedMotionBlock).toContain("transition-duration: 0.01ms !important");
     expect(reducedMotionBlock).toContain("scroll-behavior: auto !important");
+  });
+
+  it("keeps scrollbars neutral until the user interacts with them", () => {
+    const globals = readFileSync(globalsPath, "utf8");
+    const appSource = sourceRoots
+      .flatMap(collectSourceFiles)
+      .map((file) => readFileSync(file, "utf8"))
+      .join("\n");
+
+    expect(globals).toMatch(/html\s*{[^}]*scrollbar-color:\s*rgba\(255, 255, 255, 0\.1\) transparent;/s);
+    expect(globals).toMatch(/::-webkit-scrollbar\s*{[^}]*width:\s*14px;[^}]*height:\s*14px;/s);
+    expect(globals).toMatch(/::-webkit-scrollbar-track\s*{[^}]*background:\s*transparent;/s);
+    expect(globals).toMatch(/::-webkit-scrollbar-thumb\s*{[^}]*background-color:\s*rgba\(255, 255, 255, 0\.1\);[^}]*border:\s*4px solid transparent;[^}]*background-clip:\s*padding-box;/s);
+    expect(globals).toMatch(/::-webkit-scrollbar-thumb:hover,\s*::-webkit-scrollbar-thumb:active\s*{[^}]*background-color:\s*var\(--ui-accent\);/s);
+    expect(appSource).not.toMatch(/scrollbar-(?:thin|thumb-cyan|track-slate)/);
+    expect(readFileSync(join(projectRoot, "components", "layout", "BranchSidebar.tsx"), "utf8"))
+      .toContain("scrollbar-none");
   });
 
   it("uses the current Clerk dark-theme variable contract", () => {

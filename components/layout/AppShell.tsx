@@ -145,7 +145,7 @@ export function AppShell({ children, sidebar, user }: AppShellProps) {
                 </header>
 
                 {/* Page Content */}
-                <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 overflow-y-auto p-4 [padding-bottom:max(1rem,env(safe-area-inset-bottom))] sm:p-6 sm:[padding-bottom:max(1.5rem,env(safe-area-inset-bottom))] lg:p-8 lg:[padding-bottom:max(2rem,env(safe-area-inset-bottom))] scrollbar-thin scrollbar-thumb-cyan-400/35 scrollbar-track-slate-950/50">
+                <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 overflow-y-auto p-4 [padding-bottom:max(1rem,env(safe-area-inset-bottom))] sm:p-6 sm:[padding-bottom:max(1.5rem,env(safe-area-inset-bottom))] lg:p-8 lg:[padding-bottom:max(2rem,env(safe-area-inset-bottom))]">
                     {billing?.experience && <ReadOnlyBanner experience={billing.experience} />}
                     {billing?.experience && <BillingBanner experience={billing.experience} />}
                     <ContextualBackLink />
