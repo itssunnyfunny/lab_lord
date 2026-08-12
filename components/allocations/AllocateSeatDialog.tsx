@@ -31,6 +31,8 @@ interface AllocateSeatDialogProps {
     preselectedSeatId?: string;
     preselectedShiftIds?: string[];
     preselectedShiftNames?: string[];
+    preselectedMultiShiftId?: string;
+    preselectedMultiShiftName?: string;
     onClose: () => void;
     onSuccess: () => void;
 }
@@ -43,6 +45,8 @@ export function AllocateSeatDialog({
     preselectedSeatId,
     preselectedShiftIds,
     preselectedShiftNames,
+    preselectedMultiShiftId,
+    preselectedMultiShiftName,
     onClose,
     onSuccess,
 }: AllocateSeatDialogProps) {
@@ -57,8 +61,8 @@ export function AllocateSeatDialog({
     const [selectedShiftNames, setSelectedShiftNames] = useState<string[]>(preselectedShiftNames ?? []);
     const [selectedSeatId, setSelectedSeatId] = useState<string | null>(preselectedSeatId ?? null);
     // Multi-shift tracking
-    const [selectedMultiShiftId, setSelectedMultiShiftId] = useState<string | null>(null);
-    const [selectedMultiShiftName, setSelectedMultiShiftName] = useState<string | null>(null);
+    const [selectedMultiShiftId, setSelectedMultiShiftId] = useState<string | null>(preselectedMultiShiftId ?? null);
+    const [selectedMultiShiftName, setSelectedMultiShiftName] = useState<string | null>(preselectedMultiShiftName ?? null);
     const [linkFeeToSelection, setLinkFeeToSelection] = useState(false);
 
     // Submission
@@ -76,8 +80,8 @@ export function AllocateSeatDialog({
         setSelectedShiftIds(preselectedShiftIds ?? []);
         setSelectedShiftNames(preselectedShiftNames ?? []);
         setSelectedSeatId(preselectedSeatId ?? null);
-        setSelectedMultiShiftId(null);
-        setSelectedMultiShiftName(null);
+        setSelectedMultiShiftId(preselectedMultiShiftId ?? null);
+        setSelectedMultiShiftName(preselectedMultiShiftName ?? null);
         setLinkFeeToSelection(false);
         setSubmitError(null);
         setStudentId(preselectedStudentId ?? "");
@@ -89,6 +93,8 @@ export function AllocateSeatDialog({
         preselectedSeatId,
         preselectedShiftIds,
         preselectedShiftNames,
+        preselectedMultiShiftId,
+        preselectedMultiShiftName,
         preselectedStudentId,
         preselectedStudentName,
         resetFieldErrors,

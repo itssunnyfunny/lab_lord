@@ -87,8 +87,15 @@ export async function GET(
         if (statusParam && !Object.values(StudentStatus).includes(statusParam as StudentStatus)) {
             return NextResponse.json({ error: "Invalid student status" }, { status: 400 });
         }
-        const status = statusParam as StudentStatus | undefined;
+        const status = statusParam ? statusParam as StudentStatus : undefined;
         const shiftId = searchParams.get("shiftId") || undefined;
+        const multiShiftId = searchParams.get("multiShiftId") || undefined;
+        if (shiftId && multiShiftId) {
+            return NextResponse.json(
+                { error: "shiftId and multiShiftId cannot be combined" },
+                { status: 400 }
+            );
+        }
         const query = searchParams.get("q")?.trim() || undefined;
         if (query && query.length > 200) {
             return NextResponse.json({ error: "Search query must be 200 characters or fewer" }, { status: 400 });
@@ -110,6 +117,7 @@ export async function GET(
             const items = await StudentService.getStudentsByBranch(user.id, branchId, {
                 status,
                 shiftId,
+                multiShiftId,
                 query,
             });
             return NextResponse.json({ items, nextCursor: null, total: items.length });
@@ -118,6 +126,7 @@ export async function GET(
         const page = await StudentService.getStudentsByBranch(user.id, branchId, {
             status,
             shiftId,
+            multiShiftId,
             query,
             limit: limit!,
             cursor,
@@ -129,6 +138,7 @@ export async function GET(
             return NextResponse.json({ error: message }, { status: 400 });
         }
         if (message.includes("Unauthorized")) return NextResponse.json({ error: message }, { status: 403 });
+        if (message.includes("not found")) return NextResponse.json({ error: message }, { status: 404 });
         return NextResponse.json({ error: message }, { status: 500 });
     }
 }

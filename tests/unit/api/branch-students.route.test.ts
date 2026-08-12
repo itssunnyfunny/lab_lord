@@ -43,6 +43,7 @@ describe("GET /api/branches/[branchId]/students", () => {
     expect(mocks.getStudentsByBranch).toHaveBeenCalledWith("staff_1", "branch_1", {
       status: "ACTIVE",
       shiftId: "shift_1",
+      multiShiftId: undefined,
       query: "asha",
       limit: 50,
       cursor: null,
@@ -64,8 +65,54 @@ describe("GET /api/branches/[branchId]/students", () => {
     expect(mocks.getStudentsByBranch).toHaveBeenCalledWith("staff_1", "branch_1", {
       status: "ACTIVE",
       shiftId: undefined,
+      multiShiftId: undefined,
       query: undefined,
     });
+  });
+
+  it("forwards an exact multi-shift filter", async () => {
+    mocks.getStudentsByBranch.mockResolvedValue({ items: [], nextCursor: null, total: 0 });
+    const request = new NextRequest(
+      "http://test.local/api/branches/branch_1/students?multiShiftId=multi_full"
+    );
+    const { GET } = await import("@/app/api/branches/[branchId]/students/route");
+
+    const response = await GET(request, context);
+
+    expect(response.status).toBe(200);
+    expect(mocks.getStudentsByBranch).toHaveBeenCalledWith("staff_1", "branch_1", {
+      status: undefined,
+      shiftId: undefined,
+      multiShiftId: "multi_full",
+      query: undefined,
+      limit: 50,
+      cursor: null,
+    });
+  });
+
+  it("rejects primary and multi-shift filters together", async () => {
+    const request = new NextRequest(
+      "http://test.local/api/branches/branch_1/students?shiftId=morning&multiShiftId=multi_full"
+    );
+    const { GET } = await import("@/app/api/branches/[branchId]/students/route");
+
+    const response = await GET(request, context);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "shiftId and multiShiftId cannot be combined" });
+    expect(mocks.getStudentsByBranch).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the requested multi-shift is missing or belongs to another branch", async () => {
+    mocks.getStudentsByBranch.mockRejectedValue(new Error("Multi-shift not found"));
+    const request = new NextRequest(
+      "http://test.local/api/branches/branch_1/students?multiShiftId=missing"
+    );
+    const { GET } = await import("@/app/api/branches/[branchId]/students/route");
+
+    const response = await GET(request, context);
+
+    expect(response.status).toBe(404);
   });
 
   it.each([

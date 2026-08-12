@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   listSeats: vi.fn(),
   listAllocations: vi.fn(),
+  assignSeatToShifts: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -17,7 +18,10 @@ vi.mock("@/services/seat.service", () => ({
 }));
 
 vi.mock("@/services/seatAllocation.service", () => ({
-  SeatAllocationService: { listAllocations: mocks.listAllocations },
+  SeatAllocationService: {
+    listAllocations: mocks.listAllocations,
+    assignSeatToShifts: mocks.assignSeatToShifts,
+  },
 }));
 
 const context = { params: Promise.resolve({ branchId: "branch_1" }) };
@@ -28,6 +32,7 @@ describe("branch seat pagination routes", () => {
     mocks.getSessionUser.mockResolvedValue({ id: "user_1" });
     mocks.listSeats.mockResolvedValue({ items: [], nextCursor: null, total: 0 });
     mocks.listAllocations.mockResolvedValue({ items: [], nextCursor: null, total: 0 });
+    mocks.assignSeatToShifts.mockResolvedValue([]);
   });
 
   it.each(["0", "101", "1.5", "invalid"])(
@@ -106,7 +111,7 @@ describe("branch seat pagination routes", () => {
     expect(mocks.listAllocations).toHaveBeenCalledWith(
       "user_1",
       "branch_1",
-      { studentId: undefined, shiftId: undefined, activeOnly: false, status: "ENDED" },
+      { studentId: undefined, shiftId: undefined, multiShiftId: undefined, activeOnly: false, status: "ENDED" },
       {
         cursor: { sort: new Date("2026-08-07T00:00:00.000Z"), id: "allocation_1" },
         limit: 10,
@@ -127,6 +132,75 @@ describe("branch seat pagination routes", () => {
     expect(mocks.listAllocations).not.toHaveBeenCalled();
   });
 
+  it("preserves multi-shift identity with every component on allocation", async () => {
+    const { POST } = await import("@/app/api/branches/[branchId]/seat-allocations/route");
+    const request = new NextRequest(
+      "http://test.local/api/branches/branch_1/seat-allocations",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          seatId: "seat_1",
+          studentId: "student_1",
+          shiftIds: ["morning", "evening"],
+          multiShiftId: "multi_full",
+        }),
+      }
+    );
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(201);
+    expect(mocks.assignSeatToShifts).toHaveBeenCalledWith(
+      "user_1",
+      "seat_1",
+      "student_1",
+      ["morning", "evening"],
+      "multi_full"
+    );
+  });
+
+  it("forwards exact multi-shift allocation filters before pagination", async () => {
+    const { GET } = await import("@/app/api/branches/[branchId]/seat-allocations/route");
+    const request = new NextRequest(
+      "http://test.local/api/branches/branch_1/seat-allocations?status=ACTIVE&multiShiftId=multi_full"
+    );
+
+    const response = await GET(request, context);
+
+    expect(response.status).toBe(200);
+    expect(mocks.listAllocations).toHaveBeenCalledWith(
+      "user_1",
+      "branch_1",
+      { studentId: undefined, shiftId: undefined, multiShiftId: "multi_full", activeOnly: false, status: "ACTIVE" },
+      { cursor: null, limit: 50, all: false }
+    );
+  });
+
+  it("rejects primary and multi-shift allocation filters together", async () => {
+    const { GET } = await import("@/app/api/branches/[branchId]/seat-allocations/route");
+    const request = new NextRequest(
+      "http://test.local/api/branches/branch_1/seat-allocations?shiftId=morning&multiShiftId=multi_full"
+    );
+
+    const response = await GET(request, context);
+
+    expect(response.status).toBe(400);
+    expect(mocks.listAllocations).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for a missing or cross-branch multi-shift allocation filter", async () => {
+    mocks.listAllocations.mockRejectedValue(new Error("Multi-shift not found"));
+    const { GET } = await import("@/app/api/branches/[branchId]/seat-allocations/route");
+    const request = new NextRequest(
+      "http://test.local/api/branches/branch_1/seat-allocations?multiShiftId=missing"
+    );
+
+    const response = await GET(request, context);
+
+    expect(response.status).toBe(404);
+  });
+
   it("supports explicit complete allocation reads", async () => {
     const { GET } = await import("@/app/api/branches/[branchId]/seat-allocations/route");
     const request = new NextRequest(
@@ -139,7 +213,7 @@ describe("branch seat pagination routes", () => {
     expect(mocks.listAllocations).toHaveBeenCalledWith(
       "user_1",
       "branch_1",
-      { studentId: undefined, shiftId: undefined, activeOnly: true, status: undefined },
+      { studentId: undefined, shiftId: undefined, multiShiftId: undefined, activeOnly: true, status: undefined },
       { cursor: null, limit: 50, all: true }
     );
   });

@@ -91,9 +91,19 @@ export class SeatAllocationService {
 
             // 3b. Validate multiShiftId if provided
             if (multiShiftId) {
-                const ms = await tx.multiShift.findUnique({ where: { id: multiShiftId } });
+                const ms = await tx.multiShift.findUnique({
+                    where: { id: multiShiftId },
+                    include: { components: { select: { shiftId: true } } },
+                });
                 if (!ms) throw new Error("Multi-shift not found");
                 if (ms.branchId !== branchId) throw new Error("Multi-shift does not belong to this branch");
+                const componentIds = ms.components.map(component => component.shiftId);
+                if (
+                    componentIds.length !== uniqueShiftIds.length
+                    || componentIds.some(componentId => !uniqueShiftIds.includes(componentId))
+                ) {
+                    throw new Error("All component shifts of the selected multi-shift are required.");
+                }
             }
 
             // 4. Fetch and validate all requested shifts
@@ -159,13 +169,11 @@ export class SeatAllocationService {
                     if (alloc.shiftId === requestedShift.id) {
                         throw new Error(`Seat is already assigned in shift "${requestedShift.name}".`);
                     }
-                    if (!multiShiftId) {
-                        const existing = shiftTimeMap.get(alloc.shiftId);
-                        if (existing && timesOverlap(newStart, newEnd, parseNullableTime(existing.startTime), parseNullableTime(existing.endTime))) {
-                            throw new Error(
-                                `Seat is already occupied during this time (conflict with "${existing.name}")`
-                            );
-                        }
+                    const existing = shiftTimeMap.get(alloc.shiftId);
+                    if (existing && timesOverlap(newStart, newEnd, parseNullableTime(existing.startTime), parseNullableTime(existing.endTime))) {
+                        throw new Error(
+                            `Seat is already occupied during this time (conflict with "${existing.name}")`
+                        );
                     }
                 }
 
@@ -174,13 +182,11 @@ export class SeatAllocationService {
                     if (alloc.shiftId === requestedShift.id) {
                         throw new Error(`Student already has a seat in shift "${requestedShift.name}".`);
                     }
-                    if (!multiShiftId) {
-                        const existing = shiftTimeMap.get(alloc.shiftId);
-                        if (existing && timesOverlap(newStart, newEnd, parseNullableTime(existing.startTime), parseNullableTime(existing.endTime))) {
-                            throw new Error(
-                                `Student is already allocated in an overlapping shift ("${existing.name}")`
-                            );
-                        }
+                    const existing = shiftTimeMap.get(alloc.shiftId);
+                    if (existing && timesOverlap(newStart, newEnd, parseNullableTime(existing.startTime), parseNullableTime(existing.endTime))) {
+                        throw new Error(
+                            `Student is already allocated in an overlapping shift ("${existing.name}")`
+                        );
                     }
                 }
 
@@ -394,6 +400,19 @@ export class SeatAllocationService {
     ) {
         await StaffService.authorize(userId, branchId, "seat_allocation");
 
+        if (filters.shiftId && filters.multiShiftId) {
+            throw new Error("shiftId and multiShiftId cannot be combined");
+        }
+        if (filters.multiShiftId) {
+            const multiShift = await prisma.multiShift.findUnique({
+                where: { id: filters.multiShiftId },
+                select: { branchId: true },
+            });
+            if (!multiShift || multiShift.branchId !== branchId) {
+                throw new Error("Multi-shift not found");
+            }
+        }
+
         const limit = options.limit ?? DEFAULT_PAGE_SIZE;
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE) {
             throw new PaginationInputError(`limit must be between 1 and ${MAX_PAGE_SIZE}`);
@@ -408,6 +427,7 @@ export class SeatAllocationService {
             seat: { branchId },
             studentId: filters.studentId,
             shiftId: filters.shiftId,
+            multiShiftId: filters.multiShiftId,
             endDate,
         };
         const pageWhere: Prisma.SeatAllocationWhereInput = options.cursor

@@ -12,6 +12,7 @@ export const seats = {
         params?: {
             studentId?: string;
             shiftId?: string;
+            multiShiftId?: string;
             activeOnly?: boolean;
             status?: "ACTIVE" | "ENDED";
             cursor?: string;
@@ -22,6 +23,7 @@ export const seats = {
         const query = new URLSearchParams();
         if (params?.studentId) query.append("studentId", params.studentId);
         if (params?.shiftId) query.append("shiftId", params.shiftId);
+        if (params?.multiShiftId) query.append("multiShiftId", params.multiShiftId);
         if (params?.activeOnly) query.append("activeOnly", "true");
         if (params?.status) query.append("status", params.status);
         if (params?.cursor) query.append("cursor", params.cursor);
@@ -33,7 +35,7 @@ export const seats = {
 
     listAllAllocations: async <T = SeatAllocation>(
         branchId: string,
-        params?: { studentId?: string; shiftId?: string; activeOnly?: boolean; status?: "ACTIVE" | "ENDED" }
+        params?: { studentId?: string; shiftId?: string; multiShiftId?: string; activeOnly?: boolean; status?: "ACTIVE" | "ENDED" }
     ): Promise<T[]> => {
         const page = await seats.listAllocations<T>(branchId, { ...params, all: true });
         return page.items;

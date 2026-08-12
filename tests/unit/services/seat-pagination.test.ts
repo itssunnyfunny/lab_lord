@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   seatCount: vi.fn(),
   allocationFindMany: vi.fn(),
   allocationCount: vi.fn(),
+  multiShiftFindUnique: vi.fn(),
 }));
 
 vi.mock("@/services/staff.service", () => ({
@@ -26,6 +27,7 @@ vi.mock("@/lib/prisma", () => ({
       findMany: mocks.allocationFindMany,
       count: mocks.allocationCount,
     },
+    multiShift: { findUnique: mocks.multiShiftFindUnique },
   },
 }));
 
@@ -39,6 +41,7 @@ describe("seat list service pagination", () => {
     mocks.branchFindUnique.mockResolvedValue({ id: "branch_1" });
     mocks.seatCount.mockResolvedValue(2);
     mocks.allocationCount.mockResolvedValue(2);
+    mocks.multiShiftFindUnique.mockResolvedValue({ branchId: "branch_1" });
   });
 
   it("returns a bounded seat page with a stable look-ahead cursor", async () => {
@@ -93,6 +96,7 @@ describe("seat list service pagination", () => {
         seat: { branchId: "branch_1" },
         studentId: "student_1",
         shiftId: undefined,
+        multiShiftId: undefined,
         endDate: { not: null },
         OR: [
           { startDate: { lt: firstDate } },
@@ -102,6 +106,41 @@ describe("seat list service pagination", () => {
       take: 11,
       orderBy: [{ startDate: "desc" }, { id: "desc" }],
     }));
+  });
+
+  it("filters active and ended pages by the exact multi-shift before pagination", async () => {
+    mocks.allocationFindMany.mockResolvedValue([]);
+
+    await SeatAllocationService.listAllocations(
+      "user_1",
+      "branch_1",
+      { status: "ENDED", multiShiftId: "multi_full" },
+      { limit: 10 }
+    );
+
+    expect(mocks.multiShiftFindUnique).toHaveBeenCalledWith({
+      where: { id: "multi_full" },
+      select: { branchId: true },
+    });
+    expect(mocks.allocationFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        multiShiftId: "multi_full",
+        endDate: { not: null },
+      }),
+      take: 11,
+    }));
+  });
+
+  it("rejects a cross-branch multi-shift allocation filter", async () => {
+    mocks.multiShiftFindUnique.mockResolvedValue({ branchId: "branch_2" });
+
+    await expect(SeatAllocationService.listAllocations(
+      "user_1",
+      "branch_1",
+      { multiShiftId: "multi_other" }
+    )).rejects.toThrow("Multi-shift not found");
+
+    expect(mocks.allocationFindMany).not.toHaveBeenCalled();
   });
 
   it("returns an explicit complete allocation result without a cursor", async () => {

@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   branchFindUnique: vi.fn(),
   studentFindMany: vi.fn(),
   studentCount: vi.fn(),
+  multiShiftFindUnique: vi.fn(),
   paymentFindMany: vi.fn(),
   paymentCount: vi.fn(),
 }));
@@ -16,6 +17,7 @@ vi.mock("@/lib/prisma", () => ({
       findMany: mocks.studentFindMany,
       count: mocks.studentCount,
     },
+    multiShift: { findUnique: mocks.multiShiftFindUnique },
     payment: {
       findMany: mocks.paymentFindMany,
       count: mocks.paymentCount,
@@ -31,6 +33,38 @@ describe("high-volume list service pagination", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.branchFindUnique.mockResolvedValue({ id: "branch_1" });
+    mocks.multiShiftFindUnique.mockResolvedValue({ branchId: "branch_1" });
+  });
+
+  it("filters students by exact active multi-shift allocation", async () => {
+    mocks.studentFindMany.mockResolvedValue([]);
+    const { StudentService } = await import("@/services/student.service");
+
+    await StudentService.getStudentsByBranch("user_1", "branch_1", {
+      multiShiftId: "multi_full",
+    });
+
+    expect(mocks.multiShiftFindUnique).toHaveBeenCalledWith({
+      where: { id: "multi_full" },
+      select: { branchId: true },
+    });
+    expect(mocks.studentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        seatAllocations: {
+          some: { multiShiftId: "multi_full", endDate: null },
+        },
+      }),
+    }));
+  });
+
+  it("rejects a cross-branch multi-shift student filter", async () => {
+    mocks.multiShiftFindUnique.mockResolvedValue({ branchId: "branch_2" });
+    const { StudentService } = await import("@/services/student.service");
+
+    await expect(StudentService.getStudentsByBranch("user_1", "branch_1", {
+      multiShiftId: "multi_other",
+    })).rejects.toThrow("Multi-shift not found");
+    expect(mocks.studentFindMany).not.toHaveBeenCalled();
   });
 
   it("pages students by createdAt and id while preserving array defaults for internal callers", async () => {

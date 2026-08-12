@@ -21,6 +21,7 @@ export type StudentListItem = Student & {
 export type StudentListParams = {
     status?: StudentStatus;
     shiftId?: string;
+    multiShiftId?: string;
     query?: string;
     cursor?: string;
     limit?: number;
@@ -36,6 +37,7 @@ export const students = {
             params: {
                 status: params.status,
                 shiftId: params.shiftId,
+                multiShiftId: params.multiShiftId,
                 q: params.query,
                 cursor: params.cursor,
                 limit: params.limit,

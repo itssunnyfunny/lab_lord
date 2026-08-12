@@ -57,6 +57,7 @@ type StudentListRecord = Prisma.StudentGetPayload<{ include: typeof STUDENT_LIST
 type StudentListFilters = {
     status?: StudentStatus;
     shiftId?: string;
+    multiShiftId?: string;
     query?: string;
     cursor?: DateIdCursor | null;
     limit?: number;
@@ -497,6 +498,19 @@ export class StudentService {
     ): Promise<PagedResult<StudentListRecord> | StudentListRecord[]> {
         await this.verifyBranchAccess(userId, branchId);
 
+        if (filters?.shiftId && filters.multiShiftId) {
+            throw new Error("shiftId and multiShiftId cannot be combined");
+        }
+        if (filters?.multiShiftId) {
+            const multiShift = await prisma.multiShift.findUnique({
+                where: { id: filters.multiShiftId },
+                select: { branchId: true },
+            });
+            if (!multiShift || multiShift.branchId !== branchId) {
+                throw new Error("Multi-shift not found");
+            }
+        }
+
         const query = filters?.query?.trim();
         const baseWhere: Prisma.StudentWhereInput = {
             branchId,
@@ -506,6 +520,16 @@ export class StudentService {
                     seatAllocations: {
                         some: {
                             shiftId: filters.shiftId,
+                            endDate: null,
+                        },
+                    },
+                }
+                : {}),
+            ...(filters?.multiShiftId
+                ? {
+                    seatAllocations: {
+                        some: {
+                            multiShiftId: filters.multiShiftId,
                             endDate: null,
                         },
                     },

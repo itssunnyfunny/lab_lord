@@ -260,5 +260,61 @@ describe("SeatAllocationService Integration", () => {
       });
       expect(second.items.map(allocation => allocation.id)).toEqual(["allocation_a"]);
     });
+
+    it("filters active and ended allocations by exact multi-shift identity", async () => {
+      const { user, branch, shift: morning, seat } = await createTestWorld({
+        shiftStart: "06:00",
+        shiftEnd: "10:00",
+      });
+      const evening = await createShift({
+        branchId: branch.id,
+        name: "Evening",
+        startTime: "16:00",
+        endTime: "20:00",
+      });
+      const fullDay = await testPrisma.multiShift.create({
+        data: {
+          branchId: branch.id,
+          name: "Full Day",
+          components: {
+            create: [
+              { shiftId: morning.id, order: 0 },
+              { shiftId: evening.id, order: 1 },
+            ],
+          },
+        },
+      });
+      const bundleStudent = await createStudent({ branchId: branch.id, name: "Bundle Student" });
+      const morningOnlyStudent = await createStudent({ branchId: branch.id, name: "Morning Only" });
+      const morningOnlySeat = await createSeat({ branchId: branch.id, label: "M1" });
+      const endedSeat = await createSeat({ branchId: branch.id, label: "E1" });
+      const endedStudent = await createStudent({ branchId: branch.id, name: "Ended Bundle" });
+
+      await testPrisma.seatAllocation.createMany({
+        data: [
+          { seatId: seat.id, studentId: bundleStudent.id, shiftId: morning.id, multiShiftId: fullDay.id },
+          { seatId: seat.id, studentId: bundleStudent.id, shiftId: evening.id, multiShiftId: fullDay.id },
+          { seatId: morningOnlySeat.id, studentId: morningOnlyStudent.id, shiftId: morning.id },
+          { seatId: endedSeat.id, studentId: endedStudent.id, shiftId: morning.id, multiShiftId: fullDay.id, endDate: new Date("2026-02-01") },
+        ],
+      });
+
+      const active = await SeatAllocationService.listAllocations(
+        user.id,
+        branch.id,
+        { status: "ACTIVE", multiShiftId: fullDay.id },
+        { all: true }
+      );
+      const ended = await SeatAllocationService.listAllocations(
+        user.id,
+        branch.id,
+        { status: "ENDED", multiShiftId: fullDay.id },
+        { all: true }
+      );
+
+      expect(active.items).toHaveLength(2);
+      expect(new Set(active.items.map(allocation => allocation.student.name))).toEqual(new Set(["Bundle Student"]));
+      expect(ended.items.map(allocation => allocation.student.name)).toEqual(["Ended Bundle"]);
+    });
   });
 });

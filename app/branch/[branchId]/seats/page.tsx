@@ -59,11 +59,11 @@ import { AllocateSeatDialog } from "@/components/allocations/AllocateSeatDialog"
 import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
 import { getPermissionHelpText } from "@/lib/permissionMessages";
 import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
-import type { CapabilityDecision } from "@/types";
+import type { CapabilityDecision, MultiShiftSeatMap, MultiShiftSummary, ShiftScope } from "@/types";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 
-type SeatStatus = "Allocated" | "Available";
-type StatusFilter = "ALL" | "ALLOCATED" | "AVAILABLE";
+type SeatStatus = "Allocated" | "Assigned" | "Blocked" | "Available";
+type StatusFilter = "ALL" | "ALLOCATED" | "BLOCKED" | "AVAILABLE";
 type SerializableDate = string | Date;
 
 interface SeatAllocationSummary {
@@ -107,6 +107,7 @@ interface SeatWithStatus {
     createdAt: SerializableDate;
     status: SeatStatus;
     studentName?: string;
+    blockedBy?: string;
     allocations: SeatAllocationSummary[];
 }
 
@@ -122,6 +123,8 @@ interface AllocationSeed {
     seatLabel: string;
     shiftIds?: string[];
     shiftNames?: string[];
+    multiShiftId?: string;
+    multiShiftName?: string;
 }
 
 type ShiftSummary = {
@@ -134,6 +137,10 @@ type ShiftSummary = {
     percent: number;
     tone: "success" | "warning" | "danger" | "info";
 };
+
+function scopeIsSelected(scope: ShiftScope) {
+    return scope.kind !== "all";
+}
 
 function getErrorMessage(err: unknown) {
     return err instanceof Error ? err.message : "Failed to load seats.";
@@ -174,15 +181,21 @@ function getUniqueStudentNames(allocations: SeatAllocationSummary[]) {
     );
 }
 
-function buildSeatWithStatus(seat: SeatApi | SeatWithStatus, allocations: SeatAllocationSummary[]): SeatWithStatus {
+function buildSeatWithStatus(
+    seat: SeatApi | SeatWithStatus,
+    allocations: SeatAllocationSummary[],
+    status?: SeatStatus,
+    blockedBy?: string
+): SeatWithStatus {
     return {
         id: seat.id,
         branchId: seat.branchId,
         label: seat.label,
         createdAt: seat.createdAt,
         allocations,
-        status: allocations.length > 0 ? "Allocated" : "Available",
+        status: status ?? (allocations.length > 0 ? "Allocated" : "Available"),
         studentName: allocations[0]?.student?.name,
+        blockedBy,
     };
 }
 
@@ -229,11 +242,16 @@ function SeatsContent({
     const linkedSeatId = searchParams.get("seatId");
     const hasLoadedSeats = useRef(false);
     const loadSequence = useRef(0);
+    const multiShiftMapSequence = useRef(0);
     const [allSeats, setAllSeats] = useState<SeatWithStatus[]>([]);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [totalSeatCount, setTotalSeatCount] = useState(0);
     const [shifts, setShifts] = useState<Shift[]>([]);
-    const [selectedShift, setSelectedShift] = useState<string>("");
+    const [multiShifts, setMultiShifts] = useState<MultiShiftSummary[]>([]);
+    const [shiftOptionsLoaded, setShiftOptionsLoaded] = useState(false);
+    const [shiftScope, setShiftScope] = useState<ShiftScope>({ kind: "all" });
+    const [multiShiftSeatMap, setMultiShiftSeatMap] = useState<MultiShiftSeatMap | null>(null);
+    const [multiShiftMapLoading, setMultiShiftMapLoading] = useState(false);
     const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
     const [searchQuery, setSearchQuery] = useState("");
     const [viewMode, setViewMode] = useState<DataViewMode>("grid");
@@ -250,14 +268,27 @@ function SeatsContent({
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);
     const [allocationSeed, setAllocationSeed] = useState<AllocationSeed | null>(null);
     const [releaseTarget, setReleaseTarget] = useState<ReleaseTarget | null>(null);
+    const activeMultiShiftSeatMap = shiftScope.kind === "multi"
+        && multiShiftSeatMap?.multiShiftId === shiftScope.id
+        ? multiShiftSeatMap
+        : null;
+    const multiShiftAvailabilityPending = shiftScope.kind === "multi"
+        && (multiShiftMapLoading || activeMultiShiftSeatMap === null);
+    const seatViewRefreshing = refreshing || multiShiftMapLoading;
 
     useEffect(() => {
         const loadShifts = async () => {
             try {
-                const shiftsData = await branches.getShifts(branchId);
+                const [shiftsData, multiShiftData] = await Promise.all([
+                    branches.getShifts(branchId),
+                    branches.getMultiShifts(branchId),
+                ]);
                 setShifts(shiftsData);
+                setMultiShifts(multiShiftData);
+                setShiftOptionsLoaded(true);
             } catch (err) {
                 console.error("Failed to load shifts", err);
+                setActionError("Shift filters could not be loaded.");
             }
         };
 
@@ -340,6 +371,56 @@ function SeatsContent({
         }
     }, [branchId]);
 
+    const refreshSelectedMultiShiftMap = useCallback(async () => {
+        if (shiftScope.kind !== "multi") return;
+
+        const sequence = ++multiShiftMapSequence.current;
+        setMultiShiftMapLoading(true);
+        try {
+            const seatMap = await branches.getMultiShiftSeatMap(branchId, shiftScope.id);
+            if (sequence === multiShiftMapSequence.current) {
+                setMultiShiftSeatMap(seatMap);
+            }
+        } catch (seatMapError: unknown) {
+            if (sequence !== multiShiftMapSequence.current) return;
+            setMultiShiftSeatMap(null);
+            setShiftScope({ kind: "all" });
+            setActionError(
+                seatMapError instanceof Error && !seatMapError.message.toLowerCase().includes("not found")
+                    ? seatMapError.message
+                    : "That multi-shift is no longer available. Showing all shifts."
+            );
+        } finally {
+            if (sequence === multiShiftMapSequence.current) {
+                setMultiShiftMapLoading(false);
+            }
+        }
+    }, [branchId, shiftScope]);
+
+    const refreshSeatView = useCallback(async () => {
+        await Promise.all([
+            loadSeats({ revealSeatId: linkedSeatId }),
+            refreshSelectedMultiShiftMap(),
+        ]);
+    }, [linkedSeatId, loadSeats, refreshSelectedMultiShiftMap]);
+
+    useEffect(() => {
+        if (!shiftOptionsLoaded || shiftScope.kind !== "multi") return;
+        if (multiShifts.some(multiShift => multiShift.id === shiftScope.id)) return;
+        setShiftScope({ kind: "all" });
+        setMultiShiftSeatMap(null);
+        setActionError("That multi-shift is no longer available. Showing all shifts.");
+    }, [multiShifts, shiftOptionsLoaded, shiftScope]);
+
+    useEffect(() => {
+        if (shiftScope.kind !== "multi") {
+            multiShiftMapSequence.current++;
+            setMultiShiftMapLoading(false);
+            return;
+        }
+        void refreshSelectedMultiShiftMap();
+    }, [refreshSelectedMultiShiftMap, shiftScope.kind]);
+
     useEffect(() => {
         hasLoadedSeats.current = false;
         setAllSeats([]);
@@ -364,13 +445,32 @@ function SeatsContent({
     }, [allSeats, effectiveViewMode, linkedSeatId]);
 
     const seats = useMemo(() => {
-        if (!selectedShift) return allSeats;
+        if (shiftScope.kind === "all") return allSeats;
 
-        return allSeats.map((seat) => {
-            const shiftAllocations = seat.allocations.filter(allocation => allocation.shiftId === selectedShift);
-            return buildSeatWithStatus(seat, shiftAllocations);
+        if (shiftScope.kind === "primary") {
+            return allSeats.map((seat) => {
+                const shiftAllocations = seat.allocations.filter(allocation => allocation.shiftId === shiftScope.id);
+                return buildSeatWithStatus(seat, shiftAllocations);
+            });
+        }
+
+        if (!activeMultiShiftSeatMap) return [];
+
+        const statusBySeat = new Map(activeMultiShiftSeatMap.seats.map(seat => [seat.seatId, seat]));
+        return allSeats.map(seat => {
+            const availability = statusBySeat.get(seat.id);
+            const exactAllocations = seat.allocations.filter(
+                allocation => allocation.multiShiftId === shiftScope.id
+            );
+            if (availability?.status === "ASSIGNED") {
+                return buildSeatWithStatus(seat, exactAllocations, "Assigned");
+            }
+            if (availability?.status === "BLOCKED") {
+                return buildSeatWithStatus(seat, [], "Blocked", availability.occupiedBy ?? undefined);
+            }
+            return buildSeatWithStatus(seat, [], "Available");
         });
-    }, [allSeats, selectedShift]);
+    }, [activeMultiShiftSeatMap, allSeats, shiftScope]);
 
     useEffect(() => {
         if (!selectedSeatId) return;
@@ -380,20 +480,27 @@ function SeatsContent({
     }, [seats, selectedSeatId]);
 
     const activeShift = useMemo(
-        () => shifts.find(shift => shift.id === selectedShift) ?? null,
-        [selectedShift, shifts]
+        () => shiftScope.kind === "primary" ? shifts.find(shift => shift.id === shiftScope.id) ?? null : null,
+        [shiftScope, shifts]
     );
+    const activeMultiShift = useMemo(
+        () => shiftScope.kind === "multi" ? multiShifts.find(shift => shift.id === shiftScope.id) ?? null : null,
+        [multiShifts, shiftScope]
+    );
+    const activeScopeName = activeShift?.name ?? activeMultiShift?.name;
 
     const stats = useMemo(() => {
         const total = seats.length;
-        const allocated = seats.filter(seat => seat.status === "Allocated").length;
-        const available = total - allocated;
+        const allocated = seats.filter(seat => seat.status === "Allocated" || seat.status === "Assigned").length;
+        const blocked = seats.filter(seat => seat.status === "Blocked").length;
+        const available = total - allocated - blocked;
         const allocations = seats.reduce((sum, seat) => sum + seat.allocations.length, 0);
-        const totalSlots = selectedShift ? total : total * shifts.length;
-        const utilization = totalSlots === 0 ? 0 : Math.round((allocations / totalSlots) * 100);
+        const totalSlots = scopeIsSelected(shiftScope) ? total : total * shifts.length;
+        const usedUnits = shiftScope.kind === "multi" ? allocated + blocked : allocations;
+        const utilization = totalSlots === 0 ? 0 : Math.round((usedUnits / totalSlots) * 100);
 
-        return { total, allocated, available, allocations, totalSlots, utilization };
-    }, [seats, selectedShift, shifts.length]);
+        return { total, allocated, blocked, available, allocations, totalSlots, utilization };
+    }, [seats, shiftScope, shifts.length]);
 
     const shiftSummaries = useMemo(() => {
         return shifts.map((shift) => {
@@ -422,7 +529,11 @@ function SeatsContent({
 
         return seats
             .filter((seat) => {
-                if (statusFilter === "ALLOCATED" && seat.status !== "Allocated") return false;
+                if (
+                    statusFilter === "ALLOCATED"
+                    && seat.status !== (shiftScope.kind === "multi" ? "Assigned" : "Allocated")
+                ) return false;
+                if (statusFilter === "BLOCKED" && seat.status !== "Blocked") return false;
                 if (statusFilter === "AVAILABLE" && seat.status !== "Available") return false;
                 if (!query) return true;
 
@@ -435,22 +546,37 @@ function SeatsContent({
                 );
             })
             .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" }));
-    }, [searchQuery, seats, statusFilter]);
+    }, [searchQuery, seats, shiftScope.kind, statusFilter]);
 
     const selectedSeat = useMemo(
         () => seats.find(seat => seat.id === selectedSeatId) ?? null,
         [seats, selectedSeatId]
     );
+    const selectedScopeId = shiftScope.kind === "all" ? "" : shiftScope.id;
+    const allocationReady = shiftScope.kind !== "multi" || activeMultiShiftSeatMap !== null;
 
     const statusFilters: { value: StatusFilter; label: string; count: number }[] = [
         { value: "ALL", label: "All", count: stats.total },
-        { value: "ALLOCATED", label: "Allocated", count: stats.allocated },
+        { value: "ALLOCATED", label: shiftScope.kind === "multi" ? "Assigned" : "Allocated", count: stats.allocated },
         { value: "AVAILABLE", label: "Available", count: stats.available },
+        ...(shiftScope.kind === "multi"
+            ? [{ value: "BLOCKED" as const, label: "Blocked", count: stats.blocked }]
+            : []),
     ];
+
+    useEffect(() => {
+        if (statusFilter === "BLOCKED" && shiftScope.kind !== "multi") {
+            setStatusFilter("ALL");
+        }
+    }, [shiftScope.kind, statusFilter]);
 
     const openAllocation = (seat: SeatWithStatus) => {
         if (!allocationDecision.allowed) {
             setActionError(allocationDecision.reason ?? "Seat allocation changes are unavailable.");
+            return;
+        }
+        if (!allocationReady || seat.status === "Blocked") {
+            setActionError("This seat is not available across every component shift in the selected multi-shift.");
             return;
         }
         setActionError(null);
@@ -458,8 +584,18 @@ function SeatsContent({
         setAllocationSeed({
             seatId: seat.id,
             seatLabel: seat.label,
-            shiftIds: selectedShift ? [selectedShift] : undefined,
-            shiftNames: activeShift ? [activeShift.name] : undefined,
+            shiftIds: shiftScope.kind === "primary"
+                ? [shiftScope.id]
+                : shiftScope.kind === "multi"
+                    ? activeMultiShift?.components.map(component => component.shiftId)
+                    : undefined,
+            shiftNames: shiftScope.kind === "primary"
+                ? activeShift ? [activeShift.name] : undefined
+                : shiftScope.kind === "multi"
+                    ? activeMultiShift ? [activeMultiShift.name] : undefined
+                    : undefined,
+            multiShiftId: shiftScope.kind === "multi" ? shiftScope.id : undefined,
+            multiShiftName: shiftScope.kind === "multi" ? activeMultiShift?.name : undefined,
         });
     };
 
@@ -483,7 +619,7 @@ function SeatsContent({
                 throw new Error(typeof payload.error === "string" ? payload.error : "Failed to release seat.");
             }
 
-            await loadSeats({ revealSeatId: linkedSeatId });
+            await refreshSeatView();
             setReleaseTarget(null);
         } catch (err: unknown) {
             setActionError(err instanceof Error ? err.message : "Failed to release seat.");
@@ -585,23 +721,40 @@ function SeatsContent({
 
             <AppPanel contentClassName="space-y-4">
                 <ShiftFilterPanel
-                    selectedShift={selectedShift}
+                    selectedScope={shiftScope}
                     summaries={shiftSummaries}
+                    multiShifts={multiShifts}
+                    multiShiftSeatMap={activeMultiShiftSeatMap}
                     totalSeats={allSeats.length}
                     branchTotalSeats={totalSeatCount}
                     totalSlots={allSeats.length * shifts.length}
                     totalAllocatedSlots={allSeats.reduce((sum, seat) => sum + seat.allocations.length, 0)}
-                    onSelect={setSelectedShift}
+                    onSelect={scope => {
+                        setActionError(null);
+                        setMultiShiftMapLoading(
+                            scope.kind === "multi" && multiShiftSeatMap?.multiShiftId !== scope.id
+                        );
+                        setShiftScope(scope);
+                    }}
                 />
 
                 <div className={cn("border-t pt-4", pageSectionDividerClass)}>
-                    <SeatSummaryBar
-                        stats={stats}
-                        activeShiftName={activeShift?.name}
-                        branchTotalSeats={totalSeatCount}
-                    />
+                    {multiShiftAvailabilityPending ? (
+                        <div role="status" className={cn("flex min-h-20 items-center justify-center gap-2 text-sm", pageMutedTextClass)}>
+                            <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                            Checking every component and overlapping shift…
+                        </div>
+                    ) : (
+                        <SeatSummaryBar
+                            stats={stats}
+                            activeShiftName={activeScopeName}
+                            multiShiftSelected={shiftScope.kind === "multi"}
+                            branchTotalSeats={totalSeatCount}
+                        />
+                    )}
                 </div>
 
+                {!multiShiftAvailabilityPending && (
                 <div className={cn("flex flex-col gap-3 border-t pt-4 xl:flex-row xl:items-center xl:justify-between", pageSectionDividerClass)}>
                     <div className="flex flex-wrap items-center gap-2">
                         {statusFilters.map(filter => (
@@ -617,7 +770,11 @@ function SeatsContent({
                         <div className={cn("inline-flex min-h-11 max-w-full items-center gap-2 px-2.5 text-xs lg:min-h-8", pageFilterShellClass, pageSubtleTextClass)}>
                             <Clock size={13} className="shrink-0" />
                             <span className="truncate">
-                                {activeShift ? formatTimeRange(activeShift.startTime, activeShift.endTime) : "All active allocations"}
+                                {activeShift
+                                    ? formatTimeRange(activeShift.startTime, activeShift.endTime)
+                                    : activeMultiShift
+                                        ? activeMultiShift.components.map(component => component.shiftName).join(" + ")
+                                        : "All active allocations"}
                             </span>
                         </div>
                         <ViewToggle value={viewMode} onChange={setViewMode} className="hidden lg:inline-flex" />
@@ -625,19 +782,26 @@ function SeatsContent({
                             type="button"
                             variant="quiet"
                             size="sm"
-                            icon={refreshing ? Loader2 : RefreshCw}
-                            onClick={() => loadSeats({ revealSeatId: linkedSeatId })}
-                            disabled={refreshing}
-                            className={refreshing ? "[&_svg]:animate-spin" : undefined}
+                            icon={seatViewRefreshing ? Loader2 : RefreshCw}
+                            onClick={() => void refreshSeatView()}
+                            disabled={seatViewRefreshing}
+                            className={seatViewRefreshing ? "[&_svg]:animate-spin" : undefined}
                         >
                             Refresh
                         </AppButton>
                     </div>
                 </div>
+                )}
             </AppPanel>
 
-            <div className={cn("relative transition-opacity", refreshing && "opacity-60")}>
-                {filteredSeats.length === 0 ? (
+            <div className={cn("relative transition-opacity", seatViewRefreshing && "opacity-60")}>
+                {multiShiftAvailabilityPending ? (
+                    <div role="status" className={cn("flex min-h-56 flex-col items-center justify-center gap-3", pageEmptyStateClass)}>
+                        <Loader2 size={28} className="animate-spin" aria-hidden="true" />
+                        <p className="text-sm font-medium text-[color:var(--text-primary)]">Calculating multi-shift availability</p>
+                        <p className={cn("text-xs", pageMutedTextClass)}>Seats remain unavailable until every component and overlap check completes.</p>
+                    </div>
+                ) : filteredSeats.length === 0 ? (
                     <SeatEmptyState
                         hasSeats={seats.length > 0}
                         canManageBranch={canManageBranch}
@@ -650,8 +814,8 @@ function SeatsContent({
                         seats={filteredSeats}
                         selectedSeatId={selectedSeatId}
                         focusedSeatId={linkedSeatId}
-                        selectedShiftId={selectedShift}
-                        canAllocateSeats={canAllocateSeats}
+                        selectedShiftId={selectedScopeId}
+                        canAllocateSeats={canAllocateSeats && allocationReady}
                         showAllocationActions={showAllocationActions}
                         allocationDisabledReason={allocationDecision.reason ?? undefined}
                         onInspect={setSelectedSeatId}
@@ -661,8 +825,8 @@ function SeatsContent({
                     <SeatList
                         seats={filteredSeats}
                         focusedSeatId={linkedSeatId}
-                        selectedShiftId={selectedShift}
-                        canAllocateSeats={canAllocateSeats}
+                        selectedShiftId={selectedScopeId}
+                        canAllocateSeats={canAllocateSeats && allocationReady}
                         showAllocationActions={showAllocationActions}
                         allocationDisabledReason={allocationDecision.reason ?? undefined}
                         onInspect={setSelectedSeatId}
@@ -696,9 +860,9 @@ function SeatsContent({
 
             <SeatDetailsDrawer
                 seat={selectedSeat}
-                activeShiftName={activeShift?.name}
-                selectedShiftId={selectedShift}
-                canAllocateSeats={canAllocateSeats}
+                activeShiftName={activeScopeName}
+                selectedShiftId={selectedScopeId}
+                canAllocateSeats={canAllocateSeats && allocationReady}
                 showAllocationActions={showAllocationActions}
                 allocationDisabledReason={allocationDecision.reason ?? undefined}
                 onClose={() => setSelectedSeatId(null)}
@@ -711,7 +875,7 @@ function SeatsContent({
                     isOpen={isAddModalOpen}
                     onClose={() => setIsAddModalOpen(false)}
                     branchId={branchId}
-                    onSuccess={() => loadSeats({ revealSeatId: linkedSeatId })}
+                    onSuccess={() => void refreshSeatView()}
                 />
             )}
 
@@ -721,9 +885,11 @@ function SeatsContent({
                 preselectedSeatId={allocationSeed?.seatId}
                 preselectedShiftIds={allocationSeed?.shiftIds}
                 preselectedShiftNames={allocationSeed?.shiftNames}
+                preselectedMultiShiftId={allocationSeed?.multiShiftId}
+                preselectedMultiShiftName={allocationSeed?.multiShiftName}
                 onClose={() => setAllocationSeed(null)}
                 onSuccess={() => {
-                    void loadSeats({ revealSeatId: linkedSeatId });
+                    void refreshSeatView();
                 }}
             />
 
@@ -748,27 +914,37 @@ function SeatsContent({
 }
 
 function ShiftFilterPanel({
-    selectedShift,
+    selectedScope,
     summaries,
+    multiShifts,
+    multiShiftSeatMap,
     totalSeats,
     branchTotalSeats,
     totalSlots,
     totalAllocatedSlots,
     onSelect,
 }: {
-    selectedShift: string;
+    selectedScope: ShiftScope;
     summaries: ShiftSummary[];
+    multiShifts: MultiShiftSummary[];
+    multiShiftSeatMap: MultiShiftSeatMap | null;
     totalSeats: number;
     branchTotalSeats: number;
     totalSlots: number;
     totalAllocatedSlots: number;
-    onSelect: (shiftId: string) => void;
+    onSelect: (scope: ShiftScope) => void;
 }) {
     const allPercent = totalSlots === 0 ? 0 : Math.round((totalAllocatedSlots / totalSlots) * 100);
-    const selectedSummary = summaries.find((shift) => shift.id === selectedShift);
-    const selectedLabel = selectedSummary
-        ? `${selectedSummary.allocated}/${selectedSummary.capacity} loaded seats allocated`
-        : `${totalAllocatedSlots}/${totalSlots} loaded shift slots used`;
+    const selectedSummary = selectedScope.kind === "primary"
+        ? summaries.find((shift) => shift.id === selectedScope.id)
+        : undefined;
+    const selectedLabel = selectedScope.kind === "multi"
+        ? multiShiftSeatMap
+            ? `${multiShiftSeatMap.assignedCount} assigned / ${multiShiftSeatMap.blockedCount} blocked / ${multiShiftSeatMap.availableCount} available`
+            : "Checking component and overlap conflicts…"
+        : selectedSummary
+            ? `${selectedSummary.allocated}/${selectedSummary.capacity} loaded seats allocated`
+            : `${totalAllocatedSlots}/${totalSlots} loaded shift slots used`;
 
     return (
         <div className="space-y-3">
@@ -782,28 +958,56 @@ function ShiftFilterPanel({
             <div className={cn("p-1.5", pageFilterShellClass)}>
                 <div className="flex gap-1.5 overflow-x-auto">
                 <ShiftFilterChip
-                    active={selectedShift === ""}
+                    active={selectedScope.kind === "all"}
                     label="All shifts"
                     sublabel={`${totalSeats}/${branchTotalSeats} loaded`}
                     count={`${allPercent}% used`}
                     percent={allPercent}
                     tone="info"
-                    onClick={() => onSelect("")}
+                    onClick={() => onSelect({ kind: "all" })}
                 />
                 {summaries.map((shift) => (
                     <ShiftFilterChip
                         key={shift.id}
-                        active={selectedShift === shift.id}
+                        active={selectedScope.kind === "primary" && selectedScope.id === shift.id}
                         label={shift.name}
                         sublabel={shift.timeLabel}
                         count={`${shift.available} free`}
                         percent={shift.percent}
                         tone={shift.tone}
-                        onClick={() => onSelect(shift.id)}
+                        onClick={() => onSelect({ kind: "primary", id: shift.id })}
                     />
                 ))}
+                {multiShifts.map(multiShift => {
+                    const selected = selectedScope.kind === "multi" && selectedScope.id === multiShift.id;
+                    const occupied = selected && multiShiftSeatMap
+                        ? multiShiftSeatMap.assignedCount + multiShiftSeatMap.blockedCount
+                        : 0;
+                    const percent = selected && multiShiftSeatMap && multiShiftSeatMap.totalSeats > 0
+                        ? Math.round((occupied / multiShiftSeatMap.totalSeats) * 100)
+                        : 0;
+                    return (
+                        <ShiftFilterChip
+                            key={multiShift.id}
+                            active={selected}
+                            label={multiShift.name}
+                            sublabel={multiShift.components.map(component => component.shiftName).join(" + ")}
+                            count={selected && multiShiftSeatMap
+                                ? `${multiShiftSeatMap.availableCount} free`
+                                : `${multiShift.components.length} shifts`}
+                            percent={percent}
+                            tone={selected && multiShiftSeatMap ? getShiftTone(percent) : "info"}
+                            onClick={() => onSelect({ kind: "multi", id: multiShift.id })}
+                        />
+                    );
+                })}
                 </div>
             </div>
+            {selectedScope.kind === "multi" && (
+                <p className={cn("text-xs", pageSubtleTextClass)}>
+                    Assigned seats belong to this exact shift combination. Blocked seats are occupied in a component or overlapping shift; available seats are free across every component.
+                </p>
+            )}
         </div>
     );
 }
@@ -878,28 +1082,43 @@ function ShiftFilterChip({
 function SeatSummaryBar({
     stats,
     activeShiftName,
+    multiShiftSelected,
     branchTotalSeats,
 }: {
     stats: {
         total: number;
         allocated: number;
+        blocked: number;
         available: number;
         allocations: number;
         totalSlots: number;
         utilization: number;
     };
     activeShiftName?: string;
+    multiShiftSelected: boolean;
     branchTotalSeats: number;
 }) {
-    const utilizationLabel = activeShiftName ? "Shift use" : "Slot use";
-    const utilizationDetail = activeShiftName
+    const utilizationLabel = multiShiftSelected ? "Seat use" : activeShiftName ? "Shift use" : "Slot use";
+    const utilizationDetail = multiShiftSelected
+        ? `${stats.allocated + stats.blocked}/${stats.total} unavailable seats`
+        : activeShiftName
         ? `${stats.allocations}/${stats.total} loaded seats`
         : `${stats.allocations}/${stats.totalSlots} loaded slots`;
 
     return (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className={cn("grid gap-3 sm:grid-cols-2", multiShiftSelected ? "xl:grid-cols-5" : "xl:grid-cols-4")}>
             <SummaryMetric label="Loaded seats" value={stats.total} detail={`${branchTotalSeats} total`} tone="neutral" />
-            <SummaryMetric label="Allocated" value={stats.allocated} detail={`${stats.allocations} loaded active slot${stats.allocations === 1 ? "" : "s"}`} tone="success" />
+            <SummaryMetric
+                label={multiShiftSelected ? "Assigned" : "Allocated"}
+                value={stats.allocated}
+                detail={multiShiftSelected
+                    ? "Exact bundle assignments"
+                    : `${stats.allocations} loaded active slot${stats.allocations === 1 ? "" : "s"}`}
+                tone="success"
+            />
+            {multiShiftSelected && (
+                <SummaryMetric label="Blocked" value={stats.blocked} detail="Component or overlap conflict" tone="danger" />
+            )}
             <SummaryMetric label="Available" value={stats.available} detail={activeShiftName ? `Loaded in ${activeShiftName}` : "Loaded unallocated seats"} tone="warning" />
             <SummaryMetric label={utilizationLabel} value={`${stats.utilization}%`} detail={utilizationDetail} tone={getShiftTone(stats.utilization)} />
         </div>
@@ -947,6 +1166,8 @@ function StatusFilterChip({
 }) {
     const tone = filter.value === "ALLOCATED"
         ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+        : filter.value === "BLOCKED"
+            ? "border-rose-400/30 bg-rose-400/10 text-rose-200"
         : filter.value === "AVAILABLE"
             ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
             : "border-cyan-400/30 bg-cyan-400/10 text-cyan-200";
@@ -993,11 +1214,13 @@ function SeatGrid({
     return (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {seats.map(seat => {
-                const allocated = seat.status === "Allocated";
-                const allocationEligible = !selectedShiftId || !allocated;
+                const allocated = seat.status === "Allocated" || seat.status === "Assigned";
+                const blocked = seat.status === "Blocked";
+                const allocationEligible = !selectedShiftId || seat.status === "Available";
                 const studentNames = getUniqueStudentNames(seat.allocations);
                 const shiftText = allocated
                     ? seat.allocations.map(getAllocationShiftLabel).join(", ")
+                    : blocked ? `Blocked${seat.blockedBy ? ` by ${seat.blockedBy}` : ""}`
                     : selectedShiftId ? "Open in selected shift" : "No active allocation";
 
                 return (
@@ -1012,7 +1235,11 @@ function SeatGrid({
                             pageGridCardClass,
                             pageGridCardHoverClass,
                             selectedSeatId === seat.id || focusedSeatId === seat.id ? "border-cyan-400/40 bg-cyan-400/[0.05]" : "border-[color:var(--ui-card-border)] hover:border-[color:var(--ui-card-hover-border)]",
-                            allocated ? "shadow-[inset_2px_0_0_rgba(52,211,153,0.6)]" : "border-dashed shadow-[inset_2px_0_0_rgba(251,191,36,0.45)]"
+                            allocated
+                                ? "shadow-[inset_2px_0_0_rgba(52,211,153,0.6)]"
+                                : blocked
+                                    ? "shadow-[inset_2px_0_0_rgba(248,113,113,0.6)]"
+                                    : "border-dashed shadow-[inset_2px_0_0_rgba(251,191,36,0.45)]"
                         )}
                     >
                         <div className="flex items-start justify-between gap-3">
@@ -1024,13 +1251,13 @@ function SeatGrid({
                         </div>
 
                         <div className="mt-3 min-h-[42px] flex-1">
-                            <p className={cn("truncate text-sm font-medium", allocated ? "text-[color:var(--text-primary)]" : "text-[color:var(--ui-tone-warning-text)]")}>
-                                {allocated ? studentNames.join(", ") || "Student" : "Available"}
+                            <p className={cn("truncate text-sm font-medium", allocated ? "text-[color:var(--text-primary)]" : blocked ? "text-[color:var(--ui-tone-danger-text)]" : "text-[color:var(--ui-tone-warning-text)]")}>
+                                {allocated ? studentNames.join(", ") || "Student" : blocked ? seat.blockedBy ?? "Conflict" : "Available"}
                             </p>
                             <p className={cn("mt-1 text-xs", pageSubtleTextClass)}>
                                 {allocated
                                     ? `${seat.allocations.length} allocation${seat.allocations.length === 1 ? "" : "s"}`
-                                    : "Ready to assign"}
+                                    : blocked ? "Unavailable across this combination" : "Ready to assign"}
                             </p>
                         </div>
 
@@ -1094,8 +1321,8 @@ function SeatList({
                     </thead>
                     <tbody className={pageTableBodyDividerClass}>
                         {seats.map(seat => {
-                            const allocated = seat.status === "Allocated";
-                            const allocationEligible = !selectedShiftId || !allocated;
+                            const allocated = seat.status === "Allocated" || seat.status === "Assigned";
+                            const allocationEligible = !selectedShiftId || seat.status === "Available";
                             const studentNames = getUniqueStudentNames(seat.allocations);
 
                             return (
@@ -1121,10 +1348,10 @@ function SeatList({
                                         <SeatStatusBadge status={seat.status} />
                                     </td>
                                     <td className="px-5 py-4 text-textSecondary">
-                                        {studentNames.length > 0 ? studentNames.join(", ") : "No student"}
+                                        {studentNames.length > 0 ? studentNames.join(", ") : seat.blockedBy ?? "No student"}
                                     </td>
                                     <td className="px-5 py-4 text-textSecondary">
-                                        {allocated ? seat.allocations.map(getAllocationShiftLabel).join(", ") : "Open"}
+                                        {allocated ? seat.allocations.map(getAllocationShiftLabel).join(", ") : seat.status === "Blocked" ? "Component or overlap conflict" : "Open"}
                                     </td>
                                     <td className="px-5 py-4">
                                         <div className="flex justify-end gap-2">
@@ -1158,7 +1385,7 @@ function SeatList({
 
 function SeatStatusBadge({ status }: { status: SeatStatus }) {
     return (
-        <Badge variant={status === "Allocated" ? "success" : "warning"}>
+        <Badge variant={status === "Allocated" || status === "Assigned" ? "success" : status === "Blocked" ? "danger" : "warning"}>
             {status}
         </Badge>
     );
@@ -1230,16 +1457,21 @@ function SeatDetailsDrawer({
 }) {
     if (!seat) return null;
 
-    const allocated = seat.status === "Allocated";
+    const allocated = seat.status === "Allocated" || seat.status === "Assigned";
+    const blocked = seat.status === "Blocked";
     const studentNames = getUniqueStudentNames(seat.allocations);
-    const allocationEligible = !selectedShiftId || !allocated;
+    const allocationEligible = !selectedShiftId || seat.status === "Available";
 
     return (
         <Drawer
             open
             onClose={onClose}
             title={`Seat ${seat.label}`}
-            description={allocated ? studentNames.join(", ") || "Allocated" : "Available for assignment"}
+            description={allocated
+                ? studentNames.join(", ") || "Assigned"
+                : blocked
+                    ? `Unavailable because ${seat.blockedBy ?? "another allocation"} occupies a component or overlapping shift`
+                    : "Available for assignment"}
             closeLabel="Close seat details"
             className="max-w-lg"
             footer={
@@ -1257,7 +1489,9 @@ function SeatDetailsDrawer({
                     </AppButton>
                 ) : allocationEligible ? null : (
                     <div className={cn("w-full px-4 py-3 text-sm", formWarningBannerClass)}>
-                        This seat is already allocated in the selected shift.
+                        {blocked
+                            ? "This seat is blocked by a component or overlapping shift."
+                            : "This seat is already allocated in the selected shift."}
                     </div>
                 )
             }

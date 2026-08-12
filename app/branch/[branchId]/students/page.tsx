@@ -4,7 +4,7 @@ import { DataTable } from "@/components/tables/DataTable";
 import { ViewToggle } from "@/components/tables/ViewToggle";
 import { Badge } from "@/components/ui/Badge";
 import { Avatar } from "@/components/ui/Avatar";
-import { AppButton, Dialog, Drawer, PageLoadingSkeleton, PageShell, useToast } from "@/components/ui";
+import { AppButton, AppSelect, Dialog, Drawer, PageLoadingSkeleton, PageShell, useToast } from "@/components/ui";
 import { Button } from "@/components/ui/Button";
 import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
 import {
@@ -52,12 +52,22 @@ import { getPermissionHelpText } from "@/lib/permissionMessages";
 import { useDataViewMode } from "@/hooks/useDataViewMode";
 import { RowActionsMenu, type RowActionsMenuItem } from "@/components/ui/RowActionsMenu";
 import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
-import type { CapabilityDecision } from "@/types";
+import type { CapabilityDecision, MultiShiftSummary, ShiftScope } from "@/types";
 import Link from "next/link";
 import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
 
 type DueResolution = "PAID" | "WAIVED" | "KEEP";
 type StudentRosterTab = "ACTIVE" | "INACTIVE";
+
+function shiftScopeValue(scope: ShiftScope) {
+    return scope.kind === "all" ? "all" : `${scope.kind}:${scope.id}`;
+}
+
+function shiftScopeFromValue(value: string): ShiftScope {
+    if (value === "all") return { kind: "all" };
+    const [kind, id] = value.split(":", 2);
+    return kind === "multi" ? { kind: "multi", id } : { kind: "primary", id };
+}
 
 function escapeCsvValue(value: string | number | null | undefined) {
     const text = value == null ? "" : String(value);
@@ -364,6 +374,8 @@ function StudentsContent({
     const [allStudents, setAllStudents] = useState<StudentListItem[]>([]);
     const [allPayments, setAllPayments] = useState<Payment[]>([]);
     const [shifts, setShifts] = useState<Shift[]>([]);
+    const [multiShifts, setMultiShifts] = useState<MultiShiftSummary[]>([]);
+    const [shiftOptionsLoaded, setShiftOptionsLoaded] = useState(false);
     const [studentTotals, setStudentTotals] = useState<Record<StudentRosterTab, number>>({
         ACTIVE: 0,
         INACTIVE: 0,
@@ -373,7 +385,7 @@ function StudentsContent({
     const [activeTab, setActiveTab] = useState<StudentRosterTab>(() => (
         targetStudentStatus === "INACTIVE" ? "INACTIVE" : "ACTIVE"
     ));
-    const [selectedShift, setSelectedShift] = useState<string>("");
+    const [shiftScope, setShiftScope] = useState<ShiftScope>({ kind: "all" });
     const [searchQuery, setSearchQuery] = useState("");
     const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
     const [viewMode, setViewMode] = useDataViewMode();
@@ -417,12 +429,15 @@ function StudentsContent({
                 ]).then(([activePayments, waivedPayments]) => [...activePayments, ...waivedPayments])
                 : Promise.resolve([]);
 
-            const [paymentsList, shiftsList] = await Promise.all([
+            const [paymentsList, shiftsList, multiShiftList] = await Promise.all([
                 paymentListPromise,
                 canViewAllocations ? branches.getShifts(branchId) : Promise.resolve([]),
+                canViewAllocations ? branches.getMultiShifts(branchId) : Promise.resolve([]),
             ]);
             setAllPayments(paymentsList);
             setShifts(shiftsList);
+            setMultiShifts(multiShiftList);
+            setShiftOptionsLoaded(true);
         } catch {
             setError("Failed to load students data.");
         }
@@ -435,7 +450,8 @@ function StudentsContent({
         try {
             const listParams = {
                 status: activeTab as StudentStatus,
-                shiftId: selectedShift || undefined,
+                shiftId: shiftScope.kind === "primary" ? shiftScope.id : undefined,
+                multiShiftId: shiftScope.kind === "multi" ? shiftScope.id : undefined,
                 query: debouncedSearchQuery || undefined,
             };
             const otherStatus: StudentRosterTab = activeTab === "ACTIVE" ? "INACTIVE" : "ACTIVE";
@@ -476,6 +492,19 @@ function StudentsContent({
             }
             setError(null);
         } catch (loadError) {
+            if (
+                shiftScope.kind === "multi"
+                && loadError instanceof Error
+                && loadError.message.toLowerCase().includes("not found")
+            ) {
+                setShiftScope({ kind: "all" });
+                toast.show({
+                    title: "Shift filter reset",
+                    description: "That multi-shift is no longer available. Showing all shifts.",
+                    tone: "info",
+                });
+                return;
+            }
             if (append) {
                 toast.show({
                     title: "More students could not be loaded",
@@ -489,10 +518,27 @@ function StudentsContent({
             if (append) setLoadingMore(false);
             else setLoading(false);
         }
-    }, [activeTab, branchId, debouncedSearchQuery, selectedShift, targetStudentId, targetStudentStatus, toast]);
+    }, [activeTab, branchId, debouncedSearchQuery, shiftScope, targetStudentId, targetStudentStatus, toast]);
 
     useEffect(() => { void loadStudentPage(); }, [loadStudentPage]);
     useEffect(() => { void loadAuxiliaryData(); }, [loadAuxiliaryData]);
+
+    useEffect(() => {
+        if (!shiftOptionsLoaded || shiftScope.kind !== "multi") return;
+        if (multiShifts.some(multiShift => multiShift.id === shiftScope.id)) return;
+        setShiftScope({ kind: "all" });
+        toast.show({
+            title: "Shift filter reset",
+            description: "That multi-shift is no longer available. Showing all shifts.",
+            tone: "info",
+        });
+    }, [multiShifts, shiftOptionsLoaded, shiftScope, toast]);
+
+    const shiftFilterOptions = useMemo(() => [
+        { value: "all", label: "All Shifts" },
+        ...shifts.map(shift => ({ value: `primary:${shift.id}`, label: shift.name })),
+        ...multiShifts.map(multiShift => ({ value: `multi:${multiShift.id}`, label: multiShift.name })),
+    ], [multiShifts, shifts]);
 
     useEffect(() => {
         if (targetStudentStatus === "ACTIVE" || targetStudentStatus === "INACTIVE") {
@@ -542,7 +588,8 @@ function StudentsContent({
         try {
             const exportStudents = await students.listAll(branchId, {
                 status: activeTab as StudentStatus,
-                shiftId: selectedShift || undefined,
+                shiftId: shiftScope.kind === "primary" ? shiftScope.id : undefined,
+                multiShiftId: shiftScope.kind === "multi" ? shiftScope.id : undefined,
                 query: debouncedSearchQuery || undefined,
             });
             const paymentHeaders = canViewPayments ? ["Total Due", "Total Paid", "Total Waived"] : [];
@@ -806,17 +853,14 @@ function StudentsContent({
             <div className={cn("flex flex-col gap-4 border-b pb-4 md:flex-row md:items-center md:justify-between", pageSectionDividerClass)}>
                 <div className={cn("flex items-center gap-3 px-3 py-2", pageFilterShellClass)}>
                     <label htmlFor="student-shift-filter" className={cn("text-sm", pageSubtleTextClass)}>Shift</label>
-                    <select
+                    <AppSelect
                         id="student-shift-filter"
-                        className={cn(formControlClass, "min-h-11 w-auto bg-[color:var(--ui-form-input-select-bg)] px-3 py-1.5 text-base lg:min-h-10 lg:text-sm")}
-                        value={selectedShift}
-                        onChange={e => setSelectedShift(e.target.value)}
-                    >
-                        <option value="" className="bg-[color:var(--ui-form-input-select-bg)]">All Shifts</option>
-                        {shifts.map(s => (
-                            <option key={s.id} value={s.id} className="bg-[color:var(--ui-form-input-select-bg)]">{s.name}</option>
-                        ))}
-                    </select>
+                        aria-label="Filter students by shift"
+                        containerClassName="min-w-48"
+                        value={shiftScopeValue(shiftScope)}
+                        options={shiftFilterOptions}
+                        onValueChange={value => setShiftScope(shiftScopeFromValue(value))}
+                    />
                 </div>
 
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">

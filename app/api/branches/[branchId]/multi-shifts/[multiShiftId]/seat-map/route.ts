@@ -3,26 +3,18 @@ import { prisma } from "@/lib/prisma";
 import { getSessionUser } from "@/lib/auth";
 import { StaffService } from "@/services/staff.service";
 import { sortSeatsByLabel } from "@/lib/seatNumbering";
+import { parseNullableTime, timesOverlap } from "@/utils/shiftTime";
 
 interface Params {
     params: Promise<{ branchId: string; multiShiftId: string }>;
-}
-
-/** Converts "HH:MM" to integer minutes since midnight. */
-function parseTime(t: string): number {
-    const [h, m] = t.split(":").map(Number);
-    return h * 60 + m;
-}
-
-function timesOverlap(aS: number, aE: number, bS: number, bE: number): boolean {
-    return aS < bE && aE > bS;
 }
 
 /**
  * GET /api/branches/[branchId]/multi-shifts/[multiShiftId]/seat-map
  *
  * Returns the seat availability grid for a multi-shift.
- * A seat is OCCUPIED if it has any active allocation (endDate = null) in a shift
+ * A seat is ASSIGNED when it has an active allocation for this exact bundle.
+ * Otherwise it is BLOCKED if it has any active allocation (endDate = null) in a shift
  * that is either:
  *   (a) one of the multi-shift's component shifts (exact match), OR
  *   (b) any other shift whose time window overlaps with any component shift.
@@ -71,45 +63,59 @@ export async function GET(_req: Request, { params }: Params) {
             orderBy: { label: "asc" },
         }));
 
-        let occupiedCount = 0;
+        let assignedCount = 0;
+        let blockedCount = 0;
 
         const seatList = seats.map(seat => {
-            let occupiedBy: string | null = null;
+            const exactAllocation = seat.seatAllocations.find(
+                allocation => allocation.multiShiftId === multiShiftId
+            );
+            if (exactAllocation) {
+                assignedCount++;
+                return {
+                    seatId: seat.id,
+                    label: seat.label,
+                    status: "ASSIGNED" as const,
+                    occupied: true,
+                    occupiedBy: exactAllocation.student.name,
+                };
+            }
+
+            let blockedBy: string | null = null;
 
             for (const alloc of seat.seatAllocations) {
                 // (a) exact component shift match
                 if (componentShiftIds.has(alloc.shiftId)) {
-                    occupiedBy = alloc.student.name;
+                    blockedBy = alloc.student.name;
                     break;
                 }
 
                 // (b) time-overlap with any component shift
                 const allocShift = shiftTimeMap.get(alloc.shiftId);
-                if (allocShift?.startTime && allocShift?.endTime) {
-                    const as = parseTime(allocShift.startTime);
-                    const ae = parseTime(allocShift.endTime);
+                if (allocShift) {
+                    const as = parseNullableTime(allocShift.startTime);
+                    const ae = parseNullableTime(allocShift.endTime);
                     for (const comp of ms.components) {
-                        if (comp.shift.startTime && comp.shift.endTime) {
-                            const cs = parseTime(comp.shift.startTime);
-                            const ce = parseTime(comp.shift.endTime);
-                            if (timesOverlap(as, ae, cs, ce)) {
-                                occupiedBy = alloc.student.name;
-                                break;
-                            }
+                        const cs = parseNullableTime(comp.shift.startTime);
+                        const ce = parseNullableTime(comp.shift.endTime);
+                        if (timesOverlap(as, ae, cs, ce)) {
+                            blockedBy = alloc.student.name;
+                            break;
                         }
                     }
                 }
 
-                if (occupiedBy) break;
+                if (blockedBy) break;
             }
 
-            if (occupiedBy) occupiedCount++;
+            if (blockedBy) blockedCount++;
 
             return {
                 seatId: seat.id,
                 label: seat.label,
-                occupied: occupiedBy !== null,
-                occupiedBy,
+                status: blockedBy ? "BLOCKED" as const : "AVAILABLE" as const,
+                occupied: blockedBy !== null,
+                occupiedBy: blockedBy,
             };
         });
 
@@ -117,8 +123,10 @@ export async function GET(_req: Request, { params }: Params) {
             multiShiftId,
             name: ms.name,
             totalSeats: seats.length,
-            occupiedCount,
-            availableCount: seats.length - occupiedCount,
+            assignedCount,
+            blockedCount,
+            occupiedCount: assignedCount + blockedCount,
+            availableCount: seats.length - assignedCount - blockedCount,
             seats: seatList,
         });
     } catch (err: unknown) {

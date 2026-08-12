@@ -79,6 +79,10 @@ export async function GET(
         const { searchParams } = new URL(req.url);
         const studentId = searchParams.get("studentId") || undefined;
         const shiftId = searchParams.get("shiftId") || undefined;
+        const multiShiftId = searchParams.get("multiShiftId") || undefined;
+        if (shiftId && multiShiftId) {
+            throw new PaginationInputError("shiftId and multiShiftId cannot be combined");
+        }
         const activeOnly = searchParams.get("activeOnly") === "true";
         const statusValue = searchParams.get("status");
         if (statusValue && statusValue !== "ACTIVE" && statusValue !== "ENDED") {
@@ -97,6 +101,7 @@ export async function GET(
         const allocations = await SeatAllocationService.listAllocations(user.id, branchId, {
             studentId,
             shiftId,
+            multiShiftId,
             activeOnly,
             status: statusValue === "ACTIVE" || statusValue === "ENDED" ? statusValue : undefined,
         }, {

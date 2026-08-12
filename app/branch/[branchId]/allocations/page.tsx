@@ -9,7 +9,7 @@ import { UpdateAllocationDialog } from "@/components/allocations/UpdateAllocatio
 import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
 import { ViewToggle } from "@/components/tables/ViewToggle";
 import { useDataViewMode } from "@/hooks/useDataViewMode";
-import { AppButton, PageLoadingSkeleton, PageShell } from "@/components/ui";
+import { AppButton, AppSelect, PageLoadingSkeleton, PageShell } from "@/components/ui";
 import {
     pageCountBadgeClass,
     pageDescriptionClass,
@@ -26,6 +26,9 @@ import {
 import { cn } from "@/lib/utils";
 import { AlertCircle, ArrowRightLeft, CalendarCheck, UserPlus, Users } from "lucide-react";
 import { seats } from "@/lib/api/seats";
+import { branches } from "@/lib/api/branches";
+import type { Shift } from "@/app/generated/prisma/browser";
+import type { MultiShiftSummary, ShiftScope } from "@/types";
 import type { CapabilityDecision, PagedResult } from "@/types/ui";
 import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 import { formWarningBannerClass } from "@/components/ui/formSurface";
@@ -47,6 +50,16 @@ type AllocationTab = "ACTIVE" | "ENDED";
 
 const EMPTY_TOTALS: Record<AllocationTab, number> = { ACTIVE: 0, ENDED: 0 };
 const EMPTY_CURSORS: Record<AllocationTab, string | null> = { ACTIVE: null, ENDED: null };
+
+function shiftScopeValue(scope: ShiftScope) {
+    return scope.kind === "all" ? "all" : `${scope.kind}:${scope.id}`;
+}
+
+function shiftScopeFromValue(value: string): ShiftScope {
+    if (value === "all") return { kind: "all" };
+    const [kind, id] = value.split(":", 2);
+    return kind === "multi" ? { kind: "multi", id } : { kind: "primary", id };
+}
 
 function mergeAllocationRows(current: AllocationRow[], incoming: AllocationRow[]) {
     const byId = new Map(current.map(allocation => [allocation.id, allocation]));
@@ -93,8 +106,13 @@ function AllocationsContent({
     const [error, setError] = useState<string | null>(null);
     const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
     const [linkedRecordError, setLinkedRecordError] = useState<string | null>(null);
+    const [scopeFeedback, setScopeFeedback] = useState<string | null>(null);
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<AllocationTab>("ACTIVE");
+    const [shiftScope, setShiftScope] = useState<ShiftScope>({ kind: "all" });
+    const [shifts, setShifts] = useState<Shift[]>([]);
+    const [multiShifts, setMultiShifts] = useState<MultiShiftSummary[]>([]);
+    const [shiftOptionsLoaded, setShiftOptionsLoaded] = useState(false);
     const [viewMode, setViewMode] = useDataViewMode();
 
     // Optional: pre-selected student passed via query param from students page
@@ -129,6 +147,34 @@ function AllocationsContent({
         }
     }, [linkedStatus]);
 
+    useEffect(() => {
+        let cancelled = false;
+        Promise.all([branches.getShifts(branchId), branches.getMultiShifts(branchId)])
+            .then(([primaryShifts, bundleShifts]) => {
+                if (cancelled) return;
+                setShifts(primaryShifts);
+                setMultiShifts(bundleShifts);
+                setShiftOptionsLoaded(true);
+            })
+            .catch(() => {
+                if (!cancelled) setScopeFeedback("Shift filters could not be loaded.");
+            });
+        return () => { cancelled = true; };
+    }, [branchId]);
+
+    useEffect(() => {
+        if (!shiftOptionsLoaded || shiftScope.kind !== "multi") return;
+        if (multiShifts.some(multiShift => multiShift.id === shiftScope.id)) return;
+        setShiftScope({ kind: "all" });
+        setScopeFeedback("That multi-shift is no longer available. Showing all shifts.");
+    }, [multiShifts, shiftOptionsLoaded, shiftScope]);
+
+    const shiftFilterOptions = useMemo(() => [
+        { value: "all", label: "All Shifts" },
+        ...shifts.map(shift => ({ value: `primary:${shift.id}`, label: shift.name })),
+        ...multiShifts.map(multiShift => ({ value: `multi:${multiShift.id}`, label: multiShift.name })),
+    ], [multiShifts, shifts]);
+
     // Auto-open update dialog when navigated with ?changeStudentId=...
     useEffect(() => {
         if (!canManageAllocations || !changeStudentId || allocations.length === 0) return;
@@ -159,9 +205,14 @@ function AllocationsContent({
             setError(null);
             setLinkedRecordError(null);
 
+            const scopeFilters = {
+                shiftId: shiftScope.kind === "primary" ? shiftScope.id : undefined,
+                multiShiftId: shiftScope.kind === "multi" ? shiftScope.id : undefined,
+            };
+
             let [activePage, endedPage] = await Promise.all([
-                seats.listAllocations<AllocationRow>(branchId, { status: "ACTIVE" }),
-                seats.listAllocations<AllocationRow>(branchId, { status: "ENDED" }),
+                seats.listAllocations<AllocationRow>(branchId, { status: "ACTIVE", ...scopeFilters }),
+                seats.listAllocations<AllocationRow>(branchId, { status: "ENDED", ...scopeFilters }),
             ]);
 
             const loadUntil = async (
@@ -175,6 +226,7 @@ function AllocationsContent({
                     page = await seats.listAllocations<AllocationRow>(branchId, {
                         status,
                         cursor: page.nextCursor,
+                        ...scopeFilters,
                     });
                     items = mergeAllocationRows(items, page.items);
                 }
@@ -225,12 +277,21 @@ function AllocationsContent({
             }
         } catch (err: unknown) {
             if (sequence === loadSequence.current) {
-                setError(err instanceof Error ? err.message : "Failed to load allocations");
+                if (
+                    shiftScope.kind === "multi"
+                    && err instanceof Error
+                    && err.message.toLowerCase().includes("not found")
+                ) {
+                    setShiftScope({ kind: "all" });
+                    setScopeFeedback("That multi-shift is no longer available. Showing all shifts.");
+                } else {
+                    setError(err instanceof Error ? err.message : "Failed to load allocations");
+                }
             }
         } finally {
             if (sequence === loadSequence.current) setLoading(false);
         }
-    }, [branchId, changeStudentId, linkedAllocationId]);
+    }, [branchId, changeStudentId, linkedAllocationId, shiftScope]);
 
     const loadMoreAllocations = useCallback(async (status: AllocationTab) => {
         const cursor = nextCursors[status];
@@ -239,7 +300,12 @@ function AllocationsContent({
         setLoadingMoreTab(status);
         setLoadMoreError(null);
         try {
-            const page = await seats.listAllocations<AllocationRow>(branchId, { status, cursor });
+            const page = await seats.listAllocations<AllocationRow>(branchId, {
+                status,
+                cursor,
+                shiftId: shiftScope.kind === "primary" ? shiftScope.id : undefined,
+                multiShiftId: shiftScope.kind === "multi" ? shiftScope.id : undefined,
+            });
             setAllocations(current => mergeAllocationRows(current, page.items));
             setNextCursors(current => ({ ...current, [status]: page.nextCursor }));
             setAllocationTotals(current => ({ ...current, [status]: page.total }));
@@ -248,7 +314,7 @@ function AllocationsContent({
         } finally {
             setLoadingMoreTab(null);
         }
-    }, [branchId, loadingMoreTab, nextCursors]);
+    }, [branchId, loadingMoreTab, nextCursors, shiftScope]);
 
     useEffect(() => {
         if (!branchId) return;
@@ -371,6 +437,12 @@ function AllocationsContent({
                 </p>
             )}
 
+            {scopeFeedback && (
+                <p role="status" className="text-sm text-[color:var(--ui-tone-warning-text)]">
+                    {scopeFeedback}
+                </p>
+            )}
+
             <div className={cn("flex flex-col gap-3 border-b pb-4 md:flex-row md:items-center md:justify-between", pageSectionDividerClass)}>
                 <div role="group" className="flex max-w-full items-center gap-2 overflow-x-auto" aria-label="Allocation status filter">
                     {(["ACTIVE", "ENDED"] as const).map(tab => {
@@ -402,7 +474,19 @@ function AllocationsContent({
                     })}
                 </div>
 
-                <ViewToggle value={viewMode} onChange={setViewMode} className="hidden md:inline-flex" />
+                <div className="flex items-center gap-2">
+                    <AppSelect
+                        aria-label="Filter allocations by shift"
+                        containerClassName="min-w-48"
+                        value={shiftScopeValue(shiftScope)}
+                        options={shiftFilterOptions}
+                        onValueChange={value => {
+                            setScopeFeedback(null);
+                            setShiftScope(shiftScopeFromValue(value));
+                        }}
+                    />
+                    <ViewToggle value={viewMode} onChange={setViewMode} className="hidden md:inline-flex" />
+                </div>
             </div>
 
             {filteredAllocations.length === 0 ? (

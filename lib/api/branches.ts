@@ -1,7 +1,7 @@
 import { apiClient } from "./core";
 import type { Student, Seat, Payment, Staff, Shift, Branch } from "@/app/generated/prisma/browser";
 import type { SeatNumberingConfig } from "@/lib/seatNumbering";
-import type { BranchAccess } from "@/types";
+import type { BranchAccess, MultiShiftSeatMap, MultiShiftSummary } from "@/types";
 import type { PagedResult } from "@/types/ui";
 
 export const branches = {
@@ -21,9 +21,10 @@ export const branches = {
         headers: { "Idempotency-Key": crypto.randomUUID() },
     }),
 
-    getStudents: async (branchId: string, shiftId?: string): Promise<Student[]> => {
+    getStudents: async (branchId: string, shiftId?: string, multiShiftId?: string): Promise<Student[]> => {
         const query = new URLSearchParams({ all: "true" });
         if (shiftId) query.set("shiftId", shiftId);
+        if (multiShiftId) query.set("multiShiftId", multiShiftId);
         const page = await apiClient.get(`/branches/${branchId}/students?${query.toString()}`) as unknown as PagedResult<Student>;
         return page.items;
     },
@@ -73,6 +74,14 @@ export const branches = {
 
     getShifts: async (branchId: string): Promise<Shift[]> => {
         return apiClient.get(`/branches/${branchId}/shifts`);
+    },
+
+    getMultiShifts: async (branchId: string): Promise<MultiShiftSummary[]> => {
+        return apiClient.get(`/branches/${branchId}/multi-shifts`);
+    },
+
+    getMultiShiftSeatMap: async (branchId: string, multiShiftId: string): Promise<MultiShiftSeatMap> => {
+        return apiClient.get(`/branches/${branchId}/multi-shifts/${multiShiftId}/seat-map`);
     },
 
     createShift: async (branchId: string, data: { name: string; startTime?: string; endTime?: string }): Promise<Shift> => {
