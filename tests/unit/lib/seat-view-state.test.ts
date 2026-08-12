@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+    getAtomicReleaseAllocationId,
     getMultiShiftBranchStatusCount,
     getUnloadedMultiShiftMatchCount,
 } from "@/lib/seatViewState";
@@ -22,6 +23,12 @@ const map: MultiShiftSeatMap = {
 };
 
 describe("multi-shift paginated seat view state", () => {
+    it("uses one component ID for an atomic grouped bundle release", () => {
+        expect(getAtomicReleaseAllocationId(["bundle_a", "bundle_b", "bundle_c"])).toBe("bundle_a");
+        expect(getAtomicReleaseAllocationId("single")).toBe("single");
+        expect(() => getAtomicReleaseAllocationId([])).toThrow(/at least one allocation/i);
+    });
+
     it("uses branch-wide map counts rather than loaded-page counts", () => {
         expect(getMultiShiftBranchStatusCount(map, "ALL")).toBe(4);
         expect(getMultiShiftBranchStatusCount(map, "ALLOCATED")).toBe(1);

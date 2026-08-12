@@ -18,6 +18,31 @@ export type SeatAllocationListOptions = {
     all?: boolean;
 };
 
+const SERIALIZABLE_TRANSACTION_RETRIES = 3;
+
+function isRetryableTransactionConflict(error: unknown) {
+    return typeof error === "object"
+        && error !== null
+        && "code" in error
+        && error.code === "P2034";
+}
+
+async function runSerializableTransaction<T>(
+    operation: (tx: Prisma.TransactionClient) => Promise<T>
+): Promise<T> {
+    for (let attempt = 1; attempt <= SERIALIZABLE_TRANSACTION_RETRIES; attempt++) {
+        try {
+            return await prisma.$transaction(operation, { isolationLevel: "Serializable" });
+        } catch (error) {
+            if (!isRetryableTransactionConflict(error) || attempt === SERIALIZABLE_TRANSACTION_RETRIES) {
+                throw error;
+            }
+        }
+    }
+
+    throw new Error("Allocation transaction could not be completed.");
+}
+
 export class SeatAllocationService {
     private static async getSeatBranchId(seatId: string) {
         const seat = await prisma.seat.findUnique({
@@ -70,7 +95,7 @@ export class SeatAllocationService {
         await StaffService.authorize(userId, authorizedBranchId, "seat_allocation");
         await EntitlementService.assertBranchWritable(authorizedBranchId);
 
-        return prisma.$transaction(async (tx) => {
+        return runSerializableTransaction(async (tx) => {
             // 1. Fetch seat and resolve branch scope
             const seat = await tx.seat.findUnique({
                 where: { id: seatId },
@@ -244,7 +269,7 @@ export class SeatAllocationService {
         await StaffService.authorize(userId, allocation.seat.branchId, "seat_allocation");
         await EntitlementService.assertBranchWritable(allocation.seat.branchId);
 
-        return prisma.$transaction(async (tx) => {
+        return runSerializableTransaction(async (tx) => {
             const scopedAllocation = await tx.seatAllocation.findUnique({
                 where: { id: allocationId },
                 include: { seat: true },
@@ -318,47 +343,14 @@ export class SeatAllocationService {
         await StaffService.authorize(userId, branchId, "seat_allocation");
         await EntitlementService.assertBranchWritable(branchId);
 
-        let uniqueAllocationIds = [...new Set(allocationIds)];
-        let scopedAllocations = await prisma.seatAllocation.findMany({
+        const uniqueAllocationIds = [...new Set(allocationIds)];
+        const scopedAllocations = await prisma.seatAllocation.findMany({
             where: { id: { in: uniqueAllocationIds } },
             include: { seat: { select: { branchId: true } } },
         });
 
         if (scopedAllocations.length !== uniqueAllocationIds.length) {
             throw new Error("One or more allocations were not found.");
-        }
-
-        for (const allocation of scopedAllocations) {
-            if (allocation.endDate !== null) throw new Error("Allocation is already ended.");
-            if (allocation.studentId !== studentId) throw new Error("Student mismatch.");
-            if (allocation.seat.branchId !== branchId) {
-                throw new Error("Allocations must belong to the same branch.");
-            }
-        }
-
-        // Expand a selected bundle component to all active sibling rows. The
-        // server must not rely on every client submitting the complete bundle.
-        const bundleScopes = scopedAllocations
-            .filter((allocation) => allocation.multiShiftId !== null)
-            .map((allocation) => ({
-                studentId: allocation.studentId,
-                seatId: allocation.seatId,
-                multiShiftId: allocation.multiShiftId!,
-                endDate: null,
-            }));
-        if (bundleScopes.length > 0) {
-            const bundleSiblings = await prisma.seatAllocation.findMany({
-                where: { OR: bundleScopes },
-                include: { seat: { select: { branchId: true } } },
-            });
-            uniqueAllocationIds = [...new Set([
-                ...uniqueAllocationIds,
-                ...bundleSiblings.map((allocation) => allocation.id),
-            ])];
-            scopedAllocations = await prisma.seatAllocation.findMany({
-                where: { id: { in: uniqueAllocationIds } },
-                include: { seat: { select: { branchId: true } } },
-            });
         }
 
         for (const allocation of scopedAllocations) {
@@ -381,8 +373,9 @@ export class SeatAllocationService {
         const uniqueNewShiftIds = [...new Set(newShiftIds)];
 
         // Validate the complete replacement before ending any existing row.
-        return prisma.$transaction(async (tx) => {
-            const activeOldAllocations = await tx.seatAllocation.findMany({
+        return runSerializableTransaction(async (tx) => {
+            let replacementAllocationIds = uniqueAllocationIds;
+            let activeOldAllocations = await tx.seatAllocation.findMany({
                 where: { id: { in: uniqueAllocationIds }, endDate: null },
                 include: { seat: { select: { branchId: true } } },
             });
@@ -393,6 +386,40 @@ export class SeatAllocationService {
                 if (allocation.studentId !== studentId) throw new Error("Student mismatch.");
                 if (allocation.seat.branchId !== branchId) {
                     throw new Error("Allocations must belong to the same branch.");
+                }
+            }
+
+            // Resolve bundle siblings inside the serializable transaction so
+            // concurrent component writes cannot leave a partial old bundle.
+            const bundleScopes = activeOldAllocations
+                .filter((allocation) => allocation.multiShiftId !== null)
+                .map((allocation) => ({
+                    studentId: allocation.studentId,
+                    seatId: allocation.seatId,
+                    multiShiftId: allocation.multiShiftId!,
+                    endDate: null,
+                }));
+            if (bundleScopes.length > 0) {
+                const bundleSiblings = await tx.seatAllocation.findMany({
+                    where: { OR: bundleScopes },
+                    select: { id: true },
+                });
+                replacementAllocationIds = [...new Set([
+                    ...replacementAllocationIds,
+                    ...bundleSiblings.map((allocation) => allocation.id),
+                ])];
+                activeOldAllocations = await tx.seatAllocation.findMany({
+                    where: { id: { in: replacementAllocationIds }, endDate: null },
+                    include: { seat: { select: { branchId: true } } },
+                });
+                if (activeOldAllocations.length !== replacementAllocationIds.length) {
+                    throw new Error("One or more allocations are no longer active.");
+                }
+                for (const allocation of activeOldAllocations) {
+                    if (allocation.studentId !== studentId) throw new Error("Student mismatch.");
+                    if (allocation.seat.branchId !== branchId) {
+                        throw new Error("Allocations must belong to the same branch.");
+                    }
                 }
             }
 
@@ -473,14 +500,14 @@ export class SeatAllocationService {
                 where: {
                     seatId: newSeatId,
                     endDate: null,
-                    id: { notIn: uniqueAllocationIds },
+                    id: { notIn: replacementAllocationIds },
                 },
             });
             const activeStudentAllocations = await tx.seatAllocation.findMany({
                 where: {
                     studentId,
                     endDate: null,
-                    id: { notIn: uniqueAllocationIds },
+                    id: { notIn: replacementAllocationIds },
                 },
             });
 
@@ -524,7 +551,7 @@ export class SeatAllocationService {
             }
 
             await tx.seatAllocation.updateMany({
-                where: { id: { in: uniqueAllocationIds }, endDate: null },
+                where: { id: { in: replacementAllocationIds }, endDate: null },
                 data: { endDate: new Date() },
             });
 

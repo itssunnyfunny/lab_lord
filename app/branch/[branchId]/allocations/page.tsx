@@ -32,6 +32,7 @@ import type { MultiShiftSummary, ShiftScope } from "@/types";
 import type { CapabilityDecision, PagedResult } from "@/types/ui";
 import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 import { formWarningBannerClass } from "@/components/ui/formSurface";
+import { getAtomicReleaseAllocationId } from "@/lib/seatViewState";
 
 interface AllocationRow {
     id: string;
@@ -342,15 +343,16 @@ function AllocationsContent({
         if (!manageDecision.allowed) {
             throw new Error(manageDecision.reason ?? "Allocation changes are unavailable.");
         }
-        const idArray = Array.isArray(ids) ? ids : [ids];
-        for (const id of idArray) {
-            const res = await fetch(`/api/seat-allocations/${id}/end`, {
-                method: "POST",
-            });
-            if (!res.ok) {
-                const data = await res.json();
-                throw new Error(data.error || "Failed to end allocation");
-            }
+        // A grouped multi-shift is released atomically by the server when any
+        // one component allocation is ended. Sending every component would
+        // turn the successful first release into a false "already ended" error.
+        const allocationId = getAtomicReleaseAllocationId(ids);
+        const res = await fetch(`/api/seat-allocations/${allocationId}/end`, {
+            method: "POST",
+        });
+        if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.error || "Failed to end allocation");
         }
         await fetchAllocations();
     };

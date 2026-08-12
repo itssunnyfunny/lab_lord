@@ -154,6 +154,23 @@ describe("SeatAllocationService Integration", () => {
         SeatAllocationService.assignSeatToShifts(user.id, seat.id, student2.id, [shift.id])
       ).rejects.toThrow();
     });
+
+    it("serializes concurrent requests so only one student wins the same seat and shift", async () => {
+      const { user, branch, seat, shift } = await createTestWorld();
+      const student1 = await createStudent({ branchId: branch.id, name: "Concurrent Alice" });
+      const student2 = await createStudent({ branchId: branch.id, name: "Concurrent Bob" });
+
+      const results = await Promise.allSettled([
+        SeatAllocationService.assignSeatToShifts(user.id, seat.id, student1.id, [shift.id]),
+        SeatAllocationService.assignSeatToShifts(user.id, seat.id, student2.id, [shift.id]),
+      ]);
+
+      expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+      expect(await testPrisma.seatAllocation.count({
+        where: { seatId: seat.id, shiftId: shift.id, endDate: null },
+      })).toBe(1);
+    });
   });
 
   // ─── unassignSeat ─────────────────────────────────────────────────────────

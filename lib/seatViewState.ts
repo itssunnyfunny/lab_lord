@@ -2,6 +2,12 @@ import type { MultiShiftSeatMap, MultiShiftSeatStatus } from "@/types";
 
 export type SeatStatusFilter = "ALL" | "ALLOCATED" | "BLOCKED" | "AVAILABLE";
 
+export function getAtomicReleaseAllocationId(ids: string | string[]): string {
+    const allocationId = Array.isArray(ids) ? ids[0] : ids;
+    if (!allocationId) throw new Error("At least one allocation is required.");
+    return allocationId;
+}
+
 function statusForFilter(filter: SeatStatusFilter): MultiShiftSeatStatus | null {
     if (filter === "ALLOCATED") return "ASSIGNED";
     if (filter === "BLOCKED") return "BLOCKED";
