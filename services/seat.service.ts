@@ -39,6 +39,19 @@ type SeatConflictAllocation = {
     multiShiftId?: string | null;
 };
 
+const MINIMAL_STUDENT_IDENTITY_SELECT = {
+    id: true,
+    name: true,
+} as const satisfies Prisma.StudentSelect;
+
+const SEAT_STUDENT_DETAIL_SELECT = {
+    id: true,
+    name: true,
+    phone: true,
+    status: true,
+    monthlyFee: true,
+} as const satisfies Prisma.StudentSelect;
+
 function parseShiftWindow(shift: ShiftWindow): ParsedShiftWindow {
     return {
         id: shift.id,
@@ -185,6 +198,10 @@ export class SeatService {
 
     static async listSeats(userId: string, branchId: string, options: SeatListOptions | string = {}) {
         await this.assertBranchAccess(userId, branchId, "seat_allocation");
+        const access = await StaffService.getBranchAccess(userId, branchId);
+        const studentSelect = access.permissions.students
+            ? SEAT_STUDENT_DETAIL_SELECT
+            : MINIMAL_STUDENT_IDENTITY_SELECT;
 
         const resolved = typeof options === "string" ? { shiftId: options } : options;
         const limit = resolved.limit ?? DEFAULT_PAGE_SIZE;
@@ -216,13 +233,7 @@ export class SeatService {
                     },
                     include: {
                         student: {
-                            select: {
-                                id: true,
-                                name: true,
-                                phone: true,
-                                status: true,
-                                monthlyFee: true,
-                            },
+                            select: studentSelect,
                         },
                         shift: {
                             select: {
@@ -542,6 +553,14 @@ export class SeatService {
     static async getShiftsCapacity(userId: string, branchId: string, studentId?: string, excludeAllocationIds?: string[]) {
         await this.assertBranchAccess(userId, branchId, "seat_allocation");
 
+        if (studentId) {
+            const student = await prisma.student.findFirst({
+                where: { id: studentId, branchId },
+                select: { id: true },
+            });
+            if (!student) throw new Error("Student not found");
+        }
+
         // ⚡ Bolt: Fetch total seats, active shifts, and optionally student's allocations concurrently
         const [seats, shifts, rawAllocations] = await Promise.all([
             prisma.seat.findMany({
@@ -565,6 +584,8 @@ export class SeatService {
             studentId ? prisma.seatAllocation.findMany({
                 where: {
                     studentId,
+                    student: { branchId },
+                    seat: { branchId },
                     endDate: null,
                     ...(excludeAllocationIds?.length
                         ? { id: { notIn: excludeAllocationIds } }

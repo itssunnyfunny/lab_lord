@@ -20,6 +20,26 @@ export type SeatAllocationListOptions = {
 
 const SERIALIZABLE_TRANSACTION_RETRIES = 3;
 
+const MINIMAL_STUDENT_IDENTITY_SELECT = {
+    id: true,
+    name: true,
+} as const satisfies Prisma.StudentSelect;
+
+const ALLOCATION_STUDENT_DETAIL_SELECT = {
+    id: true,
+    branchId: true,
+    name: true,
+    phone: true,
+    status: true,
+    joinedAt: true,
+    billingStartAt: true,
+    monthlyFee: true,
+    feeLinkedShiftId: true,
+    feeLinkedMultiShiftId: true,
+    createdAt: true,
+    updatedAt: true,
+} as const satisfies Prisma.StudentSelect;
+
 function isRetryableTransactionConflict(error: unknown) {
     return typeof error === "object"
         && error !== null
@@ -585,6 +605,10 @@ export class SeatAllocationService {
         options: SeatAllocationListOptions = {}
     ) {
         await StaffService.authorize(userId, branchId, "seat_allocation");
+        const access = await StaffService.getBranchAccess(userId, branchId);
+        const studentSelect = access.permissions.students
+            ? ALLOCATION_STUDENT_DETAIL_SELECT
+            : MINIMAL_STUDENT_IDENTITY_SELECT;
 
         if (filters.shiftId && filters.multiShiftId) {
             throw new Error("shiftId and multiShiftId cannot be combined");
@@ -633,7 +657,7 @@ export class SeatAllocationService {
             where: options.all ? baseWhere : pageWhere,
             include: {
                 seat: true,
-                student: true,
+                student: { select: studentSelect },
                 shift: true,
                 multiShift: { select: { id: true, name: true } },
             },
