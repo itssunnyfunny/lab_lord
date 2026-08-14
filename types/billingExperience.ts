@@ -89,4 +89,25 @@ export type BillingExperience = {
     isOwner: boolean;
     canManageBilling: boolean;
   };
+  hasActiveOperation?: boolean;
 };
+
+export type BranchBillingExperience = Pick<
+  BillingExperience,
+  | "organizationId"
+  | "accessMode"
+  | "effectivePlan"
+  | "customerState"
+  | "customerMessage"
+  | "trialEndsAt"
+  | "entitlements"
+> & {
+  hasActiveOperation: boolean;
+  branch: Pick<NonNullable<BillingExperience["branch"]>, "id" | "billingStatus"> | null;
+  viewer: {
+    isOwner: false;
+    canManageBilling: false;
+  };
+};
+
+export type BillingExperienceView = BillingExperience | BranchBillingExperience;

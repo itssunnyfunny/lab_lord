@@ -180,4 +180,21 @@ describe("buildTopSearchResults", () => {
         expect(permitted.flatMap(group => group.results)[0]?.href)
             .toBe(`/branch/${branchId}/payments?generate=1`);
     });
+
+    it("only exposes AI messages when analytics and payment visibility are both available", () => {
+        const analyticsOnly = buildTopSearchResults({
+            branchId,
+            query: "messages",
+            access: { permissions: permissions(["analytics"]) },
+        });
+        expect(analyticsOnly.flatMap(group => group.results)).toHaveLength(0);
+
+        const permitted = buildTopSearchResults({
+            branchId,
+            query: "messages",
+            access: { permissions: permissions(["analytics", "view_payments"]) },
+        });
+        expect(permitted.flatMap(group => group.results)[0]?.href)
+            .toBe(`/branch/${branchId}/ai/messages`);
+    });
 });

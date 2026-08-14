@@ -89,6 +89,17 @@ describe("branch capability decisions", () => {
         expect(result.recoveryHref).toBeNull();
     });
 
+    it("requires payment visibility before exposing overdue AI messages", () => {
+        const analyticsOnly = access({
+            isOwner: false,
+            role: "STAFF",
+            permissions: { ...allPermissions, view_payments: false },
+        });
+
+        expect(getBranchCapabilityDecision(analyticsOnly, "aiUse").blocker).toBe("permission");
+        expect(getBranchCapabilityDecision(analyticsOnly, "aiGenerate").blocker).toBe("permission");
+    });
+
     it("allows a manager when the resolved permission set includes the action", () => {
         const result = getBranchCapabilityDecision(
             access({ isOwner: false, role: "MANAGER" }),

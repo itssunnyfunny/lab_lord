@@ -99,5 +99,43 @@ describe("AI route subscription entitlements", () => {
     expect(readResponse.status).toBe(200);
     expect(writeResponse.status).toBe(403);
     expect(mocks.draftOverdueMessages).toHaveBeenCalledTimes(1);
+    expect(mocks.authorize.mock.calls.map(call => call[2])).toEqual([
+      "analytics",
+      "view_payments",
+      "analytics",
+      "view_payments",
+    ]);
+  });
+
+  it("blocks both message reads and regeneration when payment visibility is denied", async () => {
+    mocks.assertBranchEntitlement.mockResolvedValue({ entitlements: ["AI_ACCESS"] });
+    mocks.draftOverdueMessages.mockResolvedValue({ items: [], meta: {} });
+    mocks.authorize.mockImplementation(
+      async (_userId: string, _branchId: string, action: string) => {
+        if (action === "view_payments") {
+          throw new Error("Unauthorized: Permission 'view_payments' is disabled for this staff member");
+        }
+        return true;
+      }
+    );
+
+    const route = await import("@/app/api/ai/branch/[branchId]/messages/route");
+    const readResponse = await route.GET(
+      new Request("http://test.local/api/ai/branch/branch_1/messages") as never,
+      { params: Promise.resolve({ branchId: "branch_1" }) }
+    );
+    const writeResponse = await route.POST(
+      new Request("http://test.local/api/ai/branch/branch_1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentIds: ["student_1"] }),
+      }) as never,
+      { params: Promise.resolve({ branchId: "branch_1" }) }
+    );
+
+    expect(readResponse.status).toBe(403);
+    expect(writeResponse.status).toBe(403);
+    expect(mocks.authorize).toHaveBeenCalledWith("user_1", "branch_1", "view_payments");
+    expect(mocks.draftOverdueMessages).not.toHaveBeenCalled();
   });
 });

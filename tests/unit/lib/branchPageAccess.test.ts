@@ -22,7 +22,7 @@ describe("branch page access mapping", () => {
         expect(BRANCH_PAGE_ACCESS.allocations).toBe("seat_allocation");
         expect(BRANCH_PAGE_ACCESS).not.toHaveProperty("aiInsights");
         expect(BRANCH_PAGE_ACCESS.aiReports).toBe("analytics");
-        expect(BRANCH_PAGE_ACCESS.aiMessages).toBe("analytics");
+        expect(BRANCH_PAGE_ACCESS.aiMessages).toEqual(["analytics", "view_payments"]);
     });
 
     it("uses the effective permission result instead of role names", () => {
@@ -31,6 +31,11 @@ describe("branch page access mapping", () => {
         expect(hasBranchPageAccess(access, "seats")).toBe(true);
         expect(hasBranchPageAccess(access, "allocations")).toBe(true);
         expect(hasBranchPageAccess(access, "settings")).toBe(false);
+    });
+
+    it("requires every permission configured for a page", () => {
+        expect(hasBranchPageAccess({ permissions: permissions(["analytics"]) }, "aiMessages")).toBe(false);
+        expect(hasBranchPageAccess({ permissions: permissions(["analytics", "view_payments"]) }, "aiMessages")).toBe(true);
     });
 
     it("denies access when no branch access payload is available", () => {

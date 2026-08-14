@@ -17,7 +17,12 @@ import {
     validateRequiredText,
     validateShiftDrafts,
 } from "@/lib/formValidation";
-import { MESSAGE_LANGUAGES, REMINDER_TONES, UpdateBranchSettingsDto } from "@/types";
+import {
+    MESSAGE_LANGUAGES,
+    REMINDER_TONES,
+    UpdateBranchSettingsDto,
+    type StaffAction,
+} from "@/types";
 import { StaffService } from "./staff.service";
 import {
     DEFAULT_PRIMARY_SHIFTS,
@@ -81,6 +86,153 @@ type AtomicBranchChangeInput = {
     effectiveAt?: Date | null;
     createdByUserId: string;
 };
+
+const BRANCH_DETAILS_SELECT = {
+    id: true,
+    organizationId: true,
+    name: true,
+    city: true,
+    address: true,
+    contactPhone: true,
+    openingTime: true,
+    closingTime: true,
+    defaultFee: true,
+    defaultAdmissionFee: true,
+    defaultMessageLanguage: true,
+    reminderTone: true,
+    aiEnabled: true,
+    createdAt: true,
+    lastDataChange: true,
+    aiLastCalledAt: true,
+    aiStatus: true,
+    billingStatus: true,
+    billingActivatedAt: true,
+    billingArchivedAt: true,
+    organization: { select: { id: true, name: true } },
+    _count: {
+        select: {
+            seats: true,
+            students: { where: { status: "ACTIVE" } },
+            shifts: { where: { status: "ACTIVE" } },
+            payments: { where: { status: "DUE" } },
+            staff: true,
+        },
+    },
+    shifts: {
+        where: { status: "ACTIVE" },
+        select: {
+            id: true,
+            name: true,
+            startTime: true,
+            endTime: true,
+            price: true,
+            isReserved: true,
+        },
+        orderBy: { createdAt: "asc" },
+    },
+    staff: {
+        select: {
+            id: true,
+            role: true,
+            user: { select: { id: true, name: true, email: true } },
+        },
+        orderBy: { createdAt: "asc" },
+    },
+} satisfies Prisma.BranchSelect;
+
+type BranchDetailsRecord = Prisma.BranchGetPayload<{ select: typeof BRANCH_DETAILS_SELECT }>;
+type BranchDetailsCounts = Partial<Record<"seats" | "students" | "shifts" | "payments" | "staff", number>>;
+
+export type BranchDetailsResponse = Pick<Branch, "id" | "organizationId" | "name"> &
+    Partial<Pick<Branch,
+        | "city"
+        | "address"
+        | "contactPhone"
+        | "openingTime"
+        | "closingTime"
+        | "defaultFee"
+        | "defaultAdmissionFee"
+        | "defaultMessageLanguage"
+        | "reminderTone"
+        | "aiEnabled"
+        | "createdAt"
+        | "lastDataChange"
+        | "aiLastCalledAt"
+        | "aiStatus"
+        | "billingStatus"
+        | "billingActivatedAt"
+        | "billingArchivedAt"
+    >> & {
+        organization: BranchDetailsRecord["organization"];
+        _count?: BranchDetailsCounts;
+        shifts?: BranchDetailsRecord["shifts"];
+        staff?: BranchDetailsRecord["staff"];
+    };
+
+function projectBranchDetails(
+    branch: BranchDetailsRecord,
+    permissions: Record<StaffAction, boolean>
+): BranchDetailsResponse {
+    const canManageBranch = permissions.manage_branch;
+    const canViewStudents = permissions.students;
+    const canViewPayments = permissions.view_payments;
+    const canViewSeatData = permissions.seat_allocation || canManageBranch;
+    const result: BranchDetailsResponse = {
+        id: branch.id,
+        organizationId: branch.organizationId,
+        name: branch.name,
+        organization: {
+            id: branch.organization.id,
+            name: branch.organization.name,
+        },
+    };
+
+    if (canManageBranch) {
+        Object.assign(result, {
+            city: branch.city,
+            address: branch.address,
+            contactPhone: branch.contactPhone,
+            openingTime: branch.openingTime,
+            closingTime: branch.closingTime,
+            defaultFee: branch.defaultFee,
+            defaultAdmissionFee: branch.defaultAdmissionFee,
+            defaultMessageLanguage: branch.defaultMessageLanguage,
+            reminderTone: branch.reminderTone,
+            aiEnabled: branch.aiEnabled,
+            createdAt: branch.createdAt,
+            lastDataChange: branch.lastDataChange,
+            aiLastCalledAt: branch.aiLastCalledAt,
+            aiStatus: branch.aiStatus,
+            billingStatus: branch.billingStatus,
+            billingActivatedAt: branch.billingActivatedAt,
+            billingArchivedAt: branch.billingArchivedAt,
+        });
+    } else {
+        if (canViewStudents) {
+            result.defaultFee = branch.defaultFee;
+            result.defaultAdmissionFee = branch.defaultAdmissionFee;
+        }
+        if (canViewPayments) {
+            result.defaultMessageLanguage = branch.defaultMessageLanguage;
+            result.reminderTone = branch.reminderTone;
+        }
+    }
+
+    const counts: BranchDetailsCounts = {};
+    if (canViewSeatData) {
+        counts.seats = branch._count.seats;
+        counts.shifts = branch._count.shifts;
+    }
+    if (canViewStudents) counts.students = branch._count.students;
+    if (canViewPayments) counts.payments = branch._count.payments;
+    if (canManageBranch) counts.staff = branch._count.staff;
+    if (Object.keys(counts).length > 0) result._count = counts;
+
+    if (canViewSeatData) result.shifts = branch.shifts;
+    if (canManageBranch) result.staff = branch.staff;
+
+    return result;
+}
 
 const BRANCH_CREATE_CHANGE_TYPES: readonly BillingChangeType[] = [
     "TRIAL_SUBSCRIPTION_UPDATE",
@@ -449,6 +601,7 @@ export class BranchService {
         const access = await StaffService.getBranchAccess(userId, branchId);
         const canViewDetails =
             access.permissions.students ||
+            access.permissions.seat_allocation ||
             access.permissions.manage_branch ||
             access.permissions.analytics ||
             access.permissions.view_payments;
@@ -457,43 +610,11 @@ export class BranchService {
             throw new Error("Unauthorized: Branch details are not enabled for this staff member");
         }
 
-        const canViewStaff = access.permissions.manage_branch;
-
-        return prisma.branch.findUnique({
+        const branch = await prisma.branch.findUnique({
             where: { id: branchId },
-            include: {
-                organization: true,
-                _count: {
-                    select: {
-                        seats: true,
-                        students: { where: { status: "ACTIVE" } },
-                        shifts: { where: { status: "ACTIVE" } },
-                        payments: { where: { status: "DUE" } },
-                        staff: true,
-                    },
-                },
-                shifts: {
-                    where: { status: "ACTIVE" },
-                    select: {
-                        id: true,
-                        name: true,
-                        startTime: true,
-                        endTime: true,
-                        price: true,
-                        isReserved: true,
-                    },
-                    orderBy: { createdAt: "asc" },
-                },
-                staff: canViewStaff
-                    ? {
-                        include: {
-                            user: { select: { id: true, name: true, email: true } },
-                        },
-                        orderBy: { createdAt: "asc" },
-                    }
-                    : false,
-            },
+            select: BRANCH_DETAILS_SELECT,
         });
+        return branch ? projectBranchDetails(branch, access.permissions) : null;
     }
 
     static parseSettingsPayload(body: unknown): UpdateBranchSettingsDto {
@@ -533,43 +654,17 @@ export class BranchService {
         await EntitlementService.assertBranchWritable(branchId);
         const data = this.parseSettingsPayload(body);
 
-        return prisma.branch.update({
+        await prisma.branch.update({
             where: { id: branchId },
             data: {
                 ...data,
                 lastDataChange: new Date(),
             },
-            include: {
-                organization: true,
-                _count: {
-                    select: {
-                        seats: true,
-                        students: { where: { status: "ACTIVE" } },
-                        shifts: { where: { status: "ACTIVE" } },
-                        payments: { where: { status: "DUE" } },
-                        staff: true,
-                    },
-                },
-                shifts: {
-                    where: { status: "ACTIVE" },
-                    select: {
-                        id: true,
-                        name: true,
-                        startTime: true,
-                        endTime: true,
-                        price: true,
-                        isReserved: true,
-                    },
-                    orderBy: { createdAt: "asc" },
-                },
-                staff: {
-                    include: {
-                        user: { select: { id: true, name: true, email: true } },
-                    },
-                    orderBy: { createdAt: "asc" },
-                },
-            },
+            select: { id: true },
         });
+        const updated = await this.getBranchDetails(userId, branchId);
+        if (!updated) throw new Error("Branch not found after update");
+        return updated;
     }
 
     static async retryPendingActivation(userId: string, branchId: string) {

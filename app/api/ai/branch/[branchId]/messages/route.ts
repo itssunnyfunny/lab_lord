@@ -5,6 +5,11 @@ import { StaffService } from "@/services/staff.service"
 import { EntitlementService } from "@/services/entitlement.service"
 import { NextRequest, NextResponse } from "next/server"
 
+async function authorizeMessageAccess(userId: string, branchId: string) {
+    await StaffService.authorize(userId, branchId, "analytics")
+    await StaffService.authorize(userId, branchId, "view_payments")
+}
+
 export async function GET(
     req: NextRequest,
     props: { params: Promise<{ branchId: string }> }
@@ -16,7 +21,7 @@ export async function GET(
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
         }
 
-        await StaffService.authorize(user.id, branchId, "analytics")
+        await authorizeMessageAccess(user.id, branchId)
         await EntitlementService.assertBranchEntitlement(branchId, "AI_ACCESS")
 
         const { searchParams } = new URL(req.url)
@@ -52,7 +57,7 @@ export async function POST(
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
         }
 
-        await StaffService.authorize(user.id, branchId, "analytics")
+        await authorizeMessageAccess(user.id, branchId)
         await EntitlementService.assertBranchEntitlement(branchId, "AI_ACCESS")
         await EntitlementService.assertBranchWritable(branchId)
 

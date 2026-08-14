@@ -16,6 +16,10 @@ import {
     pageFromRows,
     parsePageLimit,
 } from "@/lib/cursorPagination";
+import {
+    getStaffInviteTokenEmailPrefix,
+    lockStaffInviteBranch,
+} from "@/services/staffInviteSecurity";
 
 // ==========================================
 // 1. TYPES & PERMISSION MATRIX
@@ -360,18 +364,46 @@ export class StaffService {
         await this.authorize(actorId, branchId, "staff_management");
         await EntitlementService.assertBranchWritable(branchId);
 
-        const deleted = await db.staff.deleteMany({
-            where: {
-                id: staffId,
-                branchId,
-            },
+        return db.$transaction(async (tx) => {
+            await lockStaffInviteBranch(tx, branchId);
+
+            const staffMember = await tx.staff.findUnique({
+                where: { id: staffId },
+                select: {
+                    branchId: true,
+                    user: { select: { email: true } },
+                },
+            });
+            if (!staffMember || staffMember.branchId !== branchId) {
+                throw new Error("Staff member not found");
+            }
+
+            const now = new Date();
+            await tx.staffInvite.updateMany({
+                where: {
+                    branchId,
+                    acceptedAt: null,
+                    expiresAt: { gt: now },
+                    token: {
+                        startsWith: getStaffInviteTokenEmailPrefix(staffMember.user.email),
+                    },
+                },
+                data: { expiresAt: now },
+            });
+
+            const deleted = await tx.staff.deleteMany({
+                where: {
+                    id: staffId,
+                    branchId,
+                },
+            });
+
+            if (deleted.count !== 1) {
+                throw new Error("Staff member not found");
+            }
+
+            return deleted;
         });
-
-        if (deleted.count !== 1) {
-            throw new Error("Staff member not found");
-        }
-
-        return deleted;
     }
 
     /**

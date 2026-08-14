@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { billing } from "@/lib/api/billing";
 import { branches } from "@/lib/api/branches";
 import type { BillingExperience } from "@/types/billingExperience";
+import { toClientBillingExperience } from "@/lib/billingExperienceView";
 
 type BillingExperienceContextValue = {
   experience: BillingExperience | null;
@@ -37,7 +38,7 @@ export function BillingExperienceProvider({
       const next = branchId
         ? (await branches.getAccess(branchId)).billingExperience ?? null
         : (await billing.getOverview(organizationId!)).experience;
-      setExperience(next);
+      setExperience(next ? toClientBillingExperience(next) : null);
       setError(null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to load billing status");

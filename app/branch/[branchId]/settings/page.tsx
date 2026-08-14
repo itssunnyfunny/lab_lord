@@ -91,14 +91,14 @@ interface BranchData {
     aiEnabled: boolean;
     createdAt: string;
     lastDataChange: string;
-    organization?: { id: string; name: string; ownerId: string } | null;
-    _count?: {
+    organization?: { id: string; name: string } | null;
+    _count?: Partial<{
         seats: number;
         students: number;
         shifts: number;
         payments: number;
         staff: number;
-    };
+    }>;
     shifts?: ActiveShift[];
     staff?: StaffMember[];
 }
@@ -441,7 +441,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
         );
     }
 
-    const counts = branch._count ?? { seats: 0, students: 0, shifts: 0, payments: 0, staff: 0 };
+    const counts = branch._count ?? {};
     const shifts = branch.shifts ?? [];
     const staff = branch.staff ?? [];
 
@@ -517,8 +517,12 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                             <ReadOnlyRow label="Default admission fee" value={`Rs ${formatNumber(branch.defaultAdmissionFee ?? 0)}`} />
                         </>
                     )}
-                    <ReadOnlyRow label="Active students" value={<span className="inline-flex items-center gap-2"><Users size={14} />{counts.students}</span>} />
-                    <ReadOnlyRow label="Seat capacity" value={<span className="inline-flex items-center gap-2"><Armchair size={14} />{counts.seats} seats</span>} />
+                    {access.permissions.students && (
+                        <ReadOnlyRow label="Active students" value={<span className="inline-flex items-center gap-2"><Users size={14} />{counts.students ?? 0}</span>} />
+                    )}
+                    {(access.permissions.manage_branch || access.permissions.seat_allocation) && (
+                        <ReadOnlyRow label="Seat capacity" value={<span className="inline-flex items-center gap-2"><Armchair size={14} />{counts.seats ?? 0} seats</span>} />
+                    )}
                 </SettingsPanel>
 
                 <SettingsPanel id="communication" title="Communication" description="Defaults for manually copied payment reminder drafts." icon={MessageSquare}>
@@ -556,7 +560,9 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                             <ReadOnlyRow label="Reminder tone" value={`${branch.reminderTone.charAt(0).toUpperCase()}${branch.reminderTone.slice(1)}`} />
                         </>
                     )}
-                    <ReadOnlyRow label="Payments due" value={counts.payments} />
+                    {access.permissions.view_payments && (
+                        <ReadOnlyRow label="Payments due" value={counts.payments ?? 0} />
+                    )}
                 </SettingsPanel>
 
                 <SettingsPanel id="ai" title="AI" description="Control whether this branch can generate AI reports." icon={Bot}>
@@ -583,7 +589,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                 </SettingsPanel>
 
                 <SettingsPanel id="access" title="Access" description="Team summary for this branch." icon={Shield}>
-                    <ReadOnlyRow label="Staff members" value={counts.staff} />
+                    <ReadOnlyRow label="Staff members" value={counts.staff ?? 0} />
                     <div className="grid gap-2 px-5 py-4 md:grid-cols-2">
                         {staff.map(member => (
                             <SettingsCard key={member.id}>
