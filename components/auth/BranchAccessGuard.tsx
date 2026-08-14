@@ -18,7 +18,7 @@ import type { BillingFeatureKey } from "@/lib/billingPolicy";
 
 type BranchAccessGuardProps = {
     branchId: string | undefined;
-    permission: StaffAction;
+    permission: StaffAction | readonly [StaffAction, ...StaffAction[]];
     children: ReactNode | ((access: BranchAccess) => ReactNode);
     title?: string;
     description?: string;
@@ -71,6 +71,8 @@ export function BranchAccessGuard({
     feature,
 }: BranchAccessGuardProps) {
     const { access, loading, error, can } = useBranchAccess(branchId);
+    const requiredPermissions = typeof permission === "string" ? [permission] : permission;
+    const missingPermission = requiredPermissions.find(requiredPermission => !can(requiredPermission));
 
     if (!branchId) {
         return <BranchNoAccess title={title} description={description} />;
@@ -80,12 +82,12 @@ export function BranchAccessGuard({
         return <BranchAccessLoading />;
     }
 
-    if (error || !access || !can(permission)) {
+    if (error || !access || missingPermission) {
         return (
             <BranchNoAccess
                 branchId={branchId}
                 title={title}
-                description={description ?? getPermissionHelpText(permission)}
+                description={description ?? getPermissionHelpText(missingPermission ?? requiredPermissions[0])}
             />
         );
     }

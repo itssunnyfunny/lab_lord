@@ -26,8 +26,8 @@ export const BRANCH_CAPABILITIES = {
     analyticsView: { permissions: ["analytics"], entitlement: "ADVANCED_ANALYTICS" },
     staffView: { permissions: ["manage_branch"], entitlement: "STAFF_MANAGEMENT" },
     staffManage: { permissions: ["staff_management"], entitlement: "STAFF_MANAGEMENT", mutation: true },
-    aiUse: { permissions: ["analytics"], entitlement: "AI_ACCESS" },
-    aiGenerate: { permissions: ["analytics"], entitlement: "AI_ACCESS", mutation: true },
+    aiUse: { permissions: ["analytics", "view_payments"], entitlement: "AI_ACCESS" },
+    aiGenerate: { permissions: ["analytics", "view_payments"], entitlement: "AI_ACCESS", mutation: true },
     settingsManage: { permissions: ["manage_branch"], mutation: true },
 } as const satisfies Record<string, CapabilityRequirement>;
 

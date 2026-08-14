@@ -113,4 +113,24 @@ describe("BranchSidebar", () => {
     expect(labels).toContain("AI Reports");
     expect(labels).toContain("AI Messages");
   });
+
+  it("hides AI messages when payment visibility is denied", () => {
+    mocks.access = {
+      branchId: "branch_1",
+      branchName: "Main Branch",
+      organizationId: "org_1",
+      isOwner: false,
+      role: "STAFF",
+      staffId: "staff_1",
+      effectivePlan: "PRO",
+      entitlements: ["ADVANCED_ANALYTICS", "AI_ACCESS"],
+      permissions: { ...permissions, manage_branch: false, view_payments: false },
+    };
+
+    renderToStaticMarkup(<BranchSidebar />);
+
+    const labels = mocks.sidebarItems.map(item => item.label);
+    expect(labels).toContain("AI Reports");
+    expect(labels).not.toContain("AI Messages");
+  });
 });

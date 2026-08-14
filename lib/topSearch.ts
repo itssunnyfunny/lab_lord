@@ -193,7 +193,7 @@ const ACTIONS: ActionDefinition[] = [
         title: "AI Messages",
         subtitle: "Draft overdue payment messages",
         path: "ai/messages",
-        permissions: ["analytics"],
+        permissions: ["analytics", "view_payments"],
         keywords: ["ai", "messages", "reminders", "overdue"],
     },
 ];

@@ -36,7 +36,7 @@ type BranchNavItem = {
     icon: LucideIcon;
     label: string;
     href: string;
-    permission?: StaffAction;
+    permission?: StaffAction | readonly [StaffAction, ...StaffAction[]];
     feature?: BillingFeatureKey;
     active: (pathname: string | null) => boolean;
 };
@@ -50,9 +50,10 @@ export function BranchSidebar() {
 
     if (!branchId) return null;
 
-    const canSee = (permission?: StaffAction) => {
+    const canSee = (permission?: StaffAction | readonly [StaffAction, ...StaffAction[]]) => {
         if (!permission) return true;
-        return access?.permissions[permission] ?? false;
+        const requiredPermissions = typeof permission === "string" ? [permission] : permission;
+        return requiredPermissions.every(requiredPermission => access?.permissions[requiredPermission] ?? false);
     };
 
     const featureAvailable = (feature?: BillingFeatureKey) => !feature || hasFeatureEntitlement(access?.entitlements ?? [], feature);
@@ -75,7 +76,7 @@ export function BranchSidebar() {
 
     const intelligenceItems: BranchNavItem[] = [
         { icon: FileText, label: "AI Reports", href: `${basePath}/ai/reports`, permission: "analytics", feature: "AI_REPORTS", active: current => current === `${basePath}/ai/reports` },
-        { icon: MessageSquare, label: "AI Messages", href: `${basePath}/ai/messages`, permission: "analytics", feature: "AI_MESSAGES", active: current => current === `${basePath}/ai/messages` },
+        { icon: MessageSquare, label: "AI Messages", href: `${basePath}/ai/messages`, permission: ["analytics", "view_payments"], feature: "AI_MESSAGES", active: current => current === `${basePath}/ai/messages` },
     ];
 
     const renderItems = (items: BranchNavItem[]) => items.map(item => (
