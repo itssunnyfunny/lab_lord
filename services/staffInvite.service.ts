@@ -1,52 +1,15 @@
-import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { prisma as db } from "@/lib/prisma";
 import { StaffRole } from "@/types";
 import { StaffService } from "@/services/staff.service";
 import { EntitlementService } from "@/services/entitlement.service";
+import {
+    createStaffInviteToken,
+    getStaffInviteEmailHash,
+    lockStaffInviteBranch,
+    staffInviteEmailMatchesHash,
+} from "@/services/staffInviteSecurity";
 
 const DEFAULT_INVITE_TTL_DAYS = 7;
-const INVITE_TOKEN_VERSION = "v2";
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function normalizeEmail(email: string) {
-    const normalized = email.trim().toLowerCase();
-    if (!normalized || normalized.length > 160 || !EMAIL_PATTERN.test(normalized)) {
-        throw new Error("Invite email must be a valid email address.");
-    }
-    return normalized;
-}
-
-function hashEmail(email: string) {
-    return createHash("sha256").update(email).digest("base64url");
-}
-
-function createInviteToken(invitedEmail: string) {
-    const emailHash = hashEmail(normalizeEmail(invitedEmail));
-    return `${INVITE_TOKEN_VERSION}.${emailHash}.${randomBytes(32).toString("base64url")}`;
-}
-
-function getInviteEmailHash(token: string) {
-    const [version, emailHash, secret, ...extra] = token.split(".");
-    if (
-        version !== INVITE_TOKEN_VERSION
-        || !emailHash
-        || !secret
-        || extra.length > 0
-        || emailHash.length !== 43
-        || secret.length !== 43
-        || !/^[A-Za-z0-9_-]+$/.test(emailHash)
-        || !/^[A-Za-z0-9_-]+$/.test(secret)
-    ) {
-        return null;
-    }
-    return emailHash;
-}
-
-function emailMatchesHash(email: string, expectedHash: string) {
-    const actual = Buffer.from(hashEmail(normalizeEmail(email)));
-    const expected = Buffer.from(expectedHash);
-    return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
 
 function addDays(date: Date, days: number) {
     const result = new Date(date);
@@ -71,7 +34,7 @@ export class StaffInviteService {
             orderBy: { createdAt: "desc" },
         });
 
-        return invites.filter(invite => getInviteEmailHash(invite.token));
+        return invites.filter(invite => getStaffInviteEmailHash(invite.token));
     }
 
     static async createInvite(
@@ -88,13 +51,19 @@ export class StaffInviteService {
             throw new Error("Invite expiry must be between 1 and 30 days.");
         }
 
-        return db.staffInvite.create({
-            data: {
-                branchId,
-                role,
-                token: createInviteToken(invitedEmail),
-                expiresAt: addDays(new Date(), ttlDays),
-            },
+        const token = createStaffInviteToken(invitedEmail);
+        const expiresAt = addDays(new Date(), ttlDays);
+
+        return db.$transaction(async (tx) => {
+            await lockStaffInviteBranch(tx, branchId);
+            return tx.staffInvite.create({
+                data: {
+                    branchId,
+                    role,
+                    token,
+                    expiresAt,
+                },
+            });
         });
     }
 
@@ -102,32 +71,36 @@ export class StaffInviteService {
         await StaffService.authorize(actorId, branchId, "staff_management");
         await EntitlementService.assertBranchWritable(branchId);
 
-        const invite = await db.staffInvite.findUnique({
-            where: { id: inviteId },
-        });
+        return db.$transaction(async (tx) => {
+            await lockStaffInviteBranch(tx, branchId);
 
-        if (!invite || invite.branchId !== branchId) {
-            throw new Error("Invite not found");
-        }
+            const invite = await tx.staffInvite.findUnique({
+                where: { id: inviteId },
+            });
 
-        if (invite.acceptedAt) {
-            throw new Error("Accepted invites cannot be revoked");
-        }
+            if (!invite || invite.branchId !== branchId) {
+                throw new Error("Invite not found");
+            }
 
-        const now = new Date();
-        if (invite.expiresAt.getTime() <= now.getTime()) {
-            return invite;
-        }
+            if (invite.acceptedAt) {
+                throw new Error("Accepted invites cannot be revoked");
+            }
 
-        return db.staffInvite.update({
-            where: { id: invite.id },
-            data: { expiresAt: now },
+            const now = new Date();
+            if (invite.expiresAt.getTime() <= now.getTime()) {
+                return invite;
+            }
+
+            return tx.staffInvite.update({
+                where: { id: invite.id },
+                data: { expiresAt: now },
+            });
         });
     }
 
     static async getInvitePreview(token: string) {
         const normalizedToken = normalizeToken(token);
-        if (!getInviteEmailHash(normalizedToken)) {
+        if (!getStaffInviteEmailHash(normalizedToken)) {
             throw new Error("This invite link is no longer supported. Ask the branch owner for a fresh invite.");
         }
 
@@ -158,12 +131,22 @@ export class StaffInviteService {
 
     static async acceptInvite(userId: string, token: string) {
         const normalizedToken = normalizeToken(token);
-        const invitedEmailHash = getInviteEmailHash(normalizedToken);
+        const invitedEmailHash = getStaffInviteEmailHash(normalizedToken);
         if (!invitedEmailHash) {
             throw new Error("This invite link is no longer supported. Ask the branch owner for a fresh invite.");
         }
 
         return db.$transaction(async (tx) => {
+            const inviteBranch = await tx.staffInvite.findUnique({
+                where: { token: normalizedToken },
+                select: { branchId: true },
+            });
+            if (!inviteBranch) {
+                throw new Error("Invite not found");
+            }
+
+            await lockStaffInviteBranch(tx, inviteBranch.branchId);
+
             const [invite, user] = await Promise.all([
                 tx.staffInvite.findUnique({
                     where: { token: normalizedToken },
@@ -189,20 +172,21 @@ export class StaffInviteService {
                 throw new Error("Invite has expired");
             }
 
-            if (!user || !emailMatchesHash(user.email, invitedEmailHash)) {
+            if (!user || !staffInviteEmailMatchesHash(user.email, invitedEmailHash)) {
                 throw new Error("This invite was issued to a different email address.");
             }
 
             await EntitlementService.assertBranchWritable(invite.branchId);
             await EntitlementService.assertBranchEntitlement(invite.branchId, "STAFF_MANAGEMENT");
 
+            const now = new Date();
             const claimed = await tx.staffInvite.updateMany({
                 where: {
                     id: invite.id,
                     acceptedAt: null,
-                    expiresAt: { gt: new Date() },
+                    expiresAt: { gt: now },
                 },
-                data: { acceptedAt: new Date() },
+                data: { acceptedAt: now },
             });
 
             if (claimed.count !== 1) {
