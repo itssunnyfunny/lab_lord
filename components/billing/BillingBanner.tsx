@@ -52,9 +52,10 @@ export function getBillingBannerActionLabel(
 
 export function BillingBanner({ experience }: { experience: BillingExperience }) {
   const titleId = useId();
+  const hasActiveOperation = experience.hasActiveOperation ?? experience.activeOperation != null;
   const dismissible = experience.customerState === "TRIAL_ACTIVE"
     && experience.accessMode === "FULL"
-    && experience.activeOperation == null;
+    && !hasActiveOperation;
   const dismissalKey = `lablords:billing-banner:trial:${experience.organizationId}`;
   const dismissed = useSyncExternalStore(
     subscribeToDismissals,
@@ -64,12 +65,11 @@ export function BillingBanner({ experience }: { experience: BillingExperience })
   );
 
   if (experience.accessMode === "READ_ONLY") return null;
-  const show = experience.effectivePlan === "STANDARD_TRIAL" || experience.accessMode === "WARNING" || experience.activeOperation;
+  const show = experience.effectivePlan === "STANDARD_TRIAL" || experience.accessMode === "WARNING" || hasActiveOperation;
   if (!show) return null;
   if (dismissible && dismissed) return null;
 
   const isWarning = experience.accessMode === "WARNING";
-  const hasActiveOperation = experience.activeOperation != null;
   const Icon = isWarning ? AlertTriangle : hasActiveOperation ? WalletCards : Clock3;
   const contextLabel = isWarning
     ? "Billing action required"
