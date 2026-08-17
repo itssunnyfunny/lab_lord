@@ -107,7 +107,7 @@ After the controlled authorization, rerun the preflight with the returned Live `
 
 Also retain evidence of a signed Live webhook `2xx`, completed processing page, correct quantity and charge date, `paidThrough` behavior, replacement/cutover, pause/resume, cancellation, hosted recovery, and successful Production hourly cron invocation.
 
-The release order is: deploy migrations and code with the multi-method flag off; pause billing workers and drain mutation leases; audit legacy unsupported-method cancellations; enable and validate all three methods in Test Mode; run one allowlisted Live workspace; then enable the application flag broadly only after reconciliation is clean. Any ambiguous provider state or overlapping charge goes to manual review, never an automatic refund.
+The release order is: deploy migrations and code with the multi-method flag off; have an authorized operator pause the Production hourly billing cron through the approved Vercel control and drain mutation leases; audit legacy unsupported-method cancellations against the explicitly bound, verified target; enable and validate all three methods in Test Mode; run one allowlisted Live workspace; then enable the application flag broadly only after reconciliation is clean. Preview has no automatic cron worker. Any ambiguous provider state or overlapping charge goes to manual review, never an automatic refund.
 
 ## Reviewer access
 

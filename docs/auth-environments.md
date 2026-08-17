@@ -1,22 +1,24 @@
 # Auth Environments
 
+> **Scope:** This is an authentication-only supplement. For the complete
+> environment inventory, database isolation, migrations, cron, deployment, and
+> incident procedures, use
+> [`production-runbook.md`](production-runbook.md).
+
 Lab Lords uses Clerk for real identity and Prisma `User` rows for app ownership, staff roles, settings, and audit history.
 
 ## Local Development
 
 Use a Clerk development instance for local work. Development keys intentionally show Clerk's development-mode banner.
 
-Required local `.env` values:
+Required local configuration names are `DATABASE_URL`,
+`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, and `CLERK_SECRET_KEY`. Obtain values from
+the approved local/development sources; do not copy them into documentation or
+reports.
 
-```bash
-DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE"
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="pk_test_..."
-CLERK_SECRET_KEY="sk_test_..."
-NEXT_PUBLIC_CLERK_SIGN_IN_URL="/sign-in"
-NEXT_PUBLIC_CLERK_SIGN_UP_URL="/sign-up"
-NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL="/org"
-NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL="/onboarding"
-```
+Application routing is defined in code: sign-in is `/sign-in`, sign-up is
+`/sign-up`, and an unqualified successful authentication falls back to `/app`.
+Do not invent environment-variable overrides for these routes.
 
 Smooth seeded demo account:
 
@@ -44,24 +46,16 @@ Clerk keys are not needed for Vitest. Clerk/auth behavior is mocked in tests tha
 
 Production should use a separate Clerk production instance, live keys, and a production database.
 
-Required production environment values:
-
-```bash
-DATABASE_URL="postgresql://..."
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="pk_live_..."
-CLERK_SECRET_KEY="sk_live_..."
-NEXT_PUBLIC_CLERK_SIGN_IN_URL="/sign-in"
-NEXT_PUBLIC_CLERK_SIGN_UP_URL="/sign-up"
-NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL="/org"
-NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL="/onboarding"
-```
+Production uses the same three configuration names with values from the
+operator-approved Production database and Clerk production instance. Never
+print or copy those values into a local report.
 
 Production checklist:
 
 - Configure allowed origins and redirect URLs in Clerk for the deployed domain.
 - Use live Clerk keys only in the production hosting environment.
-- Run Prisma migrations against the production database before traffic.
-- Do not seed demo data into production unless deliberately creating a demo tenant.
+- Follow `production-runbook.md` for the reviewed application/migration order.
+- Never seed demo data into Production.
 
 ## Check The Current Env
 

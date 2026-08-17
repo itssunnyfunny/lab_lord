@@ -1,14 +1,14 @@
 # Workspace billing V2 rollout
 
-Workspace billing bills each active branch as a quantity unit. Card subscriptions can be updated in place; UPI AutoPay and eMandate plan, quantity, and payment-method changes use a separately authorised replacement subscription. `PRO` remains the database value displayed as Standard. Keep `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED=false` until the Test Mode flow, database isolation, legacy-operation audit, and Live canary in this runbook have passed.
+Workspace billing derives quantity from billable branch lifecycle state. Card subscriptions can be updated in place; UPI AutoPay and eMandate plan, quantity, and payment-method changes use a separately authorised replacement subscription. `PRO` remains the database value displayed as Standard. Keep `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED=false` until the Test Mode flow, database isolation, legacy-operation audit, and Live canary in this runbook have passed.
 
 ## Environment isolation
 
-Preview and Production must use separate databases, Clerk instances, Razorpay modes, webhook secrets, and cron secrets. Preserve the existing database as Production and provision a fresh Preview database with migrations and demo-only data.
+Preview and Production must use separate databases, Clerk instances, Razorpay modes, webhook secrets, and cron secrets. An authorized operator must identify and independently verify the Production database; an existing or locally configured database is not Production merely because of its name or history. Provision a separate Preview database with migrations and demo-only data.
 
 | Variable | Preview | Production |
 | --- | --- | --- |
-| `DATABASE_URL` | Preview-only database | Existing Production database |
+| `DATABASE_URL` | Preview-only database | Independently verified Production database |
 | `ACCELERATE_URL` | Preview database endpoint, if used | Production database endpoint, if used |
 | `RAZORPAY_KEY_ID` | Test Key ID (`rzp_test_...`) | Live Key ID (`rzp_live_...`) |
 | `RAZORPAY_KEY_SECRET` | Matching Test secret | Matching Live secret |
@@ -21,7 +21,7 @@ Preview and Production must use separate databases, Clerk instances, Razorpay mo
 | `CRON_SECRET` | Unique Preview value | Unique Production value |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk Test instance | Clerk Live instance |
 | `CLERK_SECRET_KEY` | Matching Clerk Test secret | Matching Clerk Live secret |
-| `NEXT_PUBLIC_SITE_URL` | `https://lablords.in` | `https://lablords.in` |
+| `NEXT_PUBLIC_SITE_URL` | Operator-approved stable Preview URL | Operator-approved Production URL |
 | `NEXT_PUBLIC_SUPPORT_EMAIL` | Monitored support inbox | Monitored support inbox |
 | `NEXT_PUBLIC_BUSINESS_ADDRESS` | Exact KYC-matching address | Exact KYC-matching address |
 
@@ -41,7 +41,12 @@ Set GitHub Environment secret `PRODUCTION_DIRECT_DATABASE_URL` to the direct Pro
 
 The Methods API does not prove every Dashboard-only or device-dependent setting. When `--expect-multi-method-subscriptions=enabled` is used, the preflight therefore requires explicit evidence flags for Subscription settings, Standard Checkout UPI Intent, desktop UPI QR, webhook subscriptions, and amount eligibility. The output records those attestations, the required webhook event set, and the highest configured charge per currency. Eligibility is still decided by Razorpay Checkout for the account, amount, customer bank/app, and device; do not turn these checks into a static allow-list.
 
-Pull each Vercel environment into a separate ignored file. Because local script execution is not itself a Vercel deployment, set `VERCEL_ENV` explicitly for the invocation:
+The following environment-pull and Production preflight commands are for an
+explicitly authorized human operator on an approved workstation. Coding agents
+must not execute them or access the resulting values. If the operator-approved
+procedure permits a local pull, place each Vercel environment in a separate
+ignored, access-restricted file. Because local script execution is not itself a
+Vercel deployment, set `VERCEL_ENV` explicitly for the invocation:
 
 ```powershell
 vercel env pull .env.preview.local --environment=preview --yes
@@ -63,7 +68,7 @@ After Card, UPI, and eMandate have been enabled and exercised in the target Razo
 pnpm exec cross-env VERCEL_ENV=preview tsx scripts/razorpay-preflight.ts --target=preview --env-file=.env.preview.local --expect-multi-method-subscriptions=enabled --confirm-subscription-settings --confirm-upi-intent --confirm-upi-qr --confirm-webhook-events --confirm-amount-eligibility
 ```
 
-The preflight has no `--apply`, cleanup, cancel, delete, or migration mode. Old Test artifacts in the preserved Production database require all of the following before any change: a current backup, a reviewed itemized report, explicit owner approval, and a separately reviewed one-off operation. Preserve organizations, branches, students, owner trials, selected post-trial plans, and subscription history. Do not improvise cleanup SQL from this runbook.
+The preflight has no `--apply`, cleanup, cancel, delete, or migration mode. Old Test artifacts in the operator-verified Production database require all of the following before any change: a current backup, a reviewed itemized report, explicit owner approval, and a separately reviewed one-off operation. Preserve organizations, branches, students, owner trials, selected post-trial plans, and subscription history. Do not improvise cleanup SQL from this runbook.
 
 ## Database deployment order
 
@@ -74,11 +79,11 @@ The preflight has no `--apply`, cleanup, cancel, delete, or migration mode. Old 
 5. Deploy `20260807120000_add_razorpay_provider_catalog` without modifying prior migration history.
 6. Deploy `20260810150000_add_subscription_replacement_foundation` while the multi-method flag remains off.
 7. Deploy `20260810153000_cut_over_subscription_current_slot` after the expansion/backfill checks pass.
-8. Run `pnpm exec tsx scripts/prepare-workspace-billing-rollout.ts` for the existing database-only dry audit.
+8. Run `pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/prepare-workspace-billing-rollout.ts` for the operator-verified Production target's database-only dry audit. Verify the target fingerprint first.
 9. Run the new Razorpay preflight for the target environment.
-10. Use the existing rollout script `--apply` or `--promote` modes only after separately reviewing their database changes. It never calls Razorpay.
+10. The rollout script is dry-run by default. Database mutation requires `--apply`; selected organization promotion requires both `--apply` and `--promote=<comma-separated-org-ids>`. Keep the explicit `BILLING_ENV_FILE` and `VERCEL_ENV` binding on every dry-run or apply invocation, verify the target again, and review the itemized database changes first. The script never calls Razorpay.
 
-The provider-catalog migration labels all pre-existing plan, offer, and current-subscription references as `TEST`. This is a one-time backfill justified by the audited empty Live Razorpay account; there is no permanent database default. A Production preflight must fail until any legacy Test references in the preserved database have been explicitly reviewed and resolved.
+The provider-catalog migration labels all pre-existing plan, offer, and current-subscription references as `TEST`; there is no permanent database default. Its original empty-Live-account assumption is not repository-verifiable. Before applying it, obtain dated owner-approved provider evidence and reconcile every existing Live/Test entity. A Production preflight must fail until all legacy Test references in the verified target have been explicitly reviewed and resolved.
 
 ## Razorpay Dashboard configuration
 
@@ -97,7 +102,7 @@ Use a stable, publicly reachable Preview hostname for the Test webhook. Do not u
 Webhook endpoints:
 
 - Preview Test Mode: `https://<stable-preview-host>/api/razorpay/webhook`
-- Production Live Mode: `https://lablords.in/api/razorpay/webhook`
+- Production Live Mode: `https://<approved-production-host>/api/razorpay/webhook`
 
 Enable exactly:
 
@@ -131,11 +136,11 @@ Both routes require `Authorization: Bearer $CRON_SECRET`. Vercel Cron invokes sc
 Follow this order exactly; do not combine the gates into one deployment:
 
 1. Deploy all replacement migrations and application code with `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED=false`.
-2. Briefly pause billing workers and scheduled billing invocations, then wait for active mutation leases and in-flight billing operations to drain. Do not interrupt ordinary student-payment jobs.
-3. Run `pnpm exec tsx scripts/audit-legacy-unsupported-method-cancellations.ts` and review every dry-run row. After provider verification and manual-review resolution, rerun it with `--apply` to supersede eligible queued or failed legacy cancellations; retain both reports.
-4. Enable Card, UPI AutoPay, and eMandate in Razorpay Test Mode. Turn on the application flag only in the isolated Preview environment, complete end-to-end acceptance, run the enabled preflight with all evidence flags, and resume Preview workers.
+2. In Production, use the operator-approved Vercel control to pause only the hourly billing schedule, then wait for active mutation leases and in-flight billing operations to drain. Preview has no automatic cron worker; stop manual Preview invocations during the audit. Do not interrupt the daily student-payment schedule.
+3. Run `pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/audit-legacy-unsupported-method-cancellations.ts` and review every dry-run row against the verified target. After provider verification and manual-review resolution, rerun the same explicitly bound command with `--apply` to supersede eligible queued or failed legacy cancellations; retain both reports.
+4. Enable Card, UPI AutoPay, and eMandate in Razorpay Test Mode. Turn on the application flag only in the isolated Preview environment, complete end-to-end acceptance, run the enabled preflight with all evidence flags, and resume only the approved manual Preview checks.
 5. Configure the same methods in Live Mode and admit one reviewed workspace with `RAZORPAY_LIVE_CANARY_ORG_IDS`. Keep global billing writes held, complete the Live canary, and reconcile subscription, invoice, payment, webhook, and access state.
-6. Remove the canary restriction and enable the application flag broadly only after reconciliation is clean. Resume Production workers, then enable global billing writes and V2 onboarding in separately observed redeployments.
+6. Remove the canary restriction and enable the application flag broadly only after reconciliation is clean. Re-enable the Production hourly schedule through the operator-approved control, verify its dashboard state, then enable global billing writes and V2 onboarding in separately observed redeployments.
 
 If any capability disappears from the Methods API, a configured amount/method is absent in Checkout, a candidate replacement is ambiguous, or reconciliation reports overlapping charges, stop the rollout. Do not auto-refund or invent provider state.
 
