@@ -1,3 +1,9 @@
+> **Historical roadmap:** This document records product intent and phased plans;
+> it is not the source of truth for current implementation status. See
+> [`docs/ai/current-state.md`](docs/ai/current-state.md) for the verified snapshot
+> and [`docs/domain-invariants.md`](docs/domain-invariants.md) for required
+> behavior and known discrepancies.
+
 # Product Overview: Micro-ERP for Offline Education Businesses
 
 *Version State: Active Development | Phase 0–6 implementation active*
@@ -80,8 +86,8 @@ The service layer isolates database operations from routing/UI logic.
 
 ## 5. Critical System Behaviors (The "Guardrails")
 
-1. **Strict Data Boundary:** All data (except Organization and User) is hard-scoped to a `branchId`. Cross-branch data mixing is structurally prevented.
+1. **Strict Data Boundary:** Branch-owned data must be scoped through authorized organization and branch service paths. The database does not structurally prevent every cross-branch relationship, so direct or unscoped Prisma writes are unsafe.
 2. **Atomic Shift Engine:** A single physical Seat can be booked by multiple students *only if* their corresponding Shifts do not overlap in time. The `seatAllocation.service.ts` rigorously validates this before mutation.
 3. **Soft-Delete Architecture:** Shifts use `deletedAt` rather than destructive drops, preserving historical referential integrity for old bills and allocations.
 4. **Read -> Render -> Mutate:** The UI logic enforces immediate visual rendering of data without optimistic assumptions. Mutation (like saving an allocation) occurs sequentially after validation.
-5. **Non-Autonomous AI:** The system acts as a "Copilot". AI generates alerts and message textual drafts based purely on analytics, storing them in the DB. A human user must hit "Send" or manually convert them to actions.
+5. **Non-Autonomous AI:** The system acts as a "Copilot". AI generates advisory alerts, narrative, and message drafts. A human reviews and copies any draft; no external message-sending integration is implemented.

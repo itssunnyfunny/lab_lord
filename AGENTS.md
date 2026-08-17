@@ -1,117 +1,144 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repository.
+Repository-wide instructions for coding agents. Keep this file small: it routes
+work to the durable sources of truth instead of duplicating them.
 
-## Project Structure
+## Repository purpose
 
-- `app/` - Next.js App Router pages, layouts, loading/error UI, and API routes.
-- `components/` - Shared React components for UI, layout, dashboards, analytics, AI, payments, allocations, and tables.
-- `services/` - Backend/business logic used by API routes. This is the main domain layer.
-- `lib/` - Prisma client setup, Clerk session helper, API client wrappers, and shared utilities.
-- `prisma/` - Prisma schema, migrations, and seed data.
-- `tests/` - Vitest unit, integration, and e2e-style tests plus test setup helpers.
-- `ai/` - Gemini client, AI contracts, prompts, readers, orchestrator, reports, and risk/message generation logic.
-- `analytics/` - Analytics calculations and trend helpers.
-- `hooks/` - Client-side React hooks.
-- `types/` - Shared TypeScript domain types.
-- `utils/` - Date, money, formatting, and shift-time helpers.
-- `scripts/` - Debugging, audit, and verification scripts.
-- `styles/` - Design tokens and shared styling assets.
-- `public/` - Static assets.
+Lab Lords is a production, multi-tenant SaaS for study halls, libraries,
+coaching centres, and tuition centres in India. It manages organizations,
+branches, students, seats, shifts, staff, payments, analytics, imports, and
+AI-assisted workflows.
+
+## Source of truth
+
+- Inspect the repository before making assumptions.
+- Code, Prisma schema, migrations, tests, and observed behavior describe the
+  current implementation.
+- The **Must preserve—enforced** and **Service-layer contract—not DB-enforced**
+  entries in [`docs/domain-invariants.md`](docs/domain-invariants.md), together
+  with [`SECURITY.md`](SECURITY.md) and Accepted ADRs, describe required
+  behavior. **Known discrepancy—do not rely on** entries are cautions to resolve,
+  not behavior to preserve.
+- [`docs/ai/current-state.md`](docs/ai/current-state.md) is the dated
+  architecture and implementation snapshot, not a substitute for inspection.
+- If implementation and required behavior conflict, record the discrepancy and
+  escalate it. Never silently redefine either side.
+
+## Read before changing
+
+- Domain behavior: `docs/domain-invariants.md`.
+- Authentication, authorization, tenancy, billing, imports, secrets, or AI data
+  handling: `SECURITY.md`.
+- Architecture or implementation status: `docs/ai/current-state.md`.
+- Schema, migrations, deployment, cron, environment, or incidents:
+  `docs/production-runbook.md`.
+- Architectural or policy choices: `docs/decisions/README.md` and applicable
+  Accepted ADRs.
+
+No nested `AGENTS.md` currently overrides these instructions.
+
+## Working agreement
+
+- Keep changes narrowly scoped to the approved goal. Avoid unrelated refactors,
+  formatting churn, and dependency changes.
+- Do not change package versions, database schema, migration history, seed data,
+  or environment configuration unless the task explicitly requires it.
+- Keep API handlers thin and business logic in `services/`; use the shared
+  Prisma client from `lib/prisma.ts` in application code.
+- User-initiated mutations must re-check object authorization, tenant scope,
+  permissions, entitlements, and branch writability server-side.
+- A machine-authenticated cron or maintenance operation may bypass user
+  entitlement only when explicitly documented as system-owned behavior,
+  tenant-scoped, idempotent, and incapable of granting SaaS access or initiating
+  provider charges.
+- Tenant isolation is application-enforced. Never assume a bare ID or foreign
+  key proves organization or branch ownership.
+- Preserve generic, tenant-safe responses for foreign and nonexistent records.
+  Where current code differs, treat that as a documented discrepancy rather
+  than precedent.
+- Do not weaken provider-authoritative billing checks, webhook or callback
+  verification, mode isolation, durable idempotency, ordering, or replay safety.
+- Treat AI output as untrusted and advisory. It must not become authorization,
+  billing truth, or an automatic external action.
+- Do not access or modify Production data. Never run tests against shared,
+  Preview, or Production databases.
+- Never print secrets, tokens, environment values, raw webhook bodies, or
+  unnecessary personal data in commands, logs, patches, or reports.
+
+## Before editing
+
+1. Inspect the relevant implementation, schema, tests, and applicable guidance.
+2. State the current behavior and identify affected invariants and trust
+   boundaries.
+3. Choose the smallest safe change and identify affected callers, data, and
+   deployment surfaces.
+4. Plan targeted tests and any migration, rollout, or rollback requirements.
 
 ## Commands
 
-Install dependencies:
+Use `pnpm`.
 
 ```bash
 pnpm install
-```
-
-Run locally:
-
-```bash
 pnpm dev
-```
-
-Run tests:
-
-```bash
+pnpm test -- <test-file-or-pattern>
 pnpm test
-```
-
-
-Run tests in watch mode:
-
-```bash
-pnpm test:watch
-```
-
-Run coverage:
-
-```bash
 pnpm test:coverage
-```
-
-Lint:
-
-```bash
 pnpm lint
-```
-
-Build:
-
-```bash
 pnpm build
+pnpm prisma generate
 ```
 
-Prisma setup commonly needed for local development:
+Local schema work, only when explicitly in scope:
 
 ```bash
-pnpm prisma generate
 pnpm prisma migrate dev
 pnpm prisma db seed
 ```
-### use if direct pnpm fails
-Use Git Bash-compatible commands where possible. If running from PowerShell, use:
+
+If direct `pnpm` invocation fails in PowerShell, use Git Bash or:
+
+```text
 cmd /c "%APPDATA%\npm\pnpm.cmd" <command>
-Do not use PowerShell direct invocation of pnpm.cmd.
+```
 
-## Environment
+Integration setup loads `.env.test`, requires `DATABASE_URL` to contain `test`,
+and truncates the configured database. The substring guard is not sufficient
+proof that a database is disposable; verify the exact target first.
 
-- Local development requires `DATABASE_URL`.
-- AI/Gemini features require `GEMINI_API_KEY`.
-- Tests load `.env.test`; its `DATABASE_URL` must include the word `test` or test setup will abort.
-- Integration tests expect a reachable PostgreSQL test database with the Prisma schema applied.
+## Validation
 
-## Coding Rules
+- Run the most relevant targeted tests while developing and the broader affected
+  suite before completion.
+- Run lint and a Production build when the change can affect them.
+- For documentation-only work, validate links, paths, examples, and
+  `git diff --check`; runtime tests may be omitted with the reason reported.
+- Report exact commands and pass/fail results. Never claim verification without
+  command evidence.
 
-- Use TypeScript and follow the existing Next.js App Router patterns.
-- Keep business logic in `services/`; keep API route handlers thin where possible.
-- Use existing helpers from `lib/`, `utils/`, `types/`, `analytics/`, and `ai/` before adding new abstractions.
-- Use the `@/*` path alias for imports when it matches existing style.
-- Keep changes scoped to the requested behavior.
-- Do not introduce unrelated refactors, formatting churn, dependency changes, or schema changes unless asked.
-- Preserve Clerk-backed authentication and application-level authorization checks.
-- For database access, use the existing Prisma client from `lib/prisma.ts` in app code.
-- For tests, use the existing Vitest setup and test DB helpers under `tests/setup/`.
-- Add or update tests when changing service behavior, utility logic, analytics calculations, or API behavior.
-- Prefer readable, direct code over broad new abstractions.
+## Documentation maintenance
 
-## Avoid Changing Unless Asked
+Update the canonical document in the same change when work alters:
 
-- `prisma/migrations/` - Existing migration history should not be edited.
-- `prisma/schema.prisma` - Schema changes require explicit approval and matching migrations.
-- `.env`, `.env.test` - Do not edit secrets or environment configuration unless asked.
-- `pnpm-lock.yaml` - Avoid dependency churn unless package changes are requested.
-- `package.json` - Do not change scripts or dependencies unless needed for the task.
-- `.next/`, `node_modules/`, `tsconfig.tsbuildinfo` - Generated/local artifacts.
-- `public/` image assets - Avoid replacing assets unless the task is visual/content-related.
-- `prisma/seed.ts` - Seed data affects demos and tests; change only when requested.
-- `lib/auth.ts` - Clerk-to-Prisma user linking and session resolution.
-- Broad UI/theme files such as `app/globals.css`, `styles/tokens.css`, and `tailwind.config.ts` unless the task is styling-related.
+- architecture or implementation status: `docs/ai/current-state.md`;
+- required domain behavior: `docs/domain-invariants.md`;
+- trust boundaries or security requirements: `SECURITY.md`;
+- migration, environment, cron, deployment, rollback, or incident procedures:
+  `docs/production-runbook.md`;
+- an approved architectural or policy decision: add or update an ADR under
+  `docs/decisions/`.
 
-## Notes
+Do not invent an Accepted decision. Agents may draft ADRs, but a human owner
+must approve them.
 
-- This project uses `pnpm`; prefer it over `npm`, `yarn`, or `bun`.
-- The README is currently generic and may not reflect the real setup requirements.
-- Some scripts are diagnostic or audit tools; inspect them before running.
+## Completion report
+
+Include behavior changed, files changed, tests added or updated, commands and
+results, schema/migration/environment requirements, remaining risks, and
+intentionally unchanged behavior.
+
+## Git
+
+Do not commit, push, create or switch branches, or open a pull request unless
+explicitly requested.

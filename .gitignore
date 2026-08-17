@@ -41,8 +41,15 @@ yarn-error.log*
 next-env.d.ts
 
 /app/generated/prisma
-.agent
+
+# Local agent artifacts; keep only the two compatibility guidance files.
+/.agent/*
+!/.agent/FRONTEND_AGENT_RULES.md
+!/.agent/rules/
+/.agent/rules/*
+!/.agent/rules/rules.md
 /test_infrastructure_plan.md
+
 # clerk configuration (can include secrets)
 /.clerk/
 # Playwright

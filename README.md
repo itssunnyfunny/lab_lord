@@ -2,6 +2,17 @@
 
 Lab Lords is a Next.js micro-ERP for offline education businesses such as study halls, coaching centers, and libraries. It manages organizations, branches, seats, shifts, students, staff, payments, analytics, and AI-assisted branch insights.
 
+## Repository Guidance
+
+The durable guidance bridge for humans and AI agents is:
+
+- [`AGENTS.md`](AGENTS.md) — repository working agreement and reading map.
+- [`SECURITY.md`](SECURITY.md) — trust boundaries and security review policy.
+- [`docs/ai/current-state.md`](docs/ai/current-state.md) — dated architecture and implementation snapshot.
+- [`docs/domain-invariants.md`](docs/domain-invariants.md) — required business rules and known discrepancies.
+- [`docs/production-runbook.md`](docs/production-runbook.md) — environment, migration, deployment, cron, and incident procedures.
+- [`docs/decisions/README.md`](docs/decisions/README.md) — ADR index, template, and approval rules.
+
 ## Tech Stack
 
 - Next.js App Router
@@ -42,22 +53,16 @@ public/       Static assets
 
 ## Environment Variables
 
-Create a local `.env` file with:
+Local development uses the configuration names `DATABASE_URL`,
+`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, and `CLERK_SECRET_KEY`.
+`GEMINI_API_KEY` is required only for live Gemini-backed AI behavior. Obtain
+values from approved local/development sources and keep them in an ignored
+environment file; never copy values into documentation or reports.
 
-```bash
-DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE"
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="pk_test_..."
-CLERK_SECRET_KEY="sk_test_..."
-NEXT_PUBLIC_CLERK_SIGN_IN_URL="/sign-in"
-NEXT_PUBLIC_CLERK_SIGN_UP_URL="/sign-up"
-NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL="/org"
-NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL="/onboarding"
-GEMINI_API_KEY="your-gemini-api-key"
-```
+Sign-in (`/sign-in`), sign-up (`/sign-up`), and the `/app` fallback are defined
+in code, not through Clerk route environment variables.
 
-`DATABASE_URL` and Clerk keys are required for the app. `GEMINI_API_KEY` is required for AI features.
-
-Tests use `.env.test`. The test `DATABASE_URL` must include the word `test`; the Vitest setup intentionally aborts otherwise.
+Tests use `.env.test`. The test `DATABASE_URL` must include the word `test`; the Vitest setup intentionally aborts otherwise and can truncate all application tables. Verify that the exact target is a dedicated disposable database—never shared, Preview, or Production data.
 Clerk keys are not required for Vitest because Clerk is mocked in auth tests.
 
 Check the current auth environment:
@@ -66,7 +71,7 @@ Check the current auth environment:
 pnpm auth:check
 ```
 
-See [docs/auth-environments.md](docs/auth-environments.md) for local, test, and production separation.
+See [docs/auth-environments.md](docs/auth-environments.md) for authentication-specific separation and [docs/production-runbook.md](docs/production-runbook.md) for the full environment and database safety procedure.
 
 ## Install
 
