@@ -1,14 +1,15 @@
-import { CheckCircle2, HelpCircle, Link2Off, Save, UserRoundCheck } from "lucide-react";
+import { CheckCircle2, HelpCircle, Link2Off, Save, ShieldCheck, UserRoundCheck } from "lucide-react";
 import { AppButton, AppPanel } from "@/components/ui";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import { labelImportOption } from "@/importing/utils/import-wizard-view-model";
 import { pageInsetSurfaceClass, pageMutedTextClass } from "@/components/ui/pageSurface";
 import { importFieldClass, StepNotice } from "./shared";
-import type { ImportQuestion } from "./types";
+import type { ImportGoal, ImportQuestion } from "./types";
 
 type DecisionsStepProps = {
     questions: ImportQuestion[];
+    goal: ImportGoal;
     questionDrafts: Record<string, string>;
     saving: boolean;
     mutationsDisabled: boolean;
@@ -16,10 +17,18 @@ type DecisionsStepProps = {
     onAnswer: (questionId: string, answer: unknown) => void;
     onDeferAllocations: () => void;
     onStudentsOnly: () => void;
+    configurationCreation: {
+        seats: boolean;
+        shifts: boolean;
+        multiShifts: boolean;
+        approved: boolean;
+    };
+    onConfigurationApproval: (approved: boolean) => void;
 };
 
 export function DecisionsStep({
     questions,
+    goal,
     questionDrafts,
     saving,
     mutationsDisabled,
@@ -27,16 +36,23 @@ export function DecisionsStep({
     onAnswer,
     onDeferAllocations,
     onStudentsOnly,
+    configurationCreation,
+    onConfigurationApproval,
 }: DecisionsStepProps) {
     const openQuestions = questions.filter(question => question.status === "OPEN");
     const answeredQuestions = questions.filter(question => question.status !== "OPEN");
+    const configurationLabels = [
+        configurationCreation.seats ? "missing seats" : null,
+        configurationCreation.shifts ? "missing shifts" : null,
+        configurationCreation.multiShifts ? "missing shift bundles" : null,
+    ].filter((value): value is string => Boolean(value));
 
     return (
         <div className="space-y-5">
             <AppPanel
                 title="Decisions"
                 description="Answer only the decisions needed for this import. Unclear seat, shift, and payment data can be deferred."
-                action={
+                action={goal !== "STUDENTS" ?
                     <AppButton
                         variant="secondary"
                         icon={Link2Off}
@@ -47,18 +63,46 @@ export function DecisionsStep({
                     >
                         Defer seat/shift mapping
                     </AppButton>
-                }
+                    : undefined}
             >
                 <div className="space-y-4">
                     <StepNotice
-                        tone={openQuestions.length > 0 ? "warning" : "success"}
-                        title={openQuestions.length > 0 ? `${openQuestions.length} decision${openQuestions.length === 1 ? "" : "s"} open` : "No open decisions"}
+                        tone={openQuestions.length > 0 || configurationLabels.length > 0 && !configurationCreation.approved ? "warning" : "success"}
+                        title={openQuestions.length > 0 ? `${openQuestions.length} decision${openQuestions.length === 1 ? "" : "s"} open` : configurationLabels.length > 0 && !configurationCreation.approved ? "Setup creation needs approval" : "No open decisions"}
                         message={openQuestions.length > 0
                             ? "Answers are saved to this staged import, then validation runs again. No branch records are created until the final preview is confirmed."
+                            : configurationLabels.length > 0 && !configurationCreation.approved
+                                ? "Review the batch action below. The final plan cannot run until this saved revision is explicitly approved."
                             : "Saved decisions are already applied to the current validation plan."}
                     />
 
-                    <div className={cn("flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between", pageInsetSurfaceClass)}>
+                    {configurationLabels.length > 0 && (
+                        <fieldset className={cn("p-4", pageInsetSurfaceClass)}>
+                            <legend className="sr-only">Approve creation of missing setup records</legend>
+                            <label htmlFor="configuration-batch-approval" className="flex cursor-pointer items-start gap-3">
+                                <input
+                                    id="configuration-batch-approval"
+                                    type="checkbox"
+                                    checked={configurationCreation.approved}
+                                    disabled={mutationsDisabled || saving}
+                                    aria-describedby="configuration-batch-description"
+                                    onChange={event => onConfigurationApproval(event.target.checked)}
+                                    className="mt-1 h-4 w-4 shrink-0 accent-cyan-300"
+                                />
+                                <span className="min-w-0">
+                                    <span className="flex items-center gap-2 text-sm font-semibold text-[color:var(--text-primary)]">
+                                        <ShieldCheck className="h-4 w-4 text-cyan-300" />
+                                        Approve setup creation for this reviewed batch
+                                    </span>
+                                    <span id="configuration-batch-description" className={cn("mt-1 block text-xs leading-5", pageMutedTextClass)}>
+                                        This import is configured to create {configurationLabels.join(", ")} when a ready row refers to one that does not exist. Approval is saved with this staged import; later changes still require a new reviewed plan before running.
+                                    </span>
+                                </span>
+                            </label>
+                        </fieldset>
+                    )}
+
+                    {goal !== "STUDENTS" && <div className={cn("flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between", pageInsetSurfaceClass)}>
                         <div className="min-w-0">
                             <div className="flex items-center gap-2">
                                 <UserRoundCheck className="h-4 w-4 text-cyan-300" />
@@ -80,7 +124,7 @@ export function DecisionsStep({
                         >
                             Use students-only mode
                         </AppButton>
-                    </div>
+                    </div>}
 
                     <div className="space-y-3">
                         {openQuestions.length === 0 && (
@@ -98,7 +142,7 @@ export function DecisionsStep({
                                             <p className="font-medium text-[color:var(--text-primary)]">{question.question}</p>
                                             <Badge variant="warning">{question.status}</Badge>
                                         </div>
-                                        {question.field && <p className={cn("mt-1 text-xs", pageMutedTextClass)}>{question.field}</p>}
+                                        {question.field && <p className={cn("mt-1 text-xs", pageMutedTextClass)}>Applies to {question.field.replace(/\./g, " ")}</p>}
 
                                         {(question.options ?? []).length > 0 && (
                                             <div className="mt-3 flex flex-wrap gap-2">
@@ -119,6 +163,7 @@ export function DecisionsStep({
                                         )}
                                         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                                             <input
+                                                aria-label={`Custom answer for ${question.question}`}
                                                 value={questionDrafts[question.id] ?? ""}
                                                 onChange={event => onDraftChange(question.id, event.target.value)}
                                                 className={cn("min-w-0 flex-1", importFieldClass)}

@@ -1,4 +1,4 @@
-import { validatePhone } from "@/lib/formValidation";
+import { FORM_LIMITS, parseIntegerField, validatePhone } from "@/lib/formValidation";
 import type { ImportNormalizedRow } from "@/importing/contracts/import-session.contract";
 import { emptyValidatorResult, type ImportValidatorResult } from "./import-required-fields.validator";
 
@@ -25,14 +25,31 @@ export function validateImportStudent(
     } else {
         const phoneResult = validatePhone(student.phone);
         if (!phoneResult.ok) {
-            result.warnings.push({
+            result.issues.push({
                 code: "INVALID_PHONE",
                 field: "student.phone",
                 message: phoneResult.error,
-                severity: "warning",
+                severity: "error",
             });
         } else {
             student.phone = phoneResult.value;
+        }
+    }
+
+    if (student.monthlyFee !== undefined) {
+        const monthlyFee = parseIntegerField(student.monthlyFee, "Monthly fee", {
+            min: 0,
+            max: FORM_LIMITS.moneyMax,
+        });
+        if (!monthlyFee.ok) {
+            result.issues.push({
+                code: "INVALID_MONTHLY_FEE",
+                field: "student.monthlyFee",
+                message: monthlyFee.error,
+                severity: "error",
+            });
+        } else {
+            student.monthlyFee = monthlyFee.value;
         }
     }
 

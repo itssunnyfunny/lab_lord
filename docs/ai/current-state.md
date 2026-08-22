@@ -1,8 +1,8 @@
 # Lab Lords: Current Architecture and Implementation State
 
-> Last verified: 2026-08-17
+> Last verified: 2026-08-18
 >
-> Repository anchor: `main` at commit `07ac439`
+> Repository anchor: Import Assistance V2 working tree based on commit `f37541e`
 >
 > Scope: repository implementation only
 
@@ -46,6 +46,22 @@ Prisma-backed domain data
   -> persisted advisory result or reviewed import plan
 ```
 
+Import Assistance V2 adds a durable execution path without moving business
+truth into the orchestrator:
+
+```text
+Authenticated import start / confirmed immutable plan
+  -> PostgreSQL ImportRun and deterministic ImportRunItem ledger
+  -> Workflow 4.6 receives one opaque run ID
+  -> bounded Workflow step claims at most 25 persisted items
+  -> transaction-aware domain service rechecks authorization and writability
+  -> business mutation and item success marker commit together
+  -> redacted progress/results remain in PostgreSQL
+```
+
+Uploaded bytes, staged rows, branch configuration, complete mutation payloads,
+and authorization conclusions do not cross the Workflow input/output boundary.
+
 ### Declared runtime
 
 The versions below come from `package.json` at the repository anchor:
@@ -57,6 +73,8 @@ The versions below come from `package.json` at the repository anchor:
 - Clerk through `@clerk/nextjs`
 - Google Gemini through `@google/genai`
 - Razorpay through the repository's server-side REST client and hosted Checkout script
+- Vercel Workflow 4.6.0 through `workflow`, with Next.js integration and a
+  PostgreSQL business ledger
 - Vitest 4.1 and Playwright 1.62
 - pnpm as the package manager
 
@@ -68,7 +86,8 @@ Clerk is the identity provider. `proxy.ts` protects authenticated page families
 such as `/account`, `/app`, `/branch`, `/onboarding`, and `/org`. API routes are
 included in the middleware matcher but are not covered by `isProtectedRoute`.
 User-facing API handlers call `getSessionUser()` and enforce authorization;
-the two cron routes instead verify `CRON_SECRET`, and the Razorpay webhook
+the three cron routes instead verify `CRON_SECRET`, Workflow's internal endpoint
+uses the framework-controlled provider boundary, and the Razorpay webhook
 verifies its raw-body signature before processing.
 
 `lib/auth.ts` maps a Clerk identity to the local Prisma `User`:
@@ -104,7 +123,9 @@ current guarantee.
 - Operations: `Student`, `Seat`, `Shift`, `MultiShift`, `MultiShiftComponent`, `SeatAllocation`.
 - Branch fee collection: `Payment` and `AuditLog`.
 - AI: `BranchAIReport` and `MessageDraft`.
-- Imports: `ImportSession`, `ImportRow`, `ImportQuestion`, and `ImportCommit`.
+- Imports: `ImportSession`, `ImportRow`, `ImportQuestion`, `ImportCommit`,
+  `ImportRowEvaluation`, `ImportPlan`, `ImportRun`, `ImportRunItem`, and
+  `ImportRecipe`.
 - SaaS billing: `OwnerTrialGrant`, `SaasRazorpayPlan`, `RazorpayPlanProvisioning`, `BillingOffer`, `OrganizationOfferGrant`, `OrganizationSubscription`, `OrganizationBillingChange`, `OrganizationSubscriptionInvoice`, `OrganizationSubscriptionHistory`, and `RazorpayWebhookEvent`.
 
 Two payment domains must not be confused:
@@ -179,23 +200,100 @@ Authoritative code: `analytics/`, `services/seat.service.ts`, and `app/api/analy
 
 ### Import assistant
 
-The persisted import wizard is implemented for CSV, XLS, XLSX, PDF, and pasted tables, with a maximum of 2,000 rows per session.
+The persisted import wizard accepts CSV, XLS, XLSX, PDF, and pasted tables. A
+complete request is capped at 4.25 MiB; the source is capped at 4 MiB, 2,000
+rows, 64 columns, and 8 KiB per cell. XLS/XLSX inspection also caps declared or
+measured expanded content at 32 MiB, exposes sheets and header candidates, and
+requires a sheet choice for multi-sheet workbooks. PDF remains text-extraction
+beta without OCR or visual-table guarantees. Parsers stop accumulating at the
+row ceiling plus one rather than materializing an arbitrarily large valid
+source before rejecting it.
 
 The flow is:
 
-1. Parse and persist raw rows in chunks.
-2. Profile columns and sample values.
-3. Ask Gemini for structured column mappings, questions, warnings, and suggestions.
-4. Sanitize the response; mappings below the auto-apply confidence threshold or duplicate mappings remain for review.
-5. Fall back to deterministic column matching if Gemini is unavailable or unusable.
-6. Normalize and validate students, seats, shifts, allocations, duplicates, conflicts, and payment decisions.
-7. Preserve manual row corrections across revalidation.
-8. Produce an explicit preview and plan version.
-9. Require final confirmation and the same plan version before committing through existing domain services.
+1. Validate request size, file signature/type, encoding, parser structure, and
+   positional headers before persisting raw rows in chunks.
+2. Profile the source, run deterministic mapping first, and send Gemini only
+   sanitized aliases for ambiguous headers plus masked value shapes and
+   structural source/branch summaries.
+3. Sanitize the model response and use deterministic fallback when it is
+   absent, invalid, low-confidence, or duplicates a target.
+4. Normalize and validate students, seats, shifts, allocations, duplicates,
+   conflicts, and payment decisions; student/configuration labels and planned
+   shift overlaps and multi-shift component cardinality/combination uniqueness
+   follow the same deterministic domain rules used at mutation time, and
+   Indian 10/11/12-digit phone forms share the student service's canonical
+   duplicate identity. Preserve manual corrections by advancing the draft
+   revision.
+5. Publish a complete immutable evaluation set for the current revision.
+6. Compile an immutable, canonical-hash plan with
+   `READY_ROWS_ONLY` or `REQUIRE_ALL_ROWS_READY`. A plan whose deterministic
+   item count exceeds `IMPORT_MAX_PLANNED_MUTATIONS` is non-runnable; expansion
+   stops at cap plus one so historical payment fan-out cannot allocate the
+   entire over-limit plan first.
+7. Bind the confirmed plan/revision to an idempotent PostgreSQL run and start
+   Workflow using only the run ID.
+8. Apply deterministic configuration, student, allocation, and payment-cycle
+   items in short transactions. Each transaction rechecks the requesting
+   user's current permission, entitlement, branch writability, object scope,
+   plan revision, linked prices/bundle structure, exact existing payment-cycle
+   facts, and lease, then commits the mutation with its success marker.
+9. Preserve redacted entity-ID/count results, progress, retry/cancellation
+   state, and partial outcomes. Ready-only plans remain partial while reviewed
+   rows are unresolved, and every terminal repair run idempotently projects its
+   row results even when the session was already partial. Repair publishes a
+   new revision and plan.
 
-`SAFE_PARTIAL` imports ready rows and leaves unresolved rows behind. `STRICT_ALL_OR_NOTHING` rejects a plan that still contains blocked or review rows, but the subsequent commit is a per-row service loop rather than one database transaction across the entire file. A runtime failure can therefore still produce a partial result; cleanup is best effort.
+There is no whole-file transaction. `REQUIRE_ALL_ROWS_READY` is a pre-run gate;
+already successful items remain committed if a later runtime item fails.
+Deterministic keys, request hashes, one-active-run enforcement, leases, bounded
+attempts, and compare-and-set completion make retries replay-safe rather than a
+rollback mechanism. Repair reuses prior successful row mutations only when
+their canonical semantic hashes still match the reviewed data. Configuration
+claiming also holds dependent multi-shifts until their seat/shift prerequisites
+have settled. A run that succeeds for every scheduled item but deliberately
+leaves blocked, skipped, or otherwise unscheduled rows is completed with issues,
+so the session remains partial and those rows can be repaired through a newer
+revision.
 
-Authoritative code: `importing/`, the import-session API routes, and the import wizard under `app/branch/[branchId]/onboarding/import/`.
+The initial analysis run is created in the same transaction as its session and
+rows. If Workflow dispatch fails, create/analyze/commit/retry still return the
+durable run ID with `dispatchRequired`; an authorized resume POST rechecks the
+same commit-start trust boundary before re-dispatch. Stale attached runs are
+reconciled with provider state: an active provider owner is retained, while a
+terminal or missing owner is database-fenced by its exact ID before a
+replacement Workflow can attach. Provider lookup failures retain the existing
+owner for a later retry. Provider Workflow IDs are not returned by polling or
+session detail.
+
+Organization-scoped recipes are available through branch-authorized routes.
+They retain only source type, a server-computed normalized-header signature,
+normalized column mappings, goal, and entity types—never samples, row values,
+branch configuration, or import/payment/default/conflict options.
+
+Exact remaining payment-cycle review is exposed from immutable plan items by a
+tenant-authorized, required-permission-checked API page of at most 100 cycles;
+the plan response retains only bounded per-student aggregates. Terminal or
+inactive-draft staging receives a 30-day `purgeAfter`. The daily
+`/api/cron/imports/daily` job drains at most 20 batches of 100 sessions, rechecks
+deadlines under lock, terminalizes stale active runs and nonterminal items,
+scrubs run-item execution payloads/errors, and reports any remaining backlog
+while retaining redacted run history. V2 start routes fail closed unless
+`IMPORT_V2_ENABLED=true`; repository code cannot prove the flag or retention
+schedule is active in a deployment.
+
+Production enablement remains blocked pending the human decisions listed in
+the Proposed Workflow ADR: provider/security and data-residency approval,
+Fluid Compute/runtime confirmation, measured 100/500/2,000-row benchmarks, a
+benchmark-derived mutation cap with two-times passing headroom, recorded
+analysis/completion SLOs, monitoring, and rollback authority. Installed code is
+not evidence of that approval.
+
+Authoritative code: `importing/`, `lib/importFeature.ts`, the import-session and
+recipe API routes, `app/api/cron/imports/daily/route.ts`, the import wizard under
+`app/branch/[branchId]/onboarding/import/`, the V2 migration, and
+`docs/decisions/0001-managed-workflow-for-import-execution.md` (Proposed, not
+Accepted).
 
 ### Lab Lords subscription billing
 
@@ -275,7 +373,14 @@ Message generation is human-triggered and does not send messages.
 
 ### Import mapping
 
-The import assistant uses Gemini for mapping assistance, not mutation. It sends branch seat/shift context, a source profile, source columns, and up to eight sample rows. Those sample rows can contain uploaded personal or financial data, so changes to this flow require security/privacy review. Sanitized AI suggestions still pass through deterministic normalization, validation, user review, preview, and service-layer authorization before any data is committed.
+The import assistant uses Gemini for mapping assistance, not mutation.
+Deterministic mapping handles known headers before any call. For only the
+ambiguous columns, Gemini receives sanitized positional/header aliases, masked
+value shapes, fill/uniqueness counts, and a branch summary of counts and
+booleans. It does not receive raw row values, complete branch configuration,
+seat/shift names, or fees. Sanitized AI suggestions still pass through
+deterministic normalization, validation, user review, immutable planning, and
+service-layer authorization before any data is committed.
 
 ### Legacy or currently unwired AI files
 
@@ -293,11 +398,12 @@ The following modules exist but are not referenced by current application routes
 
 | Integration | Repository truth | Deployment state |
 | --- | --- | --- |
-| PostgreSQL / Prisma | Required; schema and 31 timestamped migrations exist | Database target, applied migration set, backups, and health are unknown |
+| PostgreSQL / Prisma | Required; schema and 32 timestamped migrations exist | Database target, applied migration set, backups, and health are unknown |
 | Clerk | Real auth and local-user linking are implemented | Active instance, keys, redirect/origin configuration, and account health are unknown |
 | Gemini | Reports, message drafts, and import mapping are wired with fallbacks | API key, selected model availability, quota, and data-processing configuration are unknown |
 | Razorpay | Server API client, Checkout, signatures, webhook receipts, reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
-| Vercel Cron | Daily payment and hourly billing schedules are declared in `vercel.json` | Whether the deployment is Production, schedules are active, and recent runs succeeded is unknown |
+| Vercel Workflow | Workflow 4.6 integration, opaque-ID orchestration, and a PostgreSQL import ledger/runner are implemented | Production approval, Fluid Compute/runtime setup, provider retention/residency review, feature flag, mutation cap, benchmarks, SLOs, and active-run health are unknown |
+| Vercel Cron | Daily payment, hourly billing, and daily import-retention schedules are declared in `vercel.json` | Whether the deployment is Production, schedules are active, and recent runs succeeded is unknown |
 | Google Analytics | Consent-aware GA bootstrap and event helpers are implemented | Measurement ID and live collection state are unknown |
 | Support email | Public pages and `mailto:` bug reports are implemented | Mailbox monitoring and response operations are unknown |
 
@@ -305,7 +411,9 @@ Never infer a deployed state from local `.env` files, ignored Vercel metadata, s
 
 ## Verification and test evidence
 
-At this anchor the repository contains 135 Vitest/Playwright test files, 72 API route files, 27 service files, and 31 migration directories. These counts are orientation data, not invariants.
+At this anchor the repository contains 149 Vitest/Playwright test files, 81 API
+route files, 27 core service files under `services/`, and 32 migration
+directories. These counts are orientation data, not invariants.
 
 ### Automated coverage by area
 
@@ -313,6 +421,9 @@ At this anchor the repository contains 135 Vitest/Playwright test files, 72 API 
 - Core services: integration suites under `tests/integration/services/` for organizations, branches, onboarding, students, seats, shifts, multi-shifts, allocations, payments, staff, invites, trials, billing, and entitlements.
 - API authorization and behavior: route suites under `tests/unit/api/`.
 - Imports: `tests/unit/importing/`, import route tests, and `tests/integration/importing/import-commit-flow.test.ts`.
+- Import Workflow uses the separate `pnpm test:workflow` configuration in
+  `vitest.workflow.config.ts`; normal import ledger/runner behavior also has
+  focused unit coverage.
 - Billing: extensive unit suites for policies, replacement trust/access, reconciliation, payment methods, deadlines, migration contracts, plan catalog, and checkout UI; integration billing lifecycle suites; browser billing specs.
 - Analytics: payment analytics integration coverage, analytics component tests, and audit scripts.
 - UI: selected component/page unit tests and Playwright specs under `tests/browser/`.
@@ -329,6 +440,20 @@ Production migrations have a separate manually dispatched workflow requiring the
 - No direct Vitest suite exercises the complete `draftOverdueMessages()` persistence/cooldown lifecycle; route tests mock it.
 - AI verification scripts exist, but scripts are not equivalent to repeatable CI coverage.
 - Browser tests exist but are not run by the main CI workflow.
+- Repository tests do not prove deployment-pinned Workflow resume behavior,
+  provider-region/retention settings, Fluid Compute configuration, benchmark
+  headroom, or Production SLOs.
+- The V2 domain mutation-plus-marker boundary has been exercised against an
+  independently isolated local PostgreSQL container. The integration test
+  injects a database failure before the success marker, proves the domain write
+  rolls back, then replays the same lease and idempotent commit request without
+  duplication. This does not prove Vercel deployment-pinned resume behavior or
+  staging-equivalent provider/database performance.
+- `pnpm benchmark:import-v2` records a synthetic local 100/500/2,000-row parser
+  and immutable-plan expansion matrix, including configuration, allocation,
+  current-payment, and 12-/24-month historical-payment fan-out. The dated local
+  evidence is under `docs/evidence/`; it is compile-only and therefore does not
+  establish the Production mutation cap or owner-approved SLOs.
 - Passing repository tests cannot establish provider configuration, signed webhook delivery, cron execution, deployed migrations, or production data integrity.
 
 ## Known limitations and cautions
@@ -342,8 +467,17 @@ Production migrations have a separate manually dispatched workflow requiring the
   Whether that system-owned behavior should respect writability is unresolved
   and must not be treated as accepted without an ADR or updated domain invariant.
 - Workspace Billing V2 and Razorpay writes are release-gated; implementation presence is not evidence of activation.
-- Import `STRICT_ALL_OR_NOTHING` is a pre-commit strictness mode, not one database transaction for the whole import.
-- File imports are buffered and parsed before the 2,000-row check, and the route has no repository-defined upload-byte limit.
+- Import V2 is durable and replay-safe but is not one database transaction for
+  the whole file; no mode reverses already committed items.
+- Import requests are still buffered in application memory. The 4.25 MiB
+  request and 4 MiB source caps bound that exposure but do not provide streaming
+  upload or malware scanning.
+- PDF import is text-only beta and cannot reconstruct scanned or visually
+  positioned tables without upstream OCR/reformatting.
+- Workflow-backed Production execution is not approved merely because the
+  dependency and code exist. The feature flag must remain held until the
+  Proposed ADR's approval, benchmark, cap, SLO, monitoring, and rollback gates
+  are satisfied.
 - Trend analytics recompute from mutable current tables rather than immutable historical snapshots; some current status, shift, and archived-branch state affects past-looking results.
 - Attendance is absent: there is no attendance model, service, route, or test.
 - Soft-deleting a Shift does not repair existing MultiShift components or
@@ -353,7 +487,9 @@ Production migrations have a separate manually dispatched workflow requiring the
   organization timezone.
 - A failed AI report generation can still advance `aiLastCalledAt` and impose cooldown.
 - AI message generation is review/copy only; no delivery provider is wired.
-- Import mapping can send uploaded sample rows to Gemini.
+- Import staging retention depends on deployed `purgeAfter` transitions and a
+  healthy authenticated daily cron; repository code cannot prove either is
+  operating in Production.
 - Support forms rely on the user's local email client.
 - Several legacy/unwired AI files and one empty analytics hook remain in the tree.
 
@@ -364,5 +500,8 @@ This file supersedes architecture/status claims in older phase-oriented or gener
 - `product.md` is retained as a historical phase roadmap and now points here for current status.
 - The stale generated application knowledge graph and contradictory AI production checklist were removed when this bridge was created.
 - The two tracked `.agent` policy files are compatibility adapters only. Other local `.agent` logs, screenshots, generated metadata, and patch backups are ignored and are not repository authority.
+- `docs/decisions/0001-managed-workflow-for-import-execution.md` remains
+  **Proposed**. This snapshot records implemented code and explicit rollout
+  blockers; it does not convert the proposal into an Accepted decision.
 
 When this document and the implementation disagree, inspect the current schema, migrations, services, API routes, and tests, then update this document in the same change.

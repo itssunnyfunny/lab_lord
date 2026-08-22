@@ -1,4 +1,5 @@
 import type { ImportIssue, ImportNormalizedRow } from "@/importing/contracts/import-session.contract";
+import { validateRequiredText } from "@/lib/formValidation";
 
 export type ImportValidationQuestionDraft = {
     rowId?: string;
@@ -19,14 +20,21 @@ export function emptyValidatorResult(): ImportValidatorResult {
 
 export function validateRequiredImportFields(normalized: ImportNormalizedRow): ImportValidatorResult {
     const result = emptyValidatorResult();
+    const nameResult = validateRequiredText(normalized.student?.name, "Student name");
 
-    if (!normalized.student?.name) {
+    if (!nameResult.ok) {
         result.issues.push({
-            code: "MISSING_STUDENT_NAME",
+            code: nameResult.error === "Student name is required."
+                ? "MISSING_STUDENT_NAME"
+                : "INVALID_STUDENT_NAME",
             field: "student.name",
-            message: "Student name is required to create a student.",
+            message: nameResult.error,
             severity: "error",
         });
+    } else if (normalized.student) {
+        // Keep the reviewed mutation identical to StudentService's write-time
+        // normalization so an import cannot become a deterministic run failure.
+        normalized.student.name = nameResult.value;
     }
 
     return result;

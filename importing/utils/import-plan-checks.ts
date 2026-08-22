@@ -40,17 +40,11 @@ function blockedRows(rows: PlanRow[]) {
 
 function hasPaymentData(row: PlanRow) {
     const payment = row.normalizedData?.payment;
-    return Boolean(payment?.amount || payment?.status || payment?.rawStatus || payment?.period || payment?.method || payment?.referenceId);
+    return Boolean(payment?.amount || payment?.status || payment?.rawStatus || payment?.method || payment?.referenceId);
 }
 
 function skipsAllocation(row: PlanRow) {
     return issueList(row.warnings).some(issue => issue.code.startsWith("ALLOCATION_SKIPPED_"));
-}
-
-function hasCustomPeriodRange(options: ImportMappingState["importOptions"]) {
-    const start = options?.customPeriodStart ? new Date(options.customPeriodStart) : null;
-    const end = options?.customPeriodEnd ? new Date(options.customPeriodEnd) : null;
-    return Boolean(start && end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && start <= end);
 }
 
 export function buildImportPlanChecks(input: PlanCheckInput): ImportPlanCheck[] {
@@ -165,10 +159,6 @@ export function buildImportPlanChecks(input: PlanCheckInput): ImportPlanCheck[] 
             paymentStatus = "block";
             paymentMessage = "Payment cycle is enabled while the action is set to skip payments.";
             paymentAction = "Make payment cycle and action agree.";
-        } else if (cycle === "CUSTOM_PERIOD" && !hasCustomPeriodRange(options)) {
-            paymentStatus = "block";
-            paymentMessage = "Custom payment period is missing or invalid.";
-            paymentAction = "Choose valid start and end dates.";
         } else if (actionEnabled && cycleEnabled) {
             paymentStatus = paymentWarnings.length > 0 ? "warning" : "pass";
             paymentMessage = paymentWarnings.length > 0

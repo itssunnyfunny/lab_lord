@@ -4,7 +4,7 @@ import { parsePastedTable } from "@/importing/parsers/pasted-table.parser";
 import { parsePdf } from "@/importing/parsers/pdf.parser";
 import { parseXlsx } from "@/importing/parsers/xlsx.parser";
 import { buildFallbackMappings, normalizeColumnName } from "@/importing/utils/column-normalizer";
-import { detectDuplicateImportRows } from "@/importing/utils/duplicate-detector";
+import { detectDuplicateImportRows, detectExistingStudentDuplicates } from "@/importing/utils/duplicate-detector";
 import {
     buildImportAttention,
     buildImportSourceProfile,
@@ -33,7 +33,7 @@ import { inferConfirmedPaymentMapping } from "@/importing/utils/payment-mapping-
 import { assertImportRowLimit, MAX_IMPORT_ROWS, statusForValidation } from "@/importing/services/import-session.service";
 import { validateRequiredImportFields } from "@/importing/validators/import-required-fields.validator";
 import { validateImportPayment } from "@/importing/validators/import-payment.validator";
-import type { ImportMappingState } from "@/importing/contracts/import-session.contract";
+import { IMPORT_TARGET_FIELDS, type ImportMappingState } from "@/importing/contracts/import-session.contract";
 import { validateImportAllocation } from "@/importing/validators/import-allocation.validator";
 import { validateImportSeat } from "@/importing/validators/import-seat.validator";
 import { validateImportShift } from "@/importing/validators/import-shift.validator";
@@ -93,6 +93,7 @@ describe("import parsers", () => {
                 { Name: "Asha", Mobile: "9876543210", Fee: "Rs 1,200" },
                 { Name: "Ravi", Mobile: "", Fee: "1500" },
             ],
+            rowNumbers: [2, 3],
         });
 
         expect(profile.rowCount).toBe(2);
@@ -105,8 +106,8 @@ describe("import parsers", () => {
         expect(() => assertImportRowLimit(MAX_IMPORT_ROWS + 1)).toThrow("supports up to");
     });
 
-    it("returns a graceful PDF parser error", async () => {
-        await expect(parsePdf(Buffer.from("not a pdf"))).rejects.toThrow("Could not read this PDF");
+    it("rejects a file without a PDF signature", async () => {
+        await expect(parsePdf(Buffer.from("not a pdf"))).rejects.toThrow("PDF file signature");
     }, 10000);
 });
 
@@ -125,14 +126,27 @@ describe("import mapping and validation", () => {
         ]);
     });
 
+    it("does not expose or deterministically select unsupported legacy fields", () => {
+        expect(IMPORT_TARGET_FIELDS).not.toEqual(expect.arrayContaining([
+            "student.status",
+            "allocation.startDate",
+            "payment.period",
+        ]));
+        expect(buildFallbackMappings([
+            "Student Status",
+            "Allocation Start Date",
+            "Payment Period",
+        ]).map(mapping => mapping.targetField)).toEqual(["ignore", "ignore", "ignore"]);
+    });
+
     it("falls back when AI mapping fails", async () => {
         mocks.callGeminiJson.mockResolvedValueOnce({ ok: false, rawText: null, error: "Missing API key" });
         const { mapImportColumns } = await import("@/importing/ai/import-column-mapper.ai");
 
         const mapped = await mapImportColumns({
             branchContext: {},
-            columns: ["Name", "Mobile"],
-            sampleRows: [{ Name: "Asha", Mobile: "9876543210" }],
+            columns: ["Name", "Legacy Code"],
+            sampleRows: [{ Name: "Asha", "Legacy Code": "private-value" }],
         });
 
         expect(mapped.usedFallback).toBe(true);
@@ -147,13 +161,50 @@ describe("import mapping and validation", () => {
 
         const mapped = await mapImportColumns({
             branchContext: {},
-            columns: ["Name", "Paid"],
-            sampleRows: [{ Name: "Asha", Paid: "yes" }],
+            columns: ["Name", "Ledger Signal"],
+            sampleRows: [{ Name: "Asha", "Ledger Signal": "private-value" }],
         });
 
         expect(mapped.usedFallback).toBe(true);
         expect(mapped.aiTrace?.status).toBe("invalid_response");
-        expect(mapped.columnMappings.map(mapping => mapping.targetField)).toEqual(["student.name", "payment.status"]);
+        expect(mapped.columnMappings.map(mapping => mapping.targetField)).toEqual(["student.name", "ignore"]);
+    });
+
+    it("rejects AI mappings to fields the V2 import does not support", async () => {
+        mocks.callGeminiJson.mockResolvedValueOnce({
+            ok: true,
+            rawText: "{}",
+            data: {
+                entityTypesDetected: ["STUDENT", "ALLOCATION", "PAYMENT"],
+                columnMappings: [
+                    { sourceColumn: "column_2: Student Status", targetField: "student.status", confidence: 99 },
+                    { sourceColumn: "column_3: Allocation Start Date", targetField: "allocation.startDate", confidence: 99 },
+                    { sourceColumn: "column_4: Payment Period", targetField: "payment.period", confidence: 99 },
+                ],
+                questions: [],
+                warnings: [],
+            },
+        });
+        const { mapImportColumns } = await import("@/importing/ai/import-column-mapper.ai");
+
+        const mapped = await mapImportColumns({
+            branchContext: {},
+            columns: ["Name", "Student Status", "Allocation Start Date", "Payment Period"],
+            sampleRows: [{
+                Name: "Asha",
+                "Student Status": "Inactive",
+                "Allocation Start Date": "2026-01-01",
+                "Payment Period": "January",
+            }],
+        });
+
+        expect(mapped.usedFallback).toBe(true);
+        expect(mapped.columnMappings.map(mapping => mapping.targetField)).toEqual([
+            "student.name",
+            "ignore",
+            "ignore",
+            "ignore",
+        ]);
     });
 
     it("keeps AI payment value guesses unconfirmed", async () => {
@@ -163,8 +214,7 @@ describe("import mapping and validation", () => {
             data: {
             entityTypesDetected: ["STUDENT", "PAYMENT"],
             columnMappings: [
-                { sourceColumn: "Name", targetField: "student.name", confidence: 92 },
-                { sourceColumn: "Paid", targetField: "payment.status", confidence: 88 },
+                { sourceColumn: "column_2: Ledger Flag", targetField: "payment.status", confidence: 88 },
             ],
             questions: [],
             warnings: [],
@@ -182,8 +232,8 @@ describe("import mapping and validation", () => {
 
         const mapped = await mapImportColumns({
             branchContext: {},
-            columns: ["Name", "Paid"],
-            sampleRows: [{ Name: "Asha", Paid: "yes" }],
+            columns: ["Name", "Ledger Flag"],
+            sampleRows: [{ Name: "Asha", "Ledger Flag": "yes" }],
         });
 
         expect(mapped.suggestedImportOptions?.paymentMapping?.paidValues).toEqual(["yes"]);
@@ -225,9 +275,8 @@ describe("import mapping and validation", () => {
             data: {
                 entityTypesDetected: ["STUDENT"],
                 columnMappings: [
-                    { sourceColumn: "Name", targetField: "student.name", confidence: 92 },
-                    { sourceColumn: "Full Name", targetField: "student.name", confidence: 91 },
-                    { sourceColumn: "Notes", targetField: "student.notes", confidence: 80 },
+                    { sourceColumn: "column_2: Full Name", targetField: "student.name", confidence: 91 },
+                    { sourceColumn: "column_3: Notes", targetField: "student.notes", confidence: 80 },
                 ],
                 questions: [],
                 warnings: [],
@@ -255,8 +304,7 @@ describe("import mapping and validation", () => {
             data: {
                 entityTypesDetected: ["STUDENT", "ALLOCATION"],
                 columnMappings: [
-                    { sourceColumn: "Name", targetField: "student.name", confidence: 94 },
-                    { sourceColumn: "Maybe Seat", targetField: "allocation.seatLabel", confidence: 62 },
+                    { sourceColumn: "column_2: Allocation Hint", targetField: "allocation.seatLabel", confidence: 62 },
                 ],
                 questions: [],
                 warnings: [],
@@ -266,17 +314,17 @@ describe("import mapping and validation", () => {
 
         const mapped = await mapImportColumns({
             branchContext: {},
-            columns: ["Name", "Maybe Seat"],
-            sampleRows: [{ Name: "Asha", "Maybe Seat": "Morning maybe" }],
+            columns: ["Name", "Allocation Hint"],
+            sampleRows: [{ Name: "Asha", "Allocation Hint": "Morning maybe" }],
         });
 
         expect(mapped.columnMappings.find(mapping => mapping.sourceColumn === "Name")).toMatchObject({
             targetField: "student.name",
-            source: "AI",
+            source: "DETERMINISTIC",
             autoApplied: true,
             needsReview: false,
         });
-        expect(mapped.columnMappings.find(mapping => mapping.sourceColumn === "Maybe Seat")).toMatchObject({
+        expect(mapped.columnMappings.find(mapping => mapping.sourceColumn === "Allocation Hint")).toMatchObject({
             targetField: "ignore",
             source: "AI",
             autoApplied: false,
@@ -300,6 +348,46 @@ describe("import mapping and validation", () => {
         expect(result.warnings.some(warning => warning.code === "MISSING_PHONE")).toBe(true);
     });
 
+    it("blocks an invalid nonblank phone", () => {
+        const result = validateImportStudent(
+            { student: { name: "Asha", phone: "12345", monthlyFee: 1200 } },
+            { branchDefaultFee: 1200, shiftsByName: new Map(), multiShiftsByName: new Map() }
+        );
+
+        expect(result.issues).toContainEqual(expect.objectContaining({
+            code: "INVALID_PHONE",
+            severity: "error",
+        }));
+    });
+
+    it("blocks non-integer and out-of-range imported money", () => {
+        const student = validateImportStudent(
+            { student: { name: "Asha", monthlyFee: 10_000_001 } },
+            { branchDefaultFee: 1200, shiftsByName: new Map(), multiShiftsByName: new Map() }
+        );
+        const payment = validateImportPayment(
+            { payment: { amount: 10.5 } },
+            { entityTypesDetected: ["PAYMENT"], columnMappings: [], importOptions: {} }
+        );
+
+        expect(student.issues).toContainEqual(expect.objectContaining({ code: "INVALID_MONTHLY_FEE" }));
+        expect(payment.issues).toContainEqual(expect.objectContaining({ code: "INVALID_PAYMENT_AMOUNT" }));
+    });
+
+    it("blocks malformed or incomplete imported shift times", () => {
+        const malformed = validateImportShift(
+            { shift: { name: "Morning", startTime: "25:00", endTime: "10:00" } },
+            { shiftsByName: new Map(), multiShiftsByName: new Map(), createUnknownShifts: true }
+        );
+        const incomplete = validateImportShift(
+            { shift: { name: "Morning", startTime: "06:00" } },
+            { shiftsByName: new Map(), multiShiftsByName: new Map(), createUnknownShifts: true }
+        );
+
+        expect(malformed.issues).toContainEqual(expect.objectContaining({ code: "INVALID_SHIFT_START_TIME" }));
+        expect(incomplete.issues).toContainEqual(expect.objectContaining({ code: "INCOMPLETE_SHIFT_TIME_RANGE" }));
+    });
+
     it("asks a question for unknown shift", () => {
         const result = validateImportShift(
             { student: { name: "Asha" }, allocation: { seatLabel: "A1", shiftName: "Night" } },
@@ -315,7 +403,7 @@ describe("import mapping and validation", () => {
             { entityTypesDetected: ["PAYMENT"], columnMappings: [], importOptions: {} }
         );
 
-        expect(result.questions.some(question => question.field === "payment.period")).toBe(true);
+        expect(result.questions.some(question => question.field === "payment.cycle")).toBe(true);
     });
 
     it("marks ambiguous paid/unpaid values as review warnings", () => {
@@ -325,7 +413,7 @@ describe("import mapping and validation", () => {
                 entityTypesDetected: ["PAYMENT"],
                 columnMappings: [],
                 importOptions: {
-                    paymentCycle: "CURRENT_MONTH",
+                    paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
                     paymentAction: "IMPORT_PAID_UNPAID",
                     paymentMapping: { paidValues: ["yes"], unpaidValues: ["no"], waivedValues: [], unclearValues: [], confirmed: true },
                 },
@@ -333,40 +421,6 @@ describe("import mapping and validation", () => {
         );
 
         expect(result.warnings.some(warning => warning.code === "AMBIGUOUS_PAYMENT_STATUS")).toBe(true);
-    });
-
-    it("requires valid dates for custom payment periods", () => {
-        const result = validateImportPayment(
-            { student: { name: "Asha" }, payment: { amount: 1200, rawStatus: "paid", status: "PAID" } },
-            {
-                entityTypesDetected: ["PAYMENT"],
-                columnMappings: [],
-                importOptions: {
-                    paymentCycle: "CUSTOM_PERIOD",
-                    paymentAction: "GENERATE_DUE",
-                },
-            }
-        );
-
-        expect(result.warnings.some(warning => warning.code === "PAYMENT_CUSTOM_PERIOD_REQUIRED")).toBe(true);
-    });
-
-    it("accepts complete custom payment periods", () => {
-        const result = validateImportPayment(
-            { student: { name: "Asha" }, payment: { amount: 1200, rawStatus: "paid", status: "PAID" } },
-            {
-                entityTypesDetected: ["PAYMENT"],
-                columnMappings: [],
-                importOptions: {
-                    paymentCycle: "CUSTOM_PERIOD",
-                    customPeriodStart: "2026-01-01",
-                    customPeriodEnd: "2026-01-31",
-                    paymentAction: "GENERATE_DUE",
-                },
-            }
-        );
-
-        expect(result.warnings.some(warning => warning.code === "PAYMENT_CUSTOM_PERIOD_REQUIRED")).toBe(false);
     });
 
     it("allows unknown seats to be skipped while importing the student", () => {
@@ -659,15 +713,17 @@ describe("import mapping and validation", () => {
 
     it("parses formatted money values", () => {
         expect(parseImportMoney("Rs 1,500")).toBe(1500);
+        expect(parseImportMoney("₹1,500.00")).toBe(1500);
+        expect(parseImportMoney("1500.50")).toBeUndefined();
+        expect(parseImportMoney("-1500")).toBeUndefined();
     });
 
-    it("normalizes richly mapped import rows", () => {
+    it("normalizes all supported mapped import fields", () => {
         const mappings: ImportColumnMapping[] = [
             { sourceColumn: "Name", targetField: "student.name", confidence: 90 },
             { sourceColumn: "Phone", targetField: "student.phone", confidence: 90 },
             { sourceColumn: "Joined", targetField: "student.joinedAt", confidence: 90 },
             { sourceColumn: "Fee", targetField: "student.monthlyFee", confidence: 90 },
-            { sourceColumn: "Status", targetField: "student.status", confidence: 90 },
             { sourceColumn: "Fee Source", targetField: "student.feeSource", confidence: 90 },
             { sourceColumn: "Fee Shift", targetField: "student.feeLinkedShiftName", confidence: 90 },
             { sourceColumn: "Fee Bundle", targetField: "student.feeLinkedMultiShiftName", confidence: 90 },
@@ -677,12 +733,10 @@ describe("import mapping and validation", () => {
             { sourceColumn: "End", targetField: "shift.endTime", confidence: 90 },
             { sourceColumn: "Bundle", targetField: "multiShift.name", confidence: 90 },
             { sourceColumn: "Components", targetField: "multiShift.componentShiftNames", confidence: 90 },
-            { sourceColumn: "Allocation Start", targetField: "allocation.startDate", confidence: 90 },
             { sourceColumn: "Paid Amount", targetField: "payment.amount", confidence: 90 },
             { sourceColumn: "Paid", targetField: "payment.status", confidence: 90 },
             { sourceColumn: "Method", targetField: "payment.method", confidence: 90 },
             { sourceColumn: "Reference", targetField: "payment.referenceId", confidence: 90 },
-            { sourceColumn: "Period", targetField: "payment.period", confidence: 90 },
         ];
 
         const result = normalizeImportRow(
@@ -691,7 +745,6 @@ describe("import mapping and validation", () => {
                 Phone: "9876543210",
                 Joined: "02/03/26",
                 Fee: "Rs 1,500",
-                Status: "Inactive",
                 "Fee Source": "uploaded",
                 "Fee Shift": "Morning",
                 "Fee Bundle": "Full Time",
@@ -701,12 +754,10 @@ describe("import mapping and validation", () => {
                 End: "12:00",
                 Bundle: "Full Time",
                 Components: "Morning + Evening",
-                "Allocation Start": "2026-01-01",
                 "Paid Amount": "1500",
                 Paid: "yes",
                 Method: "PhonePe",
                 Reference: "TXN1",
-                Period: "Jan 2026",
             },
             mappings,
             { paidValues: ["yes"], unpaidValues: ["no"], waivedValues: ["free"], confirmed: true }
@@ -718,7 +769,6 @@ describe("import mapping and validation", () => {
             name: "Asha",
             phone: "9876543210",
             monthlyFee: 1500,
-            status: "INACTIVE",
             feeSource: "UPLOADED",
             feeLinkedShiftName: "Morning",
             feeLinkedMultiShiftName: "Full Time",
@@ -734,7 +784,6 @@ describe("import mapping and validation", () => {
             status: "PAID",
             method: "UPI",
             referenceId: "TXN1",
-            period: "Jan 2026",
         });
     });
 
@@ -754,6 +803,10 @@ describe("import mapping and validation", () => {
 
     it("covers import value parser edge cases", () => {
         expect(parseImportDate("31/03/26")).toContain("2026-03-31");
+        expect(parseImportDate("02/03/26")).toContain("2026-03-02");
+        expect(parseImportDate("2026-03-02")).toContain("2026-03-02");
+        expect(parseImportDate("31/02/2026")).toBeUndefined();
+        expect(parseImportDate("2026-02-31")).toBeUndefined();
         expect(parseImportDate("not a date")).toBeUndefined();
         expect(parsePaymentMethod("cash")).toBe("CASH");
         expect(parsePaymentMethod("bank transfer")).toBe("BANK_TRANSFER");
@@ -762,6 +815,18 @@ describe("import mapping and validation", () => {
         expect(classifyPaymentStatus("free")).toBe("WAIVED");
         expect(classifyPaymentStatus("maybe", { paidValues: ["yes"], unpaidValues: ["no"], waivedValues: [], confirmed: true })).toBe("UNCLEAR");
         expect(classifyPaymentStatus("")).toBeUndefined();
+    });
+
+    it("turns an invalid joined date into a blocking normalization issue", () => {
+        const result = normalizeImportRow(
+            { Joined: "31/02/2026" },
+            [{ sourceColumn: "Joined", targetField: "student.joinedAt", confidence: 100 }]
+        );
+
+        expect(result.normalizedData.student?.joinedAt).toBeUndefined();
+        expect(result.issues).toEqual(expect.arrayContaining([
+            expect.objectContaining({ code: "INVALID_JOINED_DATE", severity: "error" }),
+        ]));
     });
 
     it("applies default seat, multi-shift, and branch fee fallbacks", () => {
@@ -814,20 +879,60 @@ describe("import mapping and validation", () => {
         expect(feeFromSelection({ ...draftFromImportRow(row), shift: "Morning", multiShift: "" }, branchContext)).toBe("1200");
     });
 
-    it("detects duplicate phone in the same file", () => {
+    it("treats phone-only matches as hints and name-plus-phone as the canonical duplicate", () => {
         const result = detectDuplicateImportRows([
             { id: "row_1", rowNumber: 2, normalizedData: { student: { name: "A", phone: "9876543210" } } },
             { id: "row_2", rowNumber: 3, normalizedData: { student: { name: "B", phone: "9876543210" } } },
+            { id: "row_3", rowNumber: 4, normalizedData: { student: { name: "A", phone: "9876543210" } } },
+            { id: "row_4", rowNumber: 5, normalizedData: { student: { name: "A" } } },
+            { id: "row_5", rowNumber: 6, normalizedData: { student: { name: "A" } } },
         ]);
 
-        expect(result.get("row_2")?.[0].code).toBe("DUPLICATE_PHONE_IN_FILE");
+        expect(result.get("row_2")?.[0]).toMatchObject({ code: "SIMILAR_PHONE_IN_FILE", severity: "info" });
+        expect(result.get("row_3")?.some(issue => issue.code === "DUPLICATE_IDENTITY_IN_FILE")).toBe(true);
+        expect(result.has("row_5")).toBe(false);
+    });
+
+    it("canonicalizes supported Indian phone prefixes for duplicate review", () => {
+        const result = detectDuplicateImportRows([
+            { id: "row_1", rowNumber: 2, normalizedData: { student: { name: "Asha", phone: "9876543210" } } },
+            { id: "row_2", rowNumber: 3, normalizedData: { student: { name: " Asha ", phone: "09876543210" } } },
+            { id: "row_3", rowNumber: 4, normalizedData: { student: { name: "ASHA", phone: "+91 98765 43210" } } },
+            { id: "row_4", rowNumber: 5, normalizedData: { student: { name: "Asha", phone: "919876543210" } } },
+            { id: "row_5", rowNumber: 6, normalizedData: { student: { name: "Asha", phone: "" } } },
+            { id: "row_6", rowNumber: 7, normalizedData: { student: { name: "Asha" } } },
+        ]);
+
+        for (const rowId of ["row_2", "row_3", "row_4"]) {
+            expect(result.get(rowId)).toContainEqual(expect.objectContaining({
+                code: "DUPLICATE_IDENTITY_IN_FILE",
+            }));
+        }
+        expect(result.has("row_5")).toBe(false);
+        expect(result.has("row_6")).toBe(false);
+    });
+
+    it("uses the same Indian phone canonical form for existing-student matches", () => {
+        const issues = detectExistingStudentDuplicates(
+            { student: { name: "Asha", phone: "09876543210" } },
+            [{
+                id: "student_1",
+                name: "Asha",
+                phone: "+91 98765 43210",
+                joinedAt: new Date("2026-01-01T00:00:00.000Z"),
+            }]
+        );
+
+        expect(issues).toContainEqual(expect.objectContaining({
+            code: "DUPLICATE_EXISTING_IDENTITY",
+        }));
     });
 
     it("builds attention buckets and manual edit markers", () => {
         const marked = markManualNormalizedData({ "student.name": "Asha" });
         const attention = buildImportAttention({
             mapping: { entityTypesDetected: ["STUDENT"], columnMappings: [], importOptions: {} },
-            questions: [{ status: "OPEN", field: "payment.period" }],
+            questions: [{ status: "OPEN", field: "payment.cycle" }],
             rows: [{
                 rowNumber: 2,
                 status: "BLOCKED",

@@ -22,7 +22,7 @@ export function proxy(req: NextRequest, event: NextFetchEvent) {
 
 export const config = {
   matcher: [
-    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|xml|txt|webmanifest)).*)",
+    "/((?!_next|.well-known/workflow/|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|xml|txt|webmanifest)).*)",
     "/(api|trpc)(.*)",
   ],
 };

@@ -3,6 +3,7 @@ import { FORM_LIMITS, parseIntegerField, validateRequiredText } from "@/lib/form
 import { StaffService } from "@/services/staff.service";
 import type { StaffAction } from "@/types";
 import { EntitlementService } from "@/services/entitlement.service";
+import type { Prisma } from "@/app/generated/prisma/client";
 
 export interface CreateMultiShiftDto {
     name: string;
@@ -64,7 +65,8 @@ export class MultiShiftService {
     private static async validateComponents(
         branchId: string,
         shiftIds: string[],
-        excludeMultiShiftId?: string
+        excludeMultiShiftId?: string,
+        client: Prisma.TransactionClient | typeof prisma = prisma
     ) {
         if (!shiftIds || shiftIds.length < 2) {
             throw new Error("A multi-shift must contain at least 2 primary shifts.");
@@ -76,7 +78,7 @@ export class MultiShiftService {
         }
 
         // Validate all shifts exist, are ACTIVE, and belong to this branch
-        const shifts = await prisma.shift.findMany({
+        const shifts = await client.shift.findMany({
             where: { id: { in: uniqueIds } },
             select: { id: true, name: true, branchId: true, status: true },
         });
@@ -93,7 +95,7 @@ export class MultiShiftService {
 
         // Check for duplicate combination (order-independent)
         const sortedNew = [...uniqueIds].sort().join(",");
-        const existingMultiShifts = await prisma.multiShift.findMany({
+        const existingMultiShifts = await client.multiShift.findMany({
             where: {
                 branchId,
                 ...(excludeMultiShiftId ? { id: { not: excludeMultiShiftId } } : {}),
@@ -120,8 +122,19 @@ export class MultiShiftService {
         branchId: string,
         data: CreateMultiShiftDto
     ): Promise<MultiShiftItem> {
-        await this.assertBranchAccess(userId, branchId, "manage_branch");
-        await EntitlementService.assertBranchWritable(branchId);
+        return prisma.$transaction(tx =>
+            this.createMultiShiftInTransaction(userId, branchId, data, tx)
+        );
+    }
+
+    static async createMultiShiftInTransaction(
+        userId: string,
+        branchId: string,
+        data: CreateMultiShiftDto,
+        tx: Prisma.TransactionClient
+    ): Promise<MultiShiftItem> {
+        await StaffService.authorize(userId, branchId, "manage_branch", tx);
+        await EntitlementService.assertBranchWritable(branchId, tx);
         const nameResult = validateRequiredText(data.name, "Multi-shift name", 50);
         if (!nameResult.ok) throw new Error(nameResult.error);
         const priceResult = parseIntegerField(data.price, "Bundle monthly price", {
@@ -129,9 +142,9 @@ export class MultiShiftService {
             max: FORM_LIMITS.moneyMax,
         });
         if (!priceResult.ok) throw new Error(priceResult.error);
-        const uniqueIds = await this.validateComponents(branchId, data.shiftIds);
+        const uniqueIds = await this.validateComponents(branchId, data.shiftIds, undefined, tx);
 
-        const ms = await prisma.multiShift.create({
+        const ms = await tx.multiShift.create({
             data: {
                 branchId,
                 name: nameResult.value,

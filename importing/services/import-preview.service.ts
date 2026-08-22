@@ -33,6 +33,9 @@ export class ImportPreviewService {
         mode: CommitMode = "SAFE_PARTIAL"
     ): Promise<ImportPreview> {
         const detail = await ImportSessionService.getSessionDetail(userId, branchId, sessionId);
+        if (detail.engineVersion === 2) {
+            throw new Error("V2 import reviews require an immutable plan.");
+        }
         const rows = detail.rows.map(row => {
             const issues = (Array.isArray(row.issues) ? row.issues : []) as ImportIssue[];
             const warnings = (Array.isArray(row.warnings) ? row.warnings : []) as ImportIssue[];

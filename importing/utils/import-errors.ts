@@ -13,3 +13,21 @@ export class ImportValidationError extends Error {
         this.name = "ImportValidationError";
     }
 }
+
+export class ImportRevisionConflictError extends Error {
+    readonly code = "IMPORT_REVISION_CONFLICT";
+
+    constructor() {
+        super("Import revision changed");
+        this.name = "ImportRevisionConflictError";
+    }
+}
+
+export class ImportIdempotencyConflictError extends Error {
+    readonly code = "IMPORT_IDEMPOTENCY_CONFLICT";
+
+    constructor() {
+        super("Idempotency key was reused for a different import request");
+        this.name = "ImportIdempotencyConflictError";
+    }
+}

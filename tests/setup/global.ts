@@ -7,16 +7,42 @@ import path from "path";
  * This must run before any module that imports prisma.
  */
 export async function setup() {
-  config({
-    path: path.resolve(process.cwd(), ".env.test"),
-    override: true, // override any existing DATABASE_URL
-  });
+  const explicitTestDatabaseUrl = process.env.TEST_DATABASE_URL;
 
-  // ❌ SAFETY GUARD: abort if not pointing at a test database
-  if (!process.env.DATABASE_URL?.includes("test")) {
+  if (explicitTestDatabaseUrl) {
+    process.env.DATABASE_URL = explicitTestDatabaseUrl;
+  } else {
+    config({
+      path: path.resolve(process.cwd(), ".env.test"),
+      override: true, // override any existing DATABASE_URL
+    });
+  }
+
+  if (!process.env.DATABASE_URL) {
     throw new Error(
-      "❌ Tests must use a TEST database! DATABASE_URL does not contain 'test'.\n" +
-      "   Check your .env.test file."
+      "❌ Tests require DATABASE_URL. Check your explicit test target or .env.test file."
+    );
+  }
+
+  const parsedDatabaseUrl = new URL(process.env.DATABASE_URL);
+  const databaseName = parsedDatabaseUrl.pathname.replace(/^\//, "");
+  const isPostgres = ["postgres:", "postgresql:"].includes(parsedDatabaseUrl.protocol);
+
+  // ❌ SAFETY GUARD: inspect the database name, not a coincidental `test`
+  // substring in a username, password, hostname, query, or schema parameter.
+  if (!isPostgres || !databaseName.toLowerCase().includes("test")) {
+    throw new Error(
+      "❌ Tests must use a PostgreSQL database whose database name contains 'test'.\n" +
+      "   Check your explicit test target or .env.test file."
+    );
+  }
+
+  if (
+    explicitTestDatabaseUrl &&
+    process.env.TEST_DATABASE_RESET_CONFIRM !== databaseName
+  ) {
+    throw new Error(
+      "Explicit TEST_DATABASE_URL requires TEST_DATABASE_RESET_CONFIRM to exactly match its database name."
     );
   }
 
@@ -26,7 +52,10 @@ export async function setup() {
   process.env.RAZORPAY_KEY_ID ??= "rzp_test_vitest";
   process.env.RAZORPAY_KEY_SECRET ??= "vitest-secret";
 
-  console.log("✅ Test environment loaded. DB:", process.env.DATABASE_URL?.split("@")[1]);
+  console.log(
+    "✅ Test environment loaded. DB:",
+    `${parsedDatabaseUrl.hostname}:${parsedDatabaseUrl.port || "5432"}/${databaseName}`
+  );
 }
 
 export async function teardown() {

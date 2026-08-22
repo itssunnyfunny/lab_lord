@@ -2,7 +2,8 @@
 
 > Repository policy for Codex Security and other security reviewers.
 >
-> Last reconciled with `main` commit `07ac439` on 2026-08-17.
+> Last reconciled with the Import Assistance V2 working tree based on commit
+> `f37541e` on 2026-08-18.
 
 This file defines what to review, the mandatory security invariants, and how to
 calibrate findings. It is not a public vulnerability-disclosure channel,
@@ -28,9 +29,11 @@ Production-reachable review scope includes:
 - operational student payments and Lab Lords SaaS subscription billing;
 - Razorpay Checkout callbacks, REST calls, webhooks, reconciliation, billing
   mutations, feature gates, and Test/Live isolation;
-- imports, parsers, previews, plan confirmation, and commit processing;
+- imports, parsers, previews, immutable evaluations/plans, recipes, durable
+  runs, Workflow orchestration, retention, and commit processing;
 - Gemini prompts, outbound data, output validation, persistence, and fallbacks;
-- Vercel Cron routes, bearer authentication, retries, and idempotency;
+- Vercel Workflow and Cron routes, provider/bearer authentication, retries,
+  leases, cancellation, and idempotency;
 - deployment, migration, CI, environment, and incident procedures; and
 - production dependencies when the vulnerable behavior is shipped and
   reachable by this application.
@@ -46,7 +49,8 @@ Protect at least:
 
 - organization ownership, branch membership, staff roles, and overrides;
 - tenant isolation and the existence of foreign-tenant records;
-- student names, phone numbers, fees, dues, allocations, and import contents;
+- student names, phone numbers, fees, dues, allocations, import contents, staged
+  evaluations/execution payloads, and import-run history;
 - payment history, audit records, subscription state, invoices, entitlements,
   provider identifiers, and idempotency state;
 - staff-invite bearer tokens and cron credentials;
@@ -64,14 +68,15 @@ Consider:
 - compromised invite links, browser callbacks, webhook requests, or cron
   credentials;
 - malicious or malformed imports and untrusted AI/provider responses;
-- replayed, duplicated, delayed, or reordered provider and scheduled events;
+- replayed, duplicated, delayed, or reordered provider, Workflow, and scheduled
+  events;
 - compromised dependencies or external providers; and
 - operator mistakes involving environments, migrations, scripts, or Production
   data.
 
-External trust boundaries are Clerk, PostgreSQL/Prisma, Razorpay, Gemini, Vercel
-and Vercel Cron, browsers, uploaded files, and any operator workstation or CI
-runner that can access credentials.
+External trust boundaries are Clerk, PostgreSQL/Prisma, Razorpay, Gemini,
+Vercel Workflow and Vercel Cron, browsers, uploaded files, and any operator
+workstation or CI runner that can access credentials.
 
 ## Mandatory security invariants
 
@@ -104,9 +109,12 @@ runner that can access credentials.
 - Staff invitations remain owner-controlled, time-limited, email-bound,
   unpredictable, single-use, and race-safe.
 
-The two cron routes are machine-authenticated with `CRON_SECRET`. The Razorpay
-webhook is authenticated by its raw-body signature. These are deliberate
-exceptions to Clerk authentication, not unauthenticated routes.
+The three cron routes are machine-authenticated with `CRON_SECRET`. Workflow's
+framework-controlled `/.well-known/workflow/` endpoint is deliberately outside
+Clerk middleware and must remain restricted to provider-authenticated Workflow
+traffic. The Razorpay webhook is authenticated by its raw-body signature.
+These are deliberate non-user authentication boundaries, not open application
+routes.
 
 ### Billing and provider trust
 
@@ -148,10 +156,65 @@ exceptions to Clerk authentication, not unauthenticated routes.
 - Imports must authenticate, authorize the branch, enforce writability, scope
   sessions to that branch, and check all additional permissions required by the
   reviewed rows.
-- Import commit requires explicit confirmation, a reviewed plan version, fresh
-  deterministic revalidation, and matching plan content.
+- New V2 starts must fail closed unless `IMPORT_V2_ENABLED=true`; plan creation
+  must also fail closed without a configured positive
+  `IMPORT_MAX_PLANNED_MUTATIONS` and must mark a plan above that cap
+  non-runnable. Neither value may be accepted from the browser.
+- Complete import requests, source files, rows, columns, cells, and expanded
+  workbooks must remain bounded at their repository-defined limits. Parsers
+  must validate signature/type/encoding and reject malformed structures before
+  persisting rows.
+- Import commit requires explicit confirmation, the exact immutable plan hash,
+  current draft/evaluation revision, no blocking plan checks, and matching plan
+  content. A stale browser or Workflow run must fail instead of overwriting a
+  newer revision.
+- Idempotency keys bind to a canonical request hash. The same key and content
+  may replay; a different payload must conflict. One active run per session,
+  deterministic item keys, leases, bounded attempts, and compare-and-set
+  completion must remain durable in PostgreSQL.
+- Workflow is orchestration only. Workflow inputs and step outputs may contain
+  opaque run/session IDs, revisions, hashes, cursors, and counts, never source
+  rows, personal values, branch configuration, credentials, authorization
+  conclusions, or full mutation payloads. Each bounded execution step must load
+  its state from PostgreSQL and recheck tenant scope, permission, entitlement,
+  and branch writability before domain mutation.
+- Import run-item success results may retain only bounded entity IDs and numeric
+  counts. Errors must be redacted and bounded; execution payloads must be
+  cleared after terminal handling.
+- A mutation step must fail stale if current linked prices, active
+  branch-owned shift/bundle structure, or an existing same-period payment no
+  longer exactly matches the immutable plan. A same-key payment is not proof
+  of idempotent success unless its branch, type, amount, dates, allowed status,
+  and already-final method/reference metadata match. Partial terminal replay
+  must project the current run's row results even when the session was already
+  partial, without rewriting previously successful rows.
+- Session staging and its initial analysis ledger are persisted atomically.
+  Workflow/provider dispatch is recoverable through an authorized POST that
+  rechecks tenant scope, required plan permissions for commits, entitlement,
+  writability, and current branch configuration. An attached provider run that
+  is terminal or missing while the PostgreSQL ledger remains active is replaced
+  only after a database-locked compare-and-set fence; an active provider run is
+  never replaced. Tenant-facing polling exposes only `dispatchRequired`; raw
+  provider Workflow identifiers remain server-only.
+- Import recipes may retain only organization-scoped source type, normalized
+  header signature/columns, goal, entity types, and column mappings. Samples,
+  row values, branch configuration, payment/default/conflict options, and model
+  rationale must never enter recipe storage or responses.
+- Expired staging must be purged by the authenticated, idempotent daily job only
+  after its explicit `purgeAfter` deadline. One invocation drains at most 20
+  batches of 100 sessions, reports the remaining backlog, and fails closed if
+  any batch or the final backlog count fails. Each batch must lock the
+  staging record and attached ledgers, terminalize any stale active run and
+  nonterminal items with consistent counters, and clear their leases before
+  removal. Run-item payloads/errors must be scrubbed before staged sessions,
+  rows, evaluations, and plans are removed; retained run history must remain
+  redacted.
 - Files, parser output, uploaded rows, AI mappings, and model responses are
   untrusted input.
+- Import mapping must run deterministic mapping first. Gemini may receive only
+  sanitized aliases for ambiguous headers plus masked value shapes and
+  structural summaries; raw row values and branch configuration must not be
+  sent.
 - Gemini calls remain server-only. Model output must be parsed, bounded,
   sanitized, and replaced by deterministic fallback behavior when invalid.
 - AI is advisory only. It must not decide authorization, tenant scope,
@@ -170,7 +233,7 @@ exceptions to Clerk authentication, not unauthenticated routes.
 - `NEXT_PUBLIC_` variables are browser-visible and must never contain a secret.
 - Logs, errors, tests, reports, patches, screenshots, and incident evidence must
   omit credentials, bearer tokens, raw webhook bodies, unnecessary provider
-  payloads, and unnecessary personal data.
+  payloads, Workflow step payloads, import rows, and unnecessary personal data.
 - API errors must not expose stack traces, query details, provider secrets,
   internal authorization reasoning, or foreign-record existence.
 - Production data must not be copied into Local, Test, Preview, AI prompts,
@@ -238,8 +301,9 @@ Treat these as review context and remediation candidates, not accepted risks:
   object mutation paths;
 - the process-local in-memory rate limiter resets and is not coordinated across
   server instances;
-- import uploads are buffered and parsed before the 2,000-row check and have no
-  repository-defined byte limit;
+- import request parsing still buffers a bounded request in application memory;
+  the 4.25 MiB request and 4 MiB source limits are abuse bounds, not streaming
+  upload or malware-scanning controls;
 - multiple API handlers return raw `Error.message`, which can disclose sensitive
   implementation detail;
 - whether daily operational-payment generation should respect branch or
@@ -249,10 +313,14 @@ Treat these as review context and remediation candidates, not accepted risks:
 - the repository defines no centralized security log sink, alert routing,
   health/readiness endpoint, incident contact, or monitoring-retention policy;
 - repository configuration does not establish whether CSP, HSTS, WAF, or
-  equivalent external platform controls are active; and
-- Gemini receives import sample rows and student/debt drafting context, while
-  consent, retention, regional processing, and vendor-governance policy remain
-  operator-owned and unverifiable from this repository.
+  equivalent external platform controls are active;
+- overdue drafting sends selected student names and debt context to Gemini,
+  while consent, retention, regional processing, and vendor-governance policy
+  remain operator-owned and unverifiable from this repository; and
+- the Workflow execution ADR remains Proposed. Production enablement is not
+  approved until a human owner/security review covers provider processing and
+  residency, Fluid Compute/runtime configuration, retention and operator
+  access, benchmark evidence, SLOs, the mutation cap, and rollback authority.
 
 ## Review conduct
 

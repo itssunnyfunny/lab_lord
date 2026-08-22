@@ -122,33 +122,6 @@ export function PaymentsStep({
                         </div>
                     )}
 
-                    {options.paymentCycle === "CUSTOM_PERIOD" && (
-                        <div className="grid gap-3 sm:grid-cols-2">
-                            <label className="space-y-2">
-                                <span className={pickerSectionLabelClass}>Period start</span>
-                                <input
-                                    type="date"
-                                    value={options.customPeriodStart?.slice(0, 10) ?? ""}
-                                    onChange={event => onUpdateOptions({ customPeriodStart: event.target.value })}
-                                    className={cn("w-full", importFieldClass)}
-                                    disabled={mutationsDisabled}
-                                    aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
-                                />
-                            </label>
-                            <label className="space-y-2">
-                                <span className={pickerSectionLabelClass}>Period end</span>
-                                <input
-                                    type="date"
-                                    value={options.customPeriodEnd?.slice(0, 10) ?? ""}
-                                    onChange={event => onUpdateOptions({ customPeriodEnd: event.target.value })}
-                                    className={cn("w-full", importFieldClass)}
-                                    disabled={mutationsDisabled}
-                                    aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
-                                />
-                            </label>
-                        </div>
-                    )}
-
                     {showPaymentWords && (
                         <div className={cn("space-y-3 p-4", pageInsetSurfaceClass)}>
                             <div className="flex items-center gap-2">

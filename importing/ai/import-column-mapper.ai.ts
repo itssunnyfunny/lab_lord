@@ -10,6 +10,26 @@ import {
 import { buildFallbackMappings } from "@/importing/utils/column-normalizer";
 import { buildImportColumnMappingPrompt } from "./prompts/import-column-mapping.prompt";
 
+const MAX_AI_SAMPLE_ROWS = 8;
+const MAX_AI_HEADER_LENGTH = 80;
+const SAFE_HEADER_TOKENS = new Set([
+    "student", "name", "first", "last", "full", "father", "mother", "guardian",
+    "phone", "mobile", "contact", "number", "no", "joined", "joining", "date",
+    "monthly", "fee", "fees", "amount", "price", "seat", "desk", "shift", "batch",
+    "bundle", "multi", "start", "end", "time", "payment", "paid", "due", "status",
+    "method", "mode", "reference", "transaction", "id", "legacy", "value", "notes",
+    "remark", "remarks", "admission", "history", "current", "previous", "cycle",
+    "ledger", "flag", "allocation", "hint",
+]);
+const AI_QUESTION_FIELDS = new Set([
+    "student.joinedAt",
+    "seat.label",
+    "allocation.shiftName",
+    "allocation.multiShiftName",
+    "payment.cycle",
+    "payment.status",
+]);
+
 const IMPORT_COLUMN_MAPPING_SCHEMA = {
     type: "object",
     properties: {
@@ -57,8 +77,145 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function stringsFrom(value: unknown) {
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+function finiteNumber(value: unknown) {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function sanitizedHeader(value: string) {
+    const redacted = value
+        .normalize("NFKC")
+        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+        .replace(/(?:\+?\d[\d\s().-]{5,}\d)/g, "[redacted-number]")
+        .replace(/https?:\/\/\S+/gi, "[redacted-url]")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (!redacted) return "unlabeled";
+    return redacted
+        .split(/\s+/)
+        .map(token => {
+            if (/^\[redacted-(?:email|number|url)\]$/i.test(token)) return token.toLowerCase();
+            const normalized = token.toLocaleLowerCase("en-IN").replace(/[^a-z]/g, "");
+            return SAFE_HEADER_TOKENS.has(normalized) ? token : "[redacted-token]";
+        })
+        .join(" ")
+        .slice(0, MAX_AI_HEADER_LENGTH) || "unlabeled";
+}
+
+function maskedValueShape(value: unknown) {
+    const text = value == null ? "" : String(value).trim();
+    if (!text) return "[empty]";
+    const digits = text.replace(/\D/g, "");
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(text)) return `[email-like:length=${text.length}]`;
+    if (/^\+?[\d\s().-]+$/.test(text) && digits.length >= 8) return `[phone-like:digits=${digits.length}]`;
+    if (/^\d{1,4}[/-]\d{1,2}[/-]\d{1,4}$/.test(text)) return "[date-like]";
+    if (/^[\p{Sc}\s,.-]*\d[\d\s,.-]*$/u.test(text)) return `[numeric-like:digits=${digits.length}]`;
+    return `[text:length=${Array.from(text).length}:words=${text.split(/\s+/).length}]`;
+}
+
+function entityTypesForMappings(mappings: ImportMappingResult["columnMappings"]) {
+    const types = new Set<ImportMappingResult["entityTypesDetected"][number]>();
+    for (const mapping of mappings) {
+        if (mapping.targetField.startsWith("student.")) types.add("STUDENT");
+        if (mapping.targetField.startsWith("seat.")) types.add("SEAT");
+        if (mapping.targetField.startsWith("shift.") || mapping.targetField.startsWith("multiShift.")) types.add("SHIFT");
+        if (mapping.targetField.startsWith("allocation.")) types.add("ALLOCATION");
+        if (mapping.targetField.startsWith("payment.")) types.add("PAYMENT");
+    }
+    if (types.size === 0) types.add("STUDENT");
+    return Array.from(types);
+}
+
+function structuralBranchSummary(value: unknown) {
+    if (!isRecord(value)) return {};
+    return {
+        seatCount: Array.isArray(value.seats) ? value.seats.length : undefined,
+        shiftCount: Array.isArray(value.shifts) ? value.shifts.length : undefined,
+        multiShiftCount: Array.isArray(value.multiShifts) ? value.multiShifts.length : undefined,
+        hasDefaultFee: finiteNumber(value.defaultFee) !== undefined,
+        hasDefaultAdmissionFee: finiteNumber(value.defaultAdmissionFee) !== undefined,
+    };
+}
+
+export type RedactedImportMappingInput = {
+    promptInput: Parameters<typeof buildImportColumnMappingPrompt>[0];
+    aliasToColumn: ReadonlyMap<string, string>;
+    deterministicMappings: ImportMappingResult["columnMappings"];
+    ambiguousColumns: string[];
+};
+
+export function buildRedactedImportMappingInput(input: {
+    branchContext: unknown;
+    sourceProfile?: unknown;
+    columns: string[];
+    sampleRows: ParsedImportRow[];
+}): RedactedImportMappingInput {
+    const deterministicMappings = buildFallbackMappings(input.columns);
+    const ambiguousColumns = deterministicMappings
+        .filter(mapping => mapping.targetField === "ignore" || mapping.needsReview)
+        .map(mapping => mapping.sourceColumn);
+    const aliasToColumn = new Map<string, string>();
+    const columnToAlias = new Map<string, string>();
+    for (const column of ambiguousColumns) {
+        const position = input.columns.indexOf(column) + 1;
+        const alias = `column_${position}: ${sanitizedHeader(column)}`;
+        aliasToColumn.set(alias, column);
+        columnToAlias.set(column, alias);
+    }
+
+    const maskedRows = input.sampleRows.slice(0, MAX_AI_SAMPLE_ROWS).map(row =>
+        Object.fromEntries(ambiguousColumns.map(column => [
+            columnToAlias.get(column) as string,
+            maskedValueShape(row[column]),
+        ]))
+    );
+    const sourceRowCount = isRecord(input.sourceProfile) ? finiteNumber(input.sourceProfile.rowCount) : undefined;
+    const structuralColumns = ambiguousColumns.map(column => {
+        const alias = columnToAlias.get(column) as string;
+        const values = input.sampleRows.map(row => row[column]);
+        const filledValues = values.filter(value => String(value ?? "").trim().length > 0);
+        const shapes = Array.from(new Set(filledValues.map(maskedValueShape))).slice(0, 5);
+        return {
+            column: alias,
+            filledSampleRows: filledValues.length,
+            emptySampleRows: values.length - filledValues.length,
+            uniqueSampleValueCount: new Set(filledValues.map(value => String(value))).size,
+            observedShapes: shapes,
+        };
+    });
+
+    return {
+        deterministicMappings,
+        ambiguousColumns,
+        aliasToColumn,
+        promptInput: {
+            branchContext: structuralBranchSummary(input.branchContext),
+            sourceProfile: {
+                rowCount: sourceRowCount ?? input.sampleRows.length,
+                ambiguousColumnCount: ambiguousColumns.length,
+                columns: structuralColumns,
+            },
+            columns: Array.from(aliasToColumn.keys()),
+            sampleRows: maskedRows,
+        },
+    };
+}
+
+function advisoryText(value: unknown, maxLength: number) {
+    if (typeof value !== "string") return "";
+    return value
+        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, maxLength);
+}
+
+function stringsFrom(value: unknown, maxItems = 20, maxLength = 128) {
+    if (!Array.isArray(value)) return [];
+    return value
+        .slice(0, maxItems)
+        .map(item => advisoryText(item, maxLength))
+        .filter(Boolean);
 }
 
 function sanitizeSuggestedImportOptions(value: unknown): Partial<ImportOptions> | undefined {
@@ -66,9 +223,6 @@ function sanitizeSuggestedImportOptions(value: unknown): Partial<ImportOptions> 
     const next: Partial<ImportOptions> = {};
 
     if (typeof value.paymentCycle === "string" && [
-        "CURRENT_MONTH",
-        "PREVIOUS_MONTH",
-        "CUSTOM_PERIOD",
         "USE_JOINED_AT_ANNIVERSARY",
         "SKIP_PAYMENTS",
     ].includes(value.paymentCycle)) {
@@ -92,8 +246,6 @@ function sanitizeSuggestedImportOptions(value: unknown): Partial<ImportOptions> 
         next.paymentHistoryMode = value.paymentHistoryMode as ImportOptions["paymentHistoryMode"];
     }
 
-    if (typeof value.customPeriodStart === "string") next.customPeriodStart = value.customPeriodStart;
-    if (typeof value.customPeriodEnd === "string") next.customPeriodEnd = value.customPeriodEnd;
     if (typeof value.skipUnknownSeatAllocations === "boolean") next.skipUnknownSeatAllocations = value.skipUnknownSeatAllocations;
     if (typeof value.skipUnknownShiftAllocations === "boolean") next.skipUnknownShiftAllocations = value.skipUnknownShiftAllocations;
     if (typeof value.skipUnknownMultiShiftAllocations === "boolean") next.skipUnknownMultiShiftAllocations = value.skipUnknownMultiShiftAllocations;
@@ -113,14 +265,19 @@ function sanitizeSuggestedImportOptions(value: unknown): Partial<ImportOptions> 
     return Object.keys(next).length > 0 ? next : undefined;
 }
 
-function sanitizeMappingResult(value: unknown, columns: string[], aiTrace?: ImportAITrace): ImportMappingResult | null {
+function sanitizeMappingResult(
+    value: unknown,
+    columns: string[],
+    aiTrace?: ImportAITrace,
+    reservedTargets: ReadonlySet<ImportTargetField> = new Set()
+): ImportMappingResult | null {
     if (!value || typeof value !== "object") return null;
     const result = value as Record<string, unknown>;
     const columnMappingsInput = Array.isArray(result.columnMappings) ? result.columnMappings : [];
     const columnSet = new Set(columns);
-    const warnings = Array.isArray(result.warnings) ? result.warnings.filter((item): item is string => typeof item === "string") : [];
+    const warnings = stringsFrom(result.warnings, 20, 300);
     const seenColumns = new Set<string>();
-    const seenTargets = new Set<ImportTargetField>();
+    const seenTargets = new Set<ImportTargetField>(reservedTargets);
 
     const validCandidateMappings = columnMappingsInput
         .filter(isRecord)
@@ -171,7 +328,7 @@ function sanitizeMappingResult(value: unknown, columns: string[], aiTrace?: Impo
                 sourceColumn,
                 targetField,
                 confidence,
-                reason: typeof item.reason === "string" ? item.reason : undefined,
+                reason: advisoryText(item.reason, 300) || undefined,
                 source: "AI" as const,
                 autoApplied: targetField !== "ignore",
                 needsReview: false,
@@ -205,11 +362,14 @@ function sanitizeMappingResult(value: unknown, columns: string[], aiTrace?: Impo
 
     const questions = Array.isArray(result.questions)
         ? result.questions
+              .slice(0, 20)
               .filter(isRecord)
               .map(item => ({
-                  field: typeof item.field === "string" ? item.field : undefined,
-                  question: typeof item.question === "string" ? item.question : "",
-                  options: Array.isArray(item.options) ? item.options.filter((option): option is string => typeof option === "string") : undefined,
+                  field: typeof item.field === "string" && AI_QUESTION_FIELDS.has(item.field)
+                      ? item.field
+                      : undefined,
+                  question: advisoryText(item.question, 240),
+                  options: stringsFrom(item.options, 20, 100),
               }))
               .filter(item => item.question)
         : [];
@@ -220,7 +380,7 @@ function sanitizeMappingResult(value: unknown, columns: string[], aiTrace?: Impo
         questions,
         warnings,
         suggestedImportOptions: sanitizeSuggestedImportOptions(result.suggestedImportOptions),
-        analysisNotes: stringsFrom(result.analysisNotes).slice(0, 5),
+        analysisNotes: stringsFrom(result.analysisNotes, 5, 300),
         model: resolveGeminiProModel(),
         aiTrace,
     };
@@ -232,24 +392,57 @@ export async function mapImportColumns(input: {
     columns: string[];
     sampleRows: ParsedImportRow[];
 }): Promise<ImportMappingResult> {
+    const redacted = buildRedactedImportMappingInput(input);
+    if (redacted.ambiguousColumns.length === 0) {
+        return {
+            entityTypesDetected: entityTypesForMappings(redacted.deterministicMappings),
+            columnMappings: redacted.deterministicMappings,
+            questions: [],
+            warnings: [],
+            usedFallback: false,
+        };
+    }
+
     const model = resolveGeminiProModel();
     const attemptedAt = new Date().toISOString();
     const startedAt = Date.now();
     try {
-        const result = await callGeminiJson<unknown>(buildImportColumnMappingPrompt(input), {
+        const result = await callGeminiJson<unknown>(buildImportColumnMappingPrompt(redacted.promptInput), {
             model,
             responseJsonSchema: IMPORT_COLUMN_MAPPING_SCHEMA,
         });
         const durationMs = Date.now() - startedAt;
         if (result.ok) {
-            const sanitized = sanitizeMappingResult(result.data, input.columns, {
+            const reservedTargets = new Set<ImportTargetField>(redacted.deterministicMappings
+                .map(mapping => mapping.targetField)
+                .filter((target): target is ImportTargetField => target !== "ignore"));
+            const sanitized = sanitizeMappingResult(result.data, redacted.promptInput.columns, {
                 status: "success",
                 model,
                 attemptedAt,
                 durationMs,
                 usedStructuredOutput: true,
-            });
-            if (sanitized) return sanitized;
+            }, reservedTargets);
+            if (sanitized) {
+                const aiMappings = sanitized.columnMappings.map(mapping => ({
+                    ...mapping,
+                    sourceColumn: redacted.aliasToColumn.get(mapping.sourceColumn) ?? mapping.sourceColumn,
+                }));
+                const aiByColumn = new Map(aiMappings.map(mapping => [mapping.sourceColumn, mapping]));
+                const columnMappings = redacted.deterministicMappings.map(mapping =>
+                    redacted.ambiguousColumns.includes(mapping.sourceColumn)
+                        ? aiByColumn.get(mapping.sourceColumn) ?? mapping
+                        : mapping
+                );
+                return {
+                    ...sanitized,
+                    entityTypesDetected: Array.from(new Set([
+                        ...entityTypesForMappings(columnMappings),
+                        ...sanitized.entityTypesDetected,
+                    ])),
+                    columnMappings,
+                };
+            }
 
             return fallbackMapping(input.columns, {
                 status: "invalid_response",

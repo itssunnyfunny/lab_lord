@@ -1,4 +1,5 @@
 import type { ImportNormalizedRow } from "@/importing/contracts/import-session.contract";
+import { validateOptionalTime, validateRequiredText } from "@/lib/formValidation";
 import { emptyValidatorResult, type ImportValidatorResult } from "./import-required-fields.validator";
 
 export function validateImportShift(
@@ -14,9 +15,39 @@ export function validateImportShift(
     }
 ): ImportValidatorResult {
     const result = emptyValidatorResult();
-    const shiftName = normalized.allocation?.shiftName ?? normalized.shift?.name;
-    const multiShiftName = normalized.allocation?.multiShiftName ?? normalized.multiShift?.name;
+    let shiftName = normalized.allocation?.shiftName ?? normalized.shift?.name;
+    let multiShiftName = normalized.allocation?.multiShiftName ?? normalized.multiShift?.name;
     const hasSeat = Boolean(normalized.allocation?.seatLabel ?? normalized.seat?.label);
+    const startTime = validateOptionalTime(normalized.shift?.startTime, "Shift start time");
+    const endTime = validateOptionalTime(normalized.shift?.endTime, "Shift end time");
+    if (!startTime.ok) {
+        result.issues.push({
+            code: "INVALID_SHIFT_START_TIME",
+            field: "shift.startTime",
+            message: startTime.error,
+            severity: "error",
+        });
+    }
+    if (!endTime.ok) {
+        result.issues.push({
+            code: "INVALID_SHIFT_END_TIME",
+            field: "shift.endTime",
+            message: endTime.error,
+            severity: "error",
+        });
+    }
+    if (
+        startTime.ok
+        && endTime.ok
+        && ((startTime.value && !endTime.value) || (!startTime.value && endTime.value))
+    ) {
+        result.issues.push({
+            code: "INCOMPLETE_SHIFT_TIME_RANGE",
+            field: startTime.value ? "shift.endTime" : "shift.startTime",
+            message: "Shift must have both start and end time, or neither.",
+            severity: "error",
+        });
+    }
 
     if (hasSeat && !shiftName && !multiShiftName && context.skipMissingShiftAllocations) {
         result.warnings.push({
@@ -43,12 +74,27 @@ export function validateImportShift(
 
     if (shiftName && !context.shiftsByName.has(shiftName.toLowerCase())) {
         if (context.createUnknownShifts) {
-            result.warnings.push({
-                code: "WILL_CREATE_SHIFT",
-                field: "shift.name",
-                message: `Shift "${shiftName}" will be created without times unless corrected.`,
-                severity: "warning",
-            });
+            const nameResult = validateRequiredText(shiftName, "Shift name", 50);
+            if (!nameResult.ok) {
+                result.issues.push({
+                    code: "INVALID_SHIFT_NAME",
+                    field: "shift.name",
+                    message: nameResult.error,
+                    severity: "error",
+                });
+            } else {
+                shiftName = nameResult.value;
+                normalized.shift = { ...normalized.shift, name: shiftName };
+                normalized.allocation = { ...normalized.allocation, shiftName };
+                if (!context.shiftsByName.has(shiftName.toLowerCase())) {
+                    result.warnings.push({
+                        code: "WILL_CREATE_SHIFT",
+                        field: "shift.name",
+                        message: `Shift "${shiftName}" will be created without times unless corrected.`,
+                        severity: "warning",
+                    });
+                }
+            }
         } else if (context.skipUnknownShiftAllocations) {
             result.warnings.push({
                 code: "ALLOCATION_SKIPPED_UNKNOWN_SHIFT",
@@ -73,12 +119,27 @@ export function validateImportShift(
 
     if (multiShiftName && !context.multiShiftsByName.has(multiShiftName.toLowerCase())) {
         if (context.createUnknownMultiShifts) {
-            result.warnings.push({
-                code: "WILL_CREATE_MULTI_SHIFT",
-                field: "multiShift.name",
-                message: `Multi-shift "${multiShiftName}" will be created if its component shifts are known.`,
-                severity: "warning",
-            });
+            const nameResult = validateRequiredText(multiShiftName, "Multi-shift name", 50);
+            if (!nameResult.ok) {
+                result.issues.push({
+                    code: "INVALID_MULTI_SHIFT_NAME",
+                    field: "multiShift.name",
+                    message: nameResult.error,
+                    severity: "error",
+                });
+            } else {
+                multiShiftName = nameResult.value;
+                normalized.multiShift = { ...normalized.multiShift, name: multiShiftName };
+                normalized.allocation = { ...normalized.allocation, multiShiftName };
+                if (!context.multiShiftsByName.has(multiShiftName.toLowerCase())) {
+                    result.warnings.push({
+                        code: "WILL_CREATE_MULTI_SHIFT",
+                        field: "multiShift.name",
+                        message: `Multi-shift "${multiShiftName}" will be created if its component shifts are known.`,
+                        severity: "warning",
+                    });
+                }
+            }
         } else if (context.skipUnknownMultiShiftAllocations) {
             result.warnings.push({
                 code: "ALLOCATION_SKIPPED_UNKNOWN_MULTI_SHIFT",

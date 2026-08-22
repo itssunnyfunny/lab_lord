@@ -51,6 +51,18 @@ describe("import payment plan", () => {
         expect(summary.currentCyclePayments).toBe(1);
     });
 
+    it("bounds historical cycle materialization for capped plan compilation", () => {
+        const plan = buildImportPaymentPlan(
+            normalized,
+            { ...baseOptions, paymentHistoryMode: "FROM_JOINED_MARK_DUE" },
+            new Date("2026-07-12T00:00:00.000Z"),
+            { maxItems: 3 }
+        );
+
+        expect(plan.items).toHaveLength(3);
+        expect(plan.hasMoreItems).toBe(true);
+    });
+
     it("marks previous cycles paid and handles the current cycle separately", () => {
         const plan = buildImportPaymentPlan(
             {

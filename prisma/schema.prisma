@@ -27,6 +27,10 @@ model User {
   auditLogs              AuditLog[]
   importSessionsUploaded ImportSession[] @relation("ImportSessionUploadedBy")
   importCommits          ImportCommit[]  @relation("ImportCommitCommittedBy")
+  importPlansCompiled    ImportPlan[]    @relation("ImportPlanCompiledBy")
+  importRunsRequested    ImportRun[]     @relation("ImportRunRequestedBy")
+  importRunsCancelled    ImportRun[]     @relation("ImportRunCancelledBy")
+  importRecipesCreated   ImportRecipe[]  @relation("ImportRecipeCreatedBy")
   ownerTrialGrant        OwnerTrialGrant?
 }
 
@@ -59,6 +63,7 @@ model Organization {
   billingChanges        OrganizationBillingChange[]
   offerGrants           OrganizationOfferGrant[]
   subscriptionInvoices  OrganizationSubscriptionInvoice[]
+  importRecipes         ImportRecipe[]
   owner                 User                      @relation(fields: [ownerId], references: [id])
 }
 
@@ -95,6 +100,8 @@ model Branch {
   students               Student[]
   auditLogs              AuditLog[]
   importSessions         ImportSession[]
+  importRecipes          ImportRecipe[]
+  importRuns             ImportRun[]
   billingChanges         OrganizationBillingChange[]
 }
 
@@ -283,27 +290,38 @@ model MessageDraft {
 }
 
 model ImportSession {
-  id               String              @id @default(cuid())
-  branchId          String
-  uploadedByUserId  String
-  sourceType        ImportSourceType
-  fileName          String?
-  fileMeta          Json?
-  status            ImportSessionStatus @default(UPLOADED)
-  mapping           Json?
-  summary           Json?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  id                       String              @id @default(cuid())
+  branchId                 String
+  uploadedByUserId         String
+  sourceType               ImportSourceType
+  fileName                 String?
+  fileMeta                 Json?
+  sourceConfiguration      Json?
+  status                   ImportSessionStatus @default(UPLOADED)
+  mapping                  Json?
+  summary                  Json?
+  engineVersion            Int                 @default(1)
+  goal                     ImportGoal?
+  draftRevision            Int                 @default(0)
+  activeEvaluationRevision Int?
+  archivedAt               DateTime?
+  purgeAfter               DateTime?
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
 
-  branch            Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  uploadedBy        User                @relation("ImportSessionUploadedBy", fields: [uploadedByUserId], references: [id])
-  rows              ImportRow[]
-  questions         ImportQuestion[]
-  commits           ImportCommit[]
+  branch                    Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  uploadedBy                User             @relation("ImportSessionUploadedBy", fields: [uploadedByUserId], references: [id])
+  rows                      ImportRow[]
+  questions                 ImportQuestion[]
+  commits                   ImportCommit[]
+  plans                     ImportPlan[]
+  runs                      ImportRun[]
 
   @@index([branchId])
   @@index([uploadedByUserId])
   @@index([branchId, createdAt])
+  @@index([branchId, archivedAt, createdAt])
+  @@index([purgeAfter])
 }
 
 model ImportRow {
@@ -322,7 +340,9 @@ model ImportRow {
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
 
-  session          ImportSession   @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
+  session          ImportSession          @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
+  evaluations      ImportRowEvaluation[]
+  runItems         ImportRunItem[]
 
   @@index([importSessionId])
   @@index([status])
@@ -359,6 +379,161 @@ model ImportCommit {
   committedBy       User               @relation("ImportCommitCommittedBy", fields: [committedByUserId], references: [id])
 
   @@index([importSessionId])
+}
+
+model ImportRowEvaluation {
+  id              String          @id @default(cuid())
+  importRowId     String
+  revision        Int
+  engineVersion   Int
+  status          ImportRowStatus
+  mappedData      Json?
+  normalizedData  Json?
+  issues          Json
+  warnings        Json
+  confidence      Int?
+  skipped         Boolean         @default(false)
+  createdAt       DateTime        @default(now())
+
+  row              ImportRow       @relation(fields: [importRowId], references: [id], onDelete: Cascade)
+  runItems         ImportRunItem[]
+
+  @@unique([importRowId, revision])
+  @@index([revision, status])
+}
+
+model ImportPlan {
+  id                  String                   @id @default(cuid())
+  importSessionId     String
+  revision            Int
+  engineVersion       Int
+  goal                ImportGoal
+  readinessPolicy     ImportReadinessPolicy
+  planVersion         String                   @unique
+  canRun              Boolean
+  totalRows           Int
+  readyRows           Int
+  blockedRows         Int
+  warningRows         Int
+  skippedRows         Int
+  snapshot            Json
+  checks              Json
+  summary             Json
+  compiledByUserId    String
+  createdAt           DateTime                 @default(now())
+
+  session             ImportSession            @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
+  compiledBy          User                     @relation("ImportPlanCompiledBy", fields: [compiledByUserId], references: [id])
+  runs                ImportRun[]
+
+  @@unique([importSessionId, revision, readinessPolicy])
+  @@index([importSessionId, createdAt])
+}
+
+model ImportRun {
+  id                        String           @id @default(cuid())
+  branchId                  String
+  importSessionId           String?
+  importPlanId              String?
+  targetRevision            Int
+  requestedByUserId         String
+  idempotencyKey            String           @unique
+  requestHash               String
+  workflowRunId             String?          @unique
+  kind                      ImportRunKind
+  status                    ImportRunStatus  @default(QUEUED)
+  maxAttempts               Int              @default(3)
+  totalItems                Int
+  completedItems            Int              @default(0)
+  succeededItems            Int              @default(0)
+  failedItems               Int              @default(0)
+  skippedItems              Int              @default(0)
+  cancelledItems            Int              @default(0)
+  cancelRequestedAt         DateTime?
+  cancelRequestedByUserId   String?
+  startedAt                 DateTime?
+  finishedAt                DateTime?
+  lastHeartbeatAt           DateTime?
+  error                     Json?
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
+
+  session                   ImportSession?    @relation(fields: [importSessionId], references: [id], onDelete: SetNull)
+  plan                      ImportPlan?       @relation(fields: [importPlanId], references: [id], onDelete: SetNull)
+  branch                    Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  requestedBy               User              @relation("ImportRunRequestedBy", fields: [requestedByUserId], references: [id])
+  cancelRequestedBy         User?             @relation("ImportRunCancelledBy", fields: [cancelRequestedByUserId], references: [id])
+  items                     ImportRunItem[]
+
+  /// One active run per session is enforced by a partial unique index in the migration.
+  @@index([importSessionId, kind, createdAt])
+  @@index([branchId, createdAt])
+  @@index([status, createdAt])
+}
+
+model ImportRunItem {
+  id                 String              @id @default(cuid())
+  importRunId        String
+  importRowId        String?
+  evaluationId       String?
+  ordinal            Int
+  itemKey            String
+  kind               ImportRunItemKind
+  idempotencyKey     String              @unique
+  requestHash        String
+  status             ImportRunItemStatus @default(QUEUED)
+  attemptCount       Int                 @default(0)
+  availableAt        DateTime            @default(now())
+  leaseToken         String?             @unique
+  leaseOwner         String?
+  leaseExpiresAt     DateTime?
+  lastHeartbeatAt    DateTime?
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  payload            Json?
+  result             Json?
+  error              Json?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  run                ImportRun           @relation(fields: [importRunId], references: [id], onDelete: Cascade)
+  row                ImportRow?          @relation(fields: [importRowId], references: [id], onDelete: SetNull)
+  evaluation         ImportRowEvaluation? @relation(fields: [evaluationId], references: [id], onDelete: SetNull)
+
+  @@unique([importRunId, itemKey])
+  @@unique([importRunId, ordinal])
+  @@index([importRunId, status, availableAt])
+  @@index([status, leaseExpiresAt])
+}
+
+model ImportRecipe {
+  id                  String        @id @default(cuid())
+  organizationId      String
+  branchId            String?
+  createdByUserId     String
+  name                String
+  revision            Int           @default(1)
+  schemaVersion       Int           @default(1)
+  engineVersion       Int
+  goal                ImportGoal
+  sourceType          ImportSourceType
+  normalizedHeaderSignature String
+  entityTypes         Json
+  columnMappings      Json
+  useCount            Int           @default(0)
+  lastUsedAt          DateTime?
+  archivedAt          DateTime?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  organization        Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch              Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  createdBy           User          @relation("ImportRecipeCreatedBy", fields: [createdByUserId], references: [id])
+
+  @@unique([organizationId, name, revision])
+  @@index([organizationId, goal, archivedAt])
+  @@index([organizationId, sourceType, normalizedHeaderSignature])
+  @@index([branchId, archivedAt])
 }
 
 enum StudentStatus {
@@ -410,6 +585,51 @@ enum ImportSourceType {
   PDF
   PASTED_TABLE
   OTHER
+}
+
+enum ImportGoal {
+  STUDENTS
+  STUDENTS_ALLOCATIONS
+  FULL
+}
+
+enum ImportReadinessPolicy {
+  READY_ROWS_ONLY
+  REQUIRE_ALL_ROWS_READY
+}
+
+enum ImportRunStatus {
+  QUEUED
+  RUNNING
+  WAITING_FOR_USER
+  COMPLETED
+  COMPLETED_WITH_ISSUES
+  RETRYABLE_FAILURE
+  PERMANENT_FAILURE
+  CANCEL_REQUESTED
+  CANCELLED
+  SUPERSEDED
+}
+
+enum ImportRunKind {
+  ANALYSIS
+  COMMIT
+}
+
+enum ImportRunItemKind {
+  CONFIG
+  STUDENT
+  ALLOCATION
+  PAYMENT_CYCLE
+}
+
+enum ImportRunItemStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+  CANCELLED
 }
 
 enum ImportSessionStatus {

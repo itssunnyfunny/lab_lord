@@ -1,4 +1,5 @@
 import type { ImportNormalizedRow } from "@/importing/contracts/import-session.contract";
+import { validateSeatLabel } from "@/lib/formValidation";
 import { emptyValidatorResult, type ImportValidatorResult } from "./import-required-fields.validator";
 
 export function validateImportSeat(
@@ -10,10 +11,27 @@ export function validateImportSeat(
     }
 ): ImportValidatorResult {
     const result = emptyValidatorResult();
-    const label = normalized.allocation?.seatLabel ?? normalized.seat?.label;
+    let label = normalized.allocation?.seatLabel ?? normalized.seat?.label;
     if (!label) return result;
 
-    const known = context.seatsByLabel.has(label.toLowerCase());
+    let known = context.seatsByLabel.has(label.toLowerCase());
+    if (!known && context.createUnknownSeats) {
+        const labelResult = validateSeatLabel(label);
+        if (!labelResult.ok) {
+            result.issues.push({
+                code: "INVALID_SEAT_LABEL",
+                field: "seat.label",
+                message: labelResult.error,
+                severity: "error",
+            });
+            return result;
+        }
+        label = labelResult.value;
+        normalized.seat = { ...normalized.seat, label };
+        normalized.allocation = { ...normalized.allocation, seatLabel: label };
+        known = context.seatsByLabel.has(label.toLowerCase());
+    }
+
     if (!known && context.skipUnknownSeatAllocations) {
         result.warnings.push({
             code: "ALLOCATION_SKIPPED_UNKNOWN_SEAT",

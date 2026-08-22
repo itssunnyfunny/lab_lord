@@ -39,21 +39,58 @@ import { validateImportSeat } from "@/importing/validators/import-seat.validator
 import { validateImportShift } from "@/importing/validators/import-shift.validator";
 import { validateImportStudent } from "@/importing/validators/import-student.validator";
 import { inferConfirmedPaymentMapping } from "@/importing/utils/payment-mapping-inference";
+import { applyImportGoalMappingPolicy, applyImportGoalPolicy } from "@/importing/utils/import-goal-policy";
+import { importStagingPurgeAfter } from "@/importing/utils/import-retention";
+import { isImportRunDispatchRequired } from "@/importing/utils/import-run-dispatch";
+import { createImportAnalysisRunIdentity } from "@/importing/utils/import-run-identity";
+import { ImportParserError, ImportRevisionConflictError, ImportValidationError } from "@/importing/utils/import-errors";
 import type { Prisma } from "@/app/generated/prisma/client";
 import type { ImportRowStatus, ImportSessionStatus } from "@/app/generated/prisma/enums";
+import {
+    MAX_IMPORT_ROWS,
+    importRowLimitMessage,
+} from "@/importing/constants/import-limits";
+
+export { MAX_IMPORT_ROWS } from "@/importing/constants/import-limits";
 
 export type ImportSessionRowFilter = "attention" | "ready" | "all" | "skipped";
 
+export type ImportBulkRowAction = {
+    action: "SKIP" | "UNSKIP";
+    issueCode: string;
+};
+
 export type ImportSessionDetailOptions = {
     rowFilter?: ImportSessionRowFilter;
+    issueCode?: string;
     limit?: number;
     cursor?: number;
 };
 
-export const MAX_IMPORT_ROWS = 2000;
-
 function asJson(value: unknown): Prisma.InputJsonValue {
     return value as Prisma.InputJsonValue;
+}
+
+function retainedEntityIds(value: Prisma.JsonValue | null) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const entityIds = (value as { entityIds?: unknown }).entityIds;
+    return Array.isArray(entityIds)
+        ? entityIds.filter((id): id is string => typeof id === "string" && Boolean(id))
+        : [];
+}
+
+function retainedCreatedEntityId(value: Prisma.JsonValue | null, key: string) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const candidate = (value as Record<string, unknown>)[key];
+    return typeof candidate === "string" && candidate ? candidate : undefined;
+}
+
+function retainedCreatedEntityIds(value: Prisma.JsonValue | null, key: string) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const candidate = (value as Record<string, unknown>)[key];
+    return Array.isArray(candidate)
+        ? candidate.filter((id): id is string => typeof id === "string" && Boolean(id))
+        : [];
 }
 
 function toStringDate(value: Date) {
@@ -65,7 +102,29 @@ function getErrorMessage(error: unknown) {
 }
 
 function terminalImportSessionStatus(status: string) {
-    return ["COMMITTING", "COMMITTED", "PARTIAL", "FAILED"].includes(status);
+    return ["COMMITTING", "COMMITTED", "PARTIAL", "FAILED", "CANCELLED"].includes(status);
+}
+
+function importSessionIsEditable(engineVersion: number, status: string) {
+    if (engineVersion === 1 && terminalImportSessionStatus(status)) return false;
+    return !["COMMITTING", "COMMITTED", "CANCELLED"].includes(status);
+}
+
+function expectedImportRevision(value: number) {
+    if (!Number.isInteger(value) || value < 0) {
+        throw new ImportValidationError("Expected import revision must be a non-negative integer");
+    }
+    return value;
+}
+
+function importIssueCodeMatches(value: Prisma.JsonValue | null, issueCode: string) {
+    return Array.isArray(value) && value.some(issue =>
+        issue
+        && typeof issue === "object"
+        && !Array.isArray(issue)
+        && "code" in issue
+        && issue.code === issueCode
+    );
 }
 
 function clampRowLimit(value: number | undefined) {
@@ -79,10 +138,11 @@ function columnsFromFileMeta(meta: unknown): string[] | null {
     return Array.isArray(columns) && columns.every(column => typeof column === "string") ? columns : null;
 }
 
-function rowWhereForFilter(
+export function rowWhereForFilter(
     importSessionId: string,
     filter: ImportSessionRowFilter = "all",
-    cursor?: number
+    cursor?: number,
+    issueCode?: string
 ): Prisma.ImportRowWhereInput {
     const where: Prisma.ImportRowWhereInput = { importSessionId };
     if (cursor && Number.isFinite(cursor)) where.rowNumber = { gt: cursor };
@@ -95,16 +155,40 @@ function rowWhereForFilter(
             { status: "SKIPPED" },
         ];
     }
+    if (issueCode) {
+        const matchingIssue = asJson([{ code: issueCode }]);
+        where.AND = [{
+            OR: [
+                { issues: { array_contains: matchingIssue } },
+                { warnings: { array_contains: matchingIssue } },
+            ],
+        }];
+    }
 
     return where;
 }
 
+function normalizeIssueCodeFilter(value: string | undefined) {
+    if (value === undefined) return undefined;
+    const issueCode = value.trim();
+    if (!issueCode || issueCode.length > 100 || !/^[A-Z0-9_:-]+$/.test(issueCode)) {
+        throw new ImportValidationError("Import row issue filter is invalid");
+    }
+    return issueCode;
+}
+
 async function parseImportSource(input: CreateImportSessionInput): Promise<ParsedImportSource> {
     if (input.sourceType === "PASTED_TABLE") return parsePastedTable(input.pastedTable);
-    if (input.sourceType === "CSV") return parseCsv(input.fileBuffer.toString("utf8"));
-    if (input.sourceType === "XLSX" || input.sourceType === "XLS") return parseXlsx(input.fileBuffer);
+    if (input.sourceType === "CSV") return parseCsv(input.fileBuffer);
+    if (input.sourceType === "XLSX" || input.sourceType === "XLS") {
+        return parseXlsx(input.fileBuffer, {
+            sheetName: input.sourceConfiguration?.sheetName,
+            headerRow: input.sourceConfiguration?.headerRow,
+            expectedFormat: input.sourceType,
+        });
+    }
     if (input.sourceType === "PDF") return parsePdf(input.fileBuffer);
-    return parseCsv(input.fileBuffer.toString("utf8"));
+    throw new Error("Choose a CSV, XLSX, XLS, or PDF file.");
 }
 
 function emptySummary(): ImportSessionSummary {
@@ -245,7 +329,10 @@ function mappingWithComputedAnalysis(input: {
     const attention = existing?.attention?.length
         ? existing.attention
         : buildImportAttention({
-            rows: input.rows,
+            // Successful rows are immutable during a partial-repair revision.
+            // Their retained diagnostic JSON is historical evidence, not an
+            // unresolved action for the operator.
+            rows: input.rows.filter(row => row.status !== "IMPORTED"),
             questions: input.questions,
             mapping: input.mapping,
         });
@@ -339,7 +426,7 @@ export function statusForValidation(input: {
 
 export function assertImportRowLimit(rowCount: number) {
     if (rowCount > MAX_IMPORT_ROWS) {
-        throw new Error(`This import has ${rowCount.toLocaleString("en-IN")} rows. The current wizard supports up to ${MAX_IMPORT_ROWS.toLocaleString("en-IN")} rows per import.`);
+        throw new Error(importRowLimitMessage(rowCount));
     }
 }
 
@@ -353,24 +440,73 @@ export class ImportSessionService {
         await EntitlementService.assertBranchWritable(branchId);
     }
 
+    static async getSessionEngineVersion(userId: string, branchId: string, sessionId: string) {
+        await this.authorize(userId, branchId);
+        const session = await prisma.importSession.findFirst({
+            where: { id: sessionId, branchId, archivedAt: null },
+            select: { engineVersion: true },
+        });
+        if (!session) throw new Error("Import session not found");
+        return session.engineVersion;
+    }
+
+    static async getAnalysisStartState(userId: string, branchId: string, sessionId: string) {
+        await this.authorize(userId, branchId);
+        const session = await prisma.importSession.findFirst({
+            where: { id: sessionId, branchId, archivedAt: null },
+            select: {
+                engineVersion: true,
+                draftRevision: true,
+                sourceType: true,
+                sourceConfiguration: true,
+            },
+        });
+        if (!session) throw new Error("Import session not found");
+        return session;
+    }
+
     static async createSession(userId: string, branchId: string, input: CreateImportSessionInput) {
         await this.authorizeMutation(userId, branchId);
         const parsed = await parseImportSource(input);
+        if (
+            !Array.isArray(parsed.rowNumbers)
+            || parsed.rowNumbers.length !== parsed.rows.length
+            || parsed.rowNumbers.some((rowNumber, index) => (
+                !Number.isInteger(rowNumber)
+                || rowNumber < 1
+                || (index > 0 && rowNumber <= parsed.rowNumbers[index - 1])
+            ))
+        ) {
+            throw new ImportParserError("Import parser returned invalid source row positions.");
+        }
         assertImportRowLimit(parsed.rows.length);
         const sourceProfile = buildImportSourceProfile(parsed);
+        const goal = input.goal ?? "STUDENTS";
+        const now = new Date();
 
-        const session = await prisma.$transaction(async tx => {
+        const persisted = await prisma.$transaction(async tx => {
+            await StaffService.authorize(userId, branchId, "students", tx);
+            await EntitlementService.assertBranchWritable(branchId, tx);
             const created = await tx.importSession.create({
                 data: {
                     branchId,
                     uploadedByUserId: userId,
                     sourceType: input.sourceType,
+                    engineVersion: 2,
+                    goal,
+                    purgeAfter: importStagingPurgeAfter(now),
                     fileName: input.fileName,
+                    sourceConfiguration: asJson({
+                        sourceType: input.sourceType,
+                        ...(input.sourceConfiguration ?? {}),
+                        parser: parsed.parserMetadata ?? null,
+                    }),
                     fileMeta: asJson({
                         ...(input.fileMeta ?? {}),
                         columns: parsed.columns,
                         rowCount: parsed.rows.length,
                         sourceProfile,
+                        parser: parsed.parserMetadata ?? null,
                     }),
                     summary: asJson({ ...emptySummary(), totalRows: parsed.rows.length, sourceProfile }),
                 },
@@ -381,27 +517,49 @@ export class ImportSessionService {
                 await tx.importRow.createMany({
                     data: parsed.rows.slice(index, index + chunkSize).map((row, offset) => ({
                         importSessionId: created.id,
-                        rowNumber: index + offset + 2,
+                        rowNumber: parsed.rowNumbers[index + offset],
                         rawData: asJson(row),
                     })),
                 });
             }
 
-            return created;
+            const analysisIdentity = createImportAnalysisRunIdentity({
+                branchId,
+                sessionId: created.id,
+                targetRevision: 0,
+            });
+            const analysisRun = await tx.importRun.create({
+                data: {
+                    branchId,
+                    importSessionId: created.id,
+                    targetRevision: 0,
+                    requestedByUserId: userId,
+                    idempotencyKey: analysisIdentity.idempotencyKey,
+                    requestHash: analysisIdentity.requestHash,
+                    kind: "ANALYSIS",
+                    status: input.sourceType === "PDF" ? "WAITING_FOR_USER" : "QUEUED",
+                    totalItems: 0,
+                },
+            });
+
+            return { session: created, analysisRun };
         });
 
         return {
-            id: session.id,
+            id: persisted.session.id,
             rowCount: parsed.rows.length,
             columns: parsed.columns,
-            status: session.status,
+            status: persisted.session.status,
+            sourceConfiguration: persisted.session.sourceConfiguration,
+            analysisRun: persisted.analysisRun,
+            extractionPreview: input.sourceType === "PDF" ? parsed.rows.slice(0, 5) : undefined,
         };
     }
 
     static async listSessions(userId: string, branchId: string) {
         await this.authorize(userId, branchId);
         const sessions = await prisma.importSession.findMany({
-            where: { branchId },
+            where: { branchId, archivedAt: null },
             orderBy: { createdAt: "desc" },
             take: 30,
         });
@@ -412,6 +570,11 @@ export class ImportSessionService {
             sourceType: session.sourceType,
             fileName: session.fileName,
             status: session.status,
+            engineVersion: session.engineVersion,
+            goal: session.goal,
+            draftRevision: session.draftRevision,
+            activeEvaluationRevision: session.activeEvaluationRevision,
+            archivedAt: session.archivedAt ? toStringDate(session.archivedAt) : null,
             summary: session.summary as ImportSessionSummary | null,
             createdAt: toStringDate(session.createdAt),
             updatedAt: toStringDate(session.updatedAt),
@@ -434,6 +597,54 @@ export class ImportSessionService {
         });
 
         if (!session) throw new Error("Import session not found");
+        if (session.archivedAt) throw new Error("Import session is archived");
+        const latestRun = await prisma.importRun.findFirst({
+            where: { importSessionId: session.id, branchId },
+            orderBy: { createdAt: "desc" },
+            select: {
+                id: true,
+                kind: true,
+                status: true,
+                totalItems: true,
+                completedItems: true,
+                succeededItems: true,
+                failedItems: true,
+                skippedItems: true,
+                cancelledItems: true,
+                workflowRunId: true,
+                lastHeartbeatAt: true,
+                startedAt: true,
+                finishedAt: true,
+                createdAt: true,
+                updatedAt: true,
+            },
+        });
+        const latestRunPublic = latestRun
+            ? {
+                id: latestRun.id,
+                kind: latestRun.kind,
+                status: latestRun.status,
+                totalItems: latestRun.totalItems,
+                completedItems: latestRun.completedItems,
+                succeededItems: latestRun.succeededItems,
+                failedItems: latestRun.failedItems,
+                skippedItems: latestRun.skippedItems,
+                cancelledItems: latestRun.cancelledItems,
+                startedAt: latestRun.startedAt,
+                finishedAt: latestRun.finishedAt,
+                createdAt: latestRun.createdAt,
+                workflowAttached: Boolean(latestRun.workflowRunId),
+                dispatchRequired: isImportRunDispatchRequired(latestRun),
+            }
+            : null;
+        const extractionPreview = session.sourceType === "PDF" && latestRun?.status === "WAITING_FOR_USER"
+            ? await prisma.importRow.findMany({
+                where: { importSessionId: session.id },
+                orderBy: { rowNumber: "asc" },
+                take: 5,
+                select: { rowNumber: true, rawData: true },
+            })
+            : [];
         const firstRow = await prisma.importRow.findFirst({
             where: { importSessionId: sessionId },
             orderBy: { rowNumber: "asc" },
@@ -487,8 +698,9 @@ export class ImportSessionService {
             openQuestions,
         });
         const filter = options.rowFilter ?? "all";
+        const issueCode = normalizeIssueCodeFilter(options.issueCode);
         const limit = clampRowLimit(options.limit);
-        const rowsWhere = rowWhereForFilter(sessionId, filter, options.cursor);
+        const rowsWhere = rowWhereForFilter(sessionId, filter, options.cursor, issueCode);
         const pageRows = await prisma.importRow.findMany({
             where: rowsWhere,
             orderBy: { rowNumber: "asc" },
@@ -496,8 +708,8 @@ export class ImportSessionService {
         });
         const hasMore = Boolean(limit && pageRows.length > limit);
         const returnedRows = hasMore && limit ? pageRows.slice(0, limit) : pageRows;
-        const filteredRows = options.rowFilter || limit || options.cursor
-            ? await prisma.importRow.count({ where: rowWhereForFilter(sessionId, filter) })
+        const filteredRows = options.rowFilter || issueCode || limit || options.cursor
+            ? await prisma.importRow.count({ where: rowWhereForFilter(sessionId, filter, undefined, issueCode) })
             : summaryRows.length;
         const nextCursor = hasMore && returnedRows.length > 0
             ? String(returnedRows[returnedRows.length - 1].rowNumber)
@@ -511,6 +723,7 @@ export class ImportSessionService {
             summary,
             rowPage: {
                 filter,
+                issueCode: issueCode ?? null,
                 limit: limit ?? null,
                 cursor: options.cursor ? String(options.cursor) : null,
                 nextCursor,
@@ -520,6 +733,8 @@ export class ImportSessionService {
                 returnedRows: returnedRows.length,
             },
             branchContext,
+            latestRun: latestRunPublic,
+            extractionPreview,
             rows: returnedRows.map(row => ({
                 id: row.id,
                 rowNumber: row.rowNumber,
@@ -633,21 +848,47 @@ export class ImportSessionService {
         };
     }
 
-    static async analyzeSession(userId: string, branchId: string, sessionId: string) {
+    static async analyzeSession(
+        userId: string,
+        branchId: string,
+        sessionId: string,
+        targetRevision?: number
+    ) {
         await this.authorizeMutation(userId, branchId);
         const session = await prisma.importSession.findFirst({
             where: { id: sessionId, branchId },
             include: { rows: { orderBy: { rowNumber: "asc" } } },
         });
         if (!session) throw new Error("Import session not found");
+        if (session.archivedAt) throw new Error("Import session is archived");
         if (terminalImportSessionStatus(session.status)) {
             return this.getSessionDetail(userId, branchId, sessionId);
         }
+        const analysisBaseRevision = expectedImportRevision(targetRevision ?? session.draftRevision);
+        if (session.draftRevision < analysisBaseRevision) throw new ImportRevisionConflictError();
+        if (
+            session.draftRevision > analysisBaseRevision
+            || (
+                session.mapping
+                && session.activeEvaluationRevision === session.draftRevision
+            )
+        ) {
+            return session.activeEvaluationRevision === session.draftRevision
+                ? this.getSessionDetail(userId, branchId, sessionId)
+                : this.revalidateAuthorizedSession(userId, branchId, sessionId);
+        }
 
-        await prisma.importSession.update({
-            where: { id: sessionId },
-            data: { status: "ANALYZING" },
+        const claimed = await prisma.importSession.updateMany({
+            where: {
+                id: sessionId,
+                branchId,
+                draftRevision: analysisBaseRevision,
+                archivedAt: null,
+                status: { notIn: ["COMMITTING", "COMMITTED", "PARTIAL", "FAILED", "CANCELLED"] },
+            },
+            data: { status: "ANALYZING", purgeAfter: importStagingPurgeAfter() },
         });
+        if (claimed.count !== 1) throw new ImportRevisionConflictError();
 
         try {
             const columns = Object.keys((session.rows[0]?.rawData ?? {}) as Record<string, unknown>);
@@ -660,9 +901,9 @@ export class ImportSessionService {
                 sampleRows: session.rows.slice(0, 8).map(row => row.rawData as Record<string, string>),
             });
 
-            const mapping: ImportMappingState = {
+            const mapping = applyImportGoalMappingPolicy(session.goal, {
                 ...aiMapping,
-                importOptions: aiMapping.suggestedImportOptions ?? {},
+                importOptions: applyImportGoalPolicy(session.goal, aiMapping.suggestedImportOptions),
                 analysis: buildImportSessionAnalysis({
                     sourceProfile,
                     attention: [],
@@ -670,23 +911,57 @@ export class ImportSessionService {
                     notes: aiMapping.analysisNotes,
                     ai: aiMapping.aiTrace,
                 }),
-            };
-
-            await prisma.importSession.update({
-                where: { id: sessionId },
-                data: { mapping: asJson(mapping) },
             });
 
+            const publishedMapping = await prisma.$transaction(async tx => {
+                await tx.$queryRaw<Array<{ id: string }>>`
+                    SELECT "id" FROM "ImportSession"
+                    WHERE "id" = ${sessionId} AND "branchId" = ${branchId}
+                    FOR UPDATE
+                `;
+                const current = await tx.importSession.findFirst({
+                    where: { id: sessionId, branchId },
+                    select: {
+                        draftRevision: true,
+                        archivedAt: true,
+                        status: true,
+                    },
+                });
+                if (!current) throw new Error("Import session not found");
+                if (current.archivedAt) throw new Error("Import session is archived");
+                if (current.draftRevision > analysisBaseRevision) return false;
+                if (current.draftRevision !== analysisBaseRevision) throw new ImportRevisionConflictError();
+                if (["COMMITTING", "COMMITTED", "PARTIAL", "FAILED", "CANCELLED"].includes(current.status)) {
+                    throw new Error("Import session is not editable");
+                }
+                await tx.importSession.update({
+                    where: { id: sessionId },
+                    data: {
+                        mapping: asJson(mapping),
+                        draftRevision: { increment: 1 },
+                        purgeAfter: importStagingPurgeAfter(),
+                    },
+                });
+                return true;
+            });
+
+            if (!publishedMapping) throw new ImportRevisionConflictError();
             return this.revalidateAuthorizedSession(userId, branchId, sessionId);
         } catch (error) {
-            await prisma.importSession.update({
-                where: { id: sessionId },
+            await prisma.importSession.updateMany({
+                where: {
+                    id: sessionId,
+                    branchId,
+                    draftRevision: analysisBaseRevision,
+                    status: "ANALYZING",
+                },
                 data: {
                     status: "NEEDS_MAPPING",
                     summary: asJson({
                         ...emptySummary(),
                         warnings: [getErrorMessage(error)],
                     }),
+                    purgeAfter: importStagingPurgeAfter(),
                 },
             });
             throw error;
@@ -697,21 +972,41 @@ export class ImportSessionService {
         userId: string,
         branchId: string,
         sessionId: string,
-        input: { columnMappings?: ImportColumnMapping[]; importOptions?: Partial<ImportMappingState["importOptions"]> }
+        input: {
+            expectedRevision: number;
+            columnMappings?: ImportColumnMapping[];
+            importOptions?: Partial<ImportMappingState["importOptions"]>;
+        }
     ) {
         await this.authorizeMutation(userId, branchId);
+        const expectedRevision = expectedImportRevision(input.expectedRevision);
         const session = await prisma.importSession.findFirst({
             where: { id: sessionId, branchId },
             include: { rows: { orderBy: { rowNumber: "asc" }, select: { rawData: true } } },
         });
         if (!session) throw new Error("Import session not found");
+        if (session.archivedAt) throw new Error("Import session is archived");
+        if (!importSessionIsEditable(session.engineVersion, session.status)) throw new Error("Import session is not editable");
+        if (session.draftRevision !== expectedRevision) throw new ImportRevisionConflictError();
 
         const columns = Object.keys((session.rows[0]?.rawData ?? {}) as Record<string, unknown>);
         const current = normalizeMapping(session.mapping, columns);
-        const next: ImportMappingState = {
+        if (input.columnMappings) {
+            const reviewedSources = new Set(input.columnMappings.map(mapping => mapping.sourceColumn));
+            if (
+                input.columnMappings.length !== columns.length
+                || reviewedSources.size !== columns.length
+                || columns.some(column => !reviewedSources.has(column))
+            ) {
+                throw new ImportValidationError(
+                    "Every positional source column must be mapped or intentionally ignored."
+                );
+            }
+        }
+        const next = applyImportGoalMappingPolicy(session.goal, {
             ...current,
             columnMappings: input.columnMappings ?? current.columnMappings,
-            importOptions: {
+            importOptions: applyImportGoalPolicy(session.goal, {
                 ...(current.importOptions ?? {}),
                 ...(input.importOptions ?? {}),
                 paymentMapping: {
@@ -724,8 +1019,8 @@ export class ImportSessionService {
                     }),
                     ...(input.importOptions?.paymentMapping ?? {}),
                 },
-            },
-        };
+            }),
+        });
 
         if (next.importOptions?.paymentAction === "IMPORT_PAID_UNPAID" && !next.importOptions.paymentMapping?.confirmed) {
             const inferredPaymentMapping = inferConfirmedPaymentMapping({
@@ -741,9 +1036,37 @@ export class ImportSessionService {
             }
         }
 
-        await prisma.importSession.update({
-            where: { id: sessionId },
-            data: { mapping: asJson(next) },
+        await prisma.$transaction(async tx => {
+            await tx.$queryRaw<Array<{ id: string }>>`
+                SELECT "id" FROM "ImportSession"
+                WHERE "id" = ${sessionId} AND "branchId" = ${branchId}
+                FOR UPDATE
+            `;
+            const current = await tx.importSession.findFirst({
+                where: { id: sessionId, branchId },
+                select: {
+                    engineVersion: true,
+                    status: true,
+                    draftRevision: true,
+                    archivedAt: true,
+                },
+            });
+            if (!current) throw new Error("Import session not found");
+            if (current.archivedAt) throw new Error("Import session is archived");
+            await StaffService.authorize(userId, branchId, "students", tx);
+            await EntitlementService.assertBranchWritable(branchId, tx);
+            if (!importSessionIsEditable(current.engineVersion, current.status)) {
+                throw new Error("Import session is not editable");
+            }
+            if (current.draftRevision !== expectedRevision) throw new ImportRevisionConflictError();
+            await tx.importSession.update({
+                where: { id: sessionId },
+                data: {
+                    mapping: asJson(next),
+                    draftRevision: { increment: 1 },
+                    purgeAfter: importStagingPurgeAfter(),
+                },
+            });
         });
 
         return this.revalidateAuthorizedSession(userId, branchId, sessionId);
@@ -754,66 +1077,186 @@ export class ImportSessionService {
         branchId: string,
         sessionId: string,
         input: {
+            expectedRevision: number;
             edits?: { rowId: string; rawData?: Record<string, string>; normalizedData?: ImportNormalizedRow }[];
             skipRowIds?: string[];
             unskipRowIds?: string[];
+            bulkAction?: ImportBulkRowAction;
         }
     ) {
         await this.authorizeMutation(userId, branchId);
-        const session = await prisma.importSession.findFirst({ where: { id: sessionId, branchId } });
-        if (!session) throw new Error("Import session not found");
+        const expectedRevision = expectedImportRevision(input.expectedRevision);
+        const hasExplicitRowAction = input.edits !== undefined
+            || input.skipRowIds !== undefined
+            || input.unskipRowIds !== undefined;
+        if (input.bulkAction && hasExplicitRowAction) {
+            throw new ImportValidationError("Bulk row action cannot be combined with explicit row changes");
+        }
+        const issueCode = input.bulkAction?.issueCode.trim();
+        if (
+            input.bulkAction
+            && (
+                !issueCode
+                || issueCode.length > 100
+                || !/^[A-Z0-9_:-]+$/.test(issueCode)
+            )
+        ) {
+            throw new ImportValidationError("Bulk row action issue code is invalid");
+        }
+        const edits = input.edits ?? [];
+        let skipRowIds = input.skipRowIds ?? [];
+        let unskipRowIds = input.unskipRowIds ?? [];
+        const editedIds = edits.map(edit => edit.rowId);
+        if (new Set(editedIds).size !== editedIds.length) throw new Error("Each import row can be edited only once per request");
+        const skipIds = new Set(skipRowIds);
+        if (unskipRowIds.some(rowId => skipIds.has(rowId))) {
+            throw new Error("An import row cannot be skipped and unskipped in the same request");
+        }
+        let targetRowIds = [...new Set([...editedIds, ...skipRowIds, ...unskipRowIds])];
+        if (targetRowIds.length > MAX_IMPORT_ROWS) {
+            throw new ImportValidationError(`An import row action can target at most ${MAX_IMPORT_ROWS} rows`);
+        }
 
-        for (const edit of input.edits ?? []) {
-            const existingRow = edit.normalizedData
-                ? await prisma.importRow.findFirst({
-                    where: { id: edit.rowId, importSessionId: sessionId },
-                    select: { mappedData: true },
-                })
-                : null;
-
-            await prisma.importRow.updateMany({
-                where: { id: edit.rowId, importSessionId: sessionId },
-                data: {
-                    ...(edit.rawData ? {
-                        rawData: asJson(edit.rawData),
-                        mappedData: asJson({}),
-                        normalizedData: asJson({}),
-                        issues: asJson([]),
-                        warnings: asJson([]),
-                        confidence: null,
-                        status: "NEEDS_REVIEW" as ImportRowStatus,
-                    } : {}),
-                    ...(edit.normalizedData ? {
-                        normalizedData: asJson(edit.normalizedData),
-                        mappedData: asJson(markManualNormalizedData(existingRow?.mappedData ?? {})),
-                        issues: asJson([]),
-                        warnings: asJson([]),
-                        confidence: 100,
-                        skipped: false,
-                        status: "NEEDS_REVIEW" as ImportRowStatus,
-                    } : {}),
+        await prisma.$transaction(async tx => {
+            await tx.$queryRaw<Array<{ id: string }>>`
+                SELECT "id" FROM "ImportSession"
+                WHERE "id" = ${sessionId} AND "branchId" = ${branchId}
+                FOR UPDATE
+            `;
+            await StaffService.authorize(userId, branchId, "students", tx);
+            await EntitlementService.assertBranchWritable(branchId, tx);
+            const session = await tx.importSession.findFirst({
+                where: { id: sessionId, branchId },
+                select: {
+                    engineVersion: true,
+                    status: true,
+                    draftRevision: true,
+                    archivedAt: true,
                 },
             });
-        }
+            if (!session) throw new Error("Import session not found");
+            if (session.archivedAt) throw new Error("Import session is archived");
+            if (!importSessionIsEditable(session.engineVersion, session.status)) {
+                throw new Error("Import session is not editable");
+            }
+            if (session.draftRevision !== expectedRevision) throw new ImportRevisionConflictError();
 
-        if (input.skipRowIds?.length) {
-            await prisma.importRow.updateMany({
-                where: { id: { in: input.skipRowIds }, importSessionId: sessionId },
-                data: { skipped: true, status: "SKIPPED" },
-            });
-        }
+            if (input.bulkAction && issueCode) {
+                const unresolvedRows = await tx.importRow.findMany({
+                    where: {
+                        importSessionId: sessionId,
+                        status: { not: "IMPORTED" },
+                    },
+                    orderBy: { rowNumber: "asc" },
+                    take: MAX_IMPORT_ROWS + 1,
+                    select: {
+                        id: true,
+                        status: true,
+                        skipped: true,
+                        issues: true,
+                        warnings: true,
+                    },
+                });
+                if (unresolvedRows.length > MAX_IMPORT_ROWS) {
+                    throw new ImportValidationError(`An import row action can target at most ${MAX_IMPORT_ROWS} rows`);
+                }
+                const matchingRows = unresolvedRows.filter(row =>
+                    importIssueCodeMatches(row.issues, issueCode)
+                    || importIssueCodeMatches(row.warnings, issueCode)
+                );
+                if (input.bulkAction.action === "SKIP") {
+                    skipRowIds = matchingRows.filter(row => !row.skipped).map(row => row.id);
+                    unskipRowIds = [];
+                } else {
+                    skipRowIds = [];
+                    unskipRowIds = matchingRows.filter(row => row.skipped || row.status === "SKIPPED").map(row => row.id);
+                }
+                targetRowIds = [...new Set([...skipRowIds, ...unskipRowIds])];
+            }
 
-        if (input.unskipRowIds?.length) {
-            await prisma.importRow.updateMany({
-                where: { id: { in: input.unskipRowIds }, importSessionId: sessionId },
-                data: { skipped: false },
+            const targetRows = targetRowIds.length > 0
+                ? await tx.importRow.findMany({
+                    where: { id: { in: targetRowIds }, importSessionId: sessionId },
+                    select: { id: true, status: true, mappedData: true },
+                })
+                : [];
+            if (targetRows.length !== targetRowIds.length) throw new Error("Import row not found");
+            if (targetRows.some(row => row.status === "IMPORTED")) {
+                throw new Error("Imported rows are immutable; edit an unresolved row instead");
+            }
+            const targetRowsById = new Map(targetRows.map(row => [row.id, row]));
+
+            for (const edit of edits) {
+                const existingRow = targetRowsById.get(edit.rowId)!;
+                await tx.importRow.update({
+                    where: { id: edit.rowId },
+                    data: {
+                        ...(edit.rawData ? {
+                            rawData: asJson(edit.rawData),
+                            mappedData: asJson({}),
+                            normalizedData: asJson({}),
+                            issues: asJson([]),
+                            warnings: asJson([]),
+                            confidence: null,
+                            status: "NEEDS_REVIEW" as ImportRowStatus,
+                        } : {}),
+                        ...(edit.normalizedData ? {
+                            normalizedData: asJson(edit.normalizedData),
+                            mappedData: asJson(markManualNormalizedData(existingRow.mappedData ?? {})),
+                            issues: asJson([]),
+                            warnings: asJson([]),
+                            confidence: 100,
+                            skipped: false,
+                            status: "NEEDS_REVIEW" as ImportRowStatus,
+                        } : {}),
+                    },
+                });
+            }
+            if (skipRowIds.length > 0) {
+                await tx.importRow.updateMany({
+                    where: { id: { in: skipRowIds }, importSessionId: sessionId },
+                    data: { skipped: true, status: "SKIPPED" },
+                });
+            }
+            if (unskipRowIds.length > 0) {
+                await tx.importRow.updateMany({
+                    where: { id: { in: unskipRowIds }, importSessionId: sessionId },
+                    data: { skipped: false },
+                });
+            }
+
+            await tx.importSession.update({
+                where: { id: sessionId },
+                data: {
+                    ...(targetRowIds.length > 0 ? { draftRevision: { increment: 1 } } : {}),
+                    purgeAfter: importStagingPurgeAfter(),
+                },
             });
-        }
+        }, { timeout: 30_000 });
 
         return this.revalidateAuthorizedSession(userId, branchId, sessionId);
     }
 
     static async revalidateSession(userId: string, branchId: string, sessionId: string) {
+        await this.authorizeMutation(userId, branchId);
+        const bumped = await prisma.importSession.updateMany({
+            where: {
+                id: sessionId,
+                branchId,
+                archivedAt: null,
+                engineVersion: 2,
+                status: { notIn: ["COMMITTING", "COMMITTED", "CANCELLED"] },
+            },
+            data: {
+                draftRevision: { increment: 1 },
+                purgeAfter: importStagingPurgeAfter(),
+            },
+        });
+        if (bumped.count !== 1) throw new Error("Import session not found");
+        return this.revalidateAuthorizedSession(userId, branchId, sessionId);
+    }
+
+    static async revalidateCurrentDraft(userId: string, branchId: string, sessionId: string) {
         await this.authorizeMutation(userId, branchId);
         return this.revalidateAuthorizedSession(userId, branchId, sessionId);
     }
@@ -824,12 +1267,60 @@ export class ImportSessionService {
             include: { rows: { orderBy: { rowNumber: "asc" } } },
         });
         if (!session) throw new Error("Import session not found");
+        if (session.archivedAt) throw new Error("Import session is archived");
+        if (session.engineVersion === 2 && session.activeEvaluationRevision === session.draftRevision) {
+            return this.getSessionDetail(userId, branchId, sessionId);
+        }
+
+        const succeededRowItems = session.engineVersion === 2
+            ? await prisma.importRunItem.findMany({
+                where: {
+                    importRowId: { in: session.rows.map(row => row.id) },
+                    status: "SUCCEEDED",
+                    run: { importSessionId: sessionId, kind: "COMMIT" },
+                },
+                orderBy: { createdAt: "desc" },
+                select: {
+                    importRowId: true,
+                    kind: true,
+                    result: true,
+                },
+            })
+            : [];
+        const succeededStudentIdByRow = new Map<string, string>();
+        const allocationSucceededRowIds = new Set<string>();
+        for (const item of succeededRowItems) {
+            if (!item.importRowId) continue;
+            if (item.kind === "STUDENT" && !succeededStudentIdByRow.has(item.importRowId)) {
+                const studentId = retainedEntityIds(item.result)[0];
+                if (studentId) succeededStudentIdByRow.set(item.importRowId, studentId);
+            }
+            if (item.kind === "ALLOCATION") allocationSucceededRowIds.add(item.importRowId);
+        }
+        for (const row of session.rows) {
+            const studentId = retainedCreatedEntityId(row.createdEntityIds, "studentId");
+            if (studentId && !succeededStudentIdByRow.has(row.id)) {
+                succeededStudentIdByRow.set(row.id, studentId);
+            }
+            if (retainedCreatedEntityIds(row.createdEntityIds, "allocationIds").length > 0) {
+                allocationSucceededRowIds.add(row.id);
+            }
+        }
 
         const columns = Object.keys((session.rows[0]?.rawData ?? {}) as Record<string, unknown>);
         const mapping = normalizeMapping(session.mapping, columns);
         const sourceProfile = sourceProfileFromSession(session, columns);
         const context = await this.getValidationContext(branchId);
         const normalizedRows = session.rows.map(row => {
+            if (row.status === "IMPORTED") {
+                return {
+                    row,
+                    mappedData: row.mappedData ?? {},
+                    normalizedData: (row.normalizedData ?? {}) as ImportNormalizedRow,
+                    normalizationIssues: [] as ImportIssue[],
+                    confidence: row.confidence,
+                };
+            }
             if (
                 hasManualNormalizedData(row.mappedData) &&
                 row.normalizedData &&
@@ -846,6 +1337,8 @@ export class ImportSessionService {
                     normalizedData,
                     normalizationIssues: [] as ImportIssue[],
                     confidence: row.confidence,
+                    succeededStudentId: succeededStudentIdByRow.get(row.id),
+                    allocationAlreadySucceeded: allocationSucceededRowIds.has(row.id),
                 };
             }
 
@@ -863,6 +1356,8 @@ export class ImportSessionService {
                 normalizedData,
                 normalizationIssues: normalized.issues,
                 confidence: normalized.confidence,
+                succeededStudentId: succeededStudentIdByRow.get(row.id),
+                allocationAlreadySucceeded: allocationSucceededRowIds.has(row.id),
             };
         });
 
@@ -906,37 +1401,46 @@ export class ImportSessionService {
                 { issues: baseIssues, warnings: [], questions: [] },
                 validateRequiredImportFields(item.normalizedData),
                 validateImportStudent(item.normalizedData, context),
-                validateImportSeat(item.normalizedData, {
-                    seatsByLabel: context.seatsByLabel,
-                    createUnknownSeats: mapping.importOptions?.createUnknownSeats,
-                    skipUnknownSeatAllocations: mapping.importOptions?.skipUnknownSeatAllocations,
-                }),
-                validateImportShift(item.normalizedData, {
-                    shiftsByName: context.shiftsByName,
-                    multiShiftsByName: context.multiShiftsByName,
-                    createUnknownShifts: mapping.importOptions?.createUnknownShifts,
-                    createUnknownMultiShifts: mapping.importOptions?.createUnknownMultiShifts,
-                    skipUnknownShiftAllocations: mapping.importOptions?.skipUnknownShiftAllocations,
-                    skipUnknownMultiShiftAllocations: mapping.importOptions?.skipUnknownMultiShiftAllocations,
-                    skipMissingShiftAllocations: mapping.importOptions?.skipMissingShiftAllocations,
-                }),
-                validateImportAllocation(item.normalizedData, {
-                    ...context,
-                    skipConflictingAllocations: mapping.importOptions?.skipConflictingAllocations,
-                }),
+                ...(item.allocationAlreadySucceeded ? [] : [
+                    validateImportSeat(item.normalizedData, {
+                        seatsByLabel: context.seatsByLabel,
+                        createUnknownSeats: mapping.importOptions?.createUnknownSeats,
+                        skipUnknownSeatAllocations: mapping.importOptions?.skipUnknownSeatAllocations,
+                    }),
+                    validateImportShift(item.normalizedData, {
+                        shiftsByName: context.shiftsByName,
+                        multiShiftsByName: context.multiShiftsByName,
+                        createUnknownShifts: mapping.importOptions?.createUnknownShifts,
+                        createUnknownMultiShifts: mapping.importOptions?.createUnknownMultiShifts,
+                        skipUnknownShiftAllocations: mapping.importOptions?.skipUnknownShiftAllocations,
+                        skipUnknownMultiShiftAllocations: mapping.importOptions?.skipUnknownMultiShiftAllocations,
+                        skipMissingShiftAllocations: mapping.importOptions?.skipMissingShiftAllocations,
+                    }),
+                    validateImportAllocation(item.normalizedData, {
+                        ...context,
+                        skipConflictingAllocations: mapping.importOptions?.skipConflictingAllocations,
+                    }),
+                ]),
                 validateImportPayment(item.normalizedData, mapping)
             );
 
             const duplicateWarnings = [
                 ...(duplicateMap.get(item.row.id) ?? []),
-                ...detectExistingStudentDuplicates(item.normalizedData, context.existingStudents),
+                ...detectExistingStudentDuplicates(
+                    item.normalizedData,
+                    item.succeededStudentId
+                        ? context.existingStudents.filter(student => student.id !== item.succeededStudentId)
+                        : context.existingStudents
+                ),
             ];
-            const stagedConflicts = findStagedAllocationConflicts({
-                rowId: item.row.id,
-                normalizedData: item.normalizedData,
-                rows: stagedRows,
-                context,
-            });
+            const stagedConflicts = item.allocationAlreadySucceeded
+                ? []
+                : findStagedAllocationConflicts({
+                    rowId: item.row.id,
+                    normalizedData: item.normalizedData,
+                    rows: stagedRows,
+                    context,
+                });
             const skippedStagedConflicts = mapping.importOptions?.skipConflictingAllocations
                 ? stagedAllocationConflictWarnings(stagedConflicts)
                 : [];
@@ -964,86 +1468,122 @@ export class ImportSessionService {
         });
 
         questionDrafts.push(...processedRows.flatMap(row => row.questions));
-
-        const rowUpdateChunkSize = 100;
-        for (let index = 0; index < processedRows.length; index += rowUpdateChunkSize) {
-            const chunk = processedRows.slice(index, index + rowUpdateChunkSize);
-            await Promise.all(chunk.map(item =>
-                prisma.importRow.update({
-                    where: { id: item.row.id },
-                    data: {
-                        mappedData: asJson(item.mappedData),
-                        normalizedData: asJson(item.normalizedData),
-                        issues: asJson(item.issues),
-                        warnings: asJson(item.warnings),
-                        confidence: item.confidence,
-                        status: item.status,
-                    },
-                })
-            ));
-        }
-
-        await prisma.importQuestion.deleteMany({
-            where: { importSessionId: sessionId, status: "OPEN" },
-        });
-
         const uniqueQuestions = dedupeImportQuestionDrafts(questionDrafts);
-
-        if (uniqueQuestions.length > 0) {
-            await prisma.importQuestion.createMany({
-                data: uniqueQuestions.map(question => ({
-                    importSessionId: sessionId,
-                    rowId: question.rowId,
-                    field: question.field,
-                    question: question.question,
-                    options: asJson(question.options ?? null),
-                })),
-            });
-        }
-
-        const rows = await prisma.importRow.findMany({ where: { importSessionId: sessionId } });
-        const questions = await prisma.importQuestion.findMany({ where: { importSessionId: sessionId } });
-        const openQuestions = questions.filter(question => question.status === "OPEN").length;
-        const hasReviewBlocking = rows.some(row => ["NEEDS_REVIEW", "DUPLICATE"].includes(row.status));
-        const status: ImportSessionStatus =
-            openQuestions > 0 ? "NEEDS_INFO" :
-            hasReviewBlocking ? "VALIDATED" :
-            rows.some(row => row.status === "READY" || row.status === "WARNING") ? "READY_TO_COMMIT" :
-            "NEEDS_MAPPING";
-        const attention = buildImportAttention({ rows, questions, mapping });
         const detectedPaymentValues = Array.from(new Set(processedRows
             .map(row => row.normalizedData.payment?.rawStatus)
             .filter((value): value is string => Boolean(value))));
-        const nextMapping: ImportMappingState = {
-            ...mapping,
-            analysis: buildImportSessionAnalysis({
-                sourceProfile,
-                attention,
-                mapping,
-                sessionStatus: status,
-                model: mapping.analysis?.model,
-                notes: mapping.analysis?.notes,
-                ai: mapping.analysis?.ai,
-                detectedPaymentValues,
-            }),
-        };
-        const summary = {
-            ...summarizeRows(rows, {
-                mapping: nextMapping,
-                sourceProfile,
-                openQuestions,
-            }),
-            attention,
-        };
+        await prisma.$transaction(async tx => {
+            await tx.$queryRaw<Array<{ id: string }>>`
+                SELECT "id" FROM "ImportSession"
+                WHERE "id" = ${sessionId} AND "branchId" = ${branchId}
+                FOR UPDATE
+            `;
+            const currentSession = await tx.importSession.findFirst({
+                where: { id: sessionId, branchId },
+                select: { draftRevision: true, archivedAt: true },
+            });
+            if (!currentSession) throw new Error("Import session not found");
+            if (currentSession.archivedAt) throw new Error("Import session is archived");
+            if (currentSession.draftRevision !== session.draftRevision) {
+                throw new ImportRevisionConflictError();
+            }
 
-        await prisma.importSession.update({
-            where: { id: sessionId },
-            data: {
-                status,
-                mapping: asJson(nextMapping),
-                summary: asJson(summary),
-            },
-        });
+            const mutableProcessedRows = processedRows.filter(item => item.row.status !== "IMPORTED");
+            const rowUpdateChunkSize = 100;
+            for (let index = 0; index < mutableProcessedRows.length; index += rowUpdateChunkSize) {
+                const chunk = mutableProcessedRows.slice(index, index + rowUpdateChunkSize);
+                await Promise.all(chunk.map(item =>
+                    tx.importRow.update({
+                        where: { id: item.row.id },
+                        data: {
+                            mappedData: asJson(item.mappedData),
+                            normalizedData: asJson(item.normalizedData),
+                            issues: asJson(item.issues),
+                            warnings: asJson(item.warnings),
+                            confidence: item.confidence,
+                            status: item.status,
+                        },
+                    })
+                ));
+            }
+
+            await tx.importQuestion.deleteMany({
+                where: { importSessionId: sessionId, status: "OPEN" },
+            });
+            if (uniqueQuestions.length > 0) {
+                await tx.importQuestion.createMany({
+                    data: uniqueQuestions.map(question => ({
+                        importSessionId: sessionId,
+                        rowId: question.rowId,
+                        field: question.field,
+                        question: question.question,
+                        options: asJson(question.options ?? null),
+                    })),
+                });
+            }
+
+            const rows = await tx.importRow.findMany({ where: { importSessionId: sessionId } });
+            const questions = await tx.importQuestion.findMany({ where: { importSessionId: sessionId } });
+            const openQuestions = questions.filter(question => question.status === "OPEN").length;
+            const hasReviewBlocking = rows.some(row => ["NEEDS_REVIEW", "DUPLICATE"].includes(row.status));
+            const status: ImportSessionStatus =
+                openQuestions > 0 ? "NEEDS_INFO" :
+                hasReviewBlocking ? "VALIDATED" :
+                rows.some(row => row.status === "READY" || row.status === "WARNING") ? "READY_TO_COMMIT" :
+                "NEEDS_MAPPING";
+            const unresolvedRows = rows.filter(row => row.status !== "IMPORTED");
+            const attention = buildImportAttention({ rows: unresolvedRows, questions, mapping });
+            const nextMapping: ImportMappingState = {
+                ...mapping,
+                analysis: buildImportSessionAnalysis({
+                    sourceProfile,
+                    attention,
+                    mapping,
+                    sessionStatus: status,
+                    model: mapping.analysis?.model,
+                    notes: mapping.analysis?.notes,
+                    ai: mapping.analysis?.ai,
+                    detectedPaymentValues,
+                }),
+            };
+            const summary = {
+                ...summarizeRows(rows, {
+                    mapping: nextMapping,
+                    sourceProfile,
+                    openQuestions,
+                }),
+                attention,
+            };
+            if (session.engineVersion === 2) {
+                await tx.importRowEvaluation.createMany({
+                    data: rows.map(row => ({
+                        importRowId: row.id,
+                        revision: session.draftRevision,
+                        engineVersion: 2,
+                        status: row.status,
+                        mappedData: row.mappedData === null ? undefined : asJson(row.mappedData),
+                        normalizedData: row.normalizedData === null ? undefined : asJson(row.normalizedData),
+                        issues: asJson(Array.isArray(row.issues) ? row.issues : []),
+                        warnings: asJson(Array.isArray(row.warnings) ? row.warnings : []),
+                        confidence: row.confidence,
+                        skipped: row.skipped,
+                    })),
+                });
+            }
+            const updated = await tx.importSession.updateMany({
+                where: { id: sessionId, branchId, draftRevision: session.draftRevision },
+                data: {
+                    status,
+                    mapping: asJson(nextMapping),
+                    summary: asJson(summary),
+                    ...(session.engineVersion === 2 ? { activeEvaluationRevision: session.draftRevision } : {}),
+                    purgeAfter: importStagingPurgeAfter(),
+                },
+            });
+            if (updated.count !== 1) {
+                throw new ImportRevisionConflictError();
+            }
+        }, { timeout: 30_000 });
 
         return this.getSessionDetail(userId, branchId, sessionId);
     }

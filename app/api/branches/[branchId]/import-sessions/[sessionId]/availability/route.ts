@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
+import { toImportApiError } from "@/importing/http/import-api-error";
 import { ImportWiringService } from "@/importing/services/import-wiring.service";
 
 type Params = { params: Promise<{ branchId: string; sessionId: string }> };
@@ -21,8 +22,7 @@ export async function POST(req: Request, { params }: Params) {
         });
         return NextResponse.json(availability);
     } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to load import availability";
-        const status = message.includes("Unauthorized") ? 403 : message.includes("not found") ? 404 : 400;
-        return NextResponse.json({ error: message }, { status });
+        const apiError = toImportApiError(error, "Failed to load import availability.");
+        return NextResponse.json(apiError.body, { status: apiError.status });
     }
 }

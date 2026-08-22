@@ -4,7 +4,7 @@ This runbook covers the repository-owned procedures for operating Lab Lords. It
 does not grant access to Production and does not replace provider dashboards,
 database recovery documentation, or an approved incident-response policy.
 
-Last reconciled with the repository: 2026-08-17.
+Last reconciled with the repository: 2026-08-18.
 
 ## Stop conditions and operator-owned preconditions
 
@@ -15,7 +15,8 @@ items that are not encoded in this repository:
 - the Vercel team, project, Production branch, Production domains, deployment
   path, deployment approvers, and rollback authority;
 - the Vercel plan and function limits. The hourly billing schedule requires a
-  plan that accepts hourly cron expressions;
+  plan that accepts hourly cron expressions; Import Assistance V2 additionally
+  requires the approved Workflow 4.6/Fluid Compute configuration and limits;
 - the exact Production database identity and a direct migration endpoint that
   has been checked independently of its URL text;
 - the database backup owner, backup command, retention, most recent successful
@@ -24,6 +25,10 @@ items that are not encoded in this repository:
   regulatory notification owner, and approved private evidence location;
 - the monitoring provider, alert thresholds, runtime-log retention, and the
   procedure for confirming that a deployment is healthy;
+- the Import Assistance V2 owner/security approval, provider processing and
+  data-residency review, benchmark evidence, analysis/completion SLOs,
+  mutation-cap owner, Workflow/ledger monitoring, and active-run rollback or
+  cancellation authority;
 - the authority and dashboard procedure for disabling Vercel Cron Jobs or
   stopping Production traffic;
 - the allowed overlap period for old and new Razorpay webhook secrets;
@@ -86,6 +91,7 @@ provider dashboard; do not copy values into this document or command output.
 | Clerk | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`; sign-in, sign-up, and fallback paths are code-defined rather than environment-defined |
 | Razorpay credentials and mode | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_MODE`, `RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_WEBHOOK_OLD_SECRETS`, `RAZORPAY_DEFAULT_SUBSCRIPTION_CYCLES` |
 | Billing release controls | `RAZORPAY_BILLING_WRITES_ENABLED`, `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED`, `RAZORPAY_LIVE_CANARY_ORG_IDS`, `WORKSPACE_BRANCH_BILLING_V2_ENABLED` |
+| Import V2 release controls | `IMPORT_V2_ENABLED`, `IMPORT_MAX_PLANNED_MUTATIONS` |
 | Scheduled jobs | `CRON_SECRET` |
 | Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_FLASH_MODEL`, `GEMINI_PRO_MODEL`, `GEMINI_IMPORT_MODEL`, `GEMINI_FALLBACK_MODELS` |
 | Public application configuration | `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_SUPPORT_EMAIL`, `NEXT_PUBLIC_BUSINESS_ADDRESS`, `NEXT_PUBLIC_GA_MEASUREMENT_ID` |
@@ -110,6 +116,7 @@ pnpm install --frozen-lockfile
 pnpm prisma generate
 pnpm lint
 pnpm test
+pnpm test:workflow
 pnpm build
 ```
 
@@ -219,14 +226,121 @@ Vercel Git or CLI path before release. See Vercel's official
 
 Do not treat a successful build or domain assignment as a successful release.
 
+## Import Assistance V2 rollout
+
+The repository pins `workflow` 4.6.0 and implements opaque-ID Workflow
+orchestration over an application-visible PostgreSQL ledger. The architecture
+proposal is
+[`0001-managed-workflow-for-import-execution.md`](./decisions/0001-managed-workflow-for-import-execution.md),
+whose status remains **Proposed**. Code presence, a green build, or a deployed
+migration does not approve Production execution. A human owner must explicitly
+approve the decision and the security/data-residency review before enabling the
+feature.
+
+The PostgreSQL ledger—not Workflow state—is business truth for branch scope,
+requesting user, target revision, immutable plan hash, deterministic item keys,
+leases, retries, cancellation, progress, and redacted outcomes. Workflow inputs
+and step outputs contain opaque run IDs and bounded counters only. A step may
+claim at most 25 items; each item rechecks current authorization, entitlement,
+branch writability, object scope, plan revision, and lease inside the same short
+transaction as the domain mutation and completion marker. No import mode is a
+whole-file transaction, and cleanup is not rollback.
+
+### Required evidence before enabling
+
+1. Keep `IMPORT_V2_ENABLED=false` or absent. Apply the additive V2 migration
+   through the normal reviewed migration path and confirm old application code
+   remains compatible. Verify unfinished V1 sessions are archived and receive
+   the migration's 30-day purge deadline; do not rewrite terminal V1 history.
+2. In an isolated Preview environment, verify `workflow` 4.6.0, the Next.js
+   Workflow build integration, provider-authenticated internal endpoint, Fluid
+   Compute/runtime configuration, deployment pinning, retry/resume behavior,
+   provider operator access, and actual orchestration-data retention/region.
+   The Proposed ADR records `iad1` for stable Workflow v4, but the operator must
+   verify current provider truth instead of relying on that statement.
+3. Complete and approve the personal-data review. Prove Workflow receives only
+   opaque IDs/revisions/hashes/cursors/counts while source rows, personal
+   values, branch configuration, and complete mutation payloads remain in the
+   authorized PostgreSQL ledger. Use synthetic data for all acceptance and
+   benchmark work.
+4. Benchmark representative 100-, 500-, and 2,000-row imports, including the
+   highest-fan-out approved goal and configuration/allocation/payment cases.
+   Record row count, deterministic mutation-item count, analysis duration,
+   completion duration, retries, database/runtime usage, and observed
+   percentiles. Derive separate owner-approved analysis and completion SLOs;
+   do not invent thresholds in configuration or this runbook.
+   `pnpm benchmark:import-v2` provides a reproducible synthetic parser and
+   immutable-plan expansion baseline. Its output is explicitly compile-only;
+   it cannot substitute for staging-equivalent durable execution evidence.
+5. Derive `IMPORT_MAX_PLANNED_MUTATIONS` from measured item counts, not the row
+   cap. Demonstrate the approved largest workload with at least a further
+   two-times passing headroom, record the evidence and owner, then set the
+   positive integer cap. A missing/invalid cap or a plan above it must fail
+   closed before a run is created.
+6. Exercise authentication revocation, tenant/branch mismatch, permission and
+   writability changes between items, stale revisions, duplicate idempotency
+   keys with same and different request hashes, duplicate Workflow delivery,
+   lease expiry, transient retry, permanent failure, cancellation, browser
+   resume, provider-terminal attached-run replacement, repair through a new
+   revision, and both readiness policies. Use an independently verified
+   disposable PostgreSQL target for real V2 mutation-plus-marker and replay
+   tests. Confirm already completed items are not duplicated or described as
+   rolled back.
+   For a deliberately isolated local database, the integration bootstrap may
+   use `TEST_DATABASE_URL` only when `TEST_DATABASE_RESET_CONFIRM` exactly
+   matches the URL's database name. This opt-in does not remove the operator's
+   responsibility to prove the target is disposable before the truncating test
+   starts.
+7. Exercise the 4.25 MiB request, 4 MiB source, 2,000-row, 64-column, 8 KiB-cell,
+   and 32 MiB expanded-workbook limits; signature/encoding failures; malformed
+   CSV quotes; duplicate/blank headers; multi-sheet/header selection; PDF beta
+   warnings; AI prompt redaction; and recipe write/read redaction.
+8. Verify terminal and inactive-draft transitions set `purgeAfter` 30 days out.
+   Invoke `/api/cron/imports/daily` with the Preview-only secret; verify bounded
+   counts, duplicate delivery, expired waiting/queued/retryable-run
+   terminalization, running-lease concurrency, consistent final counters,
+   payload/error scrubbing, staging deletion, and retained redacted run history.
+   Establish monitoring for overdue staging rather than assuming the declared
+   schedule executed.
+9. Require green targeted tests, `pnpm test:workflow`, the broader affected
+   suite, lint, build, and Preview smoke evidence. Record the approved rollback
+   authority, observation window, alerts, and how active runs will be drained
+   or cancelled.
+10. Deploy the reviewed mutation cap while the flag is still held. Only after
+    the evidence and human approvals above, create a separate observed
+    deployment with `IMPORT_V2_ENABLED=true`. Verify one synthetic/restricted
+    run and its ledger/Workflow/retention telemetry before wider use.
+
+### Disable, rollback, and recovery
+
+- To stop new V2 starts, set `IMPORT_V2_ENABLED=false` and create a new
+  deployment. Changing the variable without redeployment does nothing, and the
+  flag does not cancel an already-started Workflow run.
+- Inspect durable PostgreSQL run/item state before choosing to drain or request
+  cancellation. Do not delete Workflow state, run items, plans, idempotency
+  keys, or success markers to simulate rollback.
+- Workflow runs are deployment-pinned. Application Instant Rollback does not
+  stop them, reverse committed domain mutations, reverse the additive schema,
+  restore archived V1 drafts, or change the active retention schedule.
+- Keep the additive migration in place and prefer a compatible forward fix.
+  Before repointing traffic to older code, prove it tolerates the current schema
+  and nullable retained run references.
+- Disable the import-retention cron separately only when retention itself is
+  harmful, then verify the Cron dashboard and track the staging backlog. A
+  disabled purge is not a substitute for stopping Workflow execution.
+- Recovery means reconciling plan/run/item counts and created entity IDs,
+  repairing through a new revision/plan when appropriate, and preserving a
+  truthful partial-result history. It does not mean file-wide rollback.
+
 ## Vercel Cron Jobs
 
-[`vercel.json`](../vercel.json) defines two HTTP `GET` schedules:
+[`vercel.json`](../vercel.json) defines three HTTP `GET` schedules:
 
 | Path | Schedule | UTC interpretation | Repository behavior |
 | --- | --- | --- | --- |
 | `/api/cron/payments/daily` | `0 0 * * *` | Daily at 00:00 UTC | Generates due payments for active students using duplicate-safe database writes |
 | `/api/cron/billing/hourly` | `0 * * * *` | At minute 0 of every UTC hour | Processes billing deadlines, retries, cancellations/replacements, expired leases, and reconciliation |
+| `/api/cron/imports/daily` | `30 0 * * *` | Daily at 00:30 UTC | Drains at most 20 batches of 100 expired staging sessions, terminalizing stale active ledger work before scrubbing retained run-item payloads/errors |
 
 Vercel cron expressions always use UTC and scheduled invocations run only for
 Production deployments. Updating, deleting, or adding a schedule requires a
@@ -235,8 +349,8 @@ redeployment. See the official [Cron Jobs](https://vercel.com/docs/cron-jobs),
 [Cron management](https://vercel.com/docs/cron-jobs/manage-cron-jobs)
 documentation.
 
-Both routes fail closed unless the request carries the exact `CRON_SECRET` as a
-Bearer authorization header. Never place the secret in a URL, screenshot,
+All three routes fail closed unless the request carries the exact `CRON_SECRET`
+as a Bearer authorization header. Never place the secret in a URL, screenshot,
 ticket, shell history, or report. Use an approved client that can set a private
 header when manually testing a protected route.
 
@@ -244,17 +358,27 @@ Operational expectations:
 
 - Vercel may deliver a scheduled event more than once or overlap executions.
   The application has duplicate-safe payment creation and durable billing
-  idempotency/leases, but operators must still inspect errors and runtimes.
+  idempotency/leases; import retention rechecks explicit deadlines, locks
+  attached ledgers, and terminalizes expired active work in a serializable
+  transaction. Operators must still inspect errors, runtimes, and overdue
+  staging.
 - Preview schedules do not run automatically. Invoke the protected Preview
   endpoint manually, verify a `2xx`, and inspect its isolated database and
   runtime logs.
-- The daily response reports processing counts. The hourly response reports
-  deadline, retry, replacement, and reconciliation counts plus errors. Retain
-  non-sensitive summaries for the release record.
+- The payment and import daily responses report processing counts. Import
+  retention reports batches, selected sessions, scrubbed run items, purged
+  sessions, the exact remaining backlog, and whether the 20-batch ceiling was
+  reached. The hourly response reports deadline, retry,
+  replacement, and reconciliation counts plus errors. Retain only non-sensitive
+  summaries for the release record.
 - A `401` indicates missing or mismatched `CRON_SECRET`. A `404` indicates a
   route/deployment mismatch. A `5xx` requires log and state inspection before a
   retry.
-- Rerunning the daily job is designed to be idempotent. For hourly billing,
+- Rerunning either daily job is designed to be idempotent. Import retention
+  automatically drains its bounded 20-by-100 window; if `limitReached` is true,
+  inspect runtime/database health and the reported `remainingBacklog` before an
+  approved manual rerun. A `5xx` means the invocation failed closed and must be
+  investigated before retry. For hourly billing,
   retry only after checking durable operation state; ambiguous/manual-review
   billing cases must not be forced through automatically.
 - To pause schedules, use the operator-approved Vercel Cron Jobs control and
@@ -331,6 +455,7 @@ sequence in the [Workspace billing V2 rollout](./workspace-billing-rollout.md).
 | Application deployment | Vercel Instant Rollback can point Production traffic to a previous deployment artifact. It does not reverse database migrations or external provider actions. Verify configuration and cron state afterward. |
 | Environment configuration | Changing a Vercel variable does not change an existing deployment. Set the intended configuration and create a new deployment. A rolled-back artifact can carry stale configuration assumptions. |
 | Database | This repository has no down-migration or automatic Production database rollback procedure. Prefer a compatible forward fix. Restore only through the operator-owned, tested backup procedure with explicit approval and a data-loss assessment. |
+| Import Workflow | Holding `IMPORT_V2_ENABLED` in a new deployment stops new starts only. Existing deployment-pinned runs must be drained or explicitly cancelled; completed items and the PostgreSQL ledger are not rolled back. |
 | Razorpay | An application rollback does not cancel, refund, or reverse provider subscriptions, mandates, invoices, payments, or webhook delivery. Reconcile provider and local state; ambiguous cases require manual review. |
 | Scheduled jobs | Disable or update schedules through the approved Vercel control, then verify the active Cron Jobs dashboard. Do not assume deployment rollback paused them. |
 
@@ -376,6 +501,12 @@ and provider state.
   leases settle. Continue accepting valid signed webhooks unless the incident
   commander determines webhook processing itself is harmful; provider evidence
   is needed for reconciliation.
+- For an import execution incident, deploy with `IMPORT_V2_ENABLED=false`,
+  inspect the PostgreSQL ledger, and decide explicitly whether active
+  deployment-pinned runs drain or receive cancellation requests. Disable the
+  import-retention cron separately only when purging is implicated. Preserve
+  immutable plans, idempotency keys, completion markers, and redacted results;
+  do not delete rows or run ad hoc cleanup to claim rollback.
 - For a runaway or compromised cron, disable Vercel Cron Jobs through the
   approved dashboard procedure. Rotate `CRON_SECRET` and redeploy if the secret
   was exposed.
@@ -397,6 +528,9 @@ containment.
 - migration status and approved database backup identifiers;
 - billing operation, subscription history, invoice, and webhook receipt IDs,
   hashes, timestamps, and redacted errors;
+- import session/run IDs, target revision, plan/request hashes, item/progress
+  counts, Workflow run ID, lease/retry/cancellation timestamps, retention-cron
+  counts, and redacted error codes—never source rows or mutation payloads;
 - Razorpay subscription, invoice, payment, webhook-delivery, and Dashboard audit
   evidence; and
 - actor/time records from the relevant application audit trail.
@@ -424,8 +558,12 @@ must fill those gaps.
    subscription/invoice/payment cross-linkage, `paidThrough`, entitlements,
    queued operations, leases, and provider reconciliation. Restart with one
    reviewed canary before broad writes.
-7. Observe operator-owned logs and alerts for the approved recovery window.
-8. Record residual risk, customer impact, follow-up owners, and any approved
+7. For import incidents, verify the feature gate deployment, current
+   revision/plan hash, run and item counts, duplicate-safe replay, active leases,
+   cancellation state, redacted results, staging deadline, and retention-cron
+   health. Repair only through a new revision and plan.
+8. Observe operator-owned logs and alerts for the approved recovery window.
+9. Record residual risk, customer impact, follow-up owners, and any approved
    decision in `docs/decisions/`.
 
 ## Release and incident record template
@@ -440,7 +578,7 @@ Environment:
 Migration workflow run and migration names:
 Backup identifier and restore-test date:
 Configuration names changed (names only):
-Cron/webhook/billing impact:
+Cron/webhook/billing/import Workflow impact:
 Validation commands and results:
 Smoke checks and observation window:
 Rollback/recovery decision:
@@ -452,6 +590,7 @@ Remaining risks and owners:
 - [Workspace billing V2 rollout](./workspace-billing-rollout.md)
 - [Razorpay live-review checklist](./razorpay-live-review.md)
 - [Auth environments](./auth-environments.md)
+- [Import Workflow execution proposal](./decisions/0001-managed-workflow-for-import-execution.md) — Proposed, not Accepted
 - [CI workflow](../.github/workflows/ci.yml)
 - [Production migration workflow](../.github/workflows/production-migrate.yml)
 - [Vercel cron configuration](../vercel.json)

@@ -4,7 +4,7 @@ import {
   type BillingEntitlement,
   type BillingPlanId,
 } from "@/lib/billingPlans";
-import type { OrganizationSubscription } from "@/app/generated/prisma/client";
+import type { OrganizationSubscription, Prisma } from "@/app/generated/prisma/client";
 import { deriveWorkspaceBillingState, type BillingAccessMode } from "@/lib/billingState";
 import { resolveRazorpayMode } from "@/lib/razorpay";
 import { deriveAuthorizedReplacementOverride } from "@/services/billingReplacement.service";
@@ -52,8 +52,11 @@ export type OrganizationEntitlementProfile = {
 };
 
 export class EntitlementService {
-  static async getOrganizationProfile(organizationId: string): Promise<OrganizationEntitlementProfile> {
-    const organization = await prisma.organization.findUnique({
+  static async getOrganizationProfile(
+    organizationId: string,
+    client: Prisma.TransactionClient | typeof prisma = prisma
+  ): Promise<OrganizationEntitlementProfile> {
+    const organization = await client.organization.findUnique({
       where: { id: organizationId },
       select: {
         id: true,
@@ -214,9 +217,10 @@ export class EntitlementService {
 
   static async assertOrganizationEntitlement(
     organizationId: string,
-    entitlement: BillingEntitlement
+    entitlement: BillingEntitlement,
+    client: Prisma.TransactionClient | typeof prisma = prisma
   ) {
-    const profile = await this.getOrganizationProfile(organizationId);
+    const profile = await this.getOrganizationProfile(organizationId, client);
     if (!profile.entitlements.includes(entitlement)) {
       throw new SubscriptionEntitlementError(
         `${entitlement.replaceAll("_", " ").toLowerCase()} requires an upgraded subscription plan`
@@ -225,17 +229,24 @@ export class EntitlementService {
     return profile;
   }
 
-  static async assertBranchEntitlement(branchId: string, entitlement: BillingEntitlement) {
-    const branch = await prisma.branch.findUnique({
+  static async assertBranchEntitlement(
+    branchId: string,
+    entitlement: BillingEntitlement,
+    client: Prisma.TransactionClient | typeof prisma = prisma
+  ) {
+    const branch = await client.branch.findUnique({
       where: { id: branchId },
       select: { organizationId: true },
     });
     if (!branch) throw new Error("Branch not found");
-    return this.assertOrganizationEntitlement(branch.organizationId, entitlement);
+    return this.assertOrganizationEntitlement(branch.organizationId, entitlement, client);
   }
 
-  static async assertCanCreateBranch(organizationId: string) {
-    const profile = await this.getOrganizationProfile(organizationId);
+  static async assertCanCreateBranch(
+    organizationId: string,
+    client: Prisma.TransactionClient | typeof prisma = prisma
+  ) {
+    const profile = await this.getOrganizationProfile(organizationId, client);
     if (!profile.canWrite) {
       throw new BillingReadOnlyError(profile.accessReason);
     }
@@ -248,14 +259,20 @@ export class EntitlementService {
     return profile;
   }
 
-  static async assertOrganizationWritable(organizationId: string) {
-    const profile = await this.getOrganizationProfile(organizationId);
+  static async assertOrganizationWritable(
+    organizationId: string,
+    client: Prisma.TransactionClient | typeof prisma = prisma
+  ) {
+    const profile = await this.getOrganizationProfile(organizationId, client);
     if (!profile.canWrite) throw new BillingReadOnlyError(profile.accessReason);
     return profile;
   }
 
-  static async assertBranchWritable(branchId: string) {
-    const branch = await prisma.branch.findUnique({
+  static async assertBranchWritable(
+    branchId: string,
+    client: Prisma.TransactionClient | typeof prisma = prisma
+  ) {
+    const branch = await client.branch.findUnique({
       where: { id: branchId },
       select: { organizationId: true, billingStatus: true },
     });
@@ -269,6 +286,6 @@ export class EntitlementService {
     if (branch.billingStatus === "REMOVAL_SCHEDULED") {
       throw new BillingReadOnlyError("This branch is read-only while removal is scheduled");
     }
-    return this.assertOrganizationWritable(branch.organizationId);
+    return this.assertOrganizationWritable(branch.organizationId, client);
   }
 }

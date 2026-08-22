@@ -1,5 +1,6 @@
 import type {
     ImportCommitStatus,
+    ImportGoal,
     ImportQuestionStatus,
     ImportRowStatus,
     ImportSessionStatus,
@@ -8,12 +9,13 @@ import type {
     PaymentStatus,
 } from "@/app/generated/prisma/enums";
 
+export type { ImportGoal } from "@/app/generated/prisma/enums";
+
 export const IMPORT_TARGET_FIELDS = [
     "student.name",
     "student.phone",
     "student.joinedAt",
     "student.monthlyFee",
-    "student.status",
     "student.feeSource",
     "student.feeLinkedShiftName",
     "student.feeLinkedMultiShiftName",
@@ -26,12 +28,10 @@ export const IMPORT_TARGET_FIELDS = [
     "allocation.seatLabel",
     "allocation.shiftName",
     "allocation.multiShiftName",
-    "allocation.startDate",
     "payment.amount",
     "payment.status",
     "payment.method",
     "payment.referenceId",
-    "payment.period",
     "ignore",
 ] as const;
 
@@ -44,6 +44,9 @@ export type ParsedImportRow = Record<string, string>;
 export type ParsedImportSource = {
     columns: string[];
     rows: ParsedImportRow[];
+    /** One-based physical source row for each entry in `rows`, in the same order. */
+    rowNumbers: number[];
+    parserMetadata?: Record<string, unknown>;
 };
 
 export type ImportColumnMapping = {
@@ -145,12 +148,7 @@ export type ImportMappingResult = {
     aiTrace?: ImportAITrace;
 };
 
-export type PaymentCycleOption =
-    | "CURRENT_MONTH"
-    | "PREVIOUS_MONTH"
-    | "CUSTOM_PERIOD"
-    | "USE_JOINED_AT_ANNIVERSARY"
-    | "SKIP_PAYMENTS";
+export type PaymentCycleOption = "USE_JOINED_AT_ANNIVERSARY" | "SKIP_PAYMENTS";
 
 export type PaymentImportAction =
     | "GENERATE_DUE"
@@ -176,8 +174,6 @@ export type ImportOptions = {
     paymentCycle?: PaymentCycleOption;
     paymentAction?: PaymentImportAction;
     paymentHistoryMode?: PaymentHistoryMode;
-    customPeriodStart?: string;
-    customPeriodEnd?: string;
     paymentMapping?: ImportPaymentMapping;
     defaultJoinedAt?: string;
     defaultSeatLabel?: string;
@@ -186,6 +182,8 @@ export type ImportOptions = {
     createUnknownSeats?: boolean;
     createUnknownShifts?: boolean;
     createUnknownMultiShifts?: boolean;
+    /** One explicit batch approval for every missing seat/shift/bundle in this reviewed revision. */
+    configurationBatchApproved?: boolean;
     skipUnknownSeatAllocations?: boolean;
     skipUnknownShiftAllocations?: boolean;
     skipUnknownMultiShiftAllocations?: boolean;
@@ -239,7 +237,6 @@ export type ImportNormalizedRow = {
         joinedAt?: string;
         joinedAtSource?: "UPLOADED" | "OPERATOR_DEFAULT" | "TODAY_DEFAULT";
         monthlyFee?: number;
-        status?: "ACTIVE" | "INACTIVE";
         feeSource?: "UPLOADED" | "BRANCH_DEFAULT" | "SHIFT_PRICE" | "MULTI_SHIFT_PRICE";
         feeLinkedShiftName?: string;
         feeLinkedMultiShiftName?: string;
@@ -260,7 +257,6 @@ export type ImportNormalizedRow = {
         seatLabel?: string;
         shiftName?: string;
         multiShiftName?: string;
-        startDate?: string;
     };
     payment?: {
         amount?: number;
@@ -268,7 +264,6 @@ export type ImportNormalizedRow = {
         rawStatus?: string;
         method?: PaymentMethod;
         referenceId?: string;
-        period?: string;
     };
 };
 
@@ -295,14 +290,23 @@ export type CreateImportSessionInput =
           fileName?: string;
           fileMeta?: Record<string, unknown>;
           fileBuffer: Buffer;
+          goal?: ImportGoal;
+          sourceConfiguration?: {
+              sheetName?: string;
+              headerRow?: number;
+              pdfConfirmed?: boolean;
+          };
       }
     | {
           sourceType: "PASTED_TABLE";
           fileName?: string;
           fileMeta?: Record<string, unknown>;
           pastedTable: string;
+          goal?: ImportGoal;
+          sourceConfiguration?: Record<string, never>;
       };
 
+/** @deprecated Use ImportReadinessPolicy for V2 plans. */
 export type CommitMode = "SAFE_PARTIAL" | "STRICT_ALL_OR_NOTHING";
 
 export type ImportSessionListItem = {
@@ -311,6 +315,11 @@ export type ImportSessionListItem = {
     sourceType: ImportSourceType;
     fileName: string | null;
     status: ImportSessionStatus;
+    engineVersion: number;
+    goal: ImportGoal | null;
+    draftRevision: number;
+    activeEvaluationRevision: number | null;
+    archivedAt: string | null;
     summary: ImportSessionSummary | null;
     createdAt: string;
     updatedAt: string;

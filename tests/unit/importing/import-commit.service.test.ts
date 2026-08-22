@@ -96,7 +96,7 @@ const readyDetail = {
     updatedAt: "2026-06-24T00:00:00.000Z",
     mapping: {
         importOptions: {
-            paymentCycle: "CURRENT_MONTH",
+            paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
             paymentAction: "IMPORT_PAID_UNPAID",
             paymentMapping: { confirmed: true, paidValues: ["paid"], unpaidValues: ["due"], waivedValues: [], unclearValues: [], defaultMethod: "CASH" },
         },
@@ -273,7 +273,7 @@ describe("ImportCommitService", () => {
             status: "VALIDATED",
             mapping: {
                 importOptions: {
-                    paymentCycle: "CURRENT_MONTH",
+                    paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
                     paymentAction: "IMPORT_PAID_UNPAID",
                 },
             },
@@ -580,7 +580,7 @@ describe("ImportCommitService", () => {
             status: "READY_TO_COMMIT",
             mapping: {
                 importOptions: {
-                    paymentCycle: "CURRENT_MONTH",
+                    paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
                     paymentAction: "GENERATE_DUE",
                 },
             },
@@ -647,7 +647,7 @@ describe("ImportCommitService", () => {
             status: "VALIDATED",
             mapping: {
                 importOptions: {
-                    paymentCycle: "CURRENT_MONTH",
+                    paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
                     paymentAction: "IMPORT_PAID_UNPAID",
                 },
             },

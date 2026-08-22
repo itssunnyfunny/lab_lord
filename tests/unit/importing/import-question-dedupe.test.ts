@@ -6,13 +6,13 @@ describe("dedupeImportQuestionDrafts", () => {
         const questions = dedupeImportQuestionDrafts([
             {
                 rowId: "row_1",
-                field: "payment.period",
+                field: "payment.cycle",
                 question: "Should payments use each student's joined-date cycle?",
                 options: ["USE_JOINED_AT_ANNIVERSARY", "SKIP_PAYMENTS"],
             },
             {
                 rowId: "row_2",
-                field: "payment.period",
+                field: "payment.cycle",
                 question: "Should payments use each student's joined-date cycle?",
                 options: ["USE_JOINED_AT_ANNIVERSARY", "SKIP_PAYMENTS"],
             },
@@ -31,7 +31,7 @@ describe("dedupeImportQuestionDrafts", () => {
         ]);
 
         expect(questions).toHaveLength(3);
-        expect(questions.find(question => question.field === "payment.period")?.rowId).toBeUndefined();
+        expect(questions.find(question => question.field === "payment.cycle")?.rowId).toBeUndefined();
         expect(questions.map(question => question.question)).toContain("Create missing seat \"A1\" during import?");
         expect(questions.map(question => question.question)).toContain("Create missing seat \"A2\" during import?");
     });
