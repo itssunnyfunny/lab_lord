@@ -9,6 +9,7 @@ import { freezeTime, restoreTime } from "@/tests/setup/time";
 
 const FAILURE_TRIGGER = "import_v2_fail_success_marker";
 const FAILURE_FUNCTION = "import_v2_fail_success_marker_once";
+const ORIGINAL_MUTATION_LIMIT = process.env.IMPORT_MAX_PLANNED_MUTATIONS;
 
 async function removeFailureInjection() {
     await testPrisma.$executeRawUnsafe(
@@ -25,12 +26,18 @@ describe("Import V2 commit flow integration", () => {
     });
 
     beforeEach(async () => {
+        process.env.IMPORT_MAX_PLANNED_MUTATIONS = "1000";
         freezeTime(new Date("2026-07-05T00:00:00.000Z"));
         await removeFailureInjection();
         await resetDatabase();
     });
 
     afterEach(async () => {
+        if (ORIGINAL_MUTATION_LIMIT === undefined) {
+            delete process.env.IMPORT_MAX_PLANNED_MUTATIONS;
+        } else {
+            process.env.IMPORT_MAX_PLANNED_MUTATIONS = ORIGINAL_MUTATION_LIMIT;
+        }
         await removeFailureInjection();
         restoreTime();
     });
