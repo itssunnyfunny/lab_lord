@@ -2,8 +2,8 @@
 
 > Repository policy for Codex Security and other security reviewers.
 >
-> Last reconciled with the Import Assistance V2 working tree based on commit
-> `f37541e` on 2026-08-18.
+> Last reconciled with the payment identity and resolution-event working tree
+> based on commit `27d417e` on 2026-08-22.
 
 This file defines what to review, the mandatory security invariants, and how to
 calibrate findings. It is not a public vulnerability-disclosure channel,
@@ -100,6 +100,10 @@ workstation or CI runner that can access credentials.
 - Permission-shaped responses must not expose unrelated counts, settings,
   students, seats, payments, staff, or other branch data.
 - User-initiated mutations must enforce entitlement and writable state.
+- Payment-resolution events are append-only domain evidence. They must be
+  created only inside the authorized payment transaction, derive `branchId`
+  and snapshot fields from the payment being changed, and must not be exposed
+  through arbitrary create, update, or delete APIs.
 - Machine-authenticated cron or maintenance operations may bypass user
   entitlement only when explicitly documented as system-owned behaviour,
   tenant-scoped, idempotent, and incapable of granting SaaS access or initiating

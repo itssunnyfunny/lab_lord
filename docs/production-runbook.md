@@ -4,7 +4,7 @@ This runbook covers the repository-owned procedures for operating Lab Lords. It
 does not grant access to Production and does not replace provider dashboards,
 database recovery documentation, or an approved incident-response policy.
 
-Last reconciled with the repository: 2026-08-18.
+Last reconciled with the repository: 2026-08-22.
 
 ## Stop conditions and operator-owned preconditions
 
@@ -162,6 +162,91 @@ The workspace-billing migrations have a specific expansion, backfill, cutover,
 and release sequence. Follow the
 [Workspace billing V2 rollout](./workspace-billing-rollout.md) rather than
 reconstructing that order here.
+
+### Payment identity and resolution-event migration
+
+Migration `20260822090000_payment_type_identity_and_resolution_events` changes
+payment identity from `(studentId, periodStart)` to
+`(studentId, type, periodStart)` and creates an initially empty immutable
+resolution-event ledger. It does not rewrite or delete any `Payment` row and it
+does not fabricate events for resolutions that occurred before deployment.
+
+Before applying it to any operator-approved target, record the payment count
+and run these read-only checks:
+
+```sql
+SELECT COUNT(*) AS payment_count
+FROM "Payment";
+
+SELECT
+  "studentId",
+  "type",
+  "periodStart",
+  COUNT(*) AS row_count
+FROM "Payment"
+GROUP BY "studentId", "type", "periodStart"
+HAVING COUNT(*) > 1;
+
+SELECT
+  "studentId",
+  "periodStart",
+  COUNT(*) AS row_count,
+  COUNT(DISTINCT "type") AS type_count
+FROM "Payment"
+GROUP BY "studentId", "periodStart"
+HAVING COUNT(*) > 1;
+```
+
+Both duplicate queries are expected to return zero groups while the old unique
+index is still enforced. If either returns rows, stop. Record the exact
+conflicting identifiers privately and obtain a separately reviewed data plan;
+do not delete, merge, or rewrite payments automatically.
+
+Inspect the actual PostgreSQL objects rather than inferring them from migration
+filenames:
+
+```sql
+SELECT schemaname, tablename, indexname, indexdef
+FROM pg_indexes
+WHERE tablename IN ('Payment', 'PaymentResolutionEvent')
+ORDER BY tablename, indexname;
+
+SELECT
+  conrelid::regclass::text AS table_name,
+  conname,
+  contype,
+  pg_get_constraintdef(oid) AS definition
+FROM pg_constraint
+WHERE conrelid = '"Payment"'::regclass
+   OR conrelid = to_regclass('"PaymentResolutionEvent"')
+ORDER BY table_name, conname;
+```
+
+The migration creates `Payment_studentId_type_periodStart_key` before dropping
+`Payment_studentId_periodStart_key`. Immediately afterward, verify all of the
+following before allowing payment writes:
+
+- the `Payment` row count exactly equals the recorded pre-migration count;
+- the same-type duplicate query still returns zero rows;
+- `Payment_studentId_type_periodStart_key` exists and is unique;
+- `Payment_studentId_periodStart_key` no longer exists;
+- `PaymentResolutionEvent` exists with restrictive payment and branch foreign
+  keys, a nullable actor foreign key using `ON DELETE SET NULL`, and indexes on
+  `(paymentId, occurredAt, id)` and `(branchId, occurredAt, id)`;
+- `SELECT COUNT(*) FROM "PaymentResolutionEvent";` returns zero immediately
+  after migration, before the new application accepts resolution writes; and
+- `pnpm prisma migrate status` reports a clean migration state.
+
+Rollback has a data-dependent boundary. Before the new application writes an
+admission and monthly payment sharing the same student and period start, it may
+be possible to restore the old untyped unique constraint. After legitimate
+typed-coexistence rows exist, that constraint cannot be restored without a
+conflict. Disable payment writes before any rollback attempt, inspect exact
+conflicting rows, never delete a legitimate payment merely to make rollback
+easier, and prefer rolling the application forward. Any post-write schema
+rollback is a controlled data-reconciliation operation requiring separate
+operator approval; this repository does not provide an automatic down
+migration.
 
 ### Production migration procedure
 
