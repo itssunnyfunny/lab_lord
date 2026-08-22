@@ -2,12 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { format, subMonths } from "date-fns";
 import { createImportPlanVersion } from "@/importing/utils/import-plan-checks";
 
-const mocks = vi.hoisted(() => ({
-    revalidateSession: vi.fn(),
-    getSessionDetail: vi.fn(),
-    authorize: vi.fn(),
-    assertBranchWritable: vi.fn(),
-    prisma: {
+const mocks = vi.hoisted(() => {
+    const prisma = {
         $transaction: vi.fn(),
         seat: { findMany: vi.fn() },
         shift: { findMany: vi.fn() },
@@ -19,16 +15,28 @@ const mocks = vi.hoisted(() => ({
         importSession: { findFirst: vi.fn(), update: vi.fn() },
         importRow: { update: vi.fn() },
         importCommit: { create: vi.fn() },
-    },
-    createImportedStudent: vi.fn(),
-    assignSeatToShifts: vi.fn(),
-    ensureMonthlyPaymentForStudent: vi.fn(),
-    markPaymentAsPaid: vi.fn(),
-    markPaymentAsWaived: vi.fn(),
-    createSeat: vi.fn(),
-    createShift: vi.fn(),
-    createMultiShift: vi.fn(),
-}));
+    };
+    const tx = {
+        ...prisma,
+        importRow: { update: vi.fn() },
+    };
+    return {
+        revalidateSession: vi.fn(),
+        getSessionDetail: vi.fn(),
+        authorize: vi.fn(),
+        assertBranchWritable: vi.fn(),
+        prisma,
+        tx,
+        createImportedStudent: vi.fn(),
+        assignSeatToShifts: vi.fn(),
+        ensureMonthlyPaymentForStudentInTransaction: vi.fn(),
+        markPaymentAsPaidInTransaction: vi.fn(),
+        markPaymentAsWaivedInTransaction: vi.fn(),
+        createSeat: vi.fn(),
+        createShift: vi.fn(),
+        createMultiShift: vi.fn(),
+    };
+});
 
 vi.mock("@/importing/services/import-session.service", () => ({
     ImportSessionService: {
@@ -67,9 +75,9 @@ vi.mock("@/services/seatAllocation.service", () => ({
 
 vi.mock("@/services/payment.service", () => ({
     PaymentService: {
-        ensureMonthlyPaymentForStudent: mocks.ensureMonthlyPaymentForStudent,
-        markPaymentAsPaid: mocks.markPaymentAsPaid,
-        markPaymentAsWaived: mocks.markPaymentAsWaived,
+        ensureMonthlyPaymentForStudentInTransaction: mocks.ensureMonthlyPaymentForStudentInTransaction,
+        markPaymentAsPaidInTransaction: mocks.markPaymentAsPaidInTransaction,
+        markPaymentAsWaivedInTransaction: mocks.markPaymentAsWaivedInTransaction,
     },
 }));
 
@@ -147,7 +155,7 @@ describe("ImportCommitService", () => {
         mocks.prisma.seat.findMany.mockResolvedValue([{ id: "seat_1", label: "A1" }]);
         mocks.prisma.shift.findMany.mockResolvedValue([{ id: "shift_1", name: "Morning" }]);
         mocks.prisma.multiShift.findMany.mockResolvedValue([]);
-        mocks.prisma.$transaction.mockImplementation(async callback => callback(mocks.prisma));
+        mocks.prisma.$transaction.mockImplementation(async callback => callback(mocks.tx));
         mocks.prisma.payment.deleteMany.mockResolvedValue({ count: 1 });
         mocks.prisma.auditLog.deleteMany.mockResolvedValue({ count: 0 });
         mocks.prisma.seatAllocation.deleteMany.mockResolvedValue({ count: 1 });
@@ -155,12 +163,13 @@ describe("ImportCommitService", () => {
         mocks.prisma.importSession.findFirst.mockResolvedValue({ status: "READY_TO_COMMIT", updatedAt: new Date("2026-06-24T00:00:00.000Z") });
         mocks.prisma.importSession.update.mockResolvedValue({});
         mocks.prisma.importRow.update.mockResolvedValue({});
+        mocks.tx.importRow.update.mockResolvedValue({});
         mocks.prisma.importCommit.create.mockResolvedValue({});
         mocks.createImportedStudent.mockResolvedValue({ id: "student_1" });
         mocks.assignSeatToShifts.mockResolvedValue([{ id: "allocation_1" }]);
-        mocks.ensureMonthlyPaymentForStudent.mockResolvedValue({ id: "payment_1" });
-        mocks.markPaymentAsPaid.mockResolvedValue({ id: "payment_1", status: "PAID" });
-        mocks.markPaymentAsWaived.mockResolvedValue({ id: "payment_1", status: "WAIVED" });
+        mocks.ensureMonthlyPaymentForStudentInTransaction.mockResolvedValue({ id: "payment_1" });
+        mocks.markPaymentAsPaidInTransaction.mockResolvedValue({ id: "payment_1", status: "PAID" });
+        mocks.markPaymentAsWaivedInTransaction.mockResolvedValue({ id: "payment_1", status: "WAIVED" });
     });
 
     afterEach(() => {
@@ -318,7 +327,7 @@ describe("ImportCommitService", () => {
         expect(result.summary.createdStudents).toBe(1);
         expect(result.summary.skippedRows).toBe(1);
         expect(mocks.createImportedStudent).toHaveBeenCalledTimes(1);
-        expect(mocks.markPaymentAsPaid).toHaveBeenCalled();
+        expect(mocks.markPaymentAsPaidInTransaction).toHaveBeenCalled();
     });
 
     it("refuses blocked rows in STRICT_ALL_OR_NOTHING mode", async () => {
@@ -454,14 +463,63 @@ describe("ImportCommitService", () => {
         );
     });
 
-    it("uses PaymentService for generated and paid transitions", async () => {
+    it("uses one payment transaction for generation, import resolution, and the row marker", async () => {
         mocks.revalidateSession.mockResolvedValueOnce(readyDetail);
         const { ImportCommitService } = await import("@/importing/services/import-commit.service");
 
         await ImportCommitService.commitSession("user_1", "branch_1", "session_1", "SAFE_PARTIAL", planVersionFor(readyDetail));
 
-        expect(mocks.ensureMonthlyPaymentForStudent).toHaveBeenCalled();
-        expect(mocks.markPaymentAsPaid).toHaveBeenCalledWith("user_1", "payment_1", "UPI", "TXN1");
+        expect(mocks.ensureMonthlyPaymentForStudentInTransaction).toHaveBeenCalledWith(
+            "user_1",
+            "branch_1",
+            expect.objectContaining({ studentId: "student_1", amount: 1200 }),
+            mocks.tx
+        );
+        expect(mocks.markPaymentAsPaidInTransaction).toHaveBeenCalledWith(
+            "user_1",
+            "payment_1",
+            "UPI",
+            "TXN1",
+            mocks.tx,
+            { source: "IMPORT_EXECUTION" }
+        );
+        expect(mocks.tx.importRow.update).toHaveBeenCalledWith({
+            where: { id: "row_1" },
+            data: {
+                status: "IMPORTED",
+                createdEntityIds: {
+                    studentId: "student_1",
+                    allocationIds: ["allocation_1"],
+                    paymentIds: ["payment_1"],
+                },
+            },
+        });
+        expect(mocks.prisma.importRow.update).not.toHaveBeenCalled();
+    });
+
+    it("records waived legacy-import resolutions with the import execution source", async () => {
+        const detail = {
+            ...readyDetail,
+            rows: [{
+                ...readyDetail.rows[0],
+                normalizedData: {
+                    ...readyDetail.rows[0].normalizedData,
+                    payment: { amount: 1200, status: "WAIVED" },
+                },
+            }],
+        };
+        mocks.revalidateSession.mockResolvedValueOnce(detail);
+        const { ImportCommitService } = await import("@/importing/services/import-commit.service");
+
+        await ImportCommitService.commitSession("user_1", "branch_1", "session_1", "SAFE_PARTIAL", planVersionFor(detail));
+
+        expect(mocks.markPaymentAsWaivedInTransaction).toHaveBeenCalledWith(
+            "user_1",
+            "payment_1",
+            mocks.tx,
+            { source: "IMPORT_EXECUTION" }
+        );
+        expect(mocks.markPaymentAsPaidInTransaction).not.toHaveBeenCalled();
     });
 
     it("starts at the current joined-date cycle without creating future dues", async () => {
@@ -490,7 +548,7 @@ describe("ImportCommitService", () => {
         expect(result.summary.generatedPayments).toBe(0);
         expect(result.summary.skippedHistoricalPayments).toBe(5);
         expect(format(createInput.billingStartAt, "yyyy-MM-dd")).toBe("2026-06-12");
-        expect(mocks.ensureMonthlyPaymentForStudent).not.toHaveBeenCalled();
+        expect(mocks.ensureMonthlyPaymentForStudentInTransaction).not.toHaveBeenCalled();
     });
 
     it("can generate joined-date history and mark every due cycle paid", async () => {
@@ -515,8 +573,8 @@ describe("ImportCommitService", () => {
 
         const result = await ImportCommitService.commitSession("user_1", "branch_1", "session_1", "SAFE_PARTIAL", planVersionFor(detail));
 
-        expect(mocks.ensureMonthlyPaymentForStudent).toHaveBeenCalledTimes(6);
-        expect(mocks.markPaymentAsPaid).toHaveBeenCalledTimes(6);
+        expect(mocks.ensureMonthlyPaymentForStudentInTransaction).toHaveBeenCalledTimes(6);
+        expect(mocks.markPaymentAsPaidInTransaction).toHaveBeenCalledTimes(6);
         expect(result.summary.generatedPayments).toBe(6);
         expect(result.summary.markedPaid).toBe(6);
         expect(result.summary.historicalPaid).toBe(5);
@@ -525,7 +583,7 @@ describe("ImportCommitService", () => {
 
     it("rolls back row-created records when a later row step fails", async () => {
         mocks.revalidateSession.mockResolvedValueOnce(readyDetail);
-        mocks.markPaymentAsPaid.mockRejectedValueOnce(new Error("Paid update failed"));
+        mocks.markPaymentAsPaidInTransaction.mockRejectedValueOnce(new Error("Paid update failed"));
         const { ImportCommitService } = await import("@/importing/services/import-commit.service");
 
         const result = await ImportCommitService.commitSession("user_1", "branch_1", "session_1", "SAFE_PARTIAL", planVersionFor(readyDetail));
@@ -539,6 +597,7 @@ describe("ImportCommitService", () => {
         expect(mocks.prisma.payment.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["payment_1"] } } });
         expect(mocks.prisma.seatAllocation.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["allocation_1"] } } });
         expect(mocks.prisma.student.deleteMany).toHaveBeenCalledWith({ where: { id: "student_1" } });
+        expect(mocks.tx.importRow.update).not.toHaveBeenCalled();
         expect(mocks.prisma.importRow.update).toHaveBeenCalledWith(expect.objectContaining({
             data: expect.objectContaining({ status: "FAILED" }),
         }));

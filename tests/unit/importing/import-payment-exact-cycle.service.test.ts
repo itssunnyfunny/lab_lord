@@ -133,6 +133,15 @@ describe("PaymentService exact imported cycle", () => {
             },
         }, tx as never)).resolves.toBe(existing);
 
+        expect(tx.payment.findUnique).toHaveBeenCalledWith({
+            where: {
+                studentId_type_periodStart: {
+                    studentId: "student_1",
+                    type: PaymentType.MONTHLY,
+                    periodStart,
+                },
+            },
+        });
         expect(tx.payment.create).not.toHaveBeenCalled();
     });
 });

@@ -186,7 +186,83 @@ describe("ImportRunExecutor current configuration fencing", () => {
             }),
             mocks.tx
         );
-        expect(mocks.markPaid).toHaveBeenCalledWith("user_1", "payment_1", "UPI", "txn_1", mocks.tx);
+        expect(mocks.markPaid).toHaveBeenCalledWith(
+            "user_1",
+            "payment_1",
+            "UPI",
+            "txn_1",
+            mocks.tx,
+            { source: "IMPORT_EXECUTION" }
+        );
         expect(mocks.completeItem).toHaveBeenCalled();
+    });
+
+    it("passes the import execution source when waiving a payment", async () => {
+        mocks.tx.importRunItem.findFirst.mockResolvedValue({
+            id: "item_1",
+            importRunId: "run_1",
+            kind: "PAYMENT_CYCLE",
+            status: "RUNNING",
+            leaseToken: "lease_1",
+            payload: {
+                studentId: "student_1",
+                bucket: "current",
+                status: "WAIVED",
+                amount: 1200,
+                cycle: {
+                    periodStart: "2026-01-01T00:00:00.000Z",
+                    periodEnd: "2026-02-01T00:00:00.000Z",
+                    dueDate: "2026-02-01T00:00:00.000Z",
+                },
+            },
+            run: {
+                id: "run_1",
+                branchId: "branch_1",
+                requestedByUserId: "user_1",
+                targetRevision: 4,
+                status: "RUNNING",
+                session: {
+                    id: "session_1",
+                    branchId: "branch_1",
+                    engineVersion: 2,
+                    draftRevision: 4,
+                    activeEvaluationRevision: 4,
+                    archivedAt: null,
+                },
+                plan: { id: "plan_1", revision: 4, canRun: true },
+            },
+        });
+        mocks.ensurePayment.mockResolvedValue({ id: "payment_1" });
+        const { ImportRunExecutor } = await import("@/importing/services/import-run-executor.service");
+
+        await ImportRunExecutor.executeClaimedItem({ ...claimedItem, kind: "PAYMENT_CYCLE" });
+
+        expect(mocks.markWaived).toHaveBeenCalledWith(
+            "user_1",
+            "payment_1",
+            mocks.tx,
+            { source: "IMPORT_EXECUTION" }
+        );
+        expect(mocks.completeItem).toHaveBeenCalled();
+    });
+
+    it("treats a SUCCEEDED payment item as a replay without resolving it again", async () => {
+        mocks.tx.importRunItem.findFirst.mockResolvedValue({
+            id: "item_1",
+            importRunId: "run_1",
+            kind: "PAYMENT_CYCLE",
+            status: "SUCCEEDED",
+            leaseToken: null,
+            payload: null,
+        });
+        const { ImportRunExecutor } = await import("@/importing/services/import-run-executor.service");
+
+        await expect(ImportRunExecutor.executeClaimedItem({ ...claimedItem, kind: "PAYMENT_CYCLE" }))
+            .resolves.toEqual({ alreadyCompleted: true });
+
+        expect(mocks.ensurePayment).not.toHaveBeenCalled();
+        expect(mocks.markPaid).not.toHaveBeenCalled();
+        expect(mocks.markWaived).not.toHaveBeenCalled();
+        expect(mocks.completeItem).not.toHaveBeenCalled();
     });
 });
