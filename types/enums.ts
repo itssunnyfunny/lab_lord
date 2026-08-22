@@ -5,6 +5,7 @@ export {
   ImportSessionStatus,
   ImportSourceType,
   PaymentMethod,
+  PaymentResolutionEventSource,
   PaymentStatus,
   PaymentType,
   SaasPlan,

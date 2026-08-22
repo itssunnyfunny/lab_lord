@@ -304,8 +304,9 @@ export class PaymentService {
 
         const existing = await tx.payment.findUnique({
             where: {
-                studentId_periodStart: {
+                studentId_type_periodStart: {
                     studentId: student.id,
+                    type: PaymentType.MONTHLY,
                     periodStart,
                 },
             },
