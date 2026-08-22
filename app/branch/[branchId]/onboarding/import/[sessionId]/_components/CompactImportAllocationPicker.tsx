@@ -141,6 +141,8 @@ export function CompactImportAllocationPicker({
                 key={`${shift.type}-${id}`}
                 type="button"
                 disabled={disabled}
+                aria-pressed={selected}
+                aria-label={`${shift.name}, ${shift.available} seats free${shift.isFull ? ", full" : ""}`}
                 onClick={() => chooseShift(shift)}
                 className={cn(
                     pickerChoiceCardBaseClass,
@@ -256,8 +258,12 @@ export function CompactImportAllocationPicker({
                                             <button
                                                 type="button"
                                                 disabled={occupied}
+                                                aria-pressed={selected}
+                                                aria-label={`${seat.label}${occupied ? ", unavailable" : selected ? ", selected" : ", available"}`}
                                                 onMouseEnter={() => setHoveredSeatId(seat.seatId)}
                                                 onMouseLeave={() => setHoveredSeatId(null)}
+                                                onFocus={() => setHoveredSeatId(seat.seatId)}
+                                                onBlur={() => setHoveredSeatId(null)}
                                                 onClick={() => onDraftChange("seat", selected ? "" : seat.label)}
                                                 className={cn(
                                                     pickerSeatButtonBaseClass,

@@ -5,12 +5,15 @@ import { StaffService } from "@/services/staff.service";
 import { inferConfirmedPaymentMapping } from "@/importing/utils/payment-mapping-inference";
 import type { ImportAIQuestion, ImportMappingState, ImportOptions } from "@/importing/contracts/import-session.contract";
 import type { Prisma } from "@/app/generated/prisma/client";
+import { applyImportGoalMappingPolicy, applyImportGoalPolicy } from "@/importing/utils/import-goal-policy";
+import { importStagingPurgeAfter } from "@/importing/utils/import-retention";
+import { ImportRevisionConflictError, ImportValidationError } from "@/importing/utils/import-errors";
 
 function asJson(value: unknown): Prisma.InputJsonValue {
     return value as Prisma.InputJsonValue;
 }
 
-const paymentCycleAnswers = ["CURRENT_MONTH", "PREVIOUS_MONTH", "CUSTOM_PERIOD", "USE_JOINED_AT_ANNIVERSARY"] as const;
+const paymentCycleAnswers = ["USE_JOINED_AT_ANNIVERSARY"] as const;
 const paymentActionAnswers = ["GENERATE_DUE", "IMPORT_PAID_UNPAID"] as const;
 const paymentHistoryAnswers = [
     "START_CURRENT_JOINED_CYCLE",
@@ -34,16 +37,6 @@ function sameQuestion(stored: ImportAIQuestion, question: { field: string | null
 function answerToOptions(question: { field: string | null }, answer: unknown): Partial<ImportOptions> {
     const value = answerValue(answer);
 
-    if (question.field === "payment.customPeriod" && answer && typeof answer === "object") {
-        const customPeriodStart = "customPeriodStart" in answer ? String((answer as { customPeriodStart: unknown }).customPeriodStart) : "";
-        const customPeriodEnd = "customPeriodEnd" in answer ? String((answer as { customPeriodEnd: unknown }).customPeriodEnd) : "";
-        return {
-            paymentCycle: "CUSTOM_PERIOD",
-            ...(customPeriodStart ? { customPeriodStart } : {}),
-            ...(customPeriodEnd ? { customPeriodEnd } : {}),
-        };
-    }
-
     if (value === "SKIP_PAYMENTS") {
         return { paymentCycle: "SKIP_PAYMENTS", paymentAction: "SKIP_PAYMENTS" };
     }
@@ -63,7 +56,7 @@ function answerToOptions(question: { field: string | null }, answer: unknown): P
         };
     }
     if (question.field === "student.joinedAt") {
-        return { defaultJoinedAt: value === "USE_TODAY" ? new Date().toISOString() : value };
+        return { defaultJoinedAt: value === "USE_TODAY" ? new Date().toISOString().slice(0, 10) : value };
     }
     if (value === "SKIP_ALLOCATIONS") {
         return {
@@ -103,26 +96,48 @@ export class ImportQuestionService {
         userId: string,
         branchId: string,
         sessionId: string,
-        input: { questionId: string; answer: unknown; applyToAffectedRows?: boolean }
+        input: {
+            expectedRevision: number;
+            questionId: string;
+            answer: unknown;
+            applyToAffectedRows?: boolean;
+        }
     ) {
         await StaffService.authorize(userId, branchId, "students");
         await EntitlementService.assertBranchWritable(branchId);
+        if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 0) {
+            throw new ImportValidationError("Expected import revision must be a non-negative integer");
+        }
         const session = await prisma.importSession.findFirst({
             where: { id: sessionId, branchId },
-            include: { questions: { where: { id: input.questionId } }, rows: { select: { rawData: true } } },
+            include: {
+                questions: { where: { id: input.questionId, status: "OPEN" } },
+                rows: { select: { id: true, status: true, rawData: true } },
+            },
         });
         if (!session) throw new Error("Import session not found");
+        if (session.archivedAt) throw new Error("Import session is archived");
+        if (
+            (session.engineVersion === 1 && ["COMMITTING", "COMMITTED", "PARTIAL", "FAILED", "CANCELLED"].includes(session.status))
+            || ["COMMITTING", "COMMITTED", "CANCELLED"].includes(session.status)
+        ) {
+            throw new Error("Import session is not editable");
+        }
+        if (session.draftRevision !== input.expectedRevision) throw new ImportRevisionConflictError();
         const question = session.questions[0];
         if (!question) throw new Error("Import question not found");
+        if (question.rowId && session.rows.some(row => row.id === question.rowId && row.status === "IMPORTED")) {
+            throw new Error("Imported rows are immutable; answer a question for an unresolved row instead");
+        }
 
         const columns = Object.keys((session.rows[0]?.rawData ?? {}) as Record<string, unknown>);
         const current = session.mapping as ImportMappingState | null;
         const answeredOptions = answerToOptions(question, input.answer);
-        const nextImportOptions = {
+        const nextImportOptions = applyImportGoalPolicy(session.goal, {
             ...(current?.importOptions ?? {}),
             ...answeredOptions,
-        };
-        const nextMapping: ImportMappingState = {
+        });
+        const nextMapping = applyImportGoalMappingPolicy(session.goal, {
             entityTypesDetected: current?.entityTypesDetected ?? ["STUDENT"],
             columnMappings: current?.columnMappings ?? [],
             questions: (current?.questions ?? []).filter(storedQuestion => !sameQuestion(storedQuestion, question)),
@@ -130,7 +145,7 @@ export class ImportQuestionService {
             importOptions: nextImportOptions,
             analysis: current?.analysis,
             usedFallback: current?.usedFallback,
-        };
+        });
 
         if (nextMapping.columnMappings.length === 0 && columns.length > 0) {
             const { buildFallbackMappings } = await import("@/importing/utils/column-normalizer");
@@ -154,20 +169,55 @@ export class ImportQuestionService {
             }
         }
 
-        await prisma.importQuestion.update({
-            where: { id: input.questionId },
-            data: {
-                answer: asJson(input.answer),
-                status: "ANSWERED",
-                answeredAt: new Date(),
-            },
+        await prisma.$transaction(async tx => {
+            await tx.$queryRaw<Array<{ id: string }>>`
+                SELECT "id" FROM "ImportSession"
+                WHERE "id" = ${sessionId} AND "branchId" = ${branchId}
+                FOR UPDATE
+            `;
+            const current = await tx.importSession.findFirst({
+                where: { id: sessionId, branchId },
+                select: {
+                    engineVersion: true,
+                    status: true,
+                    draftRevision: true,
+                    archivedAt: true,
+                },
+            });
+            if (!current) throw new Error("Import session not found");
+            if (current.archivedAt) throw new Error("Import session is archived");
+            await StaffService.authorize(userId, branchId, "students", tx);
+            await EntitlementService.assertBranchWritable(branchId, tx);
+            if (
+                (current.engineVersion === 1 && ["COMMITTING", "COMMITTED", "PARTIAL", "FAILED", "CANCELLED"].includes(current.status))
+                || ["COMMITTING", "COMMITTED", "CANCELLED"].includes(current.status)
+            ) {
+                throw new Error("Import session is not editable");
+            }
+            if (current.draftRevision !== input.expectedRevision) throw new ImportRevisionConflictError();
+            const answered = await tx.importQuestion.updateMany({
+                where: {
+                    id: input.questionId,
+                    importSessionId: sessionId,
+                    status: "OPEN",
+                },
+                data: {
+                    answer: asJson(input.answer),
+                    status: "ANSWERED",
+                    answeredAt: new Date(),
+                },
+            });
+            if (answered.count !== 1) throw new ImportRevisionConflictError();
+            await tx.importSession.update({
+                where: { id: sessionId },
+                data: {
+                    mapping: asJson(nextMapping),
+                    draftRevision: { increment: 1 },
+                    purgeAfter: importStagingPurgeAfter(),
+                },
+            });
         });
 
-        await prisma.importSession.update({
-            where: { id: sessionId },
-            data: { mapping: asJson(nextMapping) },
-        });
-
-        return ImportSessionService.revalidateSession(userId, branchId, sessionId);
+        return ImportSessionService.revalidateCurrentDraft(userId, branchId, sessionId);
     }
 }

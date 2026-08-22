@@ -7,6 +7,7 @@ import type {
     ParsedImportRow,
 } from "@/importing/contracts/import-session.contract";
 import type { PaymentMethod, PaymentStatus } from "@/app/generated/prisma/enums";
+import { validatePhone } from "@/lib/formValidation";
 
 export function compactImportText(value: unknown) {
     return value == null ? "" : String(value).trim().replace(/\s+/g, " ");
@@ -17,30 +18,51 @@ export function normalizeNameKey(value: unknown) {
 }
 
 export function normalizePhoneKey(value: unknown) {
-    return compactImportText(value).replace(/\D/g, "");
+    const validated = validatePhone(value);
+    return validated.ok && validated.value
+        ? validated.value.replace(/\D/g, "")
+        : "";
 }
 
 export function parseImportMoney(value: unknown): number | undefined {
-    const text = compactImportText(value).replace(/[^\d.]/g, "");
-    if (!text) return undefined;
-    const normalized = text.match(/^\d+(\.\d+)?$/) ? Number(text) : Number.NaN;
-    if (!Number.isFinite(normalized)) return undefined;
-    return Math.round(normalized);
+    const text = compactImportText(value)
+        .replace(/^(?:₹|rs\.?|inr)\s*/i, "")
+        .replace(/,/g, "")
+        .trim();
+    if (!/^\d+(?:\.0+)?$/.test(text)) return undefined;
+    const normalized = Number(text);
+    return Number.isSafeInteger(normalized) && normalized >= 0 ? normalized : undefined;
 }
 
 export function parseImportDate(value: unknown): string | undefined {
     const text = compactImportText(value);
     if (!text) return undefined;
-    const direct = new Date(text);
-    if (!Number.isNaN(direct.getTime())) return direct.toISOString();
 
-    const parts = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
-    if (!parts) return undefined;
-    const day = Number(parts[1]);
-    const month = Number(parts[2]) - 1;
-    const year = Number(parts[3].length === 2 ? `20${parts[3]}` : parts[3]);
-    const parsed = new Date(Date.UTC(year, month, day));
-    if (Number.isNaN(parsed.getTime())) return undefined;
+    const indian = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
+    if (indian) {
+        const day = Number(indian[1]);
+        const month = Number(indian[2]);
+        const year = Number(indian[3].length === 2 ? `20${indian[3]}` : indian[3]);
+        const parsed = new Date(Date.UTC(year, month - 1, day));
+        if (
+            parsed.getUTCFullYear() !== year
+            || parsed.getUTCMonth() !== month - 1
+            || parsed.getUTCDate() !== day
+        ) return undefined;
+        return parsed.toISOString();
+    }
+
+    const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!iso) return undefined;
+    const year = Number(iso[1]);
+    const month = Number(iso[2]);
+    const day = Number(iso[3]);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    if (
+        parsed.getUTCFullYear() !== year
+        || parsed.getUTCMonth() !== month - 1
+        || parsed.getUTCDate() !== day
+    ) return undefined;
     return parsed.toISOString();
 }
 
@@ -86,17 +108,21 @@ function setNestedValue(row: ImportNormalizedRow, target: string, value: string,
             row.student = { ...row.student, phone: value };
             break;
         case "student.joinedAt":
-            row.student = { ...row.student, joinedAt: parseImportDate(value) ?? value, joinedAtSource: "UPLOADED" };
+            {
+                const joinedAt = parseImportDate(value);
+                if (joinedAt) row.student = { ...row.student, joinedAt, joinedAtSource: "UPLOADED" };
+                else issues.push({
+                    code: "INVALID_JOINED_DATE",
+                    field: target,
+                    message: "Joined date must use DD/MM/YYYY or YYYY-MM-DD.",
+                    severity: "error",
+                });
+            }
             break;
         case "student.monthlyFee": {
             const amount = parseImportMoney(value);
             if (amount !== undefined) row.student = { ...row.student, monthlyFee: amount, feeSource: "UPLOADED" };
             else issues.push({ code: "INVALID_MONTHLY_FEE", field: target, message: "Monthly fee is not a whole number.", severity: "error" });
-            break;
-        }
-        case "student.status": {
-            const status = value.toLowerCase().includes("inactive") ? "INACTIVE" : "ACTIVE";
-            row.student = { ...row.student, status };
             break;
         }
         case "student.feeSource":
@@ -135,9 +161,6 @@ function setNestedValue(row: ImportNormalizedRow, target: string, value: string,
                 componentShiftNames: value.split(/[,+|]/).map(part => compactImportText(part)).filter(Boolean),
             };
             break;
-        case "allocation.startDate":
-            row.allocation = { ...row.allocation, startDate: parseImportDate(value) ?? value };
-            break;
         case "payment.amount": {
             const amount = parseImportMoney(value);
             if (amount !== undefined) row.payment = { ...row.payment, amount };
@@ -149,9 +172,6 @@ function setNestedValue(row: ImportNormalizedRow, target: string, value: string,
             break;
         case "payment.referenceId":
             row.payment = { ...row.payment, referenceId: value };
-            break;
-        case "payment.period":
-            row.payment = { ...row.payment, period: value };
             break;
         default:
             break;

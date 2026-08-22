@@ -11,6 +11,7 @@ import {
     StaffRole,
 } from "@/types";
 import { EntitlementService } from "@/services/entitlement.service";
+import type { Prisma } from "@/app/generated/prisma/client";
 import {
     type DateIdCursor,
     pageFromRows,
@@ -120,12 +121,16 @@ export class StaffService {
         return email.trim().toLowerCase();
     }
 
-    private static async assertActionEntitlement(organizationId: string, action: StaffAction) {
+    private static async assertActionEntitlement(
+        organizationId: string,
+        action: StaffAction,
+        client: Prisma.TransactionClient | typeof db = db
+    ) {
         if (action === "staff_management") {
-            await EntitlementService.assertOrganizationEntitlement(organizationId, "STAFF_MANAGEMENT");
+            await EntitlementService.assertOrganizationEntitlement(organizationId, "STAFF_MANAGEMENT", client);
         }
         if (action === "analytics") {
-            await EntitlementService.assertOrganizationEntitlement(organizationId, "ADVANCED_ANALYTICS");
+            await EntitlementService.assertOrganizationEntitlement(organizationId, "ADVANCED_ANALYTICS", client);
         }
     }
 
@@ -141,9 +146,14 @@ export class StaffService {
      * 3. Match role against PERMISSION_MATRIX.
      * 4. Return true or throw Error.
      */
-    static async authorizeRole(userId: string, branchId: string, action: StaffAction): Promise<boolean> {
+    static async authorizeRole(
+        userId: string,
+        branchId: string,
+        action: StaffAction,
+        client: Prisma.TransactionClient | typeof db = db
+    ): Promise<boolean> {
         // 1. Check if User is the Org Owner of this branch
-        const branch = await db.branch.findUnique({
+        const branch = await client.branch.findUnique({
             where: { id: branchId },
             include: { organization: true },
         });
@@ -157,7 +167,7 @@ export class StaffService {
         }
 
         // 2. Not Owner? Check Staff Role
-        const staffMember = await db.staff.findUnique({
+        const staffMember = await client.staff.findUnique({
             where: {
                 userId_branchId: {
                     userId,
@@ -199,14 +209,19 @@ export class StaffService {
         throw new Error(`Unauthorized: Role '${staffMember.role}' cannot perform '${action}'`);
     }
 
-    static async authorize(userId: string, branchId: string, action: StaffAction): Promise<boolean> {
-        await this.authorizeRole(userId, branchId, action);
-        const branch = await db.branch.findUnique({
+    static async authorize(
+        userId: string,
+        branchId: string,
+        action: StaffAction,
+        client: Prisma.TransactionClient | typeof db = db
+    ): Promise<boolean> {
+        await this.authorizeRole(userId, branchId, action, client);
+        const branch = await client.branch.findUnique({
             where: { id: branchId },
             select: { organizationId: true },
         });
         if (!branch) throw new Error("Branch not found");
-        await this.assertActionEntitlement(branch.organizationId, action);
+        await this.assertActionEntitlement(branch.organizationId, action, client);
         return true;
     }
 

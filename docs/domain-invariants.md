@@ -127,7 +127,10 @@ Every statement uses one of these labels:
   owned by one branch. Within a branch, normal creation rejects a duplicate
   normalized `(name, phone)` identity; the same pair may exist in another
   branch. Imported rows without a phone do not participate in this identity
-  check. (`services/student.service.ts`, student integration tests)
+  check. Import duplicate review canonicalizes valid Indian 10-digit, leading
+  zero, and `91`-prefixed phone forms before building that identity.
+  (`services/student.service.ts`, student integration tests, import duplicate
+  tests)
 - **Service-layer contract—not DB-enforced:** The normalized student identity
   rule is application-enforced; there is no matching database unique key. New
   import or bulk-write paths must preserve the intended duplicate behavior.
@@ -288,29 +291,150 @@ Every statement uses one of these labels:
   branch. Creating or mutating a session requires student-management permission
   and a writable branch; committing also checks every additional permission
   required by the reviewed rows, including branch, allocation, and payment
-  actions. Session IDs are resolved together with `branchId`.
+  actions. Session, plan, run, recipe, and row identifiers are resolved with an
+  authorized branch or organization boundary; foreign and nonexistent import
+  resources receive the same generic response.
   (`importing/services/import-session.service.ts`,
-  `importing/services/import-commit.service.ts`, import route tests)
-- **Must preserve—enforced:** Final import commit requires explicit confirmation,
-  a reviewed plan version, a fresh revalidation, no blocking plan checks, and
-  the same calculated plan version. AI mapping suggestions never bypass those
-  deterministic checks or call domain mutations directly.
-  (`app/api/branches/[branchId]/import-sessions/[sessionId]/commit/route.ts`,
-  `importing/services/import-commit.service.ts`)
+  `importing/services/import-run.service.ts`,
+  `importing/services/import-recipe.service.ts`, import route tests)
+- **Must preserve—enforced:** Import request and parser limits are 4.25 MiB for
+  the complete request, 4 MiB for the source file or decoded text, 2,000 data
+  rows, 64 columns, 8 KiB per cell, and 32 MiB of declared or measured expanded
+  workbook content. Row accumulation stops at the ceiling plus one instead of
+  fully materializing an oversized source. Type/signature and UTF-8 validation
+  fail closed; malformed CSV quoting is rejected. Blank and duplicate headers
+  remain positionally distinct instead of silently overwriting cells.
+  (`importing/http/import-request.ts`,
+  `importing/parsers/import-parser-guards.ts`, parser tests)
+- **Must preserve—enforced:** Multi-sheet workbooks require an explicit sheet
+  choice and support an explicit one-based header row. PDF import is text-only
+  beta extraction; it does not promise visual-table reconstruction or OCR and
+  every extracted row remains subject to review.
+  (`importing/parsers/xlsx.parser.ts`, `importing/parsers/pdf.parser.ts`)
+- **Must preserve—enforced:** New V2 starts fail closed unless
+  `IMPORT_V2_ENABLED=true`. Plan compilation fails closed unless
+  `IMPORT_MAX_PLANNED_MUTATIONS` is a configured positive integer, and a plan
+  whose deterministic mutation-item count exceeds that cap is published as
+  non-runnable. Compilation short-circuits at cap plus one before sorting or
+  expanding the rest of a high-fan-out payment history. Repository defaults do
+  not supply a Production cap.
+  (`lib/importFeature.ts`, V2 start routes, import feature tests)
+- **Must preserve—enforced:** V2 draft mutations advance `draftRevision`.
+  Published row evaluations cover the complete staged row set for exactly that
+  revision, and a plan can run only when the active evaluation revision still
+  matches. `ImportRowEvaluation` and `ImportPlan` rows are update-immutable;
+  repair creates a new revision and plan instead of rewriting reviewed history.
+  (`importing/services/import-evaluation.service.ts`,
+  `importing/services/import-plan.service.ts`,
+  `prisma/migrations/20260818090000_add_import_assistance_v2/migration.sql`)
+- **Must preserve—enforced:** A V2 commit requires a published deterministic
+  plan, its exact `planVersion`, an explicit readiness policy, and the current
+  target revision. `REQUIRE_ALL_ROWS_READY` blocks before a run when any
+  non-skipped row is unresolved; `READY_ROWS_ONLY` omits unresolved rows. Neither
+  policy promises one file-wide transaction or rollback of already completed
+  items.
+  (`importing/utils/import-plan-compiler.ts`,
+  `importing/services/import-run.service.ts`)
+- **Must preserve—enforced:** A successful execution whose immutable plan still
+  leaves any blocked, skipped, or otherwise unscheduled non-imported row is
+  `COMPLETED_WITH_ISSUES`, and its session remains `PARTIAL`. It must not be
+  projected as fully committed, because unresolved rows need a new reviewed
+  revision and plan. Replaying another partial repair still projects newly
+  successful entity IDs onto its rows even when the session was already
+  `PARTIAL`.
+  (`importing/services/import-runner.service.ts`,
+  `importing/services/import-run-lifecycle.service.ts`, runner lifecycle tests)
+- **Must preserve—enforced:** Import run requests use a caller idempotency key
+  plus a canonical request hash. Reusing the key for different content is a
+  conflict; replaying the same request returns the same durable run. PostgreSQL
+  enforces one active run per non-purged session and unique run-item identities.
+  Claimed items use bounded batches, expiring leases, attempt limits, and
+  compare-and-set completion so replay cannot duplicate a completed item.
+  Workflow retry exhaustion is projected into the PostgreSQL ledger with a
+  redacted terminal error: ready-row runs fail remaining independent items,
+  while require-all runs fail one item and skip unscheduled work. Successful
+  mutations are never rolled back. A successful `READY_ROWS_ONLY` run remains
+  `COMPLETED_WITH_ISSUES`/`PARTIAL` while its immutable plan contains blocked,
+  explicitly skipped, or ready-without-mutation rows; terminal replay always
+  idempotently projects the current run's successful entity IDs onto rows,
+  including consecutive partial repair runs.
+  Repair may reuse a successful row mutation only when its persisted canonical
+  mutation hash still matches the current reviewed data; a semantic mismatch
+  blocks repair instead of silently linking stale results. Configuration claims
+  are dependency-fenced so seat and shift items settle before a multi-shift
+  that references them becomes claimable.
+  (`importing/services/import-run.service.ts`,
+  `importing/services/import-runner.service.ts`, V2 migration and tests)
+- **Must preserve—enforced:** An attached Workflow provider run may be replaced
+  only after the provider reports it terminal or missing while the PostgreSQL
+  ledger remains active. Replacement clears the exact prior provider ID under
+  a row lock and compare-and-set check, moves the ledger to retryable, and lets
+  the next Workflow compete through the normal single-owner attachment fence.
+  Provider lookup failures retain the existing owner and remain retryable;
+  active provider runs are never replaced.
+  (`importing/services/import-workflow.ts`,
+  `importing/services/import-run.service.ts`, dispatch-recovery tests)
+- **Must preserve—enforced:** Each import mutation transaction rechecks the
+  current branch configuration against the reviewed item. Fee-linked shift or
+  multi-shift prices and active branch-owned components must still match, and
+  multi-shift allocations must retain the exact reviewed ordered component
+  structure. An existing monthly payment with the same student/period key may
+  be reused only when branch, monthly type, amount, period end, due date,
+  allowed status transition, and any already-final payment metadata match the
+  immutable cycle; otherwise the item fails stale instead of claiming the
+  reviewed mutation occurred.
+  (`importing/services/import-run-executor.service.ts`,
+  `services/payment.service.ts`, import executor/payment exactness tests)
+- **Must preserve—enforced:** Reviewed student names and approved new seat,
+  shift, and multi-shift labels use the same normalized length/shape rules as
+  their domain services. Approved missing shifts are checked against active
+  branch shifts and against one another with the same overlap semantics as
+  `ShiftService`; adjacent boundaries remain valid. Approved new multi-shifts
+  require at least two distinct primary shifts and cannot duplicate an
+  order-independent existing or planned component combination. Immutable plan
+  revalidation repeats these deterministic checks before a run can start.
+  (`importing/validators/`,
+  `importing/services/import-plan-configuration.service.ts`, validation parity
+  and configuration tests)
+- **Service-layer contract—not DB-enforced:** Workflow orchestration is a
+  scheduler, not the system of record or an authorization decision. Workflow
+  inputs and step outputs contain opaque run/session identifiers, revisions,
+  hashes, cursors, and counts only. Personal row values and branch configuration
+  stay in PostgreSQL and are loaded only inside bounded execution steps that
+  recheck tenant ownership, current permission, entitlement, and writability.
+  (`importing/workflows/`, `importing/services/import-run-executor.service.ts`)
+- **Must preserve—enforced:** Successful run-item results are restricted to
+  entity IDs and numeric counts; error code/message fields are bounded and
+  sanitized. Execution payloads are cleared after terminal item handling.
+  (`importing/services/import-runner.service.ts`)
+- **Must preserve—enforced:** Organization recipes are reached through a
+  branch-authorized API but persist only source type, a server-computed
+  normalized-header signature, normalized source-column/target mappings, goal,
+  and entity types. They must never persist samples, row values, branch
+  configuration, payment/default/conflict options, or model rationale.
+  (`importing/services/import-recipe.service.ts`, recipe tests)
+- **Must preserve—enforced:** Staging PII receives a 30-day `purgeAfter`
+  deadline after a terminal state or draft inactivity. The authenticated daily
+  retention job is idempotent and explicitly bounded to 20 batches of at most
+  100 sessions per invocation, reports any remaining backlog, rechecks the deadline under a row
+  lock, locks attached run ledgers, and terminalizes any remaining active runs
+  and nonterminal items with consistent counters. It then scrubs retained
+  run-item payloads and errors and deletes the session and its staged
+  rows/evaluations/plans. A stale waiting, queued, retryable, or running ledger
+  state must not retain expired staging indefinitely. Redacted run history
+  survives through nullable references.
+  (`importing/services/import-retention.service.ts`,
+  `app/api/cron/imports/daily/route.ts`, retention tests)
 - **Service-layer contract—not DB-enforced:** Gemini mapping output is untrusted
   input. It must be parsed, sanitized, confidence-gated, and replaced with
   deterministic mapping when unusable. Imported rows must still pass normal
   service authorization, tenant, duplicate, fee, and allocation rules.
-- **Known discrepancy—do not rely on:** The 2,000-row limit is checked only
-  after an uploaded file has been buffered and parsed; no repository-defined
-  byte limit protects the upload route. Do not treat the row cap as a complete
-  memory or abuse control.
-  (`app/api/branches/[branchId]/import-sessions/route.ts`,
-  `importing/services/import-session.service.ts`)
-- **Known discrepancy—do not rely on:** `STRICT_ALL_OR_NOTHING` rejects a plan
-  with unresolved rows before commit, but the ready rows are then applied
-  through a per-row service loop rather than one file-wide transaction. A
-  runtime failure can leave a partial import and best-effort cleanup.
+- **Must preserve—enforced:** Import mapping runs deterministic mapping first.
+  Gemini receives only sanitized aliases for ambiguous headers, masked value
+  shapes and structural counts, and a branch summary made of counts/booleans;
+  raw row values, complete headers, seat/shift names, fees, and branch
+  configuration are not sent to the model.
+  (`importing/ai/import-column-mapper.ai.ts`, AI privacy tests)
 - **Must preserve—enforced:** Gemini is called only from server-side code. Branch
   report risks, health score, and actions remain deterministic; Gemini supplies
   validated narrative with deterministic fallbacks. Opening the reports page
@@ -322,10 +446,12 @@ Every statement uses one of these labels:
 - **Service-layer contract—not DB-enforced:** AI output is advisory. It must not
   decide authorization, tenant scope, entitlement, payment truth, provider
   reconciliation, or an automatic external action.
-- **Known discrepancy—do not rely on:** Import mapping sends up to eight source
-  sample rows to Gemini, and overdue drafting sends student and debt context.
-  The repository does not define the operator's consent, retention, regional,
-  or vendor data-processing policy. Do not infer that policy from the code.
+- **Known discrepancy—do not rely on:** Overdue drafting still sends selected
+  student names and debt context to Gemini. The repository does not establish
+  the operator's consent, retention, regional, or vendor data-processing policy
+  for that flow. Vercel Workflow Production use likewise remains subject to the
+  human approval and provider/data-residency review recorded in the Proposed
+  import-execution ADR; do not infer approval from installed code.
 
 ## Time and money semantics
 

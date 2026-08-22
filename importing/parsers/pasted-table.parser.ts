@@ -1,44 +1,130 @@
 import type { ParsedImportSource } from "@/importing/contracts/import-session.contract";
 import { ImportParserError } from "@/importing/utils/import-errors";
-import { parseCsv } from "./csv.parser";
+import { parseDelimitedRows, parsedSourceFromDelimitedRows } from "./delimited-text.parser";
+import {
+    assertImportCell,
+    assertImportDataRowCount,
+    normalizeImportHeaders,
+    rowFromPositionalCells,
+    validateDecodedImportText,
+    type NormalizedImportHeader,
+} from "./import-parser-guards";
 
-function splitLine(line: string, delimiter: string) {
-    return line.split(delimiter).map(cell => cell.trim());
+export type PastedTableFormat = "comma" | "tab" | "pipe" | "multi-space";
+
+export type ParsedPastedTableSource = ParsedImportSource & {
+    parserMetadata: {
+        format: "PASTED_TABLE";
+        delimiter: PastedTableFormat;
+        encoding: "utf-8";
+        headers: NormalizedImportHeader[];
+    };
+};
+
+function* physicalLines(input: string) {
+    let lineStart = 0;
+    let lineNumber = 1;
+    for (let index = 0; index <= input.length; index++) {
+        if (index < input.length && input[index] !== "\n" && input[index] !== "\r") continue;
+        const line = input.slice(lineStart, index);
+        yield { line, lineNumber };
+        if (input[index] === "\r" && input[index + 1] === "\n") index++;
+        lineStart = index + 1;
+        lineNumber++;
+    }
 }
 
-export function parsePastedTable(input: string): ParsedImportSource {
-    const text = input.trim();
-    if (!text) throw new ImportParserError("Paste a table with headers and rows.");
-
-    if (text.includes(",")) {
-        try {
-            return parseCsv(text);
-        } catch {
-            // Fall through to delimiter heuristics.
-        }
+function firstNonEmptyLine(input: string) {
+    for (const { line } of physicalLines(input)) {
+        if (line.trim().length > 0) return line;
     }
+    return "";
+}
 
-    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    if (lines.length < 2) throw new ImportParserError("Pasted table must include headers and at least one data row.");
+function countUnquoted(line: string, delimiter: string) {
+    let count = 0;
+    let inQuotes = false;
+    for (let index = 0; index < line.length; index++) {
+        if (line[index] === "\"" && line[index + 1] === "\"" && inQuotes) {
+            index++;
+            continue;
+        }
+        if (line[index] === "\"") inQuotes = !inQuotes;
+        else if (!inQuotes && line[index] === delimiter) count++;
+    }
+    if (inQuotes) throw new ImportParserError("Malformed pasted header: quoted value is not closed.");
+    return count;
+}
 
-    const delimiter = lines[0].includes("\t")
-        ? "\t"
-        : lines[0].includes("|")
-            ? "|"
-            : /\s{2,}/.test(lines[0])
-                ? "MULTISPACE"
-                : "\t";
+export function detectPastedTableFormat(input: string): PastedTableFormat {
+    const header = firstNonEmptyLine(input);
+    if (!header) throw new ImportParserError("Paste a table with headers and rows.");
 
-    const split = (line: string) => delimiter === "MULTISPACE"
-        ? line.split(/\s{2,}/).map(cell => cell.trim())
-        : splitLine(line, delimiter);
+    const candidates: Array<{ format: Exclude<PastedTableFormat, "multi-space">; delimiter: string; count: number; priority: number }> = [
+        { format: "tab", delimiter: "\t", count: countUnquoted(header, "\t"), priority: 3 },
+        { format: "pipe", delimiter: "|", count: countUnquoted(header, "|"), priority: 2 },
+        { format: "comma", delimiter: ",", count: countUnquoted(header, ","), priority: 1 },
+    ];
+    const best = candidates
+        .filter(candidate => candidate.count > 0)
+        .sort((left, right) => right.count - left.count || right.priority - left.priority)[0];
+    if (best) return best.format;
+    if (/\S\s{2,}\S/.test(header)) return "multi-space";
+    throw new ImportParserError("Could not detect table columns. Paste tab-, comma-, pipe-, or aligned multi-space data.");
+}
 
-    const columns = split(lines[0]).map((column, index) => column || `Column ${index + 1}`);
-    const rows = lines.slice(1)
-        .map(split)
-        .filter(cells => cells.some(Boolean))
-        .map(cells => Object.fromEntries(columns.map((column, index) => [column, cells[index] ?? ""])));
+function parseMultiSpace(text: string): ParsedPastedTableSource {
+    const positionalRows: Array<{ sourceLine: number; cells: string[] }> = [];
+    for (const { line, lineNumber } of physicalLines(text)) {
+        const cells = line.split(/\s{2,}/).map((cell, columnIndex) => {
+            assertImportCell(cell, `Line ${lineNumber}, column ${columnIndex + 1}`);
+            return cell.trim();
+        });
+        if (!cells.some(Boolean)) continue;
+        // The first retained row is the header. Check before retaining the
+        // first row that would put the table over the data-row ceiling.
+        assertImportDataRowCount(positionalRows.length);
+        positionalRows.push({ sourceLine: lineNumber, cells });
+    }
+    if (positionalRows.length < 2) {
+        throw new ImportParserError("Pasted table must include headers and at least one data row.");
+    }
+    const normalized = normalizeImportHeaders(positionalRows[0].cells);
+    const rows = positionalRows.slice(1).map(row =>
+        rowFromPositionalCells(normalized.columns, row.cells, row.sourceLine)
+    );
+    return {
+        columns: normalized.columns,
+        rows,
+        rowNumbers: positionalRows.slice(1).map(row => row.sourceLine),
+        parserMetadata: {
+            format: "PASTED_TABLE",
+            delimiter: "multi-space",
+            encoding: "utf-8",
+            headers: normalized.headers,
+        },
+    };
+}
 
-    if (rows.length === 0) throw new ImportParserError("Pasted table did not contain any readable rows.");
-    return { columns, rows };
+export function parsePastedTable(input: string): ParsedPastedTableSource {
+    const text = validateDecodedImportText(input, "Pasted table");
+    if (!text.trim()) throw new ImportParserError("Paste a table with headers and rows.");
+    const format = detectPastedTableFormat(text);
+    if (format === "multi-space") return parseMultiSpace(text);
+
+    const delimiter = format === "tab" ? "\t" : format === "pipe" ? "|" : ",";
+    const parsed = parsedSourceFromDelimitedRows({
+        rows: parseDelimitedRows(text, delimiter),
+        delimiter,
+        format: "PASTED_TABLE",
+        emptyMessage: "Pasted table must include headers and at least one data row.",
+    });
+    return {
+        ...parsed,
+        parserMetadata: {
+            ...parsed.parserMetadata,
+            format: "PASTED_TABLE",
+            delimiter: format,
+        },
+    };
 }

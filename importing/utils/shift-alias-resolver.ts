@@ -20,9 +20,31 @@ export function promoteKnownMultiShiftAllocation(
         multiShiftsByName: ReadonlyMap<string, KnownMultiShift>;
     }
 ): ImportNormalizedRow {
+    const explicitMultiShiftName = normalized.allocation?.multiShiftName ?? normalized.multiShift?.name;
+    const explicitMultiShift = context.multiShiftsByName.get(key(explicitMultiShiftName));
+    if (explicitMultiShiftName) {
+        if (!explicitMultiShift) return normalized;
+        const componentShiftNames = normalized.multiShift?.componentShiftNames?.length
+            ? normalized.multiShift.componentShiftNames
+            : explicitMultiShift.components
+                ?.map(component => component.shiftName ?? component.shift?.name)
+                .filter((name): name is string => Boolean(name));
+        return {
+            ...normalized,
+            allocation: normalized.allocation?.multiShiftName
+                ? { ...normalized.allocation, multiShiftName: explicitMultiShift.name }
+                : normalized.allocation,
+            multiShift: {
+                ...normalized.multiShift,
+                name: explicitMultiShift.name,
+                componentShiftNames,
+            },
+        };
+    }
+
     const shiftName = normalized.allocation?.shiftName ?? normalized.shift?.name;
     const shiftKey = key(shiftName);
-    if (!shiftKey || normalized.allocation?.multiShiftName || normalized.multiShift?.name) return normalized;
+    if (!shiftKey) return normalized;
     if (context.shiftsByName.has(shiftKey)) return normalized;
 
     const multiShift = context.multiShiftsByName.get(shiftKey);

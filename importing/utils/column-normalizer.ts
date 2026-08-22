@@ -3,9 +3,8 @@ import type { ImportColumnMapping, ImportTargetField } from "@/importing/contrac
 const VARIANT_MAP: Array<{ target: ImportTargetField; patterns: RegExp[]; reason: string }> = [
     { target: "student.name", patterns: [/^name$/, /student.*name/, /candidate/, /member/], reason: "Looks like the student name column." },
     { target: "student.phone", patterns: [/mobile/, /phone/, /contact/, /whatsapp/], reason: "Looks like a phone or mobile column." },
-    { target: "student.joinedAt", patterns: [/join/, /admission/, /start.*date/, /^date$/], reason: "Looks like a joining or admission date." },
+    { target: "student.joinedAt", patterns: [/join/, /admission/, /student.*start.*date/, /member.*since/, /^date$/], reason: "Looks like a joining or admission date." },
     { target: "student.monthlyFee", patterns: [/monthly.*fee/, /^fee$/, /rent/, /amount/], reason: "Looks like a monthly fee amount." },
-    { target: "student.status", patterns: [/student.*status/, /^status$/], reason: "Looks like student active/inactive status." },
     { target: "seat.label", patterns: [/seat.*no/, /seat.*number/, /^seat$/, /desk/, /table/], reason: "Looks like a seat label." },
     { target: "allocation.seatLabel", patterns: [/allocated.*seat/, /seat.*label/, /seat.*no/, /^seat$/], reason: "Looks like the allocation seat." },
     { target: "shift.name", patterns: [/^shift$/, /batch/, /slot/, /timing/, /time$/], reason: "Looks like a shift or batch name." },
@@ -18,7 +17,6 @@ const VARIANT_MAP: Array<{ target: ImportTargetField; patterns: RegExp[]; reason
     { target: "payment.status", patterns: [/paid/, /unpaid/, /payment.*status/, /due/, /clear/], reason: "Looks like paid/unpaid status." },
     { target: "payment.method", patterns: [/method/, /mode/, /cash/, /upi/, /bank/], reason: "Looks like payment method." },
     { target: "payment.referenceId", patterns: [/reference/, /ref/, /txn/, /transaction/], reason: "Looks like payment reference." },
-    { target: "payment.period", patterns: [/period/, /month/, /cycle/], reason: "Looks like payment period." },
 ];
 
 export function normalizeColumnName(value: string) {

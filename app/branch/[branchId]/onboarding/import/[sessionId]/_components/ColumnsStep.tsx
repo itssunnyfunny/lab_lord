@@ -7,16 +7,83 @@ import { IMPORT_TARGET_FIELDS, type ImportColumnMapping } from "@/importing/cont
 import { aiAssistanceState } from "@/importing/utils/import-wizard-view-model";
 import { pageInsetSurfaceClass, pageMutedTextClass, pageTableBodyDividerClass, pageTableHeadClass, pageTableRowClass } from "@/components/ui/pageSurface";
 import { AccessibleTableScroll, StepNotice } from "./shared";
-import type { ImportDetail } from "./types";
+import type { ImportRecipe } from "@/lib/api/importSessions";
+import type { ImportDetail, ImportGoal } from "./types";
 
 type ColumnsStepProps = {
     detail: ImportDetail;
+    goal: ImportGoal;
     saving: boolean;
     mutationsDisabled: boolean;
+    suggestedRecipe?: ImportRecipe | null;
+    onDirtyChange: (dirty: boolean) => void;
     onSave: (columnMappings: ImportColumnMapping[]) => Promise<void>;
 };
 
-export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: ColumnsStepProps) {
+const targetFieldLabels: Record<ImportColumnMapping["targetField"], string> = {
+    "student.name": "Student name (required)",
+    "student.phone": "Phone number",
+    "student.joinedAt": "Joined date",
+    "student.monthlyFee": "Monthly fee",
+    "student.feeSource": "Fee source",
+    "student.feeLinkedShiftName": "Fee-linked shift",
+    "student.feeLinkedMultiShiftName": "Fee-linked bundle",
+    "seat.label": "Seat to create",
+    "shift.name": "Shift to create",
+    "shift.startTime": "Shift start time",
+    "shift.endTime": "Shift end time",
+    "multiShift.name": "Bundle to create",
+    "multiShift.componentShiftNames": "Bundle component shifts",
+    "allocation.seatLabel": "Assigned seat",
+    "allocation.shiftName": "Assigned shift",
+    "allocation.multiShiftName": "Assigned bundle",
+    "payment.amount": "Payment amount",
+    "payment.status": "Payment status",
+    "payment.method": "Payment method",
+    "payment.referenceId": "Payment reference",
+    ignore: "Do not import this column",
+};
+
+function fieldAllowedForGoal(field: ImportColumnMapping["targetField"], goal: ImportGoal) {
+    if (field === "ignore" || field.startsWith("student.")) return true;
+    if (goal === "STUDENTS") return false;
+    if (field.startsWith("payment.")) return goal === "FULL";
+    return true;
+}
+
+function targetOptions(goal: ImportGoal) {
+    const groups = [
+        ["Student", "student.", true],
+        ["Seats and shifts", "seat.|shift.|multiShift.|allocation.", goal !== "STUDENTS"],
+        ["Payments", "payment.", goal === "FULL"],
+    ] as const;
+    return [
+        ...groups.filter(([, , visible]) => visible).map(([label, prefixes]) => ({
+            label,
+            options: IMPORT_TARGET_FIELDS
+                .filter(field => field !== "ignore" && prefixes.split("|").some(prefix => field.startsWith(prefix)))
+                .map(field => ({
+                    value: field,
+                    label: targetFieldLabels[field],
+                })),
+        })),
+        { label: "Other", options: [{ value: "ignore", label: targetFieldLabels.ignore }] },
+    ];
+}
+
+function spreadsheetColumnName(index: number) {
+    if (!Number.isInteger(index) || index < 0) return null;
+    let value = index + 1;
+    let label = "";
+    while (value > 0) {
+        value--;
+        label = String.fromCharCode(65 + value % 26) + label;
+        value = Math.floor(value / 26);
+    }
+    return label;
+}
+
+export function ColumnsStep({ detail, goal, saving, mutationsDisabled, suggestedRecipe, onDirtyChange, onSave }: ColumnsStepProps) {
     const mapping = useMemo(() => detail.mapping?.columnMappings ?? [], [detail.mapping?.columnMappings]);
     const [draft, setDraft] = useState<ImportColumnMapping[]>(mapping);
 
@@ -28,14 +95,34 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
         () => new Map((detail.mapping?.analysis?.sourceProfile?.columns ?? []).map(column => [column.column, column])),
         [detail.mapping?.analysis?.sourceProfile?.columns]
     );
-    const mappingNeedsReview = draft.some(item => item.needsReview || item.targetField === "ignore");
+    const sourceHeaderLabels = useMemo(() => {
+        const headers = detail.fileMeta?.parser?.headers;
+        if (!Array.isArray(headers)) return new Map<string, string>();
+        return new Map(headers.flatMap(header => {
+            const spreadsheetColumn = spreadsheetColumnName(header.index);
+            if (!spreadsheetColumn || typeof header.column !== "string") return [];
+            const original = typeof header.original === "string" ? header.original.trim() : "";
+            return [[header.column, `${spreadsheetColumn} · ${header.wasBlank || !original ? "blank" : original}`] as const];
+        }));
+    }, [detail.fileMeta?.parser?.headers]);
+    const sourceColumnLabel = (sourceColumn: string) => sourceHeaderLabels.get(sourceColumn) ?? sourceColumn;
+    const mappingNeedsReview = draft.some(item => item.needsReview);
     const aiState = aiAssistanceState({
         ai: detail.mapping?.analysis?.ai,
         usedFallback: detail.mapping?.usedFallback,
         mappingNeedsReview,
     });
-    const changed = JSON.stringify(draft) !== JSON.stringify(mapping);
+    const changed = useMemo(() => JSON.stringify(draft) !== JSON.stringify(mapping), [draft, mapping]);
+
+    useEffect(() => {
+        onDirtyChange(changed);
+    }, [changed, onDirtyChange]);
     const mappedCount = draft.filter(item => item.targetField !== "ignore").length;
+    const intentionalBehavior = [
+        "Student status is not imported; every new student starts active.",
+        goal !== "STUDENTS" ? "Allocation start dates are not imported; allocations start when this plan is applied." : null,
+        goal === "FULL" ? "Payment periods are not mapped; payment history is generated only by the four joined-date policies in Payments." : null,
+    ].filter((message): message is string => Boolean(message)).join(" ");
     const updateTargetField = (index: number, targetField: ImportColumnMapping["targetField"]) => {
         setDraft(current => current.map((item, itemIndex) => itemIndex === index
             ? {
@@ -47,6 +134,22 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
             }
             : item));
     };
+    const applySuggestedRecipe = () => {
+        if (!suggestedRecipe) return;
+        setDraft(current => current.map((item, index) => {
+            const recipeMapping = suggestedRecipe.columnMappings[index];
+            if (!recipeMapping || !fieldAllowedForGoal(recipeMapping.targetField, goal)) return item;
+            return {
+                ...item,
+                targetField: recipeMapping.targetField,
+                confidence: 100,
+                reason: `Suggested by saved recipe ${suggestedRecipe.name}.`,
+                source: "MANUAL",
+                autoApplied: recipeMapping.targetField !== "ignore",
+                needsReview: false,
+            };
+        }));
+    };
 
     return (
         <div className="space-y-5">
@@ -57,17 +160,35 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
                     <AppButton
                         variant="primary"
                         icon={Save}
-                        onClick={() => onSave(draft)}
-                        disabled={mutationsDisabled || !changed}
+                        onClick={() => onSave(draft.map(item => ({ ...item, needsReview: false })))}
+                        disabled={mutationsDisabled || !changed && !mappingNeedsReview}
                         aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
                         isLoading={saving}
                     >
-                        Save columns
+                        Confirm columns
                     </AppButton>
                 }
             >
                 <div className="space-y-4">
                     <StepNotice tone={aiState.tone} title={aiState.title} message={aiState.message} />
+                    <StepNotice tone="cyan" title="Intentional import behavior" message={intentionalBehavior} />
+
+                    {suggestedRecipe && (
+                        <div className={cn("flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between", pageInsetSurfaceClass)}>
+                            <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="purple">Saved recipe</Badge>
+                                    <p className="text-sm font-semibold text-[color:var(--text-primary)]">{suggestedRecipe.name}</p>
+                                </div>
+                                <p className={cn("mt-1 text-xs leading-5", pageMutedTextClass)}>
+                                    The headers match a recipe used before. Apply its field meanings, then review every column before confirming.
+                                </p>
+                            </div>
+                            <AppButton variant="secondary" onClick={applySuggestedRecipe} disabled={mutationsDisabled || saving}>
+                                Use recipe, then review
+                            </AppButton>
+                        </div>
+                    )}
 
                     <div className="grid gap-3 sm:grid-cols-3">
                         <div className={cn("p-3", pageInsetSurfaceClass)}>
@@ -77,7 +198,7 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
                         <div className={cn("p-3", pageInsetSurfaceClass)}>
                             <p className={cn("text-xs", pageMutedTextClass)}>Needs review</p>
                             <p className="mt-1 text-xl font-semibold text-[color:var(--text-primary)]">
-                                {draft.filter(item => item.needsReview || item.targetField === "ignore").length}
+                                {draft.filter(item => item.needsReview).length}
                             </p>
                         </div>
                         <div className={cn("p-3", pageInsetSurfaceClass)}>
@@ -94,6 +215,7 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
                     <div role="list" className="space-y-3 md:hidden" aria-label="Column mappings">
                         {draft.map((item, index) => {
                             const profile = sourceColumns.get(item.sourceColumn);
+                            const displayLabel = sourceColumnLabel(item.sourceColumn);
                             const headingId = `column-mapping-${index}-title`;
                             const selectId = `column-mapping-${index}-field`;
 
@@ -106,9 +228,9 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
                                 >
                                     <div className="flex items-start justify-between gap-3">
                                         <h3 id={headingId} className="break-words text-sm font-semibold text-[color:var(--text-primary)]">
-                                            {item.sourceColumn}
+                                            {displayLabel}
                                         </h3>
-                                        {item.needsReview && <Badge variant="warning">review</Badge>}
+                                        {item.needsReview ? <Badge variant="warning">Review</Badge> : item.targetField === "ignore" ? <Badge variant="default">Ignored</Badge> : null}
                                     </div>
 
                                     <label htmlFor={selectId} className="mt-4 block text-xs font-semibold text-[color:var(--text-secondary)]">
@@ -120,7 +242,7 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
                                         disabled={mutationsDisabled}
                                         aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
                                         onValueChange={value => updateTargetField(index, value as ImportColumnMapping["targetField"])}
-                                        options={IMPORT_TARGET_FIELDS.map(field => ({ value: field, label: field }))}
+                                        options={targetOptions(goal)}
                                         containerClassName="mt-2 w-full"
                                     />
 
@@ -169,20 +291,21 @@ export function ColumnsStep({ detail, saving, mutationsDisabled, onSave }: Colum
                             <tbody className={pageTableBodyDividerClass}>
                                 {draft.map((item, index) => {
                                     const profile = sourceColumns.get(item.sourceColumn);
+                                    const displayLabel = sourceColumnLabel(item.sourceColumn);
                                     return (
                                         <tr key={item.sourceColumn} className={pageTableRowClass}>
                                             <th scope="row" className="p-3 text-left">
-                                                <div className="font-semibold text-[color:var(--text-primary)]">{item.sourceColumn}</div>
-                                                {item.needsReview && <Badge className="mt-2" variant="warning">review</Badge>}
+                                                <div className="font-semibold text-[color:var(--text-primary)]">{displayLabel}</div>
+                                                {item.needsReview ? <Badge className="mt-2" variant="warning">Review</Badge> : item.targetField === "ignore" ? <Badge className="mt-2" variant="default">Ignored</Badge> : null}
                                             </th>
                                             <td className="p-3">
                                                 <AppSelect
-                                                    aria-label={`ERP field for ${item.sourceColumn}`}
+                                                    aria-label={`ERP field for ${displayLabel}`}
                                                     value={item.targetField}
                                                     disabled={mutationsDisabled}
                                                     aria-describedby={mutationsDisabled ? "import-session-mutation-blocker" : undefined}
                                                     onValueChange={value => updateTargetField(index, value as ImportColumnMapping["targetField"])}
-                                                    options={IMPORT_TARGET_FIELDS.map(field => ({ value: field, label: field }))}
+                                                    options={targetOptions(goal)}
                                                 />
                                             </td>
                                             <td className="p-3">

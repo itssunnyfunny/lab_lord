@@ -52,12 +52,13 @@ export class ShiftService {
         branchId: string,
         startTime: string | null,
         endTime: string | null,
-        excludeShiftId?: string
+        excludeShiftId?: string,
+        client: Prisma.TransactionClient | typeof prisma = prisma
     ) {
         const newStart = parseNullableTime(startTime);
         const newEnd = parseNullableTime(endTime);
 
-        const activeShifts = await prisma.shift.findMany({
+        const activeShifts = await client.shift.findMany({
             where: {
                 branchId,
                 status: "ACTIVE",
@@ -78,8 +79,19 @@ export class ShiftService {
     }
 
     static async createShift(userId: string, branchId: string, data: CreateShiftDto) {
-        await this.assertBranchAccess(userId, branchId, "manage_branch");
-        await EntitlementService.assertBranchWritable(branchId);
+        return prisma.$transaction(tx =>
+            this.createShiftInTransaction(userId, branchId, data, tx)
+        );
+    }
+
+    static async createShiftInTransaction(
+        userId: string,
+        branchId: string,
+        data: CreateShiftDto,
+        tx: Prisma.TransactionClient
+    ) {
+        await StaffService.authorize(userId, branchId, "manage_branch", tx);
+        await EntitlementService.assertBranchWritable(branchId, tx);
         const nameResult = validateRequiredText(data.name, "Shift name", 50);
         if (!nameResult.ok) throw new Error(nameResult.error);
         const startResult = validateOptionalTime(data.startTime, "Start time");
@@ -95,15 +107,15 @@ export class ShiftService {
         });
         if (!priceResult.ok) throw new Error(priceResult.error);
 
-        const existingShift = await prisma.shift.findFirst({
+        const existingShift = await tx.shift.findFirst({
             where: { branchId, name: nameResult.value, status: "ACTIVE" },
         });
         if (existingShift) throw new Error(`Shift with name "${nameResult.value}" already exists in this branch.`);
 
         // Always check overlap, even for null times (null = full day, overlaps everything)
-        await this.checkTimeOverlap(branchId, startResult.value, endResult.value);
+        await this.checkTimeOverlap(branchId, startResult.value, endResult.value, undefined, tx);
 
-        return prisma.shift.create({
+        return tx.shift.create({
             data: {
                 branchId,
                 name: nameResult.value,

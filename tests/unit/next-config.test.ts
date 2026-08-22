@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import nextConfig from "@/next.config";
+import { nextConfig } from "@/next.config";
 
 describe("Next.js response headers", () => {
   it("marks private, auth, and API route families as noindex", async () => {

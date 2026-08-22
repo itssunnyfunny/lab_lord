@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/billing/hourly",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/imports/daily",
+      "schedule": "30 0 * * *"
     }
   ]
 }

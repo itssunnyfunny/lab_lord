@@ -64,16 +64,6 @@ async function runSerializableTransaction<T>(
 }
 
 export class SeatAllocationService {
-    private static async getSeatBranchId(seatId: string) {
-        const seat = await prisma.seat.findUnique({
-            where: { id: seatId },
-            select: { branchId: true },
-        });
-
-        if (!seat) throw new Error("Seat not found");
-        return seat.branchId;
-    }
-
     private static async getAllocationWithBranch(allocationId: string) {
         const allocation = await prisma.seatAllocation.findUnique({
             where: { id: allocationId },
@@ -105,24 +95,36 @@ export class SeatAllocationService {
         shiftIds: string[],
         multiShiftId?: string
     ) {
+        return runSerializableTransaction(tx =>
+            this.assignSeatToShiftsInTransaction(
+                userId,
+                seatId,
+                studentId,
+                shiftIds,
+                multiShiftId,
+                tx
+            )
+        );
+    }
+
+    static async assignSeatToShiftsInTransaction(
+        userId: string,
+        seatId: string,
+        studentId: string,
+        shiftIds: string[],
+        multiShiftId: string | undefined,
+        tx: Prisma.TransactionClient
+    ) {
         if (!shiftIds || shiftIds.length === 0) {
             throw new Error("At least one shift must be selected.");
         }
 
-        // Deduplicate
         const uniqueShiftIds = [...new Set(shiftIds)];
-        const authorizedBranchId = await this.getSeatBranchId(seatId);
-        await StaffService.authorize(userId, authorizedBranchId, "seat_allocation");
-        await EntitlementService.assertBranchWritable(authorizedBranchId);
-
-        return runSerializableTransaction(async (tx) => {
-            // 1. Fetch seat and resolve branch scope
-            const seat = await tx.seat.findUnique({
-                where: { id: seatId },
-            });
-            if (!seat) throw new Error("Seat not found");
-
-            const branchId = seat.branchId;
+        const seat = await tx.seat.findUnique({ where: { id: seatId } });
+        if (!seat) throw new Error("Seat not found");
+        const branchId = seat.branchId;
+        await StaffService.authorize(userId, branchId, "seat_allocation", tx);
+        await EntitlementService.assertBranchWritable(branchId, tx);
 
             // 3. Fetch student
             const student = await tx.student.findUnique({ where: { id: studentId } });
@@ -261,7 +263,6 @@ export class SeatAllocationService {
             });
 
             return allocationsToCreate;
-        });
     }
 
     /**

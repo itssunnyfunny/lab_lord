@@ -303,8 +303,40 @@ export class StudentService {
         branchId: string,
         data: CreateImportedStudentDto
     ) {
-        const branch = await this.verifyBranchAccess(userId, branchId);
-        await EntitlementService.assertBranchWritable(branchId);
+        const shiftIds = data.shiftIds && data.shiftIds.length > 0 ? data.shiftIds : [];
+        const student = await prisma.$transaction(tx =>
+            this.createImportedStudentInTransaction(userId, branchId, data, tx)
+        );
+
+        if (data.seatId && shiftIds.length > 0) {
+            await SeatAllocationService.assignSeatToShifts(
+                userId,
+                data.seatId,
+                student.id,
+                shiftIds
+            );
+        }
+
+        return student;
+    }
+
+    /**
+     * Transaction-aware import primitive. Authorization, entitlement, tenant
+     * ownership, validation, the domain mutation, and branch activity update
+     * all use the caller's transaction so a durable-run completion marker can
+     * be committed atomically by the caller.
+     */
+    static async createImportedStudentInTransaction(
+        userId: string,
+        branchId: string,
+        data: CreateImportedStudentDto,
+        tx: Prisma.TransactionClient
+    ) {
+        await StaffService.authorize(userId, branchId, "students", tx);
+        await EntitlementService.assertBranchWritable(branchId, tx);
+        const branch = await tx.branch.findUnique({ where: { id: branchId } });
+        if (!branch) throw new Error("Branch not found");
+
         const nameResult = validateRequiredText(data.name, "Student name");
         if (!nameResult.ok) throw new Error(nameResult.error);
         const phoneResult = validatePhone(data.phone ?? undefined);
@@ -327,72 +359,57 @@ export class StudentService {
         const joinedAt = data.joinedAt instanceof Date && !Number.isNaN(data.joinedAt.getTime())
             ? data.joinedAt
             : new Date();
-        const shiftIds = data.shiftIds && data.shiftIds.length > 0 ? data.shiftIds : [];
-
-        const student = await prisma.$transaction(async (tx) => {
-            if (phoneResult.value) {
-                await this.assertUniqueBranchIdentity(tx, branchId, nameResult.value, phoneResult.value);
-            }
-
-            const feeData = await this.resolveMonthlyFeeData(
-                tx,
-                branchId,
-                {
-                    monthlyFee: monthlyFeeResult.value,
-                    feeLinkedShiftId: linkedShiftResult.value,
-                    feeLinkedMultiShiftId: linkedMultiShiftResult.value,
-                },
-                monthlyFeeResult.value ?? branch.defaultFee ?? 0
-            );
-
-            const created = await tx.student.create({
-                data: {
-                    branchId,
-                    name: nameResult.value,
-                    phone: phoneResult.value ?? null,
-                    status: StudentStatus.ACTIVE,
-                    monthlyFee: feeData.monthlyFee,
-                    feeLinkedShiftId: feeData.feeLinkedShiftId,
-                    feeLinkedMultiShiftId: feeData.feeLinkedMultiShiftId,
-                    joinedAt,
-                    billingStartAt: data.billingStartAt ?? null,
-                },
-            });
-
-            const admissionFee = admissionFeeResult.value ?? branch.defaultAdmissionFee ?? 0;
-            if (admissionFee > 0) {
-                await tx.payment.create({
-                    data: {
-                        branchId,
-                        studentId: created.id,
-                        amount: admissionFee,
-                        status: PaymentStatus.DUE,
-                        type: PaymentType.ADMISSION,
-                        dueDate: startOfDay(joinedAt),
-                        periodStart: startOfDay(joinedAt),
-                        periodEnd: startOfDay(joinedAt),
-                    },
-                });
-            }
-
-            await tx.branch.update({
-                where: { id: branchId },
-                data: { lastDataChange: new Date() },
-            });
-
-            return created;
-        });
-
-        if (data.seatId && shiftIds.length > 0) {
-            await SeatAllocationService.assignSeatToShifts(
-                userId,
-                data.seatId,
-                student.id,
-                shiftIds
-            );
+        if (phoneResult.value) {
+            await this.assertUniqueBranchIdentity(tx, branchId, nameResult.value, phoneResult.value);
         }
 
-        return student;
+        const feeData = await this.resolveMonthlyFeeData(
+            tx,
+            branchId,
+            {
+                monthlyFee: monthlyFeeResult.value,
+                feeLinkedShiftId: linkedShiftResult.value,
+                feeLinkedMultiShiftId: linkedMultiShiftResult.value,
+            },
+            monthlyFeeResult.value ?? branch.defaultFee ?? 0
+        );
+
+        const created = await tx.student.create({
+            data: {
+                branchId,
+                name: nameResult.value,
+                phone: phoneResult.value ?? null,
+                status: StudentStatus.ACTIVE,
+                monthlyFee: feeData.monthlyFee,
+                feeLinkedShiftId: feeData.feeLinkedShiftId,
+                feeLinkedMultiShiftId: feeData.feeLinkedMultiShiftId,
+                joinedAt,
+                billingStartAt: data.billingStartAt ?? null,
+            },
+        });
+
+        const admissionFee = admissionFeeResult.value ?? branch.defaultAdmissionFee ?? 0;
+        if (admissionFee > 0) {
+            await tx.payment.create({
+                data: {
+                    branchId,
+                    studentId: created.id,
+                    amount: admissionFee,
+                    status: PaymentStatus.DUE,
+                    type: PaymentType.ADMISSION,
+                    dueDate: startOfDay(joinedAt),
+                    periodStart: startOfDay(joinedAt),
+                    periodEnd: startOfDay(joinedAt),
+                },
+            });
+        }
+
+        await tx.branch.update({
+            where: { id: branchId },
+            data: { lastDataChange: new Date() },
+        });
+
+        return created;
     }
 
     static async updateStudentProfile(

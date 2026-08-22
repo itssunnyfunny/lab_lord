@@ -22,13 +22,14 @@ Return only strict JSON with this shape:
   ],
   "questions": [
     {
-      "field": "payment.period",
+      "field": "payment.cycle",
       "question": "Should payments use each student's joined-date cycle?",
       "options": ["USE_JOINED_AT_ANNIVERSARY", "SKIP_PAYMENTS"]
     }
   ],
   "warnings": [],
   "suggestedImportOptions": {
+    "paymentCycle": "USE_JOINED_AT_ANNIVERSARY",
     "paymentHistoryMode": "START_CURRENT_JOINED_CYCLE",
     "paymentMapping": {
       "paidValues": ["paid", "yes"],
@@ -61,6 +62,7 @@ ${JSON.stringify(input.sampleRows.slice(0, 8), null, 2)}
 Rules:
 - Map every uploaded column exactly once. Use "ignore" when the column should not be imported.
 - Prefer existing branch seats, shifts, and multi-shifts when names are close.
+- Map student status, allocation start dates, and uploaded payment period/month/cycle columns to "ignore"; these are not mutable import fields.
 - Payment cycles must follow each student's joined date; do not suggest calendar-month billing.
 - Do not set createUnknownSeats, createUnknownShifts, or createUnknownMultiShifts.
 - If paid/unpaid values are present, guess paymentMapping but keep confirmed false.

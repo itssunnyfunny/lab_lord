@@ -1,11 +1,10 @@
-import { isSameDay, startOfDay } from "date-fns";
+import { isAfter, isBefore, isSameDay, startOfDay } from "date-fns";
 import type { PaymentStatus } from "@/app/generated/prisma/enums";
 import type { ImportMappingState, ImportNormalizedRow, ImportOptions, PaymentHistoryMode } from "@/importing/contracts/import-session.contract";
 import {
     currentMonthJoinedCycle,
-    dueCyclesThrough,
     isCycleDue,
-    previousCyclesBefore,
+    studentBillingCycle,
     type StudentBillingCycle,
 } from "@/utils/studentBillingCycles";
 
@@ -22,6 +21,7 @@ export type ImportPaymentPlan = {
     historyMode: PaymentHistoryMode;
     billingStartAt: Date | null;
     items: ImportPaymentPlanItem[];
+    hasMoreItems: boolean;
     skippedHistoricalPayments: number;
 };
 
@@ -64,10 +64,54 @@ function itemFor(cycle: StudentBillingCycle, status: ImportPaymentPlanItem["stat
     };
 }
 
+type BoundedCycles = {
+    cycles: StudentBillingCycle[];
+    hasMore: boolean;
+};
+
+function boundedCycleLimit(value?: number) {
+    if (value === undefined) return 600;
+    if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error("Import payment plan item limit must be a non-negative integer");
+    }
+    return Math.min(600, value);
+}
+
+function collectDueCycles(joinedAt: Date, asOf: Date, maxItems?: number): BoundedCycles {
+    const cutoff = startOfDay(asOf);
+    const limit = boundedCycleLimit(maxItems);
+    const cycles: StudentBillingCycle[] = [];
+    for (let index = 0; index < 600; index++) {
+        const cycle = studentBillingCycle(joinedAt, index);
+        if (isAfter(cycle.dueDate, cutoff)) return { cycles, hasMore: false };
+        if (cycles.length >= limit) return { cycles, hasMore: true };
+        cycles.push(cycle);
+    }
+    return { cycles, hasMore: false };
+}
+
+function collectPreviousCycles(joinedAt: Date, dueDate: Date, maxItems?: number): BoundedCycles {
+    const cutoff = startOfDay(dueDate);
+    const limit = boundedCycleLimit(maxItems);
+    const cycles: StudentBillingCycle[] = [];
+    for (let index = 0; index < 600; index++) {
+        const cycle = studentBillingCycle(joinedAt, index);
+        if (!isBefore(cycle.dueDate, cutoff)) return { cycles, hasMore: false };
+        if (cycles.length >= limit) return { cycles, hasMore: true };
+        cycles.push(cycle);
+    }
+    return { cycles, hasMore: false };
+}
+
+function countPreviousCycles(joinedAt: Date, dueDate: Date) {
+    return collectPreviousCycles(joinedAt, dueDate).cycles.length;
+}
+
 export function buildImportPaymentPlan(
     normalized: ImportNormalizedRow,
     mappingOrOptions: ImportMappingState | ImportOptions | undefined | null,
-    asOf: Date = new Date()
+    asOf: Date = new Date(),
+    limits: { maxItems?: number } = {}
 ): ImportPaymentPlan {
     const options = "importOptions" in (mappingOrOptions ?? {})
         ? (mappingOrOptions as ImportMappingState).importOptions
@@ -81,6 +125,7 @@ export function buildImportPaymentPlan(
             historyMode,
             billingStartAt: null,
             items: [],
+            hasMoreItems: false,
             skippedHistoricalPayments: 0,
         };
     }
@@ -90,44 +135,52 @@ export function buildImportPaymentPlan(
     const statusForCurrent = currentStatus(normalized, options);
 
     if (historyMode === "FROM_JOINED_MARK_PAID") {
-        const items = dueCyclesThrough(joinedStart, asOf).map(cycle =>
+        const selected = collectDueCycles(joinedStart, asOf, limits.maxItems);
+        const items = selected.cycles.map(cycle =>
             itemFor(cycle, "PAID", currentCycle)
         );
-        return { enabled: true, historyMode, billingStartAt: joinedStart, items, skippedHistoricalPayments: 0 };
+        return { enabled: true, historyMode, billingStartAt: joinedStart, items, hasMoreItems: selected.hasMore, skippedHistoricalPayments: 0 };
     }
 
     if (historyMode === "FROM_JOINED_MARK_DUE") {
-        const items = dueCyclesThrough(joinedStart, asOf).map(cycle =>
+        const selected = collectDueCycles(joinedStart, asOf, limits.maxItems);
+        const items = selected.cycles.map(cycle =>
             itemFor(cycle, "DUE", currentCycle)
         );
-        return { enabled: true, historyMode, billingStartAt: joinedStart, items, skippedHistoricalPayments: 0 };
+        return { enabled: true, historyMode, billingStartAt: joinedStart, items, hasMoreItems: selected.hasMore, skippedHistoricalPayments: 0 };
     }
 
     if (historyMode === "FROM_JOINED_PAID_THROUGH_PREVIOUS") {
-        const previousCycles = currentCycle
-            ? previousCyclesBefore(joinedStart, currentCycle.dueDate)
-            : dueCyclesThrough(joinedStart, asOf);
-        const items = previousCycles.map(cycle => itemFor(cycle, "PAID", currentCycle));
+        const selected = currentCycle
+            ? collectPreviousCycles(joinedStart, currentCycle.dueDate, limits.maxItems)
+            : collectDueCycles(joinedStart, asOf, limits.maxItems);
+        const items = selected.cycles.map(cycle => itemFor(cycle, "PAID", currentCycle));
+        let hasMoreItems = selected.hasMore;
 
         if (currentCycle && isCycleDue(currentCycle, asOf)) {
-            items.push(itemFor(currentCycle, statusForCurrent, currentCycle));
+            const limit = boundedCycleLimit(limits.maxItems);
+            if (items.length < limit) items.push(itemFor(currentCycle, statusForCurrent, currentCycle));
+            else hasMoreItems = true;
         }
 
-        return { enabled: true, historyMode, billingStartAt: joinedStart, items, skippedHistoricalPayments: 0 };
+        return { enabled: true, historyMode, billingStartAt: joinedStart, items, hasMoreItems, skippedHistoricalPayments: 0 };
     }
 
     const previousCount = currentCycle
-        ? previousCyclesBefore(joinedStart, currentCycle.dueDate).length
-        : dueCyclesThrough(joinedStart, asOf).length;
-    const items = currentCycle && isCycleDue(currentCycle, asOf)
+        ? countPreviousCycles(joinedStart, currentCycle.dueDate)
+        : collectDueCycles(joinedStart, asOf).cycles.length;
+    const currentItem = currentCycle && isCycleDue(currentCycle, asOf)
         ? [itemFor(currentCycle, statusForCurrent, currentCycle)]
         : [];
+    const limit = boundedCycleLimit(limits.maxItems);
+    const items = currentItem.slice(0, limit);
 
     return {
         enabled: true,
         historyMode,
         billingStartAt: currentCycle?.periodStart ?? joinedStart,
         items,
+        hasMoreItems: currentItem.length > items.length,
         skippedHistoricalPayments: previousCount,
     };
 }

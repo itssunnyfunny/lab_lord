@@ -27,6 +27,19 @@ const PAYMENT_LIST_INCLUDE = {
 
 type PaymentListRecord = Prisma.PaymentGetPayload<{ include: typeof PAYMENT_LIST_INCLUDE }>;
 type PaymentListPagination = { cursor?: DateIdCursor | null; limit: number };
+type EnsureMonthlyPaymentInput = {
+    studentId: string;
+    periodStart: Date;
+    periodEnd: Date;
+    dueDate?: Date;
+    amount?: number;
+    /** Import execution uses this to fence an immutable reviewed cycle. */
+    strictExisting?: {
+        targetStatus: PaymentStatus;
+        paymentMethod?: PaymentMethod;
+        referenceId?: string;
+    };
+};
 
 const STUDENT_GENERATION_BATCH_SIZE = 250;
 const PAYMENT_INSERT_BATCH_SIZE = 1000;
@@ -260,22 +273,27 @@ export class PaymentService {
     static async ensureMonthlyPaymentForStudent(
         userId: string,
         branchId: string,
-        data: {
-            studentId: string;
-            periodStart: Date;
-            periodEnd: Date;
-            dueDate?: Date;
-            amount?: number;
-        }
+        data: EnsureMonthlyPaymentInput
     ) {
-        await this.assertBranchAccess(userId, branchId, "generate_payments");
-        await EntitlementService.assertBranchWritable(branchId);
+        return prisma.$transaction(tx =>
+            this.ensureMonthlyPaymentForStudentInTransaction(userId, branchId, data, tx)
+        );
+    }
+
+    static async ensureMonthlyPaymentForStudentInTransaction(
+        userId: string,
+        branchId: string,
+        data: EnsureMonthlyPaymentInput,
+        tx: Prisma.TransactionClient
+    ) {
+        await StaffService.authorize(userId, branchId, "generate_payments", tx);
+        await EntitlementService.assertBranchWritable(branchId, tx);
 
         const periodStart = startOfDay(data.periodStart);
         const periodEnd = startOfDay(data.periodEnd);
         const dueDate = startOfDay(data.dueDate ?? data.periodEnd);
 
-        const student = await prisma.student.findUnique({
+        const student = await tx.student.findUnique({
             where: { id: data.studentId },
             select: { id: true, branchId: true, monthlyFee: true, status: true },
         });
@@ -284,7 +302,7 @@ export class PaymentService {
         if (student.branchId !== branchId) throw new Error("Student does not belong to this branch");
         if (student.status !== StudentStatus.ACTIVE) throw new Error("Only ACTIVE students can receive monthly payments");
 
-        const existing = await prisma.payment.findUnique({
+        const existing = await tx.payment.findUnique({
             where: {
                 studentId_periodStart: {
                     studentId: student.id,
@@ -293,9 +311,37 @@ export class PaymentService {
             },
         });
 
+        if (existing && data.strictExisting) {
+            const expectedAmount = data.amount ?? student.monthlyFee;
+            const allowedStatuses: PaymentStatus[] = data.strictExisting.targetStatus === PaymentStatus.DUE
+                ? [PaymentStatus.DUE]
+                : data.strictExisting.targetStatus === PaymentStatus.PAID
+                    ? [PaymentStatus.DUE, PaymentStatus.PAID]
+                    : [PaymentStatus.DUE, PaymentStatus.WAIVED];
+            const existingMethod = existing.paymentMethod ?? undefined;
+            const existingReference = existing.referenceId ?? undefined;
+            const expectedMethod = data.strictExisting.paymentMethod;
+            const expectedReference = data.strictExisting.referenceId;
+            const finalMetadataMatches = existing.status === PaymentStatus.DUE
+                ? existingMethod === undefined && existingReference === undefined
+                : existing.status !== data.strictExisting.targetStatus
+                    || (existingMethod === expectedMethod && existingReference === expectedReference);
+            if (
+                existing.branchId !== branchId
+                || existing.type !== PaymentType.MONTHLY
+                || existing.amount !== expectedAmount
+                || existing.periodEnd.getTime() !== periodEnd.getTime()
+                || existing.dueDate.getTime() !== dueDate.getTime()
+                || !allowedStatuses.includes(existing.status)
+                || !finalMetadataMatches
+            ) {
+                throw new Error("Import plan is stale because an existing payment does not match the reviewed cycle");
+            }
+        }
+
         if (existing) return existing;
 
-        const payment = await prisma.payment.create({
+        const payment = await tx.payment.create({
             data: {
                 branchId,
                 studentId: student.id,
@@ -308,7 +354,7 @@ export class PaymentService {
             },
         });
 
-        await prisma.branch.update({
+        await tx.branch.update({
             where: { id: branchId },
             data: { lastDataChange: new Date() },
         });
@@ -450,22 +496,24 @@ export class PaymentService {
         method?: PaymentMethod,
         referenceId?: string,
     ) {
-        const payment = await prisma.payment.findUnique({
-            where: { id: paymentId },
-        });
+        return prisma.$transaction(tx =>
+            this.markPaymentAsPaidInTransaction(userId, paymentId, method, referenceId, tx)
+        );
+    }
 
-        if (!payment) {
-            throw new Error("Payment not found");
-        }
+    static async markPaymentAsPaidInTransaction(
+        userId: string,
+        paymentId: string,
+        method: PaymentMethod | undefined,
+        referenceId: string | undefined,
+        tx: Prisma.TransactionClient
+    ) {
+            const payment = await tx.payment.findUnique({ where: { id: paymentId } });
+            if (!payment) throw new Error("Payment not found");
+            await StaffService.authorize(userId, payment.branchId, "mark_payment_paid", tx);
+            await EntitlementService.assertBranchWritable(payment.branchId, tx);
+            if (payment.status === PaymentStatus.PAID) return payment;
 
-        await StaffService.authorize(userId, payment.branchId, "mark_payment_paid");
-        await EntitlementService.assertBranchWritable(payment.branchId);
-
-        if (payment.status === PaymentStatus.PAID) {
-            return payment; // Already paid, idempotent
-        }
-
-        return prisma.$transaction(async (tx) => {
             // 1. Mark as PAID (write-once: method + referenceId set only here)
             const updatedPayment = await tx.payment.update({
                 where: { id: paymentId },
@@ -510,7 +558,6 @@ export class PaymentService {
             });
 
             return updatedPayment;
-        });
     }
 
     /**
@@ -519,22 +566,22 @@ export class PaymentService {
      * Preserves history; excluded from overdue/due analytics.
      */
     static async markPaymentAsWaived(userId: string, paymentId: string) {
-        const payment = await prisma.payment.findUnique({
-            where: { id: paymentId },
-        });
+        return prisma.$transaction(tx =>
+            this.markPaymentAsWaivedInTransaction(userId, paymentId, tx)
+        );
+    }
 
-        if (!payment) {
-            throw new Error("Payment not found");
-        }
+    static async markPaymentAsWaivedInTransaction(
+        userId: string,
+        paymentId: string,
+        tx: Prisma.TransactionClient
+    ) {
+            const payment = await tx.payment.findUnique({ where: { id: paymentId } });
+            if (!payment) throw new Error("Payment not found");
+            await StaffService.authorize(userId, payment.branchId, "waive_payments", tx);
+            await EntitlementService.assertBranchWritable(payment.branchId, tx);
+            if (payment.status === PaymentStatus.WAIVED) return payment;
 
-        await StaffService.authorize(userId, payment.branchId, "waive_payments");
-        await EntitlementService.assertBranchWritable(payment.branchId);
-
-        if (payment.status === PaymentStatus.WAIVED) {
-            return payment; // Already waived, idempotent
-        }
-
-        return prisma.$transaction(async (tx) => {
             const updatedPayment = await tx.payment.update({
                 where: { id: paymentId },
                 data: {
@@ -563,6 +610,5 @@ export class PaymentService {
             });
 
             return updatedPayment;
-        });
     }
 }

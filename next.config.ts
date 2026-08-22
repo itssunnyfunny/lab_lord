@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
 
 const securityHeaders = [
   {
@@ -31,7 +32,7 @@ const privateRouteSources = [
   "/sign-up/:path*",
 ];
 
-const nextConfig: NextConfig = {
+export const nextConfig: NextConfig = {
   async headers() {
     return [
       {
@@ -51,4 +52,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withWorkflow(nextConfig);

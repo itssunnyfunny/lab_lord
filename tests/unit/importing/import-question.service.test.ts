@@ -6,12 +6,14 @@ const mocks = vi.hoisted(() => ({
     revalidateSession: vi.fn(),
     getSessionDetail: vi.fn(),
     prisma: {
+        $queryRaw: vi.fn(),
+        $transaction: vi.fn(),
         importSession: {
             findFirst: vi.fn(),
             update: vi.fn(),
         },
         importQuestion: {
-            update: vi.fn(),
+            updateMany: vi.fn(),
         },
     },
 }));
@@ -32,6 +34,7 @@ vi.mock("@/importing/services/import-session.service", () => ({
     ImportSessionService: {
         getSessionDetail: mocks.getSessionDetail,
         revalidateSession: mocks.revalidateSession,
+        revalidateCurrentDraft: mocks.revalidateSession,
     },
 }));
 
@@ -59,7 +62,16 @@ describe("ImportQuestionService", () => {
         vi.clearAllMocks();
         mocks.authorize.mockResolvedValue(true);
         mocks.assertBranchWritable.mockResolvedValue({});
-        mocks.prisma.importQuestion.update.mockResolvedValue({});
+        mocks.prisma.$queryRaw.mockResolvedValue([{ id: "session_1" }]);
+        mocks.prisma.$transaction.mockImplementation(async operation => operation(mocks.prisma));
+        mocks.prisma.importSession.findFirst.mockResolvedValue({
+            id: "session_1",
+            engineVersion: 2,
+            status: "NEEDS_INFO",
+            draftRevision: 0,
+            archivedAt: null,
+        });
+        mocks.prisma.importQuestion.updateMany.mockResolvedValue({ count: 1 });
         mocks.prisma.importSession.update.mockResolvedValue({});
         mocks.revalidateSession.mockResolvedValue({ id: "session_1" });
     });
@@ -69,12 +81,13 @@ describe("ImportQuestionService", () => {
         const { ImportQuestionService } = await import("@/importing/services/import-question.service");
 
         await expect(ImportQuestionService.answerQuestion("user_1", "branch_1", "session_1", {
+            expectedRevision: 0,
             questionId: "question_1",
-            answer: "CURRENT_MONTH",
+            answer: "USE_JOINED_AT_ANNIVERSARY",
         })).rejects.toThrow("Unauthorized");
 
         expect(mocks.prisma.importSession.findFirst).not.toHaveBeenCalled();
-        expect(mocks.prisma.importQuestion.update).not.toHaveBeenCalled();
+        expect(mocks.prisma.importQuestion.updateMany).not.toHaveBeenCalled();
     });
 
     it("blocks question mutations when the branch is read-only", async () => {
@@ -82,18 +95,46 @@ describe("ImportQuestionService", () => {
         const { ImportQuestionService } = await import("@/importing/services/import-question.service");
 
         await expect(ImportQuestionService.answerQuestion("user_1", "branch_1", "session_1", {
+            expectedRevision: 0,
             questionId: "question_1",
-            answer: "CURRENT_MONTH",
+            answer: "USE_JOINED_AT_ANNIVERSARY",
         })).rejects.toThrow("read-only");
 
         expect(mocks.assertBranchWritable).toHaveBeenCalledWith("branch_1");
         expect(mocks.prisma.importSession.findFirst).not.toHaveBeenCalled();
-        expect(mocks.prisma.importQuestion.update).not.toHaveBeenCalled();
+        expect(mocks.prisma.importQuestion.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("rejects a stale question answer before changing the question", async () => {
+        mocks.prisma.importSession.findFirst.mockResolvedValueOnce({
+            id: "session_1",
+            engineVersion: 2,
+            status: "NEEDS_INFO",
+            draftRevision: 2,
+            archivedAt: null,
+            mapping: null,
+            questions: [{ id: "question_1", field: null, question: "Choose" }],
+            rows: [],
+        });
+        const { ImportQuestionService } = await import("@/importing/services/import-question.service");
+
+        await expect(ImportQuestionService.answerQuestion("user_1", "branch_1", "session_1", {
+            expectedRevision: 1,
+            questionId: "question_1",
+            answer: "choice",
+        })).rejects.toMatchObject({ code: "IMPORT_REVISION_CONFLICT" });
+
+        expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
+        expect(mocks.prisma.importQuestion.updateMany).not.toHaveBeenCalled();
     });
 
     it("preserves analysis metadata when applying an answer", async () => {
         mocks.prisma.importSession.findFirst.mockResolvedValueOnce({
             id: "session_1",
+            engineVersion: 2,
+            status: "NEEDS_INFO",
+            draftRevision: 0,
+            archivedAt: null,
             mapping: {
                 entityTypesDetected: ["STUDENT"],
                 columnMappings: [{ sourceColumn: "Name", targetField: "student.name", confidence: 95 }],
@@ -108,6 +149,7 @@ describe("ImportQuestionService", () => {
         const { ImportQuestionService } = await import("@/importing/services/import-question.service");
 
         await ImportQuestionService.answerQuestion("user_1", "branch_1", "session_1", {
+            expectedRevision: 0,
             questionId: "question_1",
             answer: "IMPORT_PAID_UNPAID",
         });
@@ -120,6 +162,10 @@ describe("ImportQuestionService", () => {
     it("auto-confirms canonical paid due waived words when importing payment status", async () => {
         mocks.prisma.importSession.findFirst.mockResolvedValueOnce({
             id: "session_1",
+            engineVersion: 2,
+            status: "NEEDS_INFO",
+            draftRevision: 0,
+            archivedAt: null,
             mapping: {
                 entityTypesDetected: ["STUDENT", "PAYMENT"],
                 columnMappings: [
@@ -128,7 +174,7 @@ describe("ImportQuestionService", () => {
                 ],
                 questions: [],
                 warnings: [],
-                importOptions: { paymentCycle: "CURRENT_MONTH" },
+                importOptions: { paymentCycle: "USE_JOINED_AT_ANNIVERSARY" },
                 analysis,
             },
             questions: [{ id: "question_1", field: "payment.status" }],
@@ -141,6 +187,7 @@ describe("ImportQuestionService", () => {
         const { ImportQuestionService } = await import("@/importing/services/import-question.service");
 
         await ImportQuestionService.answerQuestion("user_1", "branch_1", "session_1", {
+            expectedRevision: 0,
             questionId: "question_1",
             answer: "IMPORT_PAID_UNPAID",
         });
@@ -159,6 +206,10 @@ describe("ImportQuestionService", () => {
     it("keeps payment words unconfirmed when an answered payment import has unclear values", async () => {
         mocks.prisma.importSession.findFirst.mockResolvedValueOnce({
             id: "session_1",
+            engineVersion: 2,
+            status: "NEEDS_INFO",
+            draftRevision: 0,
+            archivedAt: null,
             mapping: {
                 entityTypesDetected: ["STUDENT", "PAYMENT"],
                 columnMappings: [
@@ -167,7 +218,7 @@ describe("ImportQuestionService", () => {
                 ],
                 questions: [],
                 warnings: [],
-                importOptions: { paymentCycle: "CURRENT_MONTH" },
+                importOptions: { paymentCycle: "USE_JOINED_AT_ANNIVERSARY" },
                 analysis,
             },
             questions: [{ id: "question_1", field: "payment.status" }],
@@ -179,6 +230,7 @@ describe("ImportQuestionService", () => {
         const { ImportQuestionService } = await import("@/importing/services/import-question.service");
 
         await ImportQuestionService.answerQuestion("user_1", "branch_1", "session_1", {
+            expectedRevision: 0,
             questionId: "question_1",
             answer: "IMPORT_PAID_UNPAID",
         });
@@ -190,12 +242,16 @@ describe("ImportQuestionService", () => {
 
     it("removes answered AI questions so revalidation does not recreate them", async () => {
         const sourceQuestion = {
-            field: "payment.period",
+            field: "payment.cycle",
             question: "How would you like to process cumulative historical values ('Total Paid', 'Total Due')?",
             options: ["IMPORT_PAID_UNPAID", "GENERATE_DUE", "SKIP_PAYMENTS"],
         };
         mocks.prisma.importSession.findFirst.mockResolvedValueOnce({
             id: "session_1",
+            engineVersion: 2,
+            status: "NEEDS_INFO",
+            draftRevision: 0,
+            archivedAt: null,
             mapping: {
                 entityTypesDetected: ["STUDENT", "PAYMENT"],
                 columnMappings: [{ sourceColumn: "Name", targetField: "student.name", confidence: 95 }],
@@ -210,6 +266,7 @@ describe("ImportQuestionService", () => {
         const { ImportQuestionService } = await import("@/importing/services/import-question.service");
 
         await ImportQuestionService.answerQuestion("user_1", "branch_1", "session_1", {
+            expectedRevision: 0,
             questionId: "question_1",
             answer: "IMPORT_PAID_UNPAID",
         });
@@ -223,6 +280,10 @@ describe("ImportQuestionService", () => {
     it("treats skip payments as both cycle and action so payment prompts stop", async () => {
         mocks.prisma.importSession.findFirst.mockResolvedValueOnce({
             id: "session_1",
+            engineVersion: 2,
+            status: "NEEDS_INFO",
+            draftRevision: 0,
+            archivedAt: null,
             mapping: {
                 entityTypesDetected: ["STUDENT", "PAYMENT"],
                 columnMappings: [{ sourceColumn: "Name", targetField: "student.name", confidence: 95 }],
@@ -231,12 +292,13 @@ describe("ImportQuestionService", () => {
                 importOptions: {},
                 analysis,
             },
-            questions: [{ id: "question_1", field: "payment.period", question: "Skip payments?" }],
+            questions: [{ id: "question_1", field: "payment.cycle", question: "Skip payments?" }],
             rows: [{ rawData: { Name: "Asha" } }],
         });
         const { ImportQuestionService } = await import("@/importing/services/import-question.service");
 
         await ImportQuestionService.answerQuestion("user_1", "branch_1", "session_1", {
+            expectedRevision: 0,
             questionId: "question_1",
             answer: "SKIP_PAYMENTS",
         });

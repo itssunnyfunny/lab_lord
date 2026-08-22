@@ -1741,7 +1741,8 @@ describe("BillingService SaaS subscriptions", () => {
   it("keeps an early V2 cancellation local and undoable until the cutoff", async () => {
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
-    const now = new Date("2026-08-03T00:00:00.000Z");
+    const now = new Date();
+    const paidThrough = new Date(now.getTime() + 17 * 24 * 60 * 60 * 1000);
     await testPrisma.organizationSubscription.create({
       data: {
         organizationId: org.id,
@@ -1756,7 +1757,7 @@ describe("BillingService SaaS subscriptions", () => {
         razorpaySubscriptionId: "sub_cancel_later",
         status: "ACTIVE",
         providerPaymentMethod: "CARD",
-        paidThrough: new Date("2026-08-20T00:00:00.000Z"),
+        paidThrough,
       },
     });
 

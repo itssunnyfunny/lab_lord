@@ -52,7 +52,7 @@ const session = {
         entityTypesDetected: ["STUDENT", "ALLOCATION"],
         columnMappings: [],
         importOptions: {
-            paymentCycle: "CURRENT_MONTH",
+            paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
             paymentAction: "GENERATE_DUE",
         },
     },
@@ -64,7 +64,7 @@ const session = {
             skipped: false,
             rawData: {},
             normalizedData: {
-                student: { name: "Asha", monthlyFee: 1200 },
+                student: { name: "Asha", monthlyFee: 1200, joinedAt: "2026-01-01T00:00:00.000Z", joinedAtSource: "UPLOADED" },
                 allocation: { seatLabel: "A1", shiftName: "Morning" },
             },
         },
@@ -75,7 +75,7 @@ const session = {
             skipped: false,
             rawData: {},
             normalizedData: {
-                student: { name: "Ravi", monthlyFee: 1200 },
+                student: { name: "Ravi", monthlyFee: 1200, joinedAt: "2026-01-01T00:00:00.000Z", joinedAtSource: "UPLOADED" },
                 allocation: { seatLabel: "A1", shiftName: "Morning" },
             },
         },
@@ -126,7 +126,7 @@ describe("ImportWiringService", () => {
         const preview = await ImportWiringService.previewRowDraft("user_1", "branch_1", "session_1", {
             rowId: "row_1",
             normalizedData: {
-                student: { name: "Asha", monthlyFee: 1200 },
+                student: { name: "Asha", monthlyFee: 1200, joinedAt: "2026-01-01T00:00:00.000Z", joinedAtSource: "UPLOADED" },
                 allocation: { seatLabel: "A1", shiftName: "Morning" },
             },
         });
@@ -156,7 +156,7 @@ describe("ImportWiringService", () => {
         const preview = await ImportWiringService.previewRowDraft("user_1", "branch_1", "session_1", {
             rowId: "row_1",
             normalizedData: {
-                student: { name: "Asha", monthlyFee: 1200 },
+                student: { name: "Asha", monthlyFee: 1200, joinedAt: "2026-01-01T00:00:00.000Z", joinedAtSource: "UPLOADED" },
                 allocation: { seatLabel: "A1", shiftName: "Morning" },
             },
         });

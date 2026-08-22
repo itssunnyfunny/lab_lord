@@ -1,4 +1,5 @@
 import type { ImportMappingState, ImportNormalizedRow } from "@/importing/contracts/import-session.contract";
+import { FORM_LIMITS, parseIntegerField } from "@/lib/formValidation";
 import { emptyValidatorResult, type ImportValidatorResult } from "./import-required-fields.validator";
 
 export function validateImportPayment(
@@ -9,7 +10,7 @@ export function validateImportPayment(
     const payment = normalized.payment;
     const options = mapping.importOptions;
     const mappedPaymentColumn = mapping.columnMappings.some(mapping => mapping.targetField.startsWith("payment."));
-    const hasPaymentData = Boolean(payment?.amount || payment?.rawStatus || payment?.status || payment?.period);
+    const hasPaymentData = Boolean(payment?.amount || payment?.rawStatus || payment?.status);
     const intendsPayments = Boolean(
         hasPaymentData ||
         mappedPaymentColumn ||
@@ -18,17 +19,34 @@ export function validateImportPayment(
         (options?.paymentCycle && options.paymentCycle !== "SKIP_PAYMENTS")
     );
 
+    if (payment?.amount !== undefined) {
+        const amount = parseIntegerField(payment.amount, "Payment amount", {
+            min: 0,
+            max: FORM_LIMITS.moneyMax,
+        });
+        if (!amount.ok) {
+            result.issues.push({
+                code: "INVALID_PAYMENT_AMOUNT",
+                field: "payment.amount",
+                message: amount.error,
+                severity: "error",
+            });
+        } else {
+            payment.amount = amount.value;
+        }
+    }
+
     if (!intendsPayments) return result;
 
     if (!options?.paymentCycle) {
         result.warnings.push({
             code: "PAYMENT_CYCLE_REQUIRED",
-            field: "payment.period",
-            message: "Payment cycle must be confirmed before payment data can be imported.",
+            field: "payment.cycle",
+            message: "The joined-date payment policy must be confirmed before payment data can be imported.",
             severity: "warning",
         });
         result.questions.push({
-            field: "payment.period",
+            field: "payment.cycle",
             question: "Should payments use each student's joined-date cycle?",
             options: ["USE_JOINED_AT_ANNIVERSARY", "SKIP_PAYMENTS"],
         });
@@ -37,24 +55,10 @@ export function validateImportPayment(
     if (options?.paymentCycle === "SKIP_PAYMENTS" && options.paymentAction && options.paymentAction !== "SKIP_PAYMENTS") {
         result.warnings.push({
             code: "PAYMENT_CYCLE_ACTION_MISMATCH",
-            field: "payment.period",
+            field: "payment.cycle",
             message: "Payment action is enabled, but the payment cycle is set to skip payments.",
             severity: "warning",
         });
-    }
-
-    if (options?.paymentCycle === "CUSTOM_PERIOD") {
-        const start = options.customPeriodStart ? new Date(options.customPeriodStart) : null;
-        const end = options.customPeriodEnd ? new Date(options.customPeriodEnd) : null;
-        const invalidRange = !start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end;
-        if (invalidRange) {
-            result.warnings.push({
-                code: "PAYMENT_CUSTOM_PERIOD_REQUIRED",
-                field: "payment.customPeriod",
-                message: "Choose a valid custom payment period start and end date.",
-                severity: "warning",
-            });
-        }
     }
 
     if (

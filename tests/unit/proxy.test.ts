@@ -82,4 +82,10 @@ describe("proxy matcher", () => {
     expect(unstable_doesMiddlewareMatch({ config, url: request.url })).toBe(true);
     expect(isProtectedRoute(request)).toBe(false);
   });
+
+  it("leaves Workflow's signed internal endpoint outside Clerk middleware", () => {
+    const url = "https://lablords.in/.well-known/workflow/v1/flow";
+
+    expect(unstable_doesMiddlewareMatch({ config, url })).toBe(false);
+  });
 });

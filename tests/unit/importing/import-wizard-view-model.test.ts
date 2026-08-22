@@ -3,9 +3,8 @@ import {
     aiAssistanceState,
     buildImportWizardSteps,
     deferAllocationOptions,
-    isPreviewFresh,
+    isImportPlanFresh,
     paymentActionChangeOptions,
-    paymentCycleChangeOptions,
     paymentSkipOptions,
     splitImportValues,
     studentsOnlyImportOptions,
@@ -38,10 +37,11 @@ describe("import wizard view model", () => {
         expect(state.needsMappingReview).toBe(true);
     });
 
-    it("marks preview stale when commit mode changes", () => {
-        expect(isPreviewFresh({ mode: "SAFE_PARTIAL", planVersion: "abc123" }, "SAFE_PARTIAL")).toBe(true);
-        expect(isPreviewFresh({ mode: "SAFE_PARTIAL", planVersion: "abc123" }, "STRICT_ALL_OR_NOTHING")).toBe(false);
-        expect(isPreviewFresh(null, "SAFE_PARTIAL")).toBe(false);
+    it("marks a reviewed plan stale when policy or revision changes", () => {
+        expect(isImportPlanFresh({ readinessPolicy: "READY_ROWS_ONLY", planVersion: "abc123", revision: 3 }, "READY_ROWS_ONLY", 3)).toBe(true);
+        expect(isImportPlanFresh({ readinessPolicy: "READY_ROWS_ONLY", planVersion: "abc123", revision: 3 }, "REQUIRE_ALL_ROWS_READY", 3)).toBe(false);
+        expect(isImportPlanFresh({ readinessPolicy: "READY_ROWS_ONLY", planVersion: "abc123", revision: 3 }, "READY_ROWS_ONLY", 4)).toBe(false);
+        expect(isImportPlanFresh(null, "READY_ROWS_ONLY", 3)).toBe(false);
     });
 
     it("provides explicit student-only and defer-allocation defaults", () => {
@@ -71,14 +71,8 @@ describe("import wizard view model", () => {
         });
     });
 
-    it("keeps payment skip dropdown changes internally consistent", () => {
-        expect(paymentCycleChangeOptions({}, "SKIP_PAYMENTS")).toEqual(paymentSkipOptions());
+    it("keeps payment action changes internally consistent", () => {
         expect(paymentActionChangeOptions({}, "SKIP_PAYMENTS")).toEqual(paymentSkipOptions());
-        expect(paymentCycleChangeOptions({ paymentAction: "SKIP_PAYMENTS" }, "CURRENT_MONTH")).toEqual({
-            paymentCycle: "CURRENT_MONTH",
-            paymentAction: "GENERATE_DUE",
-            paymentHistoryMode: "START_CURRENT_JOINED_CYCLE",
-        });
         expect(paymentActionChangeOptions({ paymentCycle: "SKIP_PAYMENTS" }, "IMPORT_PAID_UNPAID")).toEqual({
             paymentAction: "IMPORT_PAID_UNPAID",
             paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
@@ -268,8 +262,8 @@ describe("import wizard view model", () => {
 
     it("builds step states for manual-first imports", () => {
         const steps = buildImportWizardSteps({
-            commitMode: "SAFE_PARTIAL",
-            preview: { mode: "SAFE_PARTIAL", planVersion: "plan_1", canCommit: true },
+            readinessPolicy: "READY_ROWS_ONLY",
+            plan: { readinessPolicy: "READY_ROWS_ONLY", planVersion: "plan_1", canRun: true },
             detail: {
                 status: "READY_TO_COMMIT",
                 mapping: {
@@ -309,9 +303,45 @@ describe("import wizard view model", () => {
         });
 
         expect(steps.map(step => step.id)).toEqual(["columns", "decisions", "rows", "payments", "preview", "result"]);
-        expect(steps.find(step => step.id === "columns")?.state).toBe("needs_attention");
+        expect(steps.find(step => step.id === "columns")?.state).toBe("completed");
         expect(steps.find(step => step.id === "payments")?.detail).toBe("Skipped for now");
         expect(steps.find(step => step.id === "preview")?.state).toBe("completed");
+    });
+
+    it("treats an intentionally ignored reviewed column as resolved", () => {
+        const steps = buildImportWizardSteps({
+            readinessPolicy: "READY_ROWS_ONLY",
+            detail: {
+                status: "VALIDATED",
+                mapping: {
+                    usedFallback: true,
+                    columnMappings: [
+                        { sourceColumn: "Name", targetField: "student.name", confidence: 100, needsReview: false },
+                        { sourceColumn: "Notes", targetField: "ignore", confidence: 100, needsReview: false },
+                    ],
+                    importOptions: paymentSkipOptions(),
+                },
+                summary: {
+                    readyRows: 1,
+                    warningRows: 0,
+                    needsReviewRows: 0,
+                    blockedRows: 0,
+                    duplicateRows: 0,
+                    conflictRows: 0,
+                    skippedRows: 0,
+                    detectedEntityCounts: {
+                        STUDENT: 1,
+                        SEAT: 0,
+                        SHIFT: 0,
+                        ALLOCATION: 0,
+                        PAYMENT: 0,
+                    },
+                },
+                questions: [],
+            },
+        });
+
+        expect(steps.find(step => step.id === "columns")?.state).toBe("completed");
     });
 
     it("splits payment mapping words consistently", () => {

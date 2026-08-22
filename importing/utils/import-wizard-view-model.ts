@@ -1,12 +1,11 @@
 import type {
-    CommitMode,
     ImportAITrace,
     ImportColumnMapping,
     ImportNormalizedRow,
     ImportOptions,
     ImportSessionSummary,
 } from "@/importing/contracts/import-session.contract";
-import type { ImportPreview } from "@/importing/contracts/import-preview.contract";
+import type { ImportReadinessPolicy } from "@/importing/contracts/import-v2.contract";
 
 export type ImportWizardStepId = "columns" | "rows" | "decisions" | "payments" | "preview" | "result";
 export type ImportWizardStepState = "completed" | "needs_attention" | "pending";
@@ -75,12 +74,18 @@ export const importStatusLabels: Record<string, string> = {
     CONFLICT: "Conflict",
     SKIPPED: "Skipped",
     IMPORTED: "Imported",
+    QUEUED: "Queued",
+    RUNNING: "Running",
+    WAITING_FOR_USER: "Waiting for confirmation",
+    COMPLETED: "Completed",
+    COMPLETED_WITH_ISSUES: "Completed with issues",
+    RETRYABLE_FAILURE: "Retry available",
+    PERMANENT_FAILURE: "Failed",
+    CANCEL_REQUESTED: "Cancelling",
+    SUPERSEDED: "Replaced by newer run",
 };
 
 export const importOptionLabels: Record<string, string> = {
-    CURRENT_MONTH: "Current month",
-    PREVIOUS_MONTH: "Previous month",
-    CUSTOM_PERIOD: "Custom period",
     USE_JOINED_AT_ANNIVERSARY: "Joined date cycle",
     SKIP_PAYMENTS: "Skip payments",
     GENERATE_DUE: "Generate due payments",
@@ -113,10 +118,10 @@ export function labelImportOption(value: string) {
 
 export function statusTone(status: string | undefined | null): ImportWizardTone {
     if (!status) return "default";
-    if (["READY", "READY_TO_COMMIT", "IMPORTED", "COMMITTED", "SUCCESS"].includes(status)) return "success";
-    if (["WARNING", "NEEDS_REVIEW", "DUPLICATE", "VALIDATED", "NEEDS_INFO", "PARTIAL"].includes(status)) return "warning";
-    if (["BLOCKED", "CONFLICT", "FAILED"].includes(status)) return "danger";
-    if (status === "SKIPPED") return "default";
+    if (["READY", "READY_TO_COMMIT", "IMPORTED", "COMMITTED", "SUCCESS", "COMPLETED"].includes(status)) return "success";
+    if (["WARNING", "NEEDS_REVIEW", "DUPLICATE", "VALIDATED", "NEEDS_INFO", "PARTIAL", "COMPLETED_WITH_ISSUES", "RETRYABLE_FAILURE", "CANCEL_REQUESTED"].includes(status)) return "warning";
+    if (["BLOCKED", "CONFLICT", "FAILED", "PERMANENT_FAILURE"].includes(status)) return "danger";
+    if (["SKIPPED", "CANCELLED", "SUPERSEDED"].includes(status)) return "default";
     return "cyan";
 }
 
@@ -142,18 +147,6 @@ export function paymentSkipOptions(): Partial<ImportOptions> {
     return {
         paymentCycle: "SKIP_PAYMENTS",
         paymentAction: "SKIP_PAYMENTS",
-    };
-}
-
-export function paymentCycleChangeOptions(
-    current: ImportOptions | undefined | null,
-    paymentCycle: ImportOptions["paymentCycle"] | ""
-): Partial<ImportOptions> {
-    if (paymentCycle === "SKIP_PAYMENTS") return paymentSkipOptions();
-    return {
-        paymentCycle: paymentCycle || undefined,
-        ...(paymentCycle ? { paymentHistoryMode: current?.paymentHistoryMode ?? "START_CURRENT_JOINED_CYCLE" as const } : {}),
-        ...(current?.paymentAction === "SKIP_PAYMENTS" && paymentCycle ? { paymentAction: "GENERATE_DUE" as const } : {}),
     };
 }
 
@@ -197,13 +190,20 @@ export function isPaymentSkipped(options: ImportOptions | undefined | null) {
 export function isPaymentExplicitlyReady(options: ImportOptions | undefined | null) {
     if (isPaymentSkipped(options)) return true;
     if (!options?.paymentCycle || !options.paymentAction) return false;
-    if (options.paymentCycle === "CUSTOM_PERIOD" && (!options.customPeriodStart || !options.customPeriodEnd)) return false;
     if (options.paymentAction === "IMPORT_PAID_UNPAID") return Boolean(options.paymentMapping?.confirmed);
     return options.paymentAction === "GENERATE_DUE";
 }
 
-export function isPreviewFresh(preview: Pick<ImportPreview, "mode" | "planVersion"> | null | undefined, mode: CommitMode) {
-    return Boolean(preview?.planVersion && preview.mode === mode);
+export function isImportPlanFresh(
+    plan: { planVersion?: string; readinessPolicy?: ImportReadinessPolicy; revision?: number } | null | undefined,
+    readinessPolicy: ImportReadinessPolicy,
+    revision?: number
+) {
+    return Boolean(
+        plan?.planVersion &&
+        plan.readinessPolicy === readinessPolicy &&
+        (revision === undefined || plan.revision === revision)
+    );
 }
 
 export function aiAssistanceState(input: {
@@ -239,7 +239,10 @@ export function aiAssistanceState(input: {
         message: fallbackReason
             ? `${fallbackReason} Deterministic matching is in use.`
             : "Deterministic matching is in use, and manual review remains available.",
-        needsMappingReview: true,
+        // AI availability is advisory. Once every suggestion has been explicitly
+        // reviewed, including columns intentionally mapped to "ignore", the
+        // mapping step is complete even if the original suggestion used fallback.
+        needsMappingReview: input.mappingNeedsReview ?? true,
     };
 }
 
@@ -266,12 +269,12 @@ function detectedPaymentCount(detail: ImportWizardDetailLike) {
 
 export function buildImportWizardSteps(input: {
     detail: ImportWizardDetailLike | null;
-    preview?: Pick<ImportPreview, "canCommit" | "mode" | "planVersion"> | null;
-    commitMode: CommitMode;
+    plan?: { canRun: boolean; readinessPolicy: ImportReadinessPolicy; planVersion: string; revision?: number } | null;
+    readinessPolicy: ImportReadinessPolicy;
 }): ImportWizardStep[] {
     const detail = input.detail;
     const mapping = detail?.mapping?.columnMappings ?? [];
-    const mappingNeedsReview = mapping.some(item => item.needsReview || item.targetField === "ignore");
+    const mappingNeedsReview = mapping.some(item => item.needsReview === true);
     const aiState = aiAssistanceState({
         ai: detail?.mapping?.analysis?.ai,
         usedFallback: detail?.mapping?.usedFallback,
@@ -282,7 +285,7 @@ export function buildImportWizardSteps(input: {
     const attentionRows = attentionRowCount(detail?.summary);
     const paymentCount = detail ? detectedPaymentCount(detail) : 0;
     const paymentReady = paymentCount === 0 || isPaymentExplicitlyReady(detail?.mapping?.importOptions);
-    const previewFresh = isPreviewFresh(input.preview, input.commitMode);
+    const planFresh = isImportPlanFresh(input.plan, input.readinessPolicy);
     const hasCommit = Boolean(detail?.commits?.length || ["COMMITTED", "PARTIAL"].includes(detail?.status ?? ""));
 
     return [
@@ -317,8 +320,8 @@ export function buildImportWizardSteps(input: {
         {
             id: "preview",
             label: "Preview",
-            state: input.preview?.canCommit && previewFresh ? "completed" : "pending",
-            detail: previewFresh ? "Reviewed plan is fresh" : "Refresh final plan",
+            state: input.plan?.canRun && planFresh ? "completed" : "pending",
+            detail: planFresh ? "Reviewed plan is fresh" : "Refresh final plan",
         },
         {
             id: "result",

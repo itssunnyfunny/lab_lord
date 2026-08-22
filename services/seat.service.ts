@@ -122,18 +122,26 @@ export class SeatService {
     }
 
     static async createSeat(userId: string, branchId: string, label: string) {
-        await this.assertBranchAccess(userId, branchId, "manage_branch");
-        await EntitlementService.assertBranchWritable(branchId);
+        return prisma.$transaction(tx =>
+            this.createSeatInTransaction(userId, branchId, label, tx)
+        );
+    }
+
+    static async createSeatInTransaction(
+        userId: string,
+        branchId: string,
+        label: string,
+        tx: Prisma.TransactionClient
+    ) {
+        await StaffService.authorize(userId, branchId, "manage_branch", tx);
+        await EntitlementService.assertBranchWritable(branchId, tx);
         const labelResult = validateSeatLabel(label);
         if (!labelResult.ok) throw new Error(labelResult.error);
 
-        // Check if seat label already exists for this branch to avoid unique constraint error
-        const existingSeat = await prisma.seat.findUnique({
+        const existingSeat = await tx.seat.findFirst({
             where: {
-                branchId_label: {
-                    branchId,
-                    label: labelResult.value,
-                },
+                branchId,
+                label: { equals: labelResult.value, mode: "insensitive" },
             },
         });
 
@@ -141,7 +149,7 @@ export class SeatService {
             throw new Error(`Seat with label "${labelResult.value}" already exists in this branch.`);
         }
 
-        return prisma.seat.create({
+        return tx.seat.create({
             data: {
                 branchId,
                 label: labelResult.value,

@@ -61,8 +61,8 @@ describe("import writable guards", () => {
         const { ImportSessionService } = await import("@/importing/services/import-session.service");
         const mutationCalls = [
             () => ImportSessionService.analyzeSession("user_1", "branch_1", "session_1"),
-            () => ImportSessionService.updateMapping("user_1", "branch_1", "session_1", {}),
-            () => ImportSessionService.updateRows("user_1", "branch_1", "session_1", {}),
+            () => ImportSessionService.updateMapping("user_1", "branch_1", "session_1", { expectedRevision: 0 }),
+            () => ImportSessionService.updateRows("user_1", "branch_1", "session_1", { expectedRevision: 0 }),
         ];
 
         for (const mutate of mutationCalls) {
