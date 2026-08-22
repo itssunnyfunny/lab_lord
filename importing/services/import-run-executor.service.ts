@@ -9,6 +9,7 @@ import { SeatAllocationService } from "@/services/seatAllocation.service";
 import { ShiftService } from "@/services/shift.service";
 import { StudentService } from "@/services/student.service";
 import { StaffService } from "@/services/staff.service";
+import { PaymentResolutionEventSource } from "@/types";
 import type { ClaimedImportRunItem, ImportRunItemResult } from "../contracts/import-v2.contract";
 import { ImportRunRunner } from "./import-runner.service";
 
@@ -384,10 +385,16 @@ async function applyPaymentItem(
             payment.id,
             methodValue,
             referenceId,
-            tx
+            tx,
+            { source: PaymentResolutionEventSource.IMPORT_EXECUTION }
         );
     } else if (statusValue === "WAIVED") {
-        await PaymentService.markPaymentAsWaivedInTransaction(userId, payment.id, tx);
+        await PaymentService.markPaymentAsWaivedInTransaction(
+            userId,
+            payment.id,
+            tx,
+            { source: PaymentResolutionEventSource.IMPORT_EXECUTION }
+        );
     }
     return {
         entityIds: [payment.id],

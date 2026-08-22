@@ -1,8 +1,9 @@
 # Lab Lords: Current Architecture and Implementation State
 
-> Last verified: 2026-08-18
+> Last verified: 2026-08-22
 >
-> Repository anchor: Import Assistance V2 working tree based on commit `f37541e`
+> Repository anchor: payment identity and resolution-event working tree based
+> on commit `27d417e`
 >
 > Scope: repository implementation only
 
@@ -121,7 +122,8 @@ current guarantee.
 
 - Identity and tenancy: `User`, `Organization`, `Branch`, `Staff`, `StaffPermissionOverride`, `StaffInvite`.
 - Operations: `Student`, `Seat`, `Shift`, `MultiShift`, `MultiShiftComponent`, `SeatAllocation`.
-- Branch fee collection: `Payment` and `AuditLog`.
+- Branch fee collection: `Payment`, immutable `PaymentResolutionEvent`, and
+  `AuditLog`.
 - AI: `BranchAIReport` and `MessageDraft`.
 - Imports: `ImportSession`, `ImportRow`, `ImportQuestion`, `ImportCommit`,
   `ImportRowEvaluation`, `ImportPlan`, `ImportRun`, `ImportRunItem`, and
@@ -165,14 +167,19 @@ Authoritative code: `services/student.service.ts`, `services/seat.service.ts`, `
 ### Student fee collection
 
 - Monthly and admission payment records are implemented.
-- Monthly catch-up and replay use the `(studentId, periodStart)` uniqueness
-  constraint and duplicate skipping. That key omits payment type: a nonzero
-  admission row and the first monthly cycle can share the joined-date
-  `periodStart`, causing the first monthly charge to be skipped. Do not treat the
-  present key as proof that both charge types coexist safely.
+- Monthly catch-up and replay use typed
+  `(studentId, type, periodStart)` uniqueness plus duplicate skipping. Admission
+  and the first monthly cycle can safely coexist at the joined-date
+  `periodStart`, while a second monthly row for the same cycle remains blocked.
 - Paid and waived mutations are server-confirmed and paid/waived status is not inferred by the client.
 - Current transitions are not terminal: the service permits `PAID -> WAIVED`
-  and `WAIVED -> PAID`, and a waiver can retain earlier payment metadata.
+  and `WAIVED -> PAID`, and a waiver retains earlier payment metadata.
+- Each real transition to `PAID` or `WAIVED` appends an immutable payment
+  resolution event in the same transaction as the payment mutation and existing
+  audit. Events snapshot the trusted payment and actor/source context; repeated
+  target-status commands create no event, and later corrections preserve every
+  earlier event. The ledger begins with this migration and does not invent
+  events for historical resolutions.
 - Marking paid records the method/reference, writes an audit entry, and removes obsolete AI message drafts for the student.
 - Overdue state is derived centrally using a hard-coded rule of strictly more
   than seven calendar days; the stored `paymentGraceDays` setting is not read.
@@ -398,7 +405,7 @@ The following modules exist but are not referenced by current application routes
 
 | Integration | Repository truth | Deployment state |
 | --- | --- | --- |
-| PostgreSQL / Prisma | Required; schema and 32 timestamped migrations exist | Database target, applied migration set, backups, and health are unknown |
+| PostgreSQL / Prisma | Required; schema and 33 timestamped migrations exist | Database target, applied migration set, backups, and health are unknown |
 | Clerk | Real auth and local-user linking are implemented | Active instance, keys, redirect/origin configuration, and account health are unknown |
 | Gemini | Reports, message drafts, and import mapping are wired with fallbacks | API key, selected model availability, quota, and data-processing configuration are unknown |
 | Razorpay | Server API client, Checkout, signatures, webhook receipts, reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
@@ -411,8 +418,8 @@ Never infer a deployed state from local `.env` files, ignored Vercel metadata, s
 
 ## Verification and test evidence
 
-At this anchor the repository contains 149 Vitest/Playwright test files, 81 API
-route files, 27 core service files under `services/`, and 32 migration
+At this anchor the repository contains 177 Vitest/Playwright test files, 83 API
+route files, 28 core service files under `services/`, and 33 migration
 directories. These counts are orientation data, not invariants.
 
 ### Automated coverage by area

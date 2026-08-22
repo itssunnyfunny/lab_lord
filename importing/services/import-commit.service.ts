@@ -14,6 +14,7 @@ import { buildImportPaymentPlan, importPaymentHistoryMode } from "@/importing/ut
 import { ImportSessionService } from "./import-session.service";
 import type { PaymentMethod } from "@/app/generated/prisma/enums";
 import type { Prisma } from "@/app/generated/prisma/client";
+import { PaymentResolutionEventSource } from "@/types";
 
 const STALE_COMMITTING_AFTER_MS = 30 * 60 * 1000;
 
@@ -356,43 +357,73 @@ export class ImportCommitService {
                         rowSummary.createdAllocations += allocations.length;
                     }
 
-                    if (paymentPlan.enabled && paymentPlan.items.length > 0) {
-                        const paymentIds: string[] = [];
-                        for (const item of paymentPlan.items) {
-                            const payment = await PaymentService.ensureMonthlyPaymentForStudent(userId, branchId, {
-                                studentId: student.id,
-                                periodStart: item.cycle.periodStart,
-                                periodEnd: item.cycle.periodEnd,
-                                dueDate: item.cycle.dueDate,
-                                amount: normalized.payment?.amount ?? normalized.student.monthlyFee,
-                            });
-                            paymentIds.push(payment.id);
-                            createdEntityIds.paymentIds = paymentIds;
-                            rowSummary.generatedPayments++;
-                            if (item.bucket === "historical" && item.status === "PAID") rowSummary.historicalPaid++;
-                            if (item.bucket === "historical" && item.status === "DUE") rowSummary.historicalDue++;
-                            if (item.bucket === "current") rowSummary.currentCyclePayments++;
-
-                            if (item.status === "PAID") {
-                                const method = normalized.payment?.method ?? mapping.importOptions?.paymentMapping?.defaultMethod as PaymentMethod | undefined;
-                                await PaymentService.markPaymentAsPaid(userId, payment.id, method, normalized.payment?.referenceId);
-                                rowSummary.markedPaid++;
-                            }
-                            if (item.status === "WAIVED") {
-                                await PaymentService.markPaymentAsWaived(userId, payment.id);
-                                rowSummary.markedWaived++;
-                            }
-                        }
-                    }
                     rowSummary.skippedHistoricalPayments += paymentPlan.skippedHistoricalPayments;
 
-                    await prisma.importRow.update({
-                        where: { id: row.id },
-                        data: {
-                            status: "IMPORTED",
-                            createdEntityIds: asJson(createdEntityIds),
-                        },
-                    });
+                    if (paymentPlan.enabled && paymentPlan.items.length > 0) {
+                        const paymentAmount = normalized.payment?.amount ?? normalized.student.monthlyFee;
+                        await prisma.$transaction(async tx => {
+                            const paymentIds: string[] = [];
+                            for (const item of paymentPlan.items) {
+                                const payment = await PaymentService.ensureMonthlyPaymentForStudentInTransaction(
+                                    userId,
+                                    branchId,
+                                    {
+                                        studentId: student.id,
+                                        periodStart: item.cycle.periodStart,
+                                        periodEnd: item.cycle.periodEnd,
+                                        dueDate: item.cycle.dueDate,
+                                        amount: paymentAmount,
+                                    },
+                                    tx
+                                );
+                                paymentIds.push(payment.id);
+                                createdEntityIds.paymentIds = paymentIds;
+                                rowSummary.generatedPayments++;
+                                if (item.bucket === "historical" && item.status === "PAID") rowSummary.historicalPaid++;
+                                if (item.bucket === "historical" && item.status === "DUE") rowSummary.historicalDue++;
+                                if (item.bucket === "current") rowSummary.currentCyclePayments++;
+
+                                if (item.status === "PAID") {
+                                    const method = normalized.payment?.method
+                                        ?? mapping.importOptions?.paymentMapping?.defaultMethod as PaymentMethod | undefined;
+                                    await PaymentService.markPaymentAsPaidInTransaction(
+                                        userId,
+                                        payment.id,
+                                        method,
+                                        normalized.payment?.referenceId,
+                                        tx,
+                                        { source: PaymentResolutionEventSource.IMPORT_EXECUTION }
+                                    );
+                                    rowSummary.markedPaid++;
+                                }
+                                if (item.status === "WAIVED") {
+                                    await PaymentService.markPaymentAsWaivedInTransaction(
+                                        userId,
+                                        payment.id,
+                                        tx,
+                                        { source: PaymentResolutionEventSource.IMPORT_EXECUTION }
+                                    );
+                                    rowSummary.markedWaived++;
+                                }
+                            }
+
+                            await tx.importRow.update({
+                                where: { id: row.id },
+                                data: {
+                                    status: "IMPORTED",
+                                    createdEntityIds: asJson(createdEntityIds),
+                                },
+                            });
+                        });
+                    } else {
+                        await prisma.importRow.update({
+                            where: { id: row.id },
+                            data: {
+                                status: "IMPORTED",
+                                createdEntityIds: asJson(createdEntityIds),
+                            },
+                        });
+                    }
                     addCommitSummary(summary, rowSummary);
                 } catch (error) {
                     let cleanupMessage: string | null = null;

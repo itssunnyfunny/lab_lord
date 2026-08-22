@@ -81,6 +81,7 @@ async function main() {
 
     await prisma.messageDraft.deleteMany();
     await prisma.branchAIReport.deleteMany();
+    await prisma.paymentResolutionEvent.deleteMany();
     await prisma.payment.deleteMany();
     await prisma.seatAllocation.deleteMany();
     await prisma.student.deleteMany();

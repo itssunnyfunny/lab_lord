@@ -20,6 +20,24 @@ async function removeFailureInjection() {
     );
 }
 
+async function installFailureInjection() {
+    await testPrisma.$executeRawUnsafe(`
+        CREATE FUNCTION ${FAILURE_FUNCTION}() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.status = 'SUCCEEDED' AND OLD.status = 'RUNNING' THEN
+                RAISE EXCEPTION 'injected failure before durable completion marker';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+    `);
+    await testPrisma.$executeRawUnsafe(`
+        CREATE TRIGGER ${FAILURE_TRIGGER}
+        BEFORE UPDATE ON "ImportRunItem"
+        FOR EACH ROW EXECUTE FUNCTION ${FAILURE_FUNCTION}()
+    `);
+}
+
 describe("Import V2 commit flow integration", () => {
     afterAll(async () => {
         await disconnectDatabase();
@@ -42,14 +60,21 @@ describe("Import V2 commit flow integration", () => {
         restoreTime();
     });
 
-    it("atomically applies a mutation and its marker, then safely replays the item and commit request", async () => {
+    it("atomically applies imported payment events and success markers, then safely replays them", async () => {
         const { user, branch } = await createTestWorld({ defaultFee: 1200 });
         const normalizedData = {
             student: {
                 name: "Aarav Sharma",
                 phone: "9876501001",
-                joinedAt: "2026-01-05T00:00:00.000Z",
+                joinedAt: "2026-06-05T00:00:00.000Z",
                 monthlyFee: 1200,
+            },
+            payment: {
+                amount: 1200,
+                status: "PAID" as const,
+                rawStatus: "paid",
+                method: "UPI" as const,
+                referenceId: "import_txn_1",
             },
         };
         const session = await testPrisma.importSession.create({
@@ -59,25 +84,35 @@ describe("Import V2 commit flow integration", () => {
                 sourceType: "PASTED_TABLE",
                 fileName: "ready-import.csv",
                 engineVersion: 2,
-                goal: "STUDENTS",
+                goal: "FULL",
                 status: "READY_TO_COMMIT",
                 draftRevision: 1,
                 activeEvaluationRevision: 1,
                 sourceConfiguration: { sourceType: "PASTED_TABLE" },
-                fileMeta: { columns: ["Student Name", "Phone", "Joined Date", "Monthly Fee"], rowCount: 1 },
+                fileMeta: { columns: ["Student Name", "Phone", "Joined Date", "Monthly Fee", "Payment Status"], rowCount: 1 },
                 mapping: {
-                    entityTypesDetected: ["STUDENT"],
+                    entityTypesDetected: ["STUDENT", "PAYMENT"],
                     columnMappings: [
                         { sourceColumn: "Student Name", targetField: "student.name", confidence: 100, source: "MANUAL" },
                         { sourceColumn: "Phone", targetField: "student.phone", confidence: 100, source: "MANUAL" },
                         { sourceColumn: "Joined Date", targetField: "student.joinedAt", confidence: 100, source: "MANUAL" },
                         { sourceColumn: "Monthly Fee", targetField: "student.monthlyFee", confidence: 100, source: "MANUAL" },
+                        { sourceColumn: "Payment Status", targetField: "payment.status", confidence: 100, source: "MANUAL" },
                     ],
                     questions: [],
                     warnings: [],
                     importOptions: {
-                        paymentCycle: "SKIP_PAYMENTS",
-                        paymentAction: "SKIP_PAYMENTS",
+                        paymentCycle: "USE_JOINED_AT_ANNIVERSARY",
+                        paymentAction: "IMPORT_PAID_UNPAID",
+                        paymentHistoryMode: "START_CURRENT_JOINED_CYCLE",
+                        paymentMapping: {
+                            confirmed: true,
+                            paidValues: ["paid"],
+                            unpaidValues: ["due"],
+                            waivedValues: [],
+                            unclearValues: [],
+                            defaultMethod: "CASH",
+                        },
                     },
                 },
                 summary: {
@@ -90,7 +125,7 @@ describe("Import V2 commit flow integration", () => {
                     conflictRows: 0,
                     skippedRows: 0,
                     readinessScore: 100,
-                    detectedEntityCounts: { STUDENT: 1, SEAT: 0, SHIFT: 0, ALLOCATION: 0, PAYMENT: 0 },
+                    detectedEntityCounts: { STUDENT: 1, SEAT: 0, SHIFT: 0, ALLOCATION: 0, PAYMENT: 1 },
                     warnings: [],
                     openQuestions: 0,
                     attention: [],
@@ -104,8 +139,9 @@ describe("Import V2 commit flow integration", () => {
                 rawData: {
                     "Student Name": "Aarav Sharma",
                     Phone: "9876501001",
-                    "Joined Date": "2026-01-05",
+                    "Joined Date": "2026-06-05",
                     "Monthly Fee": "1200",
+                    "Payment Status": "paid",
                 },
                 mappedData: normalizedData,
                 normalizedData,
@@ -151,39 +187,25 @@ describe("Import V2 commit flow integration", () => {
         const run = await ImportRunService.createOrGetRun(request);
         await expect(ImportRunService.createOrGetRun(request)).resolves.toMatchObject({ id: run.id });
 
-        const [claimed] = await ImportRunRunner.claimBatch({
+        const [studentItem] = await ImportRunRunner.claimBatch({
             importRunId: run.id,
             workerId: "integration-worker-0",
             limit: 25,
         });
-        expect(claimed).toMatchObject({ kind: "STUDENT", attemptCount: 1 });
+        expect(studentItem).toMatchObject({ kind: "STUDENT", attemptCount: 1 });
 
-        await testPrisma.$executeRawUnsafe(`
-            CREATE FUNCTION ${FAILURE_FUNCTION}() RETURNS trigger AS $$
-            BEGIN
-                IF NEW.status = 'SUCCEEDED' AND OLD.status = 'RUNNING' THEN
-                    RAISE EXCEPTION 'injected failure before durable completion marker';
-                END IF;
-                RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql
-        `);
-        await testPrisma.$executeRawUnsafe(`
-            CREATE TRIGGER ${FAILURE_TRIGGER}
-            BEFORE UPDATE ON "ImportRunItem"
-            FOR EACH ROW EXECUTE FUNCTION ${FAILURE_FUNCTION}()
-        `);
+        await installFailureInjection();
 
-        await expect(ImportRunExecutor.executeClaimedItem(claimed))
+        await expect(ImportRunExecutor.executeClaimedItem(studentItem))
             .rejects.toThrow("injected failure before durable completion marker");
         expect(await testPrisma.student.count({ where: { branchId: branch.id } })).toBe(0);
-        await expect(testPrisma.importRunItem.findUniqueOrThrow({ where: { id: claimed.id } }))
+        await expect(testPrisma.importRunItem.findUniqueOrThrow({ where: { id: studentItem.id } }))
             .resolves.toMatchObject({ status: "RUNNING", attemptCount: 1 });
 
         await removeFailureInjection();
-        await expect(ImportRunExecutor.executeClaimedItem(claimed))
+        await expect(ImportRunExecutor.executeClaimedItem(studentItem))
             .resolves.toEqual({ alreadyCompleted: false });
-        await expect(ImportRunExecutor.executeClaimedItem(claimed))
+        await expect(ImportRunExecutor.executeClaimedItem(studentItem))
             .resolves.toEqual({ alreadyCompleted: true });
 
         const student = await testPrisma.student.findFirstOrThrow({
@@ -192,23 +214,87 @@ describe("Import V2 commit flow integration", () => {
         expect(student.phone).toBe("+91 98765 01001");
         expect(await testPrisma.student.count({ where: { branchId: branch.id } })).toBe(1);
 
-        const completedItem = await testPrisma.importRunItem.findUniqueOrThrow({ where: { id: claimed.id } });
-        expect(completedItem).toMatchObject({ status: "SUCCEEDED", payload: null });
-        expect(completedItem.result).toMatchObject({ entityIds: [student.id], counts: { students: 1 } });
+        const completedStudentItem = await testPrisma.importRunItem.findUniqueOrThrow({ where: { id: studentItem.id } });
+        expect(completedStudentItem).toMatchObject({ status: "SUCCEEDED", payload: null });
+        expect(completedStudentItem.result).toMatchObject({ entityIds: [student.id], counts: { students: 1 } });
+
+        const [paymentItem] = await ImportRunRunner.claimBatch({
+            importRunId: run.id,
+            workerId: "integration-worker-1",
+            limit: 25,
+        });
+        expect(paymentItem).toMatchObject({ kind: "PAYMENT_CYCLE", attemptCount: 1 });
+
+        await installFailureInjection();
+        await expect(ImportRunExecutor.executeClaimedItem(paymentItem))
+            .rejects.toThrow("injected failure before durable completion marker");
+
+        expect(await testPrisma.payment.count({ where: { branchId: branch.id } })).toBe(0);
+        expect(await testPrisma.paymentResolutionEvent.count({ where: { branchId: branch.id } })).toBe(0);
+        expect(await testPrisma.auditLog.count({
+            where: { branchId: branch.id, action: "PAYMENT_MARKED_PAID" },
+        })).toBe(0);
+        await expect(testPrisma.importRunItem.findUniqueOrThrow({ where: { id: paymentItem.id } }))
+            .resolves.toMatchObject({ status: "RUNNING", attemptCount: 1 });
+
+        await removeFailureInjection();
+        await expect(ImportRunExecutor.executeClaimedItem(paymentItem))
+            .resolves.toEqual({ alreadyCompleted: false });
+        await expect(ImportRunExecutor.executeClaimedItem(paymentItem))
+            .resolves.toEqual({ alreadyCompleted: true });
+
+        const payment = await testPrisma.payment.findFirstOrThrow({
+            where: { branchId: branch.id, studentId: student.id, type: "MONTHLY" },
+        });
+        expect(payment).toMatchObject({
+            amount: 1200,
+            status: "PAID",
+            paymentMethod: "UPI",
+            referenceId: "import_txn_1",
+        });
+        expect(await testPrisma.payment.count({ where: { branchId: branch.id } })).toBe(1);
+        expect(await testPrisma.auditLog.count({
+            where: { paymentId: payment.id, action: "PAYMENT_MARKED_PAID" },
+        })).toBe(1);
+
+        const [resolutionEvent] = await testPrisma.paymentResolutionEvent.findMany({
+            where: { paymentId: payment.id },
+            orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+        });
+        expect(resolutionEvent).toMatchObject({
+            paymentId: payment.id,
+            branchId: branch.id,
+            actorUserId: user.id,
+            source: "IMPORT_EXECUTION",
+            fromStatus: "DUE",
+            toStatus: "PAID",
+            amount: 1200,
+            paymentType: "MONTHLY",
+            periodStart: payment.periodStart,
+            dueDate: payment.dueDate,
+            paidAt: payment.paidAt,
+            paymentMethod: "UPI",
+            referenceId: "import_txn_1",
+        });
+        expect(await testPrisma.paymentResolutionEvent.count({ where: { paymentId: payment.id } })).toBe(1);
+
+        const completedPaymentItem = await testPrisma.importRunItem.findUniqueOrThrow({ where: { id: paymentItem.id } });
+        expect(completedPaymentItem).toMatchObject({ status: "SUCCEEDED", payload: null });
+        expect(completedPaymentItem.result).toMatchObject({ entityIds: [payment.id], counts: { payments: 1, paid: 1 } });
 
         const completedRun = await testPrisma.importRun.findUniqueOrThrow({ where: { id: run.id } });
         expect(completedRun).toMatchObject({
             status: "COMPLETED",
-            totalItems: 1,
-            completedItems: 1,
-            succeededItems: 1,
+            totalItems: 2,
+            completedItems: 2,
+            succeededItems: 2,
         });
         await expect(testPrisma.importSession.findUniqueOrThrow({ where: { id: session.id } }))
             .resolves.toMatchObject({ status: "COMMITTED" });
         await expect(testPrisma.importRow.findUniqueOrThrow({ where: { id: row.id } }))
             .resolves.toMatchObject({
                 status: "IMPORTED",
-                createdEntityIds: { studentId: student.id },
+                createdEntityIds: { studentId: student.id, paymentIds: [payment.id] },
             });
     });
 });

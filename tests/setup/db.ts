@@ -43,6 +43,7 @@ export async function resetDatabase() {
   // CASCADE handles FK dependencies automatically, so order doesn't matter.
   await testPrisma.$executeRawUnsafe(`
     TRUNCATE TABLE
+      "PaymentResolutionEvent",
       "AuditLog",
       "OrganizationSubscriptionInvoice",
       "OrganizationBillingChange",

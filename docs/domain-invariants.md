@@ -219,27 +219,30 @@ Every statement uses one of these labels:
   start before `billingStartAt`, and includes only active students.
   (`utils/studentBillingCycles.ts`, `services/payment.service.ts`, billing-cycle
   and payment tests)
-- **Must preserve—enforced:** Monthly generation and catch-up are retry-safe for
-  the current monthly key through unique `(studentId, periodStart)` plus
-  duplicate skipping. A rerun must not create another monthly charge for the
-  same cycle. (`prisma/schema.prisma`, payment integration tests)
+- **Must preserve—enforced:** A payment is database-unique by
+  `(studentId, type, periodStart)`. An admission charge and the first monthly
+  charge may therefore coexist at the joined-date period start, while duplicate
+  monthly charges for one student and cycle remain forbidden. Monthly
+  generation and catch-up remain retry-safe through this typed key plus
+  duplicate skipping. (`prisma/schema.prisma`, payment integration tests)
 - **Must preserve—enforced:** Payment states are `DUE`, `PAID`, and `WAIVED`.
-  Repeating a mutation to its already-current target state is idempotent. The
-  first effective transition records an audit and updates branch activity;
-  marking paid also removes follow-up message drafts.
-  (`services/payment.service.ts`, payment integration tests)
-- **Known discrepancy—do not rely on:** Admission and first monthly payment use
-  the same joined-date `periodStart`, while the database unique key omits
-  payment type. A nonzero admission payment can therefore cause the first
-  monthly payment to be silently skipped by duplicate-tolerant generation.
-  This is a likely billing defect, not a valid one-charge invariant.
-  (`prisma/schema.prisma`, `services/student.service.ts`,
-  `utils/studentBillingCycles.ts`, `services/payment.service.ts`)
-- **Known discrepancy—do not rely on:** `PAID` and `WAIVED` are not terminal in
-  the current service. It permits `PAID -> WAIVED` and `WAIVED -> PAID`, and a
-  waiver after payment can leave `paidAt`, method, and reference populated.
-  Do not build reporting or integrations on those transitions until the state
-  machine and field-clearing behavior are explicitly decided.
+  Effective transitions are `DUE -> PAID`, `DUE -> WAIVED`, `PAID -> WAIVED`,
+  and `WAIVED -> PAID`; repeating a mutation to its current target state is an
+  idempotent no-op. A waiver after payment retains the existing `paidAt`,
+  method, and reference metadata. Marking paid also removes follow-up message
+  drafts. (`services/payment.service.ts`, payment integration tests)
+- **Must preserve—enforced:** Every effective transition to `PAID` or `WAIVED`
+  through a supported payment, student-inactivation, or import path appends one
+  immutable `PaymentResolutionEvent` in the same transaction as the payment
+  mutation and existing `AuditLog`. The event derives branch ownership and its
+  payment snapshot from trusted before/after payment rows. Corrections append a
+  new event without rewriting prior events, while a target-status no-op creates
+  neither an audit nor an event. The restrictive payment and branch relations
+  prevent deleting domain history through those parents. Historical resolutions
+  from before the event-ledger migration are deliberately not backfilled as if
+  their original transition facts were known.
+  (`services/paymentResolutionEvent.service.ts`, payment, student, and import
+  integration tests)
 - **Must preserve—enforced:** “Overdue” is derived rather than stored. Current
   logic considers a payment overdue only while `DUE` and strictly more than
   seven calendar days past its due date. `WAIVED` payments are excluded from
