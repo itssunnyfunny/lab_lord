@@ -277,9 +277,12 @@ describe("StudentService Integration", () => {
       expect(updated?.endDate).not.toBeNull();
     });
 
-    it("dueResolution=PAID marks DUE payments as PAID", async () => {
+    it("dueResolution=PAID marks DUE payments as PAID and records their resolution snapshot", async () => {
       const { user, branch } = await createTestWorld();
       const student = await createStudent({ branchId: branch.id });
+      const periodStart = new Date("2026-02-01T00:00:00.000Z");
+      const periodEnd = new Date("2026-02-28T23:59:59.999Z");
+      const dueDate = new Date("2026-02-05T00:00:00.000Z");
       const createdPayment = await testPrisma.payment.create({
         data: {
           branchId: branch.id,
@@ -287,9 +290,9 @@ describe("StudentService Integration", () => {
           amount: 1000,
           status: "DUE",
           type: "MONTHLY",
-          dueDate: new Date(),
-          periodStart: new Date(),
-          periodEnd: new Date(),
+          dueDate,
+          periodStart,
+          periodEnd,
         },
       });
 
@@ -297,6 +300,9 @@ describe("StudentService Integration", () => {
 
       const payment = await testPrisma.payment.findFirst({ where: { studentId: student.id } });
       const auditLog = await testPrisma.auditLog.findFirst({ where: { paymentId: createdPayment.id } });
+      const event = await testPrisma.paymentResolutionEvent.findFirst({
+        where: { paymentId: createdPayment.id },
+      });
       expect(payment?.status).toBe("PAID");
       expect(auditLog?.action).toBe("PAYMENT_MARKED_PAID");
       expect(auditLog?.details).toMatchObject({
@@ -306,12 +312,30 @@ describe("StudentService Integration", () => {
         method: null,
         referenceId: null,
       });
+      expect(event).toMatchObject({
+        paymentId: createdPayment.id,
+        branchId: branch.id,
+        actorUserId: user.id,
+        source: "STUDENT_INACTIVATION",
+        fromStatus: "DUE",
+        toStatus: "PAID",
+        amount: 1000,
+        paymentType: "MONTHLY",
+        periodStart,
+        dueDate,
+        paidAt: payment?.paidAt,
+        paymentMethod: null,
+        referenceId: null,
+        details: null,
+      });
+      expect(event?.paidAt).not.toBeNull();
+      expect(event?.occurredAt.getTime()).toBe(event?.paidAt?.getTime());
     });
 
-    it("dueResolution=KEEP leaves DUE payments untouched", async () => {
+    it("dueResolution=KEEP leaves DUE payments untouched and records no resolution event", async () => {
       const { user, branch } = await createTestWorld();
       const student = await createStudent({ branchId: branch.id });
-      await testPrisma.payment.create({
+      const payment = await testPrisma.payment.create({
         data: {
           branchId: branch.id,
           studentId: student.id,
@@ -326,13 +350,20 @@ describe("StudentService Integration", () => {
 
       await StudentService.updateStudentStatus(user.id, student.id, "INACTIVE", "KEEP");
 
-      const payment = await testPrisma.payment.findFirst({ where: { studentId: student.id } });
-      expect(payment?.status).toBe("DUE");
+      const unchangedPayment = await testPrisma.payment.findUnique({ where: { id: payment.id } });
+      expect(unchangedPayment?.status).toBe("DUE");
+      await expect(
+        testPrisma.paymentResolutionEvent.count({ where: { paymentId: payment.id } })
+      ).resolves.toBe(0);
     });
 
-    it("dueResolution=WAIVED marks DUE payments as WAIVED", async () => {
+    it("dueResolution=WAIVED marks DUE payments as WAIVED and records their resolution snapshot", async () => {
       const { user, branch } = await createTestWorld();
       const student = await createStudent({ branchId: branch.id });
+      const periodStart = new Date("2026-03-01T00:00:00.000Z");
+      const periodEnd = new Date("2026-03-31T23:59:59.999Z");
+      const dueDate = new Date("2026-03-05T00:00:00.000Z");
+      const retainedPaidAt = new Date("2026-03-04T08:30:00.000Z");
       const createdPayment = await testPrisma.payment.create({
         data: {
           branchId: branch.id,
@@ -340,9 +371,12 @@ describe("StudentService Integration", () => {
           amount: 1000,
           status: "DUE",
           type: "MONTHLY",
-          dueDate: new Date(),
-          periodStart: new Date(),
-          periodEnd: new Date(),
+          dueDate,
+          periodStart,
+          periodEnd,
+          paidAt: retainedPaidAt,
+          paymentMethod: "UPI",
+          referenceId: "retained-reference",
         },
       });
 
@@ -350,6 +384,9 @@ describe("StudentService Integration", () => {
 
       const payment = await testPrisma.payment.findFirst({ where: { studentId: student.id } });
       const auditLog = await testPrisma.auditLog.findFirst({ where: { paymentId: createdPayment.id } });
+      const event = await testPrisma.paymentResolutionEvent.findFirst({
+        where: { paymentId: createdPayment.id },
+      });
       expect(payment?.status).toBe("WAIVED");
       expect(auditLog?.action).toBe("PAYMENT_WAIVED");
       expect(auditLog?.details).toMatchObject({
@@ -357,6 +394,170 @@ describe("StudentService Integration", () => {
         to: "WAIVED",
         amount: 1000,
       });
+      expect(event).toMatchObject({
+        paymentId: createdPayment.id,
+        branchId: branch.id,
+        actorUserId: user.id,
+        source: "STUDENT_INACTIVATION",
+        fromStatus: "DUE",
+        toStatus: "WAIVED",
+        amount: 1000,
+        paymentType: "MONTHLY",
+        periodStart,
+        dueDate,
+        paidAt: retainedPaidAt,
+        paymentMethod: "UPI",
+        referenceId: "retained-reference",
+        details: null,
+      });
+    });
+
+    it("records exactly one resolution event for each DUE payment", async () => {
+      const { user, branch } = await createTestWorld();
+      const student = await createStudent({ branchId: branch.id });
+      const payments = await Promise.all([
+        createPayment({
+          branchId: branch.id,
+          studentId: student.id,
+          amount: 900,
+          dueDate: new Date("2026-01-05T00:00:00.000Z"),
+          periodStart: new Date("2026-01-01T00:00:00.000Z"),
+          periodEnd: new Date("2026-01-31T23:59:59.999Z"),
+        }),
+        createPayment({
+          branchId: branch.id,
+          studentId: student.id,
+          amount: 1000,
+          dueDate: new Date("2026-02-05T00:00:00.000Z"),
+          periodStart: new Date("2026-02-01T00:00:00.000Z"),
+          periodEnd: new Date("2026-02-28T23:59:59.999Z"),
+        }),
+        createPayment({
+          branchId: branch.id,
+          studentId: student.id,
+          amount: 1100,
+          dueDate: new Date("2026-03-05T00:00:00.000Z"),
+          periodStart: new Date("2026-03-01T00:00:00.000Z"),
+          periodEnd: new Date("2026-03-31T23:59:59.999Z"),
+        }),
+      ]);
+
+      await StudentService.updateStudentStatus(user.id, student.id, "INACTIVE", "WAIVED");
+
+      const events = await testPrisma.paymentResolutionEvent.findMany({
+        where: { paymentId: { in: payments.map(payment => payment.id) } },
+      });
+      expect(events).toHaveLength(payments.length);
+      expect(new Set(events.map(event => event.paymentId))).toEqual(
+        new Set(payments.map(payment => payment.id))
+      );
+      expect(events).toEqual(
+        expect.arrayContaining(
+          payments.map(payment => expect.objectContaining({
+            paymentId: payment.id,
+            source: "STUDENT_INACTIVATION",
+            fromStatus: "DUE",
+            toStatus: "WAIVED",
+          }))
+        )
+      );
+    });
+
+    it("does not duplicate resolution events or payment audits when the request is repeated", async () => {
+      const { user, branch } = await createTestWorld();
+      const student = await createStudent({ branchId: branch.id });
+      const payment = await createPayment({
+        branchId: branch.id,
+        studentId: student.id,
+        dueDate: new Date("2026-04-05T00:00:00.000Z"),
+        periodStart: new Date("2026-04-01T00:00:00.000Z"),
+        periodEnd: new Date("2026-04-30T23:59:59.999Z"),
+      });
+
+      await StudentService.updateStudentStatus(user.id, student.id, "INACTIVE", "PAID");
+      await StudentService.updateStudentStatus(user.id, student.id, "INACTIVE", "PAID");
+
+      await expect(
+        testPrisma.paymentResolutionEvent.count({ where: { paymentId: payment.id } })
+      ).resolves.toBe(1);
+      await expect(
+        testPrisma.auditLog.count({ where: { paymentId: payment.id } })
+      ).resolves.toBe(1);
+    });
+
+    it("rolls back student, allocation, payment, audit, and event writes if event insertion fails", async () => {
+      const { user, branch, seat, shift } = await createTestWorld();
+      const student = await createStudent({ branchId: branch.id });
+      const allocation = await createAllocation({
+        seatId: seat.id,
+        studentId: student.id,
+        shiftId: shift.id,
+      });
+      const payment = await createPayment({
+        branchId: branch.id,
+        studentId: student.id,
+        dueDate: new Date("2026-05-05T00:00:00.000Z"),
+        periodStart: new Date("2026-05-01T00:00:00.000Z"),
+        periodEnd: new Date("2026-05-31T23:59:59.999Z"),
+      });
+
+      await testPrisma.$executeRawUnsafe(`
+        ALTER TABLE "PaymentResolutionEvent"
+        ADD CONSTRAINT "PaymentResolutionEvent_test_insert_failure"
+        CHECK (false) NOT VALID
+      `);
+
+      try {
+        await expect(
+          StudentService.updateStudentStatus(user.id, student.id, "INACTIVE", "PAID")
+        ).rejects.toThrow();
+      } finally {
+        await testPrisma.$executeRawUnsafe(`
+          ALTER TABLE "PaymentResolutionEvent"
+          DROP CONSTRAINT IF EXISTS "PaymentResolutionEvent_test_insert_failure"
+        `);
+      }
+
+      await expect(
+        testPrisma.student.findUnique({ where: { id: student.id } })
+      ).resolves.toMatchObject({ status: "ACTIVE" });
+      await expect(
+        testPrisma.seatAllocation.findUnique({ where: { id: allocation.id } })
+      ).resolves.toMatchObject({ endDate: null });
+      await expect(
+        testPrisma.payment.findUnique({ where: { id: payment.id } })
+      ).resolves.toMatchObject({ status: "DUE", paidAt: null });
+      await expect(
+        testPrisma.auditLog.count({ where: { paymentId: payment.id } })
+      ).resolves.toBe(0);
+      await expect(
+        testPrisma.paymentResolutionEvent.count({ where: { paymentId: payment.id } })
+      ).resolves.toBe(0);
+    });
+
+    it("does not resolve a corrupt payment whose branch differs from its student", async () => {
+      const { user, branch } = await createTestWorld();
+      const { branch: foreignBranch } = await createTestWorld();
+      const student = await createStudent({ branchId: branch.id });
+      const corruptPayment = await createPayment({
+        branchId: foreignBranch.id,
+        studentId: student.id,
+        dueDate: new Date("2026-06-05T00:00:00.000Z"),
+        periodStart: new Date("2026-06-01T00:00:00.000Z"),
+        periodEnd: new Date("2026-06-30T23:59:59.999Z"),
+      });
+
+      await StudentService.updateStudentStatus(user.id, student.id, "INACTIVE", "PAID");
+
+      await expect(
+        testPrisma.payment.findUnique({ where: { id: corruptPayment.id } })
+      ).resolves.toMatchObject({ status: "DUE", paidAt: null });
+      await expect(
+        testPrisma.auditLog.count({ where: { paymentId: corruptPayment.id } })
+      ).resolves.toBe(0);
+      await expect(
+        testPrisma.paymentResolutionEvent.count({ where: { paymentId: corruptPayment.id } })
+      ).resolves.toBe(0);
     });
 
     it("rejects an invalid dueResolution without payment or audit mutations", async () => {
@@ -387,6 +588,9 @@ describe("StudentService Integration", () => {
       ).resolves.toMatchObject({ status: "DUE" });
       await expect(
         testPrisma.auditLog.count({ where: { paymentId: payment.id } })
+      ).resolves.toBe(0);
+      await expect(
+        testPrisma.paymentResolutionEvent.count({ where: { paymentId: payment.id } })
       ).resolves.toBe(0);
     });
 
@@ -427,9 +631,13 @@ describe("StudentService Integration", () => {
       const unchangedPayment = await testPrisma.payment.findUnique({ where: { id: payment.id } });
       const unchangedStudent = await testPrisma.student.findUnique({ where: { id: student.id } });
       const auditCount = await testPrisma.auditLog.count({ where: { paymentId: payment.id } });
+      const eventCount = await testPrisma.paymentResolutionEvent.count({
+        where: { paymentId: payment.id },
+      });
       expect(unchangedPayment?.status).toBe("DUE");
       expect(unchangedStudent?.status).toBe("ACTIVE");
       expect(auditCount).toBe(0);
+      expect(eventCount).toBe(0);
     });
 
   describe("getStudentsByBranch", () => {

@@ -1,12 +1,22 @@
 import { prisma } from "@/lib/prisma";
 import { MESSAGE_DRAFT_ACTION_PREFIX } from "@/lib/messageDrafts";
 import { StaffService } from "@/services/staff.service";
-import { PaymentStatus, StudentStatus, PaymentType, PaymentMethod } from "@/types";
+import {
+    PaymentMethod,
+    PaymentResolutionEventSource,
+    PaymentStatus,
+    PaymentType,
+    StudentStatus,
+} from "@/types";
 import type { StaffAction } from "@/types";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { startOfDay, startOfMonth, endOfMonth } from "date-fns";
 import { dueCyclesThrough } from "@/utils/studentBillingCycles";
 import { EntitlementService } from "@/services/entitlement.service";
+import {
+    recordPaymentResolutionEvent,
+    type PaymentResolutionContext,
+} from "@/services/paymentResolutionEvent.service";
 import {
     DEFAULT_PAGE_SIZE,
     pageFromRows,
@@ -43,6 +53,9 @@ type EnsureMonthlyPaymentInput = {
 
 const STUDENT_GENERATION_BATCH_SIZE = 250;
 const PAYMENT_INSERT_BATCH_SIZE = 1000;
+const PAYMENT_ACTION_RESOLUTION = {
+    source: PaymentResolutionEventSource.PAYMENT_ACTION,
+} satisfies PaymentResolutionContext;
 
 type PaymentGenerationSummary = {
     generatedCount: number;
@@ -84,6 +97,56 @@ export class PaymentService {
         }
 
         return branch;
+    }
+
+    private static async loadAuthorizedPaymentForResolution(
+        userId: string,
+        paymentId: string,
+        action: StaffAction,
+        tx: Prisma.TransactionClient
+    ) {
+        const initiallyResolved = await tx.payment.findUnique({ where: { id: paymentId } });
+        if (!initiallyResolved) throw new Error("Payment not found");
+
+        await this.authorizePaymentResolution(
+            userId,
+            initiallyResolved.branchId,
+            action,
+            tx
+        );
+        await EntitlementService.assertBranchWritable(initiallyResolved.branchId, tx);
+
+        await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE
+        `;
+        const payment = await tx.payment.findUnique({ where: { id: paymentId } });
+        if (!payment) throw new Error("Payment not found");
+
+        if (payment.branchId !== initiallyResolved.branchId) {
+            await this.authorizePaymentResolution(userId, payment.branchId, action, tx);
+            await EntitlementService.assertBranchWritable(payment.branchId, tx);
+        }
+
+        return payment;
+    }
+
+    private static async authorizePaymentResolution(
+        userId: string,
+        branchId: string,
+        action: StaffAction,
+        tx: Prisma.TransactionClient
+    ) {
+        try {
+            await StaffService.authorize(userId, branchId, action, tx);
+        } catch (error) {
+            if (
+                error instanceof Error
+                && error.message.includes("Not a staff member of this branch")
+            ) {
+                throw new Error("Payment not found");
+            }
+            throw error;
+        }
     }
 
     private static async createPaymentBatch(
@@ -498,7 +561,14 @@ export class PaymentService {
         referenceId?: string,
     ) {
         return prisma.$transaction(tx =>
-            this.markPaymentAsPaidInTransaction(userId, paymentId, method, referenceId, tx)
+            this.markPaymentAsPaidInTransaction(
+                userId,
+                paymentId,
+                method,
+                referenceId,
+                tx,
+                PAYMENT_ACTION_RESOLUTION
+            )
         );
     }
 
@@ -507,58 +577,66 @@ export class PaymentService {
         paymentId: string,
         method: PaymentMethod | undefined,
         referenceId: string | undefined,
-        tx: Prisma.TransactionClient
+        tx: Prisma.TransactionClient,
+        resolutionContext: PaymentResolutionContext
     ) {
-            const payment = await tx.payment.findUnique({ where: { id: paymentId } });
-            if (!payment) throw new Error("Payment not found");
-            await StaffService.authorize(userId, payment.branchId, "mark_payment_paid", tx);
-            await EntitlementService.assertBranchWritable(payment.branchId, tx);
-            if (payment.status === PaymentStatus.PAID) return payment;
+        const payment = await this.loadAuthorizedPaymentForResolution(
+            userId,
+            paymentId,
+            "mark_payment_paid",
+            tx
+        );
+        if (payment.status === PaymentStatus.PAID) return payment;
+        const transitionAt = new Date();
 
-            // 1. Mark as PAID (write-once: method + referenceId set only here)
-            const updatedPayment = await tx.payment.update({
-                where: { id: paymentId },
-                data: {
-                    status: PaymentStatus.PAID,
-                    paidAt: new Date(),
-                    ...(method      ? { paymentMethod: method } : {}),
-                    ...(referenceId ? { referenceId }           : {}),
-                },
-            });
+        const updatedPayment = await tx.payment.update({
+            where: { id: paymentId },
+            data: {
+                status: PaymentStatus.PAID,
+                paidAt: transitionAt,
+                ...(method ? { paymentMethod: method } : {}),
+                ...(referenceId ? { referenceId } : {}),
+            },
+        });
 
-            // 2. Delete associated MessageDrafts (stop pestering once paid)
-            await tx.messageDraft.deleteMany({
-                where: {
-                    studentId: payment.studentId,
-                    branchId: payment.branchId,
-                    action: { startsWith: MESSAGE_DRAFT_ACTION_PREFIX }
+        await tx.messageDraft.deleteMany({
+            where: {
+                studentId: payment.studentId,
+                branchId: payment.branchId,
+                action: { startsWith: MESSAGE_DRAFT_ACTION_PREFIX },
+            },
+        });
+
+        await tx.branch.update({
+            where: { id: payment.branchId },
+            data: { lastDataChange: transitionAt },
+        });
+
+        await tx.auditLog.create({
+            data: {
+                branchId: payment.branchId,
+                userId,
+                action: "PAYMENT_MARKED_PAID",
+                paymentId: payment.id,
+                details: {
+                    from: payment.status,
+                    to: "PAID",
+                    amount: payment.amount,
+                    method: method ?? null,
+                    referenceId: referenceId ?? null,
                 }
-            });
+            },
+        });
 
-            // 3. Update Branch lastDataChange
-            await tx.branch.update({
-                where: { id: payment.branchId },
-                data: { lastDataChange: new Date() }
-            });
+        await recordPaymentResolutionEvent(tx, {
+            before: payment,
+            after: updatedPayment,
+            actorUserId: userId,
+            occurredAt: transitionAt,
+            ...resolutionContext,
+        });
 
-            // 4. Create Audit Log
-            await tx.auditLog.create({
-                data: {
-                    branchId: payment.branchId,
-                    userId,
-                    action: "PAYMENT_MARKED_PAID",
-                    paymentId: payment.id,
-                    details: {
-                        from: payment.status,
-                        to: "PAID",
-                        amount: payment.amount,
-                        method: method ?? null,
-                        referenceId: referenceId ?? null,
-                    }
-                }
-            });
-
-            return updatedPayment;
+        return updatedPayment;
     }
 
     /**
@@ -566,50 +644,69 @@ export class PaymentService {
      * WAIVED = owner consciously decided not to pursue this debt.
      * Preserves history; excluded from overdue/due analytics.
      */
-    static async markPaymentAsWaived(userId: string, paymentId: string) {
+    static async markPaymentAsWaived(
+        userId: string,
+        paymentId: string
+    ) {
         return prisma.$transaction(tx =>
-            this.markPaymentAsWaivedInTransaction(userId, paymentId, tx)
+            this.markPaymentAsWaivedInTransaction(
+                userId,
+                paymentId,
+                tx,
+                PAYMENT_ACTION_RESOLUTION
+            )
         );
     }
 
     static async markPaymentAsWaivedInTransaction(
         userId: string,
         paymentId: string,
-        tx: Prisma.TransactionClient
+        tx: Prisma.TransactionClient,
+        resolutionContext: PaymentResolutionContext
     ) {
-            const payment = await tx.payment.findUnique({ where: { id: paymentId } });
-            if (!payment) throw new Error("Payment not found");
-            await StaffService.authorize(userId, payment.branchId, "waive_payments", tx);
-            await EntitlementService.assertBranchWritable(payment.branchId, tx);
-            if (payment.status === PaymentStatus.WAIVED) return payment;
+        const payment = await this.loadAuthorizedPaymentForResolution(
+            userId,
+            paymentId,
+            "waive_payments",
+            tx
+        );
+        if (payment.status === PaymentStatus.WAIVED) return payment;
+        const transitionAt = new Date();
 
-            const updatedPayment = await tx.payment.update({
-                where: { id: paymentId },
-                data: {
-                    status: PaymentStatus.WAIVED,
+        const updatedPayment = await tx.payment.update({
+            where: { id: paymentId },
+            data: {
+                status: PaymentStatus.WAIVED,
+            },
+        });
+
+        await tx.branch.update({
+            where: { id: payment.branchId },
+            data: { lastDataChange: transitionAt },
+        });
+
+        await tx.auditLog.create({
+            data: {
+                branchId: payment.branchId,
+                userId,
+                action: "PAYMENT_WAIVED",
+                paymentId: payment.id,
+                details: {
+                    from: payment.status,
+                    to: "WAIVED",
+                    amount: payment.amount,
                 },
-            });
+            },
+        });
 
-            await tx.branch.update({
-                where: { id: payment.branchId },
-                data: { lastDataChange: new Date() }
-            });
+        await recordPaymentResolutionEvent(tx, {
+            before: payment,
+            after: updatedPayment,
+            actorUserId: userId,
+            occurredAt: transitionAt,
+            ...resolutionContext,
+        });
 
-            // Create Audit Log
-            await tx.auditLog.create({
-                data: {
-                    branchId: payment.branchId,
-                    userId,
-                    action: "PAYMENT_WAIVED",
-                    paymentId: payment.id,
-                    details: {
-                        from: payment.status,
-                        to: "WAIVED",
-                        amount: payment.amount
-                    }
-                }
-            });
-
-            return updatedPayment;
+        return updatedPayment;
     }
 }

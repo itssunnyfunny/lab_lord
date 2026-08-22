@@ -175,6 +175,9 @@ export async function createPayment(overrides: {
   amount?: number;
   status?: "DUE" | "PAID" | "WAIVED";
   type?: "MONTHLY" | "ADMISSION";
+  paidAt?: Date | null;
+  paymentMethod?: "CASH" | "UPI" | "BANK_TRANSFER" | null;
+  referenceId?: string | null;
   id?: string;
 }) {
   return testPrisma.payment.create({
@@ -185,6 +188,9 @@ export async function createPayment(overrides: {
       amount: overrides.amount ?? 1000,
       status: overrides.status ?? "DUE",
       type: overrides.type ?? "MONTHLY",
+      paidAt: overrides.paidAt ?? null,
+      paymentMethod: overrides.paymentMethod ?? null,
+      referenceId: overrides.referenceId ?? null,
       dueDate: overrides.dueDate,
       periodStart: overrides.periodStart,
       periodEnd: overrides.periodEnd,

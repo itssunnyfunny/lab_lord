@@ -1,11 +1,18 @@
 import { prisma } from "@/lib/prisma";
-import { StudentStatus, PaymentType, PaymentStatus, isDueResolution } from "@/types";
+import {
+    isDueResolution,
+    PaymentResolutionEventSource,
+    PaymentStatus,
+    PaymentType,
+    StudentStatus,
+} from "@/types";
 import type { CreateImportedStudentDto, CreateStudentDto, DueResolution, UpdateStudentProfileDto } from "@/types";
 import { SeatAllocationService } from "@/services/seatAllocation.service";
 import { StaffService } from "@/services/staff.service";
 import { startOfDay } from "date-fns";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { EntitlementService } from "@/services/entitlement.service";
+import { recordPaymentResolutionEvents } from "@/services/paymentResolutionEvent.service";
 import {
     compactText,
     FORM_LIMITS,
@@ -267,8 +274,6 @@ export class StudentService {
                         amount: admissionFee,
                         status: PaymentStatus.DUE,
                         type: PaymentType.ADMISSION,
-                        // Normalize to midnight so it never collides with a MONTHLY
-                        // payment's periodStart (which is also normalized via startOfDay)
                         dueDate:     startOfDay(created.joinedAt),
                         periodStart: startOfDay(created.joinedAt),
                         periodEnd:   startOfDay(created.joinedAt),
@@ -689,55 +694,67 @@ export class StudentService {
                     },
                 });
 
-                const paymentsToResolve: {
-                    id: string;
-                    branchId: string;
-                    amount: number;
-                    status: PaymentStatus;
-                }[] = paymentResolution === null
+                const paymentsToResolve = paymentResolution === null
                     ? []
                     : await tx.payment.findMany({
                         where: {
                             studentId,
+                            branchId: verifiedStudent.branchId,
                             status: PaymentStatus.DUE,
-                        },
-                        select: {
-                            id: true,
-                            branchId: true,
-                            amount: true,
-                            status: true,
                         },
                     });
 
                 // 3. Resolve DUE payments based on the validated choice
-                if (paymentResolution) {
-                    await tx.payment.updateMany({
+                const resolvedPayments = paymentResolution && paymentsToResolve.length > 0
+                    ? await tx.payment.updateManyAndReturn({
                         where: {
-                            studentId,
+                            id: { in: paymentsToResolve.map(payment => payment.id) },
+                            branchId: verifiedStudent.branchId,
                             status: PaymentStatus.DUE,
                         },
                         data: paymentResolution.data,
-                    });
-                }
+                    })
+                    : [];
                 // KEEP: do nothing, DUE payments stay as-is
 
-                if (paymentsToResolve.length > 0 && paymentResolution) {
+                if (resolvedPayments.length > 0 && paymentResolution) {
+                    const paymentsBeforeById = new Map(
+                        paymentsToResolve.map(payment => [payment.id, payment])
+                    );
+                    const resolutionPairs = resolvedPayments.map(payment => {
+                        const before = paymentsBeforeById.get(payment.id);
+                        if (!before) {
+                            throw new Error("Payment resolution snapshot is missing");
+                        }
+                        return { before, after: payment };
+                    });
                     await tx.auditLog.createMany({
-                        data: paymentsToResolve.map(payment => ({
-                            branchId: payment.branchId,
+                        data: resolutionPairs.map(({ before, after }) => ({
+                            branchId: after.branchId,
                             userId,
                             action: paymentResolution.action,
-                            paymentId: payment.id,
+                            paymentId: after.id,
                             details: {
-                                from: payment.status,
+                                from: before.status,
                                 to: paymentResolution.status,
-                                amount: payment.amount,
+                                amount: after.amount,
                                 ...(paymentResolution.status === PaymentStatus.PAID
                                     ? { method: null, referenceId: null }
                                     : {}),
                             },
                         })),
                     });
+
+                    await recordPaymentResolutionEvents(
+                        tx,
+                        resolutionPairs.map(({ before, after }) => ({
+                                before,
+                                after,
+                                actorUserId: userId,
+                                source: PaymentResolutionEventSource.STUDENT_INACTIVATION,
+                                occurredAt: now,
+                            }))
+                    );
                 }
             }
 
