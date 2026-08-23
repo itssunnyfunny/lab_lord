@@ -12,6 +12,9 @@ export const STAFF_ACTIONS = [
     "mark_payment_paid",
     "waive_payments",
     "analytics",
+    "view_whatsapp",
+    "send_whatsapp",
+    "manage_whatsapp",
     "staff_management",
 ] as const;
 
@@ -26,6 +29,9 @@ export const OVERRIDABLE_STAFF_ACTIONS = [
     "mark_payment_paid",
     "waive_payments",
     "analytics",
+    "view_whatsapp",
+    "send_whatsapp",
+    "manage_whatsapp",
 ] as const satisfies readonly StaffAction[];
 
 export type OverridableStaffAction = typeof OVERRIDABLE_STAFF_ACTIONS[number];

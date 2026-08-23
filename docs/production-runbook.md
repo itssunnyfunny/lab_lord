@@ -4,7 +4,7 @@ This runbook covers the repository-owned procedures for operating Lab Lords. It
 does not grant access to Production and does not replace provider dashboards,
 database recovery documentation, or an approved incident-response policy.
 
-Last reconciled with the repository: 2026-08-22.
+Last reconciled with the repository: 2026-08-23.
 
 ## Stop conditions and operator-owned preconditions
 
@@ -33,7 +33,12 @@ items that are not encoded in this repository:
   stopping Production traffic;
 - the allowed overlap period for old and new Razorpay webhook secrets;
 - the stable Preview and Production webhook hostnames and any Deployment
-  Protection exception needed for Razorpay delivery; and
+  Protection exception needed for Razorpay or Meta delivery;
+- the Meta developer-app owner, Business verification and App Review/Advanced
+  Access state, token- and app-secret-rotation owners, dedicated Test WABA and
+  phone, customer-asset/billing ownership evidence, stable HTTPS Preview and
+  Production WhatsApp callback hosts, incident owner, monitoring, and the
+  approval authority for provider onboarding; and
 - the canonical Node.js and pnpm versions. CI currently uses Node.js 20 and
   pnpm 9, while the Production migration workflow uses Node.js 24 and pnpm 9;
   `package.json` does not pin either runtime.
@@ -54,6 +59,14 @@ previous deployment.
 - Never use browser success, a callback alone, or a locally inferred provider
   state as proof of payment. Signed webhooks and provider reconciliation remain
   authoritative.
+- Never use browser-supplied Meta business, WABA, or phone identifiers as
+  sender truth. Do not persist or print an Embedded Signup code/token, system
+  token, app secret, registration PIN, verification token, raw signup session,
+  or raw Meta webhook body.
+- This WhatsApp foundation cannot send messages. Do not add or invoke Meta
+  `/messages`, a test send, dispatcher, reminder job, credit-line sharing, or a
+  customer connection as an operational shortcut. Lab Lords must not pay or
+  rebill the customer's Meta usage.
 - Never improvise cleanup SQL, reverse an applied migration by hand, or
   automatically refund an ambiguous charge.
 - Record the commit, deployment ID, migration workflow run, UTC start/end time,
@@ -67,15 +80,17 @@ variables be scoped to each environment. See Vercel's official
 [Environment variables](https://vercel.com/docs/environment-variables)
 documentation.
 
-| Environment | Data and identity | Razorpay | Scheduled jobs | Data policy |
-| --- | --- | --- | --- | --- |
-| Local Development | Dedicated local/development database and Clerk development instance | Test Mode only when billing is exercised | No automatic Vercel schedule; invoke protected routes manually | Synthetic or approved development data only |
-| Automated Test | Dedicated disposable PostgreSQL test database; Clerk is mocked where needed | Test/fake configuration supplied by the test harness | None | Disposable fixtures only |
-| Preview | Database and Clerk development instance isolated from Production | Test Mode with a Preview-only webhook secret | Vercel does not schedule Preview cron jobs; invoke the protected Preview route manually | Demo or approved sanitized data only |
-| Production | Production database and Clerk production instance | Live Mode with Production-only credentials and webhook secret | `vercel.json` declares schedules for the active Production deployment; verify that they are deployed and enabled | Customer data under the approved access and retention policy |
+| Environment | Data and identity | Razorpay | Meta WhatsApp | Scheduled jobs | Data policy |
+| --- | --- | --- | --- | --- | --- |
+| Local Development | Dedicated local/development database and Clerk development instance | Test Mode only when billing is exercised | `TEST` only; synthetic/injected fake provider unless an explicitly approved isolated Test-app exercise is being performed | No automatic Vercel schedule; invoke protected routes manually | Synthetic or approved development data only |
+| Automated Test | Dedicated disposable PostgreSQL test database; Clerk is mocked where needed | Test/fake configuration supplied by the test harness | Injected fake client and mocked Facebook SDK only; never contact Meta | None | Disposable fixtures only |
+| Preview | Database and Clerk development instance isolated from Production | Test Mode with a Preview-only webhook secret | `TEST` only, dedicated Test app/config/WABA/phone and Preview-only secret/callback if separately configured | Vercel does not schedule Preview cron jobs; invoke the protected Preview route manually | Demo or approved sanitized data only |
+| Production | Production database and Clerk production instance | Live Mode with Production-only credentials and webhook secret | `LIVE` only, Production-only configuration, and all WhatsApp flags held until the separately approved rollout | `vercel.json` declares schedules for the active Production deployment; verify that they are deployed and enabled | Customer data under the approved access and retention policy |
 
 Preview and Production must have different database fingerprints, Clerk
 instances, Razorpay modes and credentials, webhook secrets, and cron secrets.
+They must also use isolated Meta Test/Live assets, credentials, system users,
+Embedded Signup configurations, verification tokens, and callback hosts.
 The detailed proof and release gates are in the
 [Workspace billing V2 rollout](./workspace-billing-rollout.md).
 
@@ -91,6 +106,8 @@ provider dashboard; do not copy values into this document or command output.
 | Clerk | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`; sign-in, sign-up, and fallback paths are code-defined rather than environment-defined |
 | Razorpay credentials and mode | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_MODE`, `RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_WEBHOOK_OLD_SECRETS`, `RAZORPAY_DEFAULT_SUBSCRIPTION_CYCLES` |
 | Billing release controls | `RAZORPAY_BILLING_WRITES_ENABLED`, `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED`, `RAZORPAY_LIVE_CANARY_ORG_IDS`, `WORKSPACE_BRANCH_BILLING_V2_ENABLED` |
+| Meta WhatsApp credentials and mode | `META_WHATSAPP_MODE`, `META_APP_ID`, `META_APP_SECRET`, `META_EMBEDDED_SIGNUP_CONFIG_ID`, `META_BUSINESS_ID`, `META_SYSTEM_USER_ID`, `META_SYSTEM_USER_ACCESS_TOKEN`, `META_GRAPH_API_VERSION`, `META_WHATSAPP_WEBHOOK_VERIFY_TOKEN` |
+| WhatsApp release controls | `WHATSAPP_INTEGRATION_ENABLED`, `WHATSAPP_META_ONBOARDING_WRITES_ENABLED`, `WHATSAPP_WEBHOOK_INGEST_ENABLED`, `WHATSAPP_LIVE_CANARY_ORG_IDS` |
 | Import V2 release controls | `IMPORT_V2_ENABLED`, `IMPORT_MAX_PLANNED_MUTATIONS` |
 | Scheduled jobs | `CRON_SECRET` |
 | Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_FLASH_MODEL`, `GEMINI_PRO_MODEL`, `GEMINI_IMPORT_MODEL`, `GEMINI_FALLBACK_MODELS` |
@@ -100,6 +117,10 @@ provider dashboard; do not copy values into this document or command output.
 Every `NEXT_PUBLIC_` variable is browser-visible and must contain no secret.
 `RAZORPAY_KEY_ID` remains server-only; do not introduce
 `NEXT_PUBLIC_RAZORPAY_KEY_ID`.
+No Meta secret is public. Only the app ID, server-selected Embedded Signup
+configuration ID, pinned Graph version, mode, and sanitized availability may be
+returned by the authenticated owner-only configuration endpoint. Do not add a
+`NEXT_PUBLIC_META_*` or `NEXT_PUBLIC_WHATSAPP_*` secret.
 
 Environment-variable changes apply only to new Vercel deployments. After any
 addition, removal, flag change, or secret rotation, create a new deployment and
@@ -248,6 +269,157 @@ rollback is a controlled data-reconciliation operation requiring separate
 operator approval; this repository does not provide an automatic down
 migration.
 
+### WhatsApp communication-foundation migration
+
+Migration `20260822120000_whatsapp_communication_foundation` is an additive
+expansion. It adds the three WhatsApp staff-permission enum values, the
+WhatsApp enums, and ten initially empty foundation tables with their indexes
+and foreign keys. It does not update or delete an existing organization,
+branch, permission override, student, payment, payment-resolution event,
+subscription, sender, consent, or message row, and it performs no backfill.
+`BranchWhatsAppSettings.enabled` defaults to false, but the migration creates no
+settings rows. Do not run this migration against Preview or Production merely
+because the code has been merged.
+
+Before an operator-approved application, identify and record the target and
+run the payment preflight above. Record these existing-table counts with a UTC
+timestamp in the private release record:
+
+```sql
+SELECT COUNT(*) AS organization_count FROM "Organization";
+SELECT COUNT(*) AS branch_count FROM "Branch";
+SELECT COUNT(*) AS staff_permission_override_count
+FROM "StaffPermissionOverride";
+SELECT COUNT(*) AS payment_count FROM "Payment";
+SELECT COUNT(*) AS payment_resolution_event_count
+FROM "PaymentResolutionEvent";
+```
+
+Inspect the actual pre-migration permission values and relevant indexes and
+constraints rather than trusting generated code or a migration filename:
+
+```sql
+SELECT e.enumsortorder, e.enumlabel
+FROM pg_type AS t
+JOIN pg_enum AS e ON e.enumtypid = t.oid
+WHERE t.typname = 'StaffPermissionAction'
+ORDER BY e.enumsortorder;
+
+SELECT schemaname, tablename, indexname, indexdef
+FROM pg_indexes
+WHERE tablename IN (
+  'Organization',
+  'Branch',
+  'StaffPermissionOverride',
+  'Payment',
+  'PaymentResolutionEvent'
+)
+ORDER BY tablename, indexname;
+
+SELECT
+  conrelid::regclass::text AS table_name,
+  conname,
+  contype,
+  pg_get_constraintdef(oid) AS definition
+FROM pg_constraint
+WHERE conrelid IN (
+  '"Organization"'::regclass,
+  '"Branch"'::regclass,
+  '"StaffPermissionOverride"'::regclass,
+  '"Payment"'::regclass,
+  '"PaymentResolutionEvent"'::regclass
+)
+ORDER BY table_name, conname;
+```
+
+Before this migration, every value in the following query must be null. If any
+foundation table or same-named enum already exists unexpectedly, stop and
+reconcile the target's migration history; do not improvise around it.
+
+```sql
+SELECT
+  to_regclass('"WhatsAppSender"') AS whatsapp_sender,
+  to_regclass('"WhatsAppConnectionIntent"') AS whatsapp_connection_intent,
+  to_regclass('"BranchWhatsAppSettings"') AS branch_whatsapp_settings,
+  to_regclass('"WhatsAppTemplate"') AS whatsapp_template,
+  to_regclass('"WhatsAppConsent"') AS whatsapp_consent,
+  to_regclass('"WhatsAppConsentEvent"') AS whatsapp_consent_event,
+  to_regclass('"WhatsAppMessage"') AS whatsapp_message,
+  to_regclass('"WhatsAppMessageEvent"') AS whatsapp_message_event,
+  to_regclass('"WhatsAppWebhookReceipt"') AS whatsapp_webhook_receipt,
+  to_regclass('"WhatsAppAuditEvent"') AS whatsapp_audit_event;
+
+SELECT typname
+FROM pg_type
+WHERE typname LIKE 'WhatsApp%'
+ORDER BY typname;
+```
+
+Expected precondition: the payment identity/resolution-event migration is
+already applied and clean, `Payment_studentId_type_periodStart_key` remains the
+typed unique key, the recorded baseline queries complete, the three new
+permission values are absent, and no WhatsApp object exists. No existing
+permission override needs rewriting.
+
+Immediately after the migration and before enabling any WhatsApp flag, repeat
+the five baseline counts and require exact equality. Then verify the additive
+objects through `pg_type`, `pg_enum`, `pg_indexes`, and `pg_constraint`. At
+minimum, confirm:
+
+- `VIEW_WHATSAPP`, `SEND_WHATSAPP`, and `MANAGE_WHATSAPP` appear exactly once in
+  `StaffPermissionAction`, and all new WhatsApp enums contain the reviewed
+  values;
+- all ten tables exist with the reviewed unique/index and history-preserving
+  `RESTRICT`/`SET NULL` policies;
+- `WhatsAppSender` has unique provider/mode/phone identity;
+- branch assignment has one row per branch and does not structurally assert
+  cross-organization trust;
+- consent is unique by sender/phone/type, message and webhook dedupe keys are
+  unique, and append-only event indexes exist;
+- `Payment_studentId_type_periodStart_key` and
+  `PaymentResolutionEvent` remain intact; and
+- `pnpm prisma migrate status` is clean against the independently verified
+  direct target.
+
+Every new table must be empty immediately after the expansion, and no branch
+may be enabled:
+
+```sql
+SELECT COUNT(*) AS sender_count FROM "WhatsAppSender";
+SELECT COUNT(*) AS connection_intent_count FROM "WhatsAppConnectionIntent";
+SELECT COUNT(*) AS branch_settings_count FROM "BranchWhatsAppSettings";
+SELECT COUNT(*) AS enabled_branch_settings_count
+FROM "BranchWhatsAppSettings"
+WHERE "enabled" = true;
+SELECT COUNT(*) AS template_count FROM "WhatsAppTemplate";
+SELECT COUNT(*) AS consent_count FROM "WhatsAppConsent";
+SELECT COUNT(*) AS consent_event_count FROM "WhatsAppConsentEvent";
+SELECT COUNT(*) AS message_count FROM "WhatsAppMessage";
+SELECT COUNT(*) AS message_event_count FROM "WhatsAppMessageEvent";
+SELECT COUNT(*) AS webhook_receipt_count FROM "WhatsAppWebhookReceipt";
+SELECT COUNT(*) AS whatsapp_audit_count FROM "WhatsAppAuditEvent";
+```
+
+Every result above must be zero. A nonzero result means provider/application
+work has already occurred or the target was not the expected pre-migration
+state; stop and investigate without deleting evidence.
+
+The application/migration compatibility boundary is flag-controlled. It is
+safe for the reviewed application to deploy briefly before this expansion only
+while all WhatsApp flags are absent/false, because ordinary flag-off paths do
+not query the new tables or initialize provider work eagerly. Apply the
+migration before any flag or customer onboarding is enabled.
+
+There is no automatic down migration. Before any WhatsApp row exists, an
+operator may separately review a schema-only rollback, but PostgreSQL enum and
+dependency handling still requires an exact plan. After a sender, intent,
+template, consent, receipt, or audit row exists, first disable all WhatsApp
+flags and stop webhook ingestion, preserve the rows and signed/audit evidence,
+and prefer a compatible forward correction. Dropping any WhatsApp table or
+enum after data exists is destructive and requires separate human approval,
+exact affected-row counts, export/retention decisions, and a tested recovery
+plan. Local disconnect is not schema rollback.
+
 ### Production migration procedure
 
 The protected
@@ -310,6 +482,234 @@ Vercel Git or CLI path before release. See Vercel's official
    deployments when the change-specific runbook requires staged gates.
 
 Do not treat a successful build or domain assignment as a successful release.
+
+## WhatsApp communication-foundation rollout
+
+> **No-delivery boundary:** this release cannot send a WhatsApp message. It has
+> no Meta `/messages` call, send API/client method, dispatcher, planner,
+> reminder or delivery cron, test-send control, credit-line operation, or
+> customer-usage billing. The `WhatsAppMessage` tables are empty future schema
+> foundations only. Do not describe sender readiness as message delivery.
+
+The architecture proposal is
+[`0002-whatsapp-communication-foundation.md`](./decisions/0002-whatsapp-communication-foundation.md),
+whose status remains **Proposed**. `SECURITY.md` changes and this ADR require
+explicit human-owner approval before merge/enablement. Repository code, tests,
+or a successful migration do not approve a Meta connection.
+
+No real Meta app review, Embedded Signup, WABA, phone registration, signed
+webhook delivery, customer asset, Preview setup, Production setup, deployment,
+or Production migration was performed while adding this foundation. Obtain
+external evidence in the approved private operations record; never infer it
+from local environment files or provider IDs in fixtures.
+
+### External prerequisites and ownership
+
+Before configuring even a Test deployment, record and verify all of the
+following without copying secret values:
+
+1. The customer owns the WABA, phone, Meta business identity, provider payment
+   method, and message charges. Lab Lords receives delegated access only; no Lab
+   Lords credit line or extended credit may be shared or assigned.
+2. An accountable owner controls the Meta developer app and Business Portfolio,
+   Business verification is complete where required, and the WhatsApp product
+   is added to the app.
+3. One server-controlled Embedded Signup configuration ID is approved. The
+   fixed browser contract passes that ID with `sessionInfoVersion: "3"`; there
+   is no customer selector. The browser may not choose app ID, Graph version,
+   configuration ID, session-info version, feature type, coexistence, calling,
+   Marketing Messages Lite, credit sharing, or any other provider mode.
+   WhatsApp Business App coexistence is not supported or promised by this
+   release. Reverify that exact configuration and session-info version against
+   current official Meta requirements before external setup.
+4. Reverify current official Meta documentation, its WhatsApp Business Platform
+   Postman workspace, and the official tech-provider sample on the rollout date.
+   The 2026-08-23 official recheck selected the Facebook JavaScript SDK, the
+   configured Embedded Signup flow, and Graph API `v26.0`: Meta's official
+   Business SDK `v26.0.0` follows Graph v26. The official tech-provider sample
+   still contains an older example version, so it is flow evidence rather than
+   the operational version pin. Set `META_GRAPH_API_VERSION=v26.0` explicitly,
+   never use `latest`, and reverify every WhatsApp endpoint, response field, App
+   Review permission, Embedded Signup setting, configuration ID, and
+   `sessionInfoVersion: "3"` contract before enablement. If current requirements
+   differ, stop and review code/ADR changes before configuration.
+5. App Review/Advanced Access and endpoint-specific permissions are approved.
+   The current connection validation requires
+   `whatsapp_business_management` and `whatsapp_business_messaging`; separately
+   verify any current Business Management permission required for system-user
+   administration. The configured Lab Lords system user must be the reviewed
+   identity and receive only the minimum WABA task currently required by the
+   code (`MANAGE`).
+6. Dedicated Test app/configuration, Test WABA, and Test phone exist for Preview
+   validation. Production must use isolated Live assets and credentials and
+   must never receive a Test or customer token from another environment.
+7. Stable HTTPS Preview and Production callback hosts, allowed OAuth/JavaScript
+   SDK domains, and any narrowly scoped Vercel Deployment Protection exception
+   are approved. Do not weaken authentication for unrelated routes.
+8. The Meta callback is exactly the reviewed public route
+   `/api/whatsapp/webhook`; the private verification token and app secret are
+   configured server-side. Do not configure an arbitrary customer-specific
+   callback override.
+9. Incident ownership, token-rotation and app-secret-rotation ownership,
+   webhook/provider health monitoring, log retention, outage handling, and
+   customer support/escalation are documented outside the repository gaps noted
+   in `SECURITY.md`.
+10. Legal/privacy/consent review confirms the intended future use. Consent
+    remains unknown and no customer or student is opted in by this migration or
+    connection flow.
+
+### Mode and release controls
+
+`META_WHATSAPP_MODE` is mandatory and may be only `TEST` or `LIVE`. Local
+Development and Vercel Preview fail closed unless it is `TEST`; Vercel
+Production fails closed unless it is `LIVE`. Tests must inject the fake client.
+Provider mode is stored with sender and receipt identity; never infer it from
+an ID or copy a row between modes.
+
+All controls are false when absent and require a redeployment to change:
+
+```text
+WHATSAPP_INTEGRATION_ENABLED=false
+  hides/blocks the integration and prevents ordinary WhatsApp table/provider use
+
+WHATSAPP_META_ONBOARDING_WRITES_ENABLED=false
+  blocks new provider onboarding, registration, and other onboarding mutations
+
+WHATSAPP_WEBHOOK_INGEST_ENABLED=false
+  independently blocks verification/receipt ingestion and WABA subscription work
+
+WHATSAPP_LIVE_CANARY_ORG_IDS=<exact reviewed IDs only>
+  additionally restricts enabled onboarding writes to exact valid IDs in LIVE
+  Vercel Production; an empty or malformed list permits nobody
+```
+
+The integration flag is a prerequisite for the other two paths. The onboarding
+writes flag is always required; in LIVE Production, the exact canary allow-list
+is required as well. Enabling either is a separate, later rollout decision.
+Disabling a flag does not delete sender records, disconnect Meta assets, remove templates,
+consents, receipts, or audit history, cancel an already-issued provider
+request, or change an existing deployment. There is intentionally no delivery
+flag because delivery code does not exist.
+
+### Inert merge and migration sequence
+
+Use this order for the reviewed expansion:
+
+1. Require scoped review and green CI for the exact commit.
+2. Obtain explicit human-owner approval of the `SECURITY.md` policy diff.
+3. Review the Proposed ADR; do not mark it Accepted without an explicit owner
+   decision and recorded approval date.
+4. Merge/deploy with every WhatsApp flag absent or false.
+5. Verify ordinary Production sign-in, owner/staff, branch, payment, billing,
+   import, and AI review flows remain healthy and do not query WhatsApp tables.
+6. Run the read-only Production migration preflight above and record exact
+   counts/metadata privately.
+7. Apply the protected additive Prisma migration through the approved
+   Production workflow.
+8. Repeat existing counts, confirm all ten new tables are empty, confirm no
+   branch setting is enabled, and require clean migration status.
+9. Redeploy the exact merged commit if the approved platform sequence requires
+   it, then repeat ordinary-application smoke checks.
+10. Keep integration, onboarding writes, webhook ingestion, and Live canary
+    empty/false.
+11. Do not connect a real customer WABA/phone or configure a Production webhook.
+12. Perform Meta Test/Preview and eventual Live setup only as separate,
+    explicitly approved operations after prerequisites and monitoring exist.
+
+Because Vercel may deploy `main` before the manual migration, flag-off paths
+must remain inert and must not touch new tables. If ordinary traffic queries a
+WhatsApp table while the flag is off, stop the release rather than enabling the
+migration early to mask the defect.
+
+### Separately approved Test onboarding procedure
+
+This is a future procedure, not evidence that setup has occurred:
+
+1. Prove Preview uses an isolated database, Clerk development instance, stable
+   HTTPS host, and only dedicated Meta Test assets. Verify all nine Meta
+   configuration names are present by name without printing their values, that
+   mode is `TEST`, and that Graph version/configuration match the reviewed app.
+2. Deploy with integration enabled but onboarding writes and webhook ingest
+   held. Confirm ordinary settings render, Basic/nonowner/read-only users remain
+   denied safely, browser JSON contains no secret/system token, and no provider
+   call occurs.
+3. Configure and verify the public callback as described below. Enable webhook
+   ingestion in a new observed deployment only after signature/receipt
+   monitoring is ready.
+4. In a separate observed deployment enable onboarding writes for the Test
+   exercise. Use an entitled, writable organization owner. The intent must be
+   one-time, approximately ten minutes, and only its hash may appear in the
+   database.
+5. Complete one mocked-first and then separately approved real Test Embedded
+   Signup. Confirm the server verifies app/scopes, authorized WABA, phone
+   membership, Test mode, system-user task, and subscribed app before sender
+   finalization. Browser IDs alone are not evidence.
+6. If provider truth says registration is required, use the owner-only six-ASCII-
+   digit action. Never capture the PIN in logs, screenshots, tickets, browser
+   persistence, or the database. Confirm a provider refetch proves registration.
+7. Run provider-authoritative template synchronization and confirm only bounded
+   normalized metadata is stored. Do not create/edit/delete a Meta template.
+8. Verify branch assignment is same-organization, leaves `enabled=false`, and
+   does not imply automation. Confirm `WhatsAppMessage` and
+   `WhatsAppMessageEvent` remain empty throughout.
+9. Hold onboarding writes again and redeploy after the exercise. Retain safe
+   audit/receipt evidence; do not destructively clean up customer/provider
+   assets through application code.
+
+### Meta webhook setup and health
+
+1. Confirm the stable HTTPS host reaches GET and POST
+   `/api/whatsapp/webhook` without Clerk or broad Deployment Protection while
+   all unrelated routes retain their normal protection.
+2. Configure the private verification token in Meta and the deployment. The GET
+   challenge returns plain text only for exact mode/token/challenge input;
+   never log the token or include it in retained evidence.
+3. Configure the reviewed WhatsApp event subscriptions on the Meta app. Let the
+   connection flow query the WABA subscribed-app state and add this app only
+   when missing; do not remove other apps or replace a customer callback.
+4. With the ingest flag enabled, deliver a provider-signed Test envelope. POST
+   accepts at most 512 KiB, verifies `x-hub-signature-256` over exact raw bytes
+   before JSON parsing, and persists bounded mode/hash/asset/event metadata
+   before `2xx`. It stores neither raw body nor message text.
+5. Replay the exact signed bytes and require harmless duplicate success with no
+   duplicate side effect. Deliver a correctly signed unknown WABA/phone and
+   require a generic ignored receipt without tenant disclosure.
+6. Confirm inbound content or delivery-looking events create no message,
+   message event, consent change, payment action, student notification, AI job,
+   or reply in this release.
+7. Alert on repeated verification/signature failures, receipt-persistence
+   `5xx`, receipt backlog/failures, provider outages, and loss of callback
+   reachability. The repository does not define this alert sink; the operator
+   must record it before enablement.
+
+Do not enable a real customer Production webhook during this foundation
+rollout. Later delivery/status processing requires its own approved release.
+
+### Credential rotation, provider outage, and disconnect
+
+- Environment changes require a new deployment. Rotate the system-user token
+  at Meta/secret manager, deploy the replacement, prove bounded provider reads
+  and assignment/subscription state, then revoke the old token. Never store a
+  customer token to bridge a rotation.
+- App-secret rotation changes both server API authentication and webhook HMAC.
+  The current WhatsApp handler has no old-secret overlap list, so plan a
+  provider-coordinated cutover and observation window; do not invalidate the
+  old secret until the new deployment and Meta configuration are ready. Verify
+  a signed Test delivery after cutover without retaining raw bytes.
+- Rotating the webhook verification token requires updating the server secret,
+  redeploying, and completing Meta's callback verification in an approved
+  sequence. It does not authenticate POST deliveries; the app-secret HMAC does.
+- During a Meta outage, hold onboarding writes in a new deployment and preserve
+  sender/intents/audit state. Keep signed webhook ingestion active unless it is
+  itself harmful; if disabled, track provider retries/backlog. Never blindly
+  retry an ambiguous system-user assignment, WABA subscription, or phone
+  registration. Refetch provider truth after recovery and require human review
+  when it cannot be proven.
+- A local Lab Lords disconnect is not a provider disconnect. It marks the
+  sender `DISCONNECTED`, unassigns branches, and preserves history. It does not
+  deregister the phone, unsubscribe the WABA, remove a system user, delete a
+  WABA/template, revoke the customer's number, or alter Meta billing. Any
+  destructive provider action needs a separate operator/customer decision.
 
 ## Import Assistance V2 rollout
 
@@ -542,6 +942,7 @@ sequence in the [Workspace billing V2 rollout](./workspace-billing-rollout.md).
 | Database | This repository has no down-migration or automatic Production database rollback procedure. Prefer a compatible forward fix. Restore only through the operator-owned, tested backup procedure with explicit approval and a data-loss assessment. |
 | Import Workflow | Holding `IMPORT_V2_ENABLED` in a new deployment stops new starts only. Existing deployment-pinned runs must be drained or explicitly cancelled; completed items and the PostgreSQL ledger are not rolled back. |
 | Razorpay | An application rollback does not cancel, refund, or reverse provider subscriptions, mandates, invoices, payments, or webhook delivery. Reconcile provider and local state; ambiguous cases require manual review. |
+| Meta WhatsApp | Holding integration/onboarding/webhook flags in a new deployment stops the corresponding new application paths but does not undo an in-flight provider result, WABA/system-user subscription, phone registration, sender evidence, or customer-owned provider asset. Reconcile Meta state; local disconnect is deliberately non-destructive. |
 | Scheduled jobs | Disable or update schedules through the approved Vercel control, then verify the active Cron Jobs dashboard. Do not assume deployment rollback paused them. |
 
 Vercel's official
@@ -592,6 +993,15 @@ and provider state.
   import-retention cron separately only when purging is implicated. Preserve
   immutable plans, idempotency keys, completion markers, and redacted results;
   do not delete rows or run ad hoc cleanup to claim rollback.
+- For a WhatsApp onboarding incident, deploy with
+  `WHATSAPP_META_ONBOARDING_WRITES_ENABLED=false`, remove the Live canary list,
+  and inspect connection-intent leases and provider-authoritative assignment,
+  subscription, and registration state. Disable
+  `WHATSAPP_WEBHOOK_INGEST_ENABLED` separately only if ingestion itself is
+  harmful; preserve signed receipts and audit events. If the whole product
+  surface is harmful, also disable `WHATSAPP_INTEGRATION_ENABLED`. Do not delete
+  sender/history rows, blindly repeat an ambiguous Meta mutation, send a test
+  message, share credit, or perform a destructive provider disconnect.
 - For a runaway or compromised cron, disable Vercel Cron Jobs through the
   approved dashboard procedure. Rotate `CRON_SECRET` and redeploy if the secret
   was exposed.
@@ -617,7 +1027,12 @@ containment.
   counts, Workflow run ID, lease/retry/cancellation timestamps, retention-cron
   counts, and redacted error codes—never source rows or mutation payloads;
 - Razorpay subscription, invoice, payment, webhook-delivery, and Dashboard audit
-  evidence; and
+  evidence;
+- WhatsApp connection-intent/sender IDs, lease and provider-mode timestamps,
+  bounded audit actions, template-sync counts, webhook receipt hashes/statuses,
+  and redacted Meta request identifiers where already safely retained—never
+  codes, access tokens, PINs, raw signup sessions, signatures, webhook bodies,
+  message text, or customer secrets; and
 - actor/time records from the relevant application audit trail.
 
 Repository evidence is incomplete on its own: there is no repository-defined
@@ -647,8 +1062,13 @@ must fill those gaps.
    revision/plan hash, run and item counts, duplicate-safe replay, active leases,
    cancellation state, redacted results, staging deadline, and retention-cron
    health. Repair only through a new revision and plan.
-8. Observe operator-owned logs and alerts for the approved recovery window.
-9. Record residual risk, customer impact, follow-up owners, and any approved
+8. For WhatsApp incidents, verify the exact deployed flags/mode, intent leases,
+   owner/tenant scope, sender assignment, provider-authoritative WABA/phone,
+   system-user/subscription/registration state, signed-receipt replay behavior,
+   and that both message tables remain empty. Resume with one approved Test or
+   Live canary organization only after the ambiguity is resolved.
+9. Observe operator-owned logs and alerts for the approved recovery window.
+10. Record residual risk, customer impact, follow-up owners, and any approved
    decision in `docs/decisions/`.
 
 ## Release and incident record template
@@ -663,7 +1083,7 @@ Environment:
 Migration workflow run and migration names:
 Backup identifier and restore-test date:
 Configuration names changed (names only):
-Cron/webhook/billing/import Workflow impact:
+Cron/webhook/billing/import Workflow/Meta WhatsApp impact:
 Validation commands and results:
 Smoke checks and observation window:
 Rollback/recovery decision:
@@ -676,6 +1096,7 @@ Remaining risks and owners:
 - [Razorpay live-review checklist](./razorpay-live-review.md)
 - [Auth environments](./auth-environments.md)
 - [Import Workflow execution proposal](./decisions/0001-managed-workflow-for-import-execution.md) — Proposed, not Accepted
+- [WhatsApp communication foundation proposal](./decisions/0002-whatsapp-communication-foundation.md) — Proposed, not Accepted
 - [CI workflow](../.github/workflows/ci.yml)
 - [Production migration workflow](../.github/workflows/production-migrate.yml)
 - [Vercel cron configuration](../vercel.json)

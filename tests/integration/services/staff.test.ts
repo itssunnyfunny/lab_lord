@@ -64,6 +64,31 @@ describe("StaffService Integration", () => {
       ).rejects.toThrow(/Unauthorized/i);
     });
 
+    it("enforces WhatsApp role defaults and persisted overrides", async () => {
+      const { user, branch } = await createTestWorld();
+      const staffUser = await createUser();
+      const staffRecord = await createStaff({ userId: staffUser.id, branchId: branch.id, role: "STAFF" });
+
+      await expect(StaffService.authorize(staffUser.id, branch.id, "view_whatsapp")).resolves.toBe(true);
+      await expect(StaffService.authorize(staffUser.id, branch.id, "send_whatsapp")).resolves.toBe(true);
+      await expect(StaffService.authorize(staffUser.id, branch.id, "manage_whatsapp")).rejects.toThrow(/Unauthorized/i);
+
+      await StaffService.updateStaffPermissions(user.id, branch.id, staffRecord.id, {
+        manage_whatsapp: true,
+        send_whatsapp: false,
+      });
+
+      await expect(StaffService.authorize(staffUser.id, branch.id, "manage_whatsapp")).resolves.toBe(true);
+      await expect(StaffService.authorize(staffUser.id, branch.id, "send_whatsapp")).rejects.toThrow(/disabled/i);
+      await expect(testPrisma.staffPermissionOverride.findMany({
+        where: { staffId: staffRecord.id },
+        orderBy: { action: "asc" },
+      })).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ action: StaffPermissionAction.MANAGE_WHATSAPP, allowed: true }),
+        expect.objectContaining({ action: StaffPermissionAction.SEND_WHATSAPP, allowed: false }),
+      ]));
+    });
+
     it("throws if user has no staff record on the branch", async () => {
       const { branch } = await createTestWorld();
       const stranger = await createUser();

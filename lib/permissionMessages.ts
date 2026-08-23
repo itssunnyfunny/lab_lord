@@ -10,6 +10,9 @@ export const STAFF_ACTION_LABELS: Record<StaffAction, string> = {
     mark_payment_paid: "payment collection",
     waive_payments: "payment waiver",
     analytics: "analytics",
+    view_whatsapp: "WhatsApp viewing",
+    send_whatsapp: "WhatsApp sending",
+    manage_whatsapp: "WhatsApp management",
     staff_management: "owner-only staff management",
 };
 

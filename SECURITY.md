@@ -2,8 +2,8 @@
 
 > Repository policy for Codex Security and other security reviewers.
 >
-> Last reconciled with the payment identity and resolution-event working tree
-> based on commit `27d417e` on 2026-08-22.
+> Last reconciled with the WhatsApp communication-foundation working tree based
+> on commit `6efc3c4` on 2026-08-23.
 
 This file defines what to review, the mandatory security invariants, and how to
 calibrate findings. It is not a public vulnerability-disclosure channel,
@@ -29,6 +29,9 @@ Production-reachable review scope includes:
 - operational student payments and Lab Lords SaaS subscription billing;
 - Razorpay Checkout callbacks, REST calls, webhooks, reconciliation, billing
   mutations, feature gates, and Test/Live isolation;
+- Meta WhatsApp Cloud API onboarding, delegated system-user access, phone
+  registration, template synchronization, signed webhook receipts, provider
+  modes, release gates, and branch sender assignment;
 - imports, parsers, previews, immutable evaluations/plans, recipes, durable
   runs, Workflow orchestration, retention, and commit processing;
 - Gemini prompts, outbound data, output validation, persistence, and fallbacks;
@@ -52,10 +55,11 @@ Protect at least:
 - student names, phone numbers, fees, dues, allocations, import contents, staged
   evaluations/execution payloads, and import-run history;
 - payment history, audit records, subscription state, invoices, entitlements,
-  provider identifiers, and idempotency state;
+  provider identifiers, WhatsApp sender/template/consent history, empty future
+  outbox foundations, signed webhook receipts, and idempotency state;
 - staff-invite bearer tokens and cron credentials;
-- database, Clerk, Gemini, Razorpay, webhook, deployment, and environment
-  credentials; and
+- database, Clerk, Gemini, Razorpay, Meta app/system-user, webhook, deployment,
+  and environment credentials; and
 - the integrity and availability of Production data and billing operations.
 
 ## Threat actors and trust boundaries
@@ -74,9 +78,10 @@ Consider:
 - operator mistakes involving environments, migrations, scripts, or Production
   data.
 
-External trust boundaries are Clerk, PostgreSQL/Prisma, Razorpay, Gemini,
-Vercel Workflow and Vercel Cron, browsers, uploaded files, and any operator
-workstation or CI runner that can access credentials.
+External trust boundaries are Clerk, PostgreSQL/Prisma, Razorpay, Meta Graph and
+WhatsApp Cloud APIs, the Facebook JavaScript SDK and its browser messages,
+Gemini, Vercel Workflow and Vercel Cron, browsers, uploaded files, and any
+operator workstation or CI runner that can access credentials.
 
 ## Mandatory security invariants
 
@@ -117,8 +122,11 @@ The three cron routes are machine-authenticated with `CRON_SECRET`. Workflow's
 framework-controlled `/.well-known/workflow/` endpoint is deliberately outside
 Clerk middleware and must remain restricted to provider-authenticated Workflow
 traffic. The Razorpay webhook is authenticated by its raw-body signature.
-These are deliberate non-user authentication boundaries, not open application
-routes.
+The public Meta verification and webhook route at `/api/whatsapp/webhook` is
+likewise outside Clerk: its GET challenge requires the private verification
+token and its POST requires Meta's HMAC over the untouched raw bytes before any
+JSON parsing or durable processing. These are deliberate non-user
+authentication boundaries, not open application routes.
 
 ### Billing and provider trust
 
@@ -150,6 +158,66 @@ routes.
   or already-running work.
 - Ambiguous provider state requires reconciliation and human review. Never
   automatically refund, cancel, recreate, or overwrite ambiguous billing state.
+
+### WhatsApp and Meta Cloud API
+
+- Customer-supplied Meta business, WABA, phone-number, and browser-session
+  identifiers are untrusted hints. A sender may be persisted only after the
+  server exchanges and validates the one-time authorization, verifies the
+  expected app and required scopes, resolves the authorized WABA, and confirms
+  provider-authoritatively that the phone belongs to it.
+- A WhatsApp sender is organization-owned application state. Every sender read
+  or mutation must scope the sender through the authorized organization;
+  branch assignment must independently prove that both branch and sender
+  belong to that same organization and that the environment/provider mode
+  matches. A bare sender, WABA, phone, business, or branch ID is never
+  authorization.
+- Only the current organization owner may start or complete Embedded Signup,
+  register a phone, reconcile organization-wide templates, assign or unassign
+  a sender, or locally disconnect it. Each mutation independently rechecks the
+  internal `WHATSAPP_AUTOMATION` entitlement, writable state, integration and
+  onboarding-write gates, Test/Live policy, and any Live canary.
+- The Embedded Signup authorization code and temporary access token, the
+  server-only system-user access token, app secret, verification token, phone
+  registration PIN, raw signup session, and raw webhook body must never be
+  persisted or logged. The customer authorization code/token is held only for
+  bounded provider verification and then discarded; the long-lived global
+  system-user credential remains in server-only configuration.
+- One-time connection state contains at least 256 random bits, is stored only
+  as a SHA-256 hash, expires, is bound to the owner and organization, and is
+  claimed through a database lease before provider calls. Provider calls must
+  not run inside a long database transaction. Finalization must recheck owner,
+  tenant, entitlement, writable state, mode, gates, and lease ownership.
+- Meta webhook POST signatures are verified with HMAC-SHA256 over the exact,
+  bounded raw bytes before decoding or schema validation. Verified deliveries
+  receive a mode-bound payload hash and durable unique receipt before success;
+  exact replay is harmless, and an unknown but correctly signed WABA or phone
+  is ignored without revealing tenant existence. Raw bodies, message content,
+  and unnecessary phone data are not receipt evidence.
+- TEST and LIVE sender assets, credentials, webhooks, database rows, and
+  environments remain isolated. Configuration and provider mutations fail
+  closed on a mode mismatch. Onboarding writes and webhook ingestion are
+  separately gated; disabling either must not erase historical state.
+- The customer owns its WABA, phone, Meta business assets, payment method, and
+  provider charges. Lab Lords must not share or assign its credit line, absorb
+  customer Meta usage, store a customer access token, use unofficial WhatsApp
+  Web automation, or destructively alter provider assets during a local
+  disconnect.
+- Consent begins `UNKNOWN`; existing students are not opted in or backfilled.
+  Consent history is append-only, sender-and-phone scoped, and unavailable
+  through an arbitrary mutation API.
+- The WhatsApp message and message-event models are schema foundations only.
+  This release has no Meta `/messages` operation, send API, dispatcher,
+  scheduler, reminder cron, test-send control, or application path that creates
+  a sendable outbox row. Later delivery requires a separately reviewed design
+  and release gate.
+- Existing AI `MessageDraft` records remain review/copy suggestions. They are
+  not WhatsApp templates or outbox rows, and neither AI output nor a provider
+  webhook may cause an automatic external message or payment mutation.
+- Local disconnect updates Lab Lords state, unassigns branches, and preserves
+  sender identifiers, templates, consents, signed receipts, future message
+  history, and append-only audit evidence. It must not deregister the phone,
+  unsubscribe other apps, revoke customer ownership, or delete provider assets.
 
 ### Cron, imports, and AI
 
@@ -324,7 +392,14 @@ Treat these as review context and remediation candidates, not accepted risks:
 - the Workflow execution ADR remains Proposed. Production enablement is not
   approved until a human owner/security review covers provider processing and
   residency, Fluid Compute/runtime configuration, retention and operator
-  access, benchmark evidence, SLOs, the mutation cap, and rollback authority.
+  access, benchmark evidence, SLOs, the mutation cap, and rollback authority;
+- the WhatsApp communication architecture ADR remains Proposed. No repository
+  evidence proves Meta App Review/Advanced Access, real Embedded Signup, WABA
+  or phone registration, signed provider delivery, webhook reachability,
+  customer billing ownership, or Preview/Production configuration; and
+- WhatsApp rate limits use the same process-local limitation described above,
+  and the repository still does not establish centralized webhook/provider
+  alerting or a stable externally reachable callback host.
 
 ## Review conduct
 

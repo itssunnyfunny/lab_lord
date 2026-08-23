@@ -38,6 +38,9 @@ const permissions: BranchAccess["permissions"] = {
   mark_payment_paid: true,
   waive_payments: true,
   analytics: true,
+  view_whatsapp: true,
+  send_whatsapp: true,
+  manage_whatsapp: true,
   staff_management: false,
 };
 

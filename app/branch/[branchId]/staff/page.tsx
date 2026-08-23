@@ -61,6 +61,7 @@ const ROLE_DETAILS: Record<StaffRoleOption, { label: string; summary: string; ca
             "Manage students and seat allocations",
             "View, collect, generate, and waive payments",
             "View analytics, AI reports, and staff overview",
+            "View and manage branch WhatsApp settings",
         ],
         cannot: ["Add, remove, or change staff roles"],
     },
@@ -70,6 +71,7 @@ const ROLE_DETAILS: Record<StaffRoleOption, { label: string; summary: string; ca
         can: [
             "Manage students and seat allocations",
             "View payments and mark them paid",
+            "View WhatsApp settings and hold future send access",
         ],
         cannot: [
             "Change branch settings, seats, shifts, or bundles",
@@ -92,6 +94,9 @@ const PERMISSION_OPTIONS: {
     { action: "mark_payment_paid", label: "Collect payments", summary: "Mark dues as paid" },
     { action: "waive_payments", label: "Waive payments", summary: "Write off dues" },
     { action: "analytics", label: "Analytics and AI", summary: "Reports, insights, and branch analytics" },
+    { action: "view_whatsapp", label: "View WhatsApp", summary: "See sender readiness and branch communication settings" },
+    { action: "send_whatsapp", label: "Send WhatsApp", summary: "Reserved for future reviewed message delivery; PR2 cannot send" },
+    { action: "manage_whatsapp", label: "Manage WhatsApp", summary: "Manage branch WhatsApp configuration; provider ownership remains owner-only" },
 ];
 
 const PERMISSION_ACTION_MAP: Record<OverridableStaffAction, PermissionActionCode> = {
@@ -103,6 +108,9 @@ const PERMISSION_ACTION_MAP: Record<OverridableStaffAction, PermissionActionCode
     mark_payment_paid: "MARK_PAYMENT_PAID",
     waive_payments: "WAIVE_PAYMENTS",
     analytics: "ANALYTICS",
+    view_whatsapp: "VIEW_WHATSAPP",
+    send_whatsapp: "SEND_WHATSAPP",
+    manage_whatsapp: "MANAGE_WHATSAPP",
 };
 
 const ROLE_DEFAULT_PERMISSIONS: Record<StaffRoleOption, Record<OverridableStaffAction, boolean>> = {
@@ -115,6 +123,9 @@ const ROLE_DEFAULT_PERMISSIONS: Record<StaffRoleOption, Record<OverridableStaffA
         mark_payment_paid: true,
         waive_payments: true,
         analytics: true,
+        view_whatsapp: true,
+        send_whatsapp: true,
+        manage_whatsapp: true,
     },
     STAFF: {
         manage_branch: false,
@@ -125,6 +136,9 @@ const ROLE_DEFAULT_PERMISSIONS: Record<StaffRoleOption, Record<OverridableStaffA
         mark_payment_paid: true,
         waive_payments: false,
         analytics: false,
+        view_whatsapp: true,
+        send_whatsapp: true,
+        manage_whatsapp: false,
     },
 };
 

@@ -6,6 +6,9 @@ describe("permission messages", () => {
         expect(STAFF_ACTION_LABELS.staff_management).toBe("owner-only staff management");
         expect(STAFF_ACTION_LABELS.waive_payments).toBe("payment waiver");
         expect(STAFF_ACTION_LABELS.manage_branch).toBe("branch management");
+        expect(STAFF_ACTION_LABELS.view_whatsapp).toBe("WhatsApp viewing");
+        expect(STAFF_ACTION_LABELS.send_whatsapp).toBe("WhatsApp sending");
+        expect(STAFF_ACTION_LABELS.manage_whatsapp).toBe("WhatsApp management");
     });
 
     it("explains who can adjust permissions", () => {

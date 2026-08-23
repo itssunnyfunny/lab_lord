@@ -30,6 +30,15 @@ describe("billing plan catalog", () => {
     expect(getActiveBillingPlan("PRO").entitlements).toContain("AI_ACCESS");
   });
 
+  it("gates WhatsApp internally without advertising unfinished delivery", () => {
+    expect(getActiveBillingPlan("BASIC").entitlements).not.toContain("WHATSAPP_AUTOMATION");
+    expect(getActiveBillingPlan("PRO").entitlements).toContain("WHATSAPP_AUTOMATION");
+    expect(getBillingPlan("AGENT_CONTROL")?.entitlements).toContain("WHATSAPP_AUTOMATION");
+    expect(getBillingPlan("CUSTOM")?.entitlements).toContain("WHATSAPP_AUTOMATION");
+    expect(JSON.stringify(publicBillingPlans())).not.toContain("WHATSAPP_AUTOMATION");
+    expect(JSON.stringify(publicBillingPlans())).not.toContain("WhatsApp");
+  });
+
   it("publishes the exact shared capability matrix in a stable order", () => {
     const [basic, standard] = publicBillingPlans();
     const labels = [

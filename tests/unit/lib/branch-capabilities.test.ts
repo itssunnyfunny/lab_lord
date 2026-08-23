@@ -12,6 +12,9 @@ const allPermissions = {
     mark_payment_paid: true,
     waive_payments: true,
     analytics: true,
+    view_whatsapp: true,
+    send_whatsapp: true,
+    manage_whatsapp: true,
     staff_management: true,
 } satisfies Record<StaffAction, boolean>;
 
@@ -39,7 +42,7 @@ function billingExperience(
         planFeeDueToday: 0,
         nextChargeAt: null,
         paymentAction: "NONE",
-        entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
+        entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS", "WHATSAPP_AUTOMATION"],
         latestOperation: null,
         activeOperation: null,
         scheduledChanges: [],
@@ -58,7 +61,7 @@ function access(overrides: Partial<BranchAccess> = {}): BranchAccess {
         role: "OWNER",
         permissions: { ...allPermissions },
         effectivePlan: "PRO",
-        entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
+        entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS", "WHATSAPP_AUTOMATION"],
         billingExperience: billingExperience(),
         ...overrides,
     };
@@ -171,5 +174,37 @@ describe("branch capability decisions", () => {
         expect(result.allowed).toBe(false);
         expect(result.blocker).toBe("branch_state");
         expect(result.reason).toContain("Activate");
+    });
+
+    it("separates WhatsApp view, future-send, and management permissions", () => {
+        const staff = access({
+            isOwner: false,
+            role: "STAFF",
+            permissions: { ...allPermissions, manage_whatsapp: false },
+        });
+
+        expect(getBranchCapabilityDecision(staff, "whatsappView").allowed).toBe(true);
+        expect(getBranchCapabilityDecision(staff, "whatsappSend").allowed).toBe(true);
+        expect(getBranchCapabilityDecision(staff, "whatsappManage").blocker).toBe("permission");
+
+        const viewOnly = access({
+            isOwner: false,
+            role: "STAFF",
+            permissions: { ...allPermissions, send_whatsapp: false, manage_whatsapp: false },
+        });
+        expect(getBranchCapabilityDecision(viewOnly, "whatsappView").allowed).toBe(true);
+        expect(getBranchCapabilityDecision(viewOnly, "whatsappSend").blocker).toBe("permission");
+    });
+
+    it("requires entitlement separately and writable state only for WhatsApp mutations", () => {
+        const missingEntitlement = access({ entitlements: [] });
+        expect(getBranchCapabilityDecision(missingEntitlement, "whatsappView").blocker).toBe("entitlement");
+
+        const readOnly = access({
+            billingExperience: billingExperience({ accessMode: "READ_ONLY" }),
+        });
+        expect(getBranchCapabilityDecision(readOnly, "whatsappView").allowed).toBe(true);
+        expect(getBranchCapabilityDecision(readOnly, "whatsappSend").blocker).toBe("read_only");
+        expect(getBranchCapabilityDecision(readOnly, "whatsappManage").blocker).toBe("read_only");
     });
 });

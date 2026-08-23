@@ -93,6 +93,12 @@ describe("PERMISSION_MATRIX", () => {
   it("staff_management allows no roles (owner only)", () => {
     expect(PERMISSION_MATRIX.staff_management).toEqual([]);
   });
+
+  it("uses the approved WhatsApp role defaults", () => {
+    expect(PERMISSION_MATRIX.view_whatsapp).toEqual(["MANAGER", "STAFF"]);
+    expect(PERMISSION_MATRIX.send_whatsapp).toEqual(["MANAGER", "STAFF"]);
+    expect(PERMISSION_MATRIX.manage_whatsapp).toEqual(["MANAGER"]);
+  });
 });
 
 describe("StaffService.authorize()", () => {
@@ -138,6 +144,26 @@ describe("StaffService.authorize()", () => {
     mockBranch(OWNER_ID);
     mockStaff("STAFF");
     await expect(StaffService.authorize(OTHER_ID, "branch_1", "students")).resolves.toBe(true);
+  });
+
+  it("allows STAFF to view and hold send access but not manage WhatsApp", async () => {
+    mockBranch(OWNER_ID);
+    mockStaff("STAFF");
+
+    await expect(StaffService.authorize(OTHER_ID, "branch_1", "view_whatsapp")).resolves.toBe(true);
+    await expect(StaffService.authorize(OTHER_ID, "branch_1", "send_whatsapp")).resolves.toBe(true);
+    await expect(StaffService.authorize(OTHER_ID, "branch_1", "manage_whatsapp")).rejects.toThrow("Unauthorized");
+  });
+
+  it("applies WhatsApp permission overrides", async () => {
+    mockBranch(OWNER_ID);
+    mockStaff("STAFF", [
+      { action: StaffPermissionAction.MANAGE_WHATSAPP, allowed: true },
+      { action: StaffPermissionAction.SEND_WHATSAPP, allowed: false },
+    ]);
+
+    await expect(StaffService.authorize(OTHER_ID, "branch_1", "manage_whatsapp")).resolves.toBe(true);
+    await expect(StaffService.authorize(OTHER_ID, "branch_1", "send_whatsapp")).rejects.toThrow("disabled");
   });
 
   it("allows an explicit permission override to grant access beyond role defaults", async () => {
@@ -224,6 +250,9 @@ describe("StaffService.getBranchAccess()", () => {
     expect(access.permissions.students).toBe(true);
     expect(access.permissions.analytics).toBe(true);
     expect(access.permissions.mark_payment_paid).toBe(false);
+    expect(access.permissions.view_whatsapp).toBe(true);
+    expect(access.permissions.send_whatsapp).toBe(true);
+    expect(access.permissions.manage_whatsapp).toBe(false);
     expect(access.permissions.staff_management).toBe(false);
   });
 

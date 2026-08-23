@@ -5,6 +5,7 @@ export const BILLING_ENTITLEMENTS = [
   "STAFF_MANAGEMENT",
   "ADVANCED_ANALYTICS",
   "AI_ACCESS",
+  "WHATSAPP_AUTOMATION",
 ] as const;
 
 export type BillingEntitlement = typeof BILLING_ENTITLEMENTS[number];
@@ -92,7 +93,7 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Branch and cross-branch advanced analytics",
       "AI reports and message drafting",
     ],
-    entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
+    entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS", "WHATSAPP_AUTOMATION"],
     limits: { maxBranches: null },
   },
   {
@@ -113,7 +114,7 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Custom automation policies",
       "Priority rollout access",
     ],
-    entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
+    entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS", "WHATSAPP_AUTOMATION"],
     limits: { maxBranches: null },
   },
   {
@@ -134,7 +135,7 @@ export const BILLING_PLANS: BillingPlan[] = [
       "Security and workflow reviews",
       "Tailored agent and reporting roadmap",
     ],
-    entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS"],
+    entitlements: ["STAFF_MANAGEMENT", "ADVANCED_ANALYTICS", "AI_ACCESS", "WHATSAPP_AUTOMATION"],
     limits: { maxBranches: null },
   },
 ];
@@ -184,7 +185,10 @@ export function publicBillingPlans() {
       label: capability.label,
       included: !capability.standardOnly || plan.id === "PRO",
     } satisfies PublicBillingCapability)),
-    entitlements: plan.entitlements,
+    // Internal rollout entitlements must not advertise unfinished capabilities.
+    entitlements: plan.entitlements.filter(
+      entitlement => entitlement !== "WHATSAPP_AUTOMATION"
+    ),
     limits: plan.limits,
   }));
 }

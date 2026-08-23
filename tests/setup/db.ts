@@ -43,6 +43,16 @@ export async function resetDatabase() {
   // CASCADE handles FK dependencies automatically, so order doesn't matter.
   await testPrisma.$executeRawUnsafe(`
     TRUNCATE TABLE
+      "WhatsAppMessageEvent",
+      "WhatsAppMessage",
+      "WhatsAppConsentEvent",
+      "WhatsAppConsent",
+      "WhatsAppTemplate",
+      "WhatsAppWebhookReceipt",
+      "WhatsAppAuditEvent",
+      "BranchWhatsAppSettings",
+      "WhatsAppConnectionIntent",
+      "WhatsAppSender",
       "PaymentResolutionEvent",
       "AuditLog",
       "OrganizationSubscriptionInvoice",
