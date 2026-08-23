@@ -57,14 +57,18 @@ Every statement uses one of these labels:
   application action and is not restricted by branch staff membership.
 - **Must preserve—enforced:** The base role matrix is:
   - `MANAGER`: manage branch, students, seat allocation, view/generate/mark
-    paid/waive payments, and analytics.
-  - `STAFF`: manage students and seat allocation, and view/mark paid payments.
+    paid/waive payments, analytics, and view/send/manage WhatsApp actions.
+  - `STAFF`: manage students and seat allocation, view/mark paid payments, and
+    view/send WhatsApp actions.
   - Organization management and staff management remain owner-only.
   (`types/staff.ts`, `services/staff.service.ts`)
 - **Must preserve—enforced:** Per-user grant/deny overrides apply only to the
   supported operational actions. They must not be used to grant owner-only
   organization or staff-management powers. Analytics and staff-management
-  access must also satisfy the relevant plan entitlement.
+  access must also satisfy the relevant plan entitlement. WhatsApp actions are
+  overridable but additionally require `WHATSAPP_AUTOMATION`; branch
+  `manage_whatsapp` does not grant organization-owned sender connection,
+  registration, template-sync, assignment, or disconnect authority.
   (`services/staff.service.ts`, staff integration tests)
 - **Must preserve—enforced:** Branch detail responses are permission-shaped.
   A caller with only payment access, for example, must not receive unrelated
@@ -287,6 +291,95 @@ Every statement uses one of these labels:
   replacement is authenticated or active and its lineage, plan, and quantity
   exactly match the approved intent. A mismatch removes provisional trust and
   requires manual review. (Billing replacement trust/access unit tests)
+
+## WhatsApp communication foundation
+
+- **Must preserve—enforced:** A Meta Cloud sender belongs to one organization,
+  and `(provider, providerMode, phoneNumberId)` is database-unique. A connected
+  phone cannot be represented as independent same-mode senders for two
+  organizations. Sender disconnect is a status transition rather than row
+  deletion, and restrictive historical relations preserve templates, consent
+  history, future message history, webhook receipts, and WhatsApp audit events.
+  (`prisma/schema.prisma`, `services/whatsappSender.service.ts`)
+- **Service-layer contract—not DB-enforced:** Every WhatsApp sender operation
+  must scope the sender through the currently authorized organization. Branch
+  assignment must resolve the organization first and independently prove that
+  the branch and sender belong to it and that the sender's provider mode matches
+  the environment. The schema has separate organization, branch, and sender
+  foreign keys; those keys alone do not prove same-tenant assignment.
+  (`services/whatsappAuthorization.service.ts`,
+  `services/whatsappSender.service.ts`)
+- **Must preserve—enforced:** Customer-supplied business, WABA, and phone IDs
+  are hints only. Embedded Signup completion exchanges the one-time code on the
+  server, validates the expected Meta app, permission and granular asset scope,
+  resolves the authorized WABA, fetches its phone list, and verifies the chosen
+  phone's WABA membership before persisting provider identifiers. TEST and LIVE
+  assets remain mode-isolated and wrong-environment configuration fails closed.
+  (`services/whatsappConnection.service.ts`, `lib/metaWhatsApp.ts`,
+  `lib/whatsappFeature.ts`)
+- **Must preserve—enforced:** Connection state is generated from 32 random
+  bytes and only its SHA-256 hash is stored. It is owner/organization/mode
+  bound, expires after approximately ten minutes, uses a bounded-attempt lease
+  around provider work, and can finalize only while that same lease remains
+  valid after authorization, entitlement, writability, mode, and release gates
+  are rechecked. Meta calls do not run inside a long Prisma transaction.
+  (`services/whatsappConnection.service.ts`)
+- **Must preserve—enforced:** The database contains no OAuth code, customer
+  access-token, system-user-token, app-secret, webhook-verification-token,
+  registration-PIN, raw signup-session, or raw-webhook-body column. Signup
+  code/token material is discarded after bounded server-side verification, and
+  the registration PIN exists only for the provider request. Secrets remain in
+  server-only configuration and must not be logged or returned to the browser.
+- **Service-layer contract—not DB-enforced:** The customer organization owns its
+  WABA, number, Meta business assets, provider billing method, and message
+  charges. Lab Lords uses delegated access only. No service may share a Lab
+  Lords credit line, retain customer credentials, use unofficial WhatsApp Web
+  automation, or treat local disconnect as destructive provider disconnection.
+- **Must preserve—enforced:** `WhatsAppConsent` is sender-and-E.164-phone scoped,
+  defaults to `UNKNOWN`, and is unique by `(senderId, phoneE164, consentType)`.
+  Existing students are not normalized, backfilled, or opted in. Each effective
+  consent change appends immutable trusted snapshots in the same transaction;
+  a repeated target status is a no-op.
+  (`prisma/schema.prisma`, `services/whatsappConsent.service.ts`)
+- **Must preserve—enforced:** `WhatsAppMessage.dedupeKey`, non-null provider
+  message IDs and non-null lease tokens are unique, and message-event identity
+  is append-only and unique. Per-message estimated/actual costs use currency
+  micros; branch budget configuration uses explicitly separate minor units.
+  These are future outbox/history constraints, not evidence that delivery is
+  implemented. (`prisma/schema.prisma`)
+- **Service-layer contract—not DB-enforced:** This foundation release may not
+  create a `WhatsAppMessage` or `WhatsAppMessageEvent` through connection,
+  registration, template sync, webhook, branch assignment, seed, route, cron,
+  or other ordinary application behavior. The Meta client has no `/messages`
+  operation or delivery method, and there is no sender, scheduler, dispatcher,
+  reminder automation, test-send action, or credit-sharing path. A direct
+  Prisma write could bypass this absence, so every future creation path requires
+  a separately approved design, permission/consent/idempotency enforcement, and
+  release gate. (`lib/metaWhatsApp.ts`, WhatsApp cost-boundary tests)
+- **Must preserve—enforced:** Template synchronization is provider-authoritative,
+  bounded, and read-only with respect to Meta. It completes all bounded pages
+  before changing stale state, maps unknown provider categories/statuses to
+  `UNKNOWN`, hashes canonical bounded components, versions normalized changes,
+  and never creates, edits, deletes, or sends a provider template.
+  (`services/whatsappTemplate.service.ts`)
+- **Must preserve—enforced:** The public Meta webhook POST verifies
+  HMAC-SHA256 over the exact bounded raw bytes before parsing. A mode-bound
+  payload hash is a durable unique receipt; exact replay is harmless, receipt
+  persistence must succeed before acknowledgement, and signed unknown assets
+  are ignored generically. PR2 webhook handling does not create outbound
+  messages, delivery events, consent changes, student actions, AI work, or
+  payment mutations. (`app/api/whatsapp/webhook/route.ts`,
+  `services/whatsappWebhook.service.ts`)
+- **Must preserve—enforced:** A local disconnect marks the sender
+  `DISCONNECTED`, clears branch assignments atomically, and appends audit
+  evidence while preserving provider identifiers and all local history. It
+  does not deregister the phone, unsubscribe the WABA, remove system users,
+  revoke customer assets, or call a destructive Meta endpoint.
+  (`services/whatsappSender.service.ts`)
+- **Must preserve—enforced:** Existing AI `MessageDraft` records remain
+  human-reviewed copy suggestions and are neither Meta templates nor WhatsApp
+  outbox rows. AI output cannot select an external action or cause automatic
+  WhatsApp delivery.
 
 ## Imports and AI boundaries
 
