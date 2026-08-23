@@ -579,13 +579,14 @@ WHATSAPP_WEBHOOK_INGEST_ENABLED=false
   independently blocks verification/receipt ingestion and WABA subscription work
 
 WHATSAPP_LIVE_CANARY_ORG_IDS=<exact reviewed IDs only>
-  when global onboarding writes are held, permits only exact valid IDs in LIVE
+  additionally restricts enabled onboarding writes to exact valid IDs in LIVE
   Vercel Production; an empty or malformed list permits nobody
 ```
 
-The integration flag is a prerequisite for the other two paths. Globally
-enabling onboarding writes is a separate, later rollout decision. Disabling a
-flag does not delete sender records, disconnect Meta assets, remove templates,
+The integration flag is a prerequisite for the other two paths. The onboarding
+writes flag is always required; in LIVE Production, the exact canary allow-list
+is required as well. Enabling either is a separate, later rollout decision.
+Disabling a flag does not delete sender records, disconnect Meta assets, remove templates,
 consents, receipts, or audit history, cancel an already-issued provider
 request, or change an existing deployment. There is intentionally no delivery
 flag because delivery code does not exist.
