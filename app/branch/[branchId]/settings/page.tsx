@@ -41,6 +41,7 @@ import {
 } from "@/components/settings/SettingsWorkspace";
 import { useInlineFieldErrors } from "@/components/ui/InlineFieldError";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { BranchWhatsAppPanel } from "@/components/whatsapp/BranchWhatsAppPanel";
 import { BRANCH_PAGE_ACCESS } from "@/lib/branchPageAccess";
 import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 import { cn } from "@/lib/utils";
@@ -128,6 +129,12 @@ const SECTIONS = [
     { id: "system", label: "System Info", icon: Hash },
 ];
 
+const SECTIONS_WITH_WHATSAPP = [
+    ...SECTIONS.slice(0, 3),
+    { id: "whatsapp", label: "WhatsApp", icon: MessageSquare },
+    ...SECTIONS.slice(3),
+];
+
 function toForm(branch: BranchData): BranchForm {
     return {
         name: branch.name ?? "",
@@ -195,6 +202,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
     const { formatDate, formatDateTime, formatNumber } = useUserPreferences();
     const hasAiAccess = access.entitlements.includes("AI_ACCESS");
     const settingsDecision = getBranchCapabilityDecision(access, "settingsManage");
+    const whatsappViewDecision = getBranchCapabilityDecision(access, "whatsappView");
     const showMutationControls = settingsDecision.blocker !== "permission";
     const mutationsDisabled = !settingsDecision.allowed;
     const mutationDescriptionId = mutationsDisabled ? SETTINGS_BLOCKER_ID : undefined;
@@ -207,6 +215,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
     const [loading, setLoading] = useState(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
     const [activeSection, setActiveSection] = useState("profile");
+    const [whatsAppAvailable, setWhatsAppAvailable] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -450,7 +459,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
             <SettingsWorkspace
                 title="Branch Settings"
                 subtitle="Configure the branch profile, billing defaults, reminders, AI, and access overview."
-                sections={SECTIONS}
+                sections={whatsAppAvailable ? SECTIONS_WITH_WHATSAPP : SECTIONS}
                 activeSection={activeSection}
                 onSectionChange={setActiveSection}
                 actions={!isEditing ? (
@@ -564,6 +573,13 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                         <ReadOnlyRow label="Payments due" value={counts.payments ?? 0} />
                     )}
                 </SettingsPanel>
+
+                <BranchWhatsAppPanel
+                    organizationId={access.organizationId}
+                    branchId={branchId}
+                    canView={whatsappViewDecision.allowed}
+                    onAvailabilityChange={setWhatsAppAvailable}
+                />
 
                 <SettingsPanel id="ai" title="AI" description="Control whether this branch can generate AI reports." icon={Bot}>
                     {showMutationControls && isEditing ? (

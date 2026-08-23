@@ -16,6 +16,7 @@ import {
     Loader2,
     Mail,
     MapPin,
+    MessageCircle,
     Phone,
     Shield,
     Sparkles,
@@ -38,6 +39,7 @@ import {
 } from "@/components/settings/SettingsWorkspace";
 import { useInlineFieldErrors } from "@/components/ui/InlineFieldError";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { OrganizationWhatsAppPanel } from "@/components/whatsapp/OrganizationWhatsAppPanel";
 import { BillingPriceSummary } from "@/components/billing/BillingPriceSummary";
 import { BillingPaymentMethodsOverview } from "@/components/billing/BillingPaymentMethodsOverview";
 import { CheckoutConfirmationDialog } from "@/components/billing/CheckoutConfirmationDialog";
@@ -128,6 +130,12 @@ const SECTIONS = [
     { id: "system", label: "System Info", icon: Shield },
 ];
 
+const SECTIONS_WITH_WHATSAPP = [
+    ...SECTIONS.slice(0, 4),
+    { id: "whatsapp", label: "WhatsApp", icon: MessageCircle },
+    ...SECTIONS.slice(4),
+];
+
 const BUSINESS_TYPES = ["Study Hall", "Library", "Coaching Center", "Tuition Class", "Other"];
 
 function toForm(org: OrgDetails): OrgForm {
@@ -169,6 +177,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
     const [loading, setLoading] = useState(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
     const [activeSection, setActiveSection] = useState("profile");
+    const [whatsAppAvailable, setWhatsAppAvailable] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -919,7 +928,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
             <SettingsWorkspace
                 title="Organization Settings"
                 subtitle="Configure business identity, contact details, and workspace defaults."
-                sections={SECTIONS}
+                sections={whatsAppAvailable ? SECTIONS_WITH_WHATSAPP : SECTIONS}
                 activeSection={activeSection}
                 onSectionChange={setActiveSection}
                 actions={!isEditing ? (
@@ -1063,6 +1072,11 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
                         ))}
                     </div>
                 </SettingsPanel>
+
+                <OrganizationWhatsAppPanel
+                    organizationId={orgId}
+                    onAvailabilityChange={setWhatsAppAvailable}
+                />
 
                 <SettingsPanel id="billing" title="Billing" description="Workspace subscription and Razorpay billing state." icon={CreditCard}>
                     {billingNotice && (

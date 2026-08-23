@@ -9,3 +9,4 @@ export * from "./payment";
 export * from "./settings";
 export * from "./billingExperience";
 export * from "./ui";
+export * from "./whatsapp";
