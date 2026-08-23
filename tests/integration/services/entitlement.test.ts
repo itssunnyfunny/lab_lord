@@ -56,6 +56,7 @@ describe("subscription entitlements", () => {
     });
     expect(profile.entitlements).not.toContain("ADVANCED_ANALYTICS");
     expect(profile.entitlements).not.toContain("AI_ACCESS");
+    expect(profile.entitlements).not.toContain("WHATSAPP_AUTOMATION");
   });
 
   it("lets Basic add billable branches while keeping premium features unavailable", async () => {
@@ -71,6 +72,7 @@ describe("subscription entitlements", () => {
       limits: { maxBranches: null },
     });
     await expect(StaffService.authorize(user.id, branch.id, "analytics")).rejects.toThrow("upgraded subscription");
+    await expect(StaffService.authorize(user.id, branch.id, "view_whatsapp")).rejects.toThrow("upgraded subscription");
     await expect(StaffService.listStaff(user.id, branch.id)).rejects.toThrow("upgraded subscription");
   });
 
@@ -89,7 +91,9 @@ describe("subscription entitlements", () => {
       limits: { maxBranches: null },
     });
     expect(profile.entitlements).toContain("AI_ACCESS");
+    expect(profile.entitlements).toContain("WHATSAPP_AUTOMATION");
     await expect(StaffService.authorize(user.id, branch.id, "analytics")).resolves.toBe(true);
+    await expect(StaffService.authorize(user.id, branch.id, "view_whatsapp")).resolves.toBe(true);
     await expect(StaffService.listStaff(user.id, branch.id)).resolves.toEqual([]);
   });
 
@@ -102,6 +106,7 @@ describe("subscription entitlements", () => {
 
     expect(profile.entitlements).not.toContain("ADVANCED_ANALYTICS");
     expect(profile.entitlements).not.toContain("AI_ACCESS");
+    expect(profile.entitlements).not.toContain("WHATSAPP_AUTOMATION");
     expect(profile.effectivePlan).toBe("BASIC");
     expect(profile.fallbackAccess).toBe(true);
     expect(profile.limits.maxBranches).toBeNull();
@@ -124,6 +129,7 @@ describe("subscription entitlements", () => {
     });
     expect(profile.entitlements).not.toContain("ADVANCED_ANALYTICS");
     expect(profile.entitlements).not.toContain("AI_ACCESS");
+    expect(profile.entitlements).not.toContain("WHATSAPP_AUTOMATION");
   });
 
   it("holds a V2 workspace read-only when its stored subscription is from another mode", async () => {
@@ -147,5 +153,6 @@ describe("subscription entitlements", () => {
       canWrite: false,
     });
     expect(profile.entitlements).not.toContain("AI_ACCESS");
+    expect(profile.entitlements).not.toContain("WHATSAPP_AUTOMATION");
   });
 });

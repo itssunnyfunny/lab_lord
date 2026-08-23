@@ -28,6 +28,9 @@ export const BRANCH_CAPABILITIES = {
     staffManage: { permissions: ["staff_management"], entitlement: "STAFF_MANAGEMENT", mutation: true },
     aiUse: { permissions: ["analytics", "view_payments"], entitlement: "AI_ACCESS" },
     aiGenerate: { permissions: ["analytics", "view_payments"], entitlement: "AI_ACCESS", mutation: true },
+    whatsappView: { permissions: ["view_whatsapp"], entitlement: "WHATSAPP_AUTOMATION" },
+    whatsappSend: { permissions: ["view_whatsapp", "send_whatsapp"], entitlement: "WHATSAPP_AUTOMATION", mutation: true },
+    whatsappManage: { permissions: ["manage_whatsapp"], entitlement: "WHATSAPP_AUTOMATION", mutation: true },
     settingsManage: { permissions: ["manage_branch"], mutation: true },
 } as const satisfies Record<string, CapabilityRequirement>;
 

@@ -41,6 +41,9 @@ export const PERMISSION_MATRIX: EntityPermissionMatrix = {
     mark_payment_paid: [StaffRole.MANAGER, StaffRole.STAFF],
     waive_payments: [StaffRole.MANAGER],
     analytics: [StaffRole.MANAGER],
+    view_whatsapp: [StaffRole.MANAGER, StaffRole.STAFF],
+    send_whatsapp: [StaffRole.MANAGER, StaffRole.STAFF],
+    manage_whatsapp: [StaffRole.MANAGER],
     staff_management: [], // OWNER only
 };
 
@@ -53,6 +56,9 @@ const ACTION_TO_PERMISSION_ACTION: Record<OverridableStaffAction, StaffPermissio
     mark_payment_paid: StaffPermissionAction.MARK_PAYMENT_PAID,
     waive_payments: StaffPermissionAction.WAIVE_PAYMENTS,
     analytics: StaffPermissionAction.ANALYTICS,
+    view_whatsapp: StaffPermissionAction.VIEW_WHATSAPP,
+    send_whatsapp: StaffPermissionAction.SEND_WHATSAPP,
+    manage_whatsapp: StaffPermissionAction.MANAGE_WHATSAPP,
 };
 
 const OVERRIDABLE_ACTION_SET = new Set<string>(OVERRIDABLE_STAFF_ACTIONS);
@@ -131,6 +137,9 @@ export class StaffService {
         }
         if (action === "analytics") {
             await EntitlementService.assertOrganizationEntitlement(organizationId, "ADVANCED_ANALYTICS", client);
+        }
+        if (action === "view_whatsapp" || action === "send_whatsapp" || action === "manage_whatsapp") {
+            await EntitlementService.assertOrganizationEntitlement(organizationId, "WHATSAPP_AUTOMATION", client);
         }
     }
 

@@ -25,6 +25,9 @@ const permissions = Object.fromEntries([
   "mark_payment_paid",
   "waive_payments",
   "analytics",
+  "view_whatsapp",
+  "send_whatsapp",
+  "manage_whatsapp",
   "staff_management",
 ].map(action => [action, true])) as Record<StaffAction, boolean>;
 
