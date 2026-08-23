@@ -32,6 +32,12 @@ model User {
   importRunsCancelled    ImportRun[]     @relation("ImportRunCancelledBy")
   importRecipesCreated   ImportRecipe[]  @relation("ImportRecipeCreatedBy")
   paymentResolutionEvents PaymentResolutionEvent[] @relation("PaymentResolutionEventActor")
+  whatsAppSendersConnected  WhatsAppSender[]           @relation("WhatsAppSenderConnectedBy")
+  whatsAppConnectionIntents WhatsAppConnectionIntent[] @relation("WhatsAppConnectionIntentActor")
+  whatsAppConsentsRecorded  WhatsAppConsent[]          @relation("WhatsAppConsentRecordedBy")
+  whatsAppConsentEvents     WhatsAppConsentEvent[]     @relation("WhatsAppConsentEventActor")
+  whatsAppMessagesCreated   WhatsAppMessage[]          @relation("WhatsAppMessageCreatedBy")
+  whatsAppAuditEvents       WhatsAppAuditEvent[]       @relation("WhatsAppAuditEventActor")
   ownerTrialGrant        OwnerTrialGrant?
 }
 
@@ -65,6 +71,12 @@ model Organization {
   offerGrants           OrganizationOfferGrant[]
   subscriptionInvoices  OrganizationSubscriptionInvoice[]
   importRecipes         ImportRecipe[]
+  whatsAppSenders                WhatsAppSender[]
+  whatsAppConnectionIntents      WhatsAppConnectionIntent[]
+  branchWhatsAppSettings         BranchWhatsAppSettings[]
+  whatsAppMessages               WhatsAppMessage[]
+  whatsAppWebhookReceipts        WhatsAppWebhookReceipt[]
+  whatsAppAuditEvents            WhatsAppAuditEvent[]
   owner                 User                      @relation(fields: [ownerId], references: [id])
 }
 
@@ -105,6 +117,9 @@ model Branch {
   importRecipes          ImportRecipe[]
   importRuns             ImportRun[]
   billingChanges         OrganizationBillingChange[]
+  whatsAppSettings        BranchWhatsAppSettings?
+  whatsAppMessages        WhatsAppMessage[]
+  whatsAppAuditEvents     WhatsAppAuditEvent[]
 }
 
 model Student {
@@ -123,6 +138,7 @@ model Student {
   messageDrafts   MessageDraft[]
   payments        Payment[]
   seatAllocations SeatAllocation[]
+  whatsAppMessages      WhatsAppMessage[]
   branch          Branch           @relation(fields: [branchId], references: [id])
 
   @@index([branchId])
@@ -222,6 +238,7 @@ model Payment {
   branch        Branch          @relation(fields: [branchId], references: [id])
   student       Student         @relation(fields: [studentId], references: [id])
   resolutionEvents PaymentResolutionEvent[]
+  whatsAppMessages WhatsAppMessage[]
 
   @@unique([studentId, type, periodStart], map: "Payment_studentId_type_periodStart_key")
   @@index([branchId, dueDate])
@@ -247,6 +264,7 @@ model PaymentResolutionEvent {
   payment       Payment                      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   branch        Branch                       @relation(fields: [branchId], references: [id], onDelete: Restrict)
   actor         User?                        @relation("PaymentResolutionEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  whatsAppMessages WhatsAppMessage[]
 
   @@index([paymentId, occurredAt, id])
   @@index([branchId, occurredAt, id])
@@ -315,6 +333,254 @@ model MessageDraft {
   student   Student? @relation(fields: [studentId], references: [id])
 
   @@index([branchId, studentId])
+}
+
+model WhatsAppSender {
+  id                  String                   @id @default(cuid())
+  organizationId      String
+  provider            WhatsAppProvider
+  providerMode        WhatsAppProviderMode
+  providerBusinessId  String?
+  wabaId              String
+  phoneNumberId       String
+  displayPhoneNumber  String
+  verifiedName        String?
+  qualityRating       String?
+  accountMode         String?
+  status              WhatsAppSenderStatus     @default(PENDING)
+  phoneRegisteredAt   DateTime?
+  webhookSubscribedAt DateTime?
+  connectedByUserId   String?
+  connectedAt         DateTime?
+  disconnectedAt      DateTime?
+  lastSyncedAt        DateTime?
+  lastTemplateSyncAt  DateTime?
+  lastHealthCheckAt   DateTime?
+  lastErrorCode       String?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  organization        Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  connectedBy         User?                    @relation("WhatsAppSenderConnectedBy", fields: [connectedByUserId], references: [id], onDelete: SetNull)
+  branchSettings      BranchWhatsAppSettings[]
+  templates           WhatsAppTemplate[]
+  consents            WhatsAppConsent[]
+  consentEvents       WhatsAppConsentEvent[]
+  messages            WhatsAppMessage[]
+  webhookReceipts     WhatsAppWebhookReceipt[]
+  auditEvents         WhatsAppAuditEvent[]
+
+  @@unique([provider, providerMode, phoneNumberId])
+  @@index([organizationId, status])
+  @@index([provider, providerMode, wabaId])
+}
+
+model WhatsAppConnectionIntent {
+  id                 String                         @id @default(cuid())
+  organizationId     String
+  actorUserId        String
+  providerMode       WhatsAppProviderMode
+  stateHash          String                         @unique
+  status             WhatsAppConnectionIntentStatus @default(CREATED)
+  leaseToken         String?                        @unique
+  leaseUntil         DateTime?
+  attemptCount       Int                            @default(0)
+  providerBusinessId String?
+  wabaId             String?
+  phoneNumberId      String?
+  expiresAt          DateTime
+  consumedAt         DateTime?
+  lastErrorCode      String?
+  createdAt          DateTime                       @default(now())
+  updatedAt          DateTime                       @updatedAt
+  organization       Organization                   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  actor              User                           @relation("WhatsAppConnectionIntentActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, status, expiresAt])
+  @@index([actorUserId, status, expiresAt])
+}
+
+model BranchWhatsAppSettings {
+  branchId           String          @id
+  organizationId     String
+  senderId           String?
+  enabled            Boolean         @default(false)
+  defaultLanguage    String          @default("en")
+  defaultTone        String          @default("polite")
+  monthlyBudgetMinor Int?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  branch             Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  organization       Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  sender             WhatsAppSender? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([senderId])
+}
+
+model WhatsAppTemplate {
+  id                 String                         @id @default(cuid())
+  senderId           String
+  providerTemplateId String
+  name               String
+  language           String
+  category           WhatsAppTemplateCategory
+  providerStatus     WhatsAppTemplateProviderStatus
+  version            Int                            @default(1)
+  components         Json
+  componentHash      String
+  lastSyncedAt       DateTime
+  staleAt            DateTime?
+  createdAt          DateTime                       @default(now())
+  updatedAt          DateTime                       @updatedAt
+  sender             WhatsAppSender                 @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  messages           WhatsAppMessage[]
+
+  @@unique([senderId, providerTemplateId])
+  @@unique([senderId, name, language])
+  @@index([senderId, category, providerStatus])
+}
+
+model WhatsAppConsent {
+  id               String                 @id @default(cuid())
+  senderId         String
+  phoneE164        String
+  consentType      WhatsAppConsentType
+  status           WhatsAppConsentStatus  @default(UNKNOWN)
+  source           WhatsAppConsentSource
+  grantedAt        DateTime?
+  revokedAt        DateTime?
+  recordedByUserId String?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  sender           WhatsAppSender         @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  recordedBy       User?                  @relation("WhatsAppConsentRecordedBy", fields: [recordedByUserId], references: [id], onDelete: SetNull)
+  events           WhatsAppConsentEvent[]
+
+  @@unique([senderId, phoneE164, consentType])
+}
+
+model WhatsAppConsentEvent {
+  id             String                @id @default(cuid())
+  consentId      String
+  senderId       String
+  phoneE164      String
+  consentType    WhatsAppConsentType
+  actorUserId    String?
+  previousStatus WhatsAppConsentStatus
+  nextStatus     WhatsAppConsentStatus
+  source         WhatsAppConsentSource
+  details        Json?
+  occurredAt     DateTime              @default(now())
+  consent        WhatsAppConsent       @relation(fields: [consentId], references: [id], onDelete: Restrict)
+  sender         WhatsAppSender        @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  actor          User?                 @relation("WhatsAppConsentEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([consentId, occurredAt, id])
+  @@index([senderId, occurredAt, id])
+}
+
+model WhatsAppMessage {
+  id                       String                  @id @default(cuid())
+  organizationId           String
+  branchId                 String?
+  senderId                 String
+  studentId                String?
+  paymentId                String?
+  paymentResolutionEventId String?
+  templateId               String?
+  createdByUserId          String?
+  recipientPhoneE164       String
+  purpose                  WhatsAppMessagePurpose
+  templateVersion          Int?
+  templateVariables        Json
+  renderedPreview          String?
+  scheduledFor             DateTime
+  localScheduleDate        DateTime?
+  status                   WhatsAppMessageStatus   @default(SCHEDULED)
+  dedupeKey                String                  @unique
+  providerMessageId        String?                 @unique
+  attemptCount             Int                     @default(0)
+  leaseToken               String?                 @unique
+  leaseUntil               DateTime?
+  estimatedCostMicros      Int?
+  actualCostMicros         Int?
+  currency                 String                  @default("INR")
+  failureCode              String?
+  safeFailureMessage       String?
+  createdAt                DateTime                @default(now())
+  updatedAt                DateTime                @updatedAt
+  organization             Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  branch                   Branch?                 @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  sender                   WhatsAppSender          @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  student                  Student?                @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  payment                  Payment?                @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  paymentResolutionEvent   PaymentResolutionEvent? @relation(fields: [paymentResolutionEventId], references: [id], onDelete: Restrict)
+  template                 WhatsAppTemplate?       @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  createdBy                User?                   @relation("WhatsAppMessageCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  events                   WhatsAppMessageEvent[]
+
+  @@index([organizationId, createdAt])
+  @@index([branchId, createdAt])
+  @@index([senderId, status, scheduledFor])
+  @@index([studentId, createdAt])
+  @@index([paymentId, createdAt])
+  @@index([paymentResolutionEventId, createdAt])
+}
+
+model WhatsAppMessageEvent {
+  id                String                @id @default(cuid())
+  messageId         String
+  eventKey          String                @unique
+  status            WhatsAppMessageStatus
+  providerTimestamp DateTime?
+  receivedAt        DateTime              @default(now())
+  payloadHash       String
+  message           WhatsAppMessage       @relation(fields: [messageId], references: [id], onDelete: Restrict)
+
+  @@index([messageId, providerTimestamp, id])
+}
+
+model WhatsAppWebhookReceipt {
+  id               String                       @id @default(cuid())
+  providerMode     WhatsAppProviderMode
+  dedupeKey        String                       @unique
+  payloadHash      String
+  signatureVersion String
+  organizationId   String?
+  senderId         String?
+  wabaId           String?
+  phoneNumberId    String?
+  eventType        String?
+  status           WhatsAppWebhookReceiptStatus @default(RECEIVED)
+  receivedAt       DateTime                     @default(now())
+  processedAt      DateTime?
+  failureCode      String?
+  organization     Organization?                @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  sender           WhatsAppSender?              @relation(fields: [senderId], references: [id], onDelete: Restrict)
+
+  @@index([providerMode, receivedAt])
+  @@index([senderId, receivedAt])
+  @@index([wabaId, receivedAt])
+  @@index([phoneNumberId, receivedAt])
+}
+
+model WhatsAppAuditEvent {
+  id             String              @id @default(cuid())
+  organizationId String
+  branchId       String?
+  senderId       String?
+  actorUserId    String?
+  action         WhatsAppAuditAction
+  details        Json?
+  createdAt      DateTime            @default(now())
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  branch         Branch?             @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  sender         WhatsAppSender?     @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  actor          User?               @relation("WhatsAppAuditEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt, id])
+  @@index([branchId, createdAt, id])
+  @@index([senderId, createdAt, id])
 }
 
 model ImportSession {
@@ -601,6 +867,118 @@ enum StaffPermissionAction {
   MARK_PAYMENT_PAID
   WAIVE_PAYMENTS
   ANALYTICS
+  VIEW_WHATSAPP
+  SEND_WHATSAPP
+  MANAGE_WHATSAPP
+}
+
+enum WhatsAppProvider {
+  META_CLOUD
+}
+
+enum WhatsAppProviderMode {
+  TEST
+  LIVE
+}
+
+enum WhatsAppSenderStatus {
+  PENDING
+  NEEDS_REGISTRATION
+  ACTIVE
+  RESTRICTED
+  DISCONNECTED
+  ERROR
+}
+
+enum WhatsAppConnectionIntentStatus {
+  CREATED
+  PROCESSING
+  COMPLETED
+  FAILED
+  EXPIRED
+  CANCELLED
+}
+
+enum WhatsAppTemplateCategory {
+  AUTHENTICATION
+  MARKETING
+  UTILITY
+  UNKNOWN
+}
+
+enum WhatsAppTemplateProviderStatus {
+  APPROVED
+  PENDING
+  REJECTED
+  PAUSED
+  DISABLED
+  UNKNOWN
+}
+
+enum WhatsAppConsentType {
+  OPERATIONAL
+  MARKETING
+  OWNER_REPORT
+}
+
+enum WhatsAppConsentStatus {
+  UNKNOWN
+  OPTED_IN
+  OPTED_OUT
+}
+
+enum WhatsAppConsentSource {
+  IN_PERSON
+  REGISTRATION_FORM
+  IMPORT_ATTESTATION
+  WHATSAPP_REPLY
+  OWNER_CONFIGURATION
+  SYSTEM
+}
+
+enum WhatsAppMessagePurpose {
+  MANUAL_REMINDER
+  WELCOME
+  FEE_RENEWAL
+  PAST_DUE
+  PAYMENT_CONFIRMATION
+  DAILY_BRANCH_REPORT
+  DAILY_ORGANIZATION_REPORT
+  SERVICE_NOTICE
+}
+
+enum WhatsAppMessageStatus {
+  SCHEDULED
+  CLAIMED
+  SUBMITTING
+  ACCEPTED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  CANCELLED
+  SUPPRESSED
+  UNKNOWN
+}
+
+enum WhatsAppWebhookReceiptStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  FAILED
+}
+
+enum WhatsAppAuditAction {
+  CONNECTION_STARTED
+  CONNECTION_COMPLETED
+  CONNECTION_FAILED
+  PHONE_REGISTERED
+  WEBHOOK_SUBSCRIBED
+  TEMPLATES_SYNCED
+  BRANCH_ASSIGNED
+  BRANCH_UNASSIGNED
+  LOCAL_DISCONNECTED
+  CONSENT_CHANGED
 }
 
 enum PaymentType {
