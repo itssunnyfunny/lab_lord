@@ -203,6 +203,7 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
     const hasAiAccess = access.entitlements.includes("AI_ACCESS");
     const settingsDecision = getBranchCapabilityDecision(access, "settingsManage");
     const whatsappViewDecision = getBranchCapabilityDecision(access, "whatsappView");
+    const whatsappManageDecision = getBranchCapabilityDecision(access, "whatsappManage");
     const showMutationControls = settingsDecision.blocker !== "permission";
     const mutationsDisabled = !settingsDecision.allowed;
     const mutationDescriptionId = mutationsDisabled ? SETTINGS_BLOCKER_ID : undefined;
@@ -578,6 +579,8 @@ function BranchSettingsContent({ branchId, access }: { branchId: string; access:
                     organizationId={access.organizationId}
                     branchId={branchId}
                     canView={whatsappViewDecision.allowed}
+                    canManage={whatsappManageDecision.allowed}
+                    isOwner={access.isOwner}
                     onAvailabilityChange={setWhatsAppAvailable}
                 />
 

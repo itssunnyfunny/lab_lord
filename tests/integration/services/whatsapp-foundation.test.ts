@@ -249,8 +249,11 @@ describe("WhatsApp foundation database integration", () => {
       createdByUserId: owner.id,
       recipientPhoneE164: "+919876543210",
       purpose: "PAYMENT_CONFIRMATION" as const,
+      trigger: "MANUAL" as const,
+      sourceFingerprint: "message-source-fingerprint-20001",
       templateVariables: {},
       scheduledFor: now,
+      availableAt: now,
       dedupeKey: "message-dedupe-20001",
     };
     await testPrisma.whatsAppMessage.create({ data: messageData });

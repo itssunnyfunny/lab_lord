@@ -292,94 +292,160 @@ Every statement uses one of these labels:
   exactly match the approved intent. A mismatch removes provisional trust and
   requires manual review. (Billing replacement trust/access unit tests)
 
-## WhatsApp communication foundation
+## WhatsApp managed Utility delivery and collections
 
 - **Must preserve—enforced:** A Meta Cloud sender belongs to one organization,
   and `(provider, providerMode, phoneNumberId)` is database-unique. A connected
   phone cannot be represented as independent same-mode senders for two
   organizations. Sender disconnect is a status transition rather than row
-  deletion, and restrictive historical relations preserve templates, consent
-  history, future message history, webhook receipts, and WhatsApp audit events.
-  (`prisma/schema.prisma`, `services/whatsappSender.service.ts`)
-- **Service-layer contract—not DB-enforced:** Every WhatsApp sender operation
-  must scope the sender through the currently authorized organization. Branch
-  assignment must resolve the organization first and independently prove that
-  the branch and sender belong to it and that the sender's provider mode matches
-  the environment. The schema has separate organization, branch, and sender
-  foreign keys; those keys alone do not prove same-tenant assignment.
-  (`services/whatsappAuthorization.service.ts`,
+  deletion, and restrictive historical relations preserve provider identifiers,
+  templates/bindings, recipient and consent history, messages/events, signed
+  receipts, and audit evidence. (`prisma/schema.prisma`,
   `services/whatsappSender.service.ts`)
-- **Must preserve—enforced:** Customer-supplied business, WABA, and phone IDs
-  are hints only. Embedded Signup completion exchanges the one-time code on the
-  server, validates the expected Meta app, permission and granular asset scope,
-  resolves the authorized WABA, fetches its phone list, and verifies the chosen
-  phone's WABA membership before persisting provider identifiers. TEST and LIVE
-  assets remain mode-isolated and wrong-environment configuration fails closed.
+- **Service-layer contract—not DB-enforced:** Every sender, settings, recipient,
+  template, message, payment, and event operation must independently prove the
+  authorized organization and branch. Separate foreign keys do not prove that a
+  branch, sender, student, payment, mapping, consent, template, or message belongs
+  to the same tenant. Foreign and nonexistent identifiers remain generic.
+  (`services/whatsappAuthorization.service.ts`, `services/whatsapp*.ts`)
+- **Must preserve—enforced:** Customer-supplied business, WABA, and phone IDs are
+  hints only. Embedded Signup completion exchanges the one-time code on the
+  server, validates the expected app and scopes, resolves the authorized WABA,
+  fetches its phone list, and verifies membership before persisting identifiers.
+  Connection state is owner/organization/mode-bound, stores only a SHA-256 hash
+  of 32 random bytes, expires, and is lease-fenced. TEST and LIVE assets remain
+  isolated and wrong-environment configuration fails closed.
   (`services/whatsappConnection.service.ts`, `lib/metaWhatsApp.ts`,
   `lib/whatsappFeature.ts`)
-- **Must preserve—enforced:** Connection state is generated from 32 random
-  bytes and only its SHA-256 hash is stored. It is owner/organization/mode
-  bound, expires after approximately ten minutes, uses a bounded-attempt lease
-  around provider work, and can finalize only while that same lease remains
-  valid after authorization, entitlement, writability, mode, and release gates
-  are rechecked. Meta calls do not run inside a long Prisma transaction.
-  (`services/whatsappConnection.service.ts`)
-- **Must preserve—enforced:** The database contains no OAuth code, customer
-  access-token, system-user-token, app-secret, webhook-verification-token,
-  registration-PIN, raw signup-session, or raw-webhook-body column. Signup
-  code/token material is discarded after bounded server-side verification, and
-  the registration PIN exists only for the provider request. Secrets remain in
-  server-only configuration and must not be logged or returned to the browser.
-- **Service-layer contract—not DB-enforced:** The customer organization owns its
-  WABA, number, Meta business assets, provider billing method, and message
-  charges. Lab Lords uses delegated access only. No service may share a Lab
-  Lords credit line, retain customer credentials, use unofficial WhatsApp Web
-  automation, or treat local disconnect as destructive provider disconnection.
-- **Must preserve—enforced:** `WhatsAppConsent` is sender-and-E.164-phone scoped,
-  defaults to `UNKNOWN`, and is unique by `(senderId, phoneE164, consentType)`.
-  Existing students are not normalized, backfilled, or opted in. Each effective
-  consent change appends immutable trusted snapshots in the same transaction;
-  a repeated target status is a no-op.
-  (`prisma/schema.prisma`, `services/whatsappConsent.service.ts`)
-- **Must preserve—enforced:** `WhatsAppMessage.dedupeKey`, non-null provider
-  message IDs and non-null lease tokens are unique, and message-event identity
-  is append-only and unique. Per-message estimated/actual costs use currency
-  micros; branch budget configuration uses explicitly separate minor units.
-  These are future outbox/history constraints, not evidence that delivery is
-  implemented. (`prisma/schema.prisma`)
-- **Service-layer contract—not DB-enforced:** This foundation release may not
-  create a `WhatsAppMessage` or `WhatsAppMessageEvent` through connection,
-  registration, template sync, webhook, branch assignment, seed, route, cron,
-  or other ordinary application behavior. The Meta client has no `/messages`
-  operation or delivery method, and there is no sender, scheduler, dispatcher,
-  reminder automation, test-send action, or credit-sharing path. A direct
-  Prisma write could bypass this absence, so every future creation path requires
-  a separately approved design, permission/consent/idempotency enforcement, and
-  release gate. (`lib/metaWhatsApp.ts`, WhatsApp cost-boundary tests)
-- **Must preserve—enforced:** Template synchronization is provider-authoritative,
-  bounded, and read-only with respect to Meta. It completes all bounded pages
-  before changing stale state, maps unknown provider categories/statuses to
-  `UNKNOWN`, hashes canonical bounded components, versions normalized changes,
-  and never creates, edits, deletes, or sends a provider template.
-  (`services/whatsappTemplate.service.ts`)
-- **Must preserve—enforced:** The public Meta webhook POST verifies
-  HMAC-SHA256 over the exact bounded raw bytes before parsing. A mode-bound
-  payload hash is a durable unique receipt; exact replay is harmless, receipt
-  persistence must succeed before acknowledgement, and signed unknown assets
-  are ignored generically. PR2 webhook handling does not create outbound
-  messages, delivery events, consent changes, student actions, AI work, or
-  payment mutations. (`app/api/whatsapp/webhook/route.ts`,
-  `services/whatsappWebhook.service.ts`)
-- **Must preserve—enforced:** A local disconnect marks the sender
-  `DISCONNECTED`, clears branch assignments atomically, and appends audit
-  evidence while preserving provider identifiers and all local history. It
-  does not deregister the phone, unsubscribe the WABA, remove system users,
-  revoke customer assets, or call a destructive Meta endpoint.
-  (`services/whatsappSender.service.ts`)
+- **Must preserve—enforced:** OAuth codes, customer access tokens, the global
+  system-user token, app secret, webhook verification token, registration PIN,
+  raw signup session, raw webhook body, inbound text, and raw provider errors are
+  neither persisted nor logged. Secrets remain server-only.
+- **Service-layer contract—not DB-enforced:** The customer owns its WABA, number,
+  business assets, payment method, and Meta charges. Lab Lords uses delegated
+  access and estimated usage only. No path may share credit, aggregate billing,
+  fund customer usage, retain customer credentials, use WhatsApp Web automation,
+  or treat local disconnect as a destructive provider action.
+- **Must preserve—enforced:** Provider-written templates come only from the
+  versioned deterministic catalogue in `lib/whatsappManagedTemplates.ts`.
+  Creation hardcodes `UTILITY`; a send requires an active binding whose catalogue
+  key/version/hash matches a provider-authoritative `APPROVED` and `UTILITY`
+  template. Installation queries provider truth before create and reconciles an
+  ambiguous create by name; unresolved ambiguity remains `UNKNOWN`. Template
+  sync stays bounded and provider-authoritative. Reclassification, rejection,
+  pause, disablement, staleness, or incompatible content deactivates the binding
+  and suppresses safe unsubmitted work without erasing history.
+  (`services/whatsappTemplateProvisioning.service.ts`,
+  `services/whatsappTemplate.service.ts`)
+- **Must preserve—enforced:** `WhatsAppConsent` is unique by
+  `(senderId, phoneE164, consentType)`, begins `UNKNOWN`, and changes only through
+  append-only trusted snapshots. Send eligibility additionally requires an
+  active `WhatsAppStudentRecipient` that joins the same organization, branch,
+  student, assigned sender, exact normalized current phone, and current
+  `OPTED_IN` operational consent with the reviewed policy version. Existing
+  students are not backfilled or opted in, repeated consent is a no-op, several
+  students may intentionally share one guardian number, and phone changes or
+  reactivation never transfer consent. (`services/whatsappConsent.service.ts`,
+  `services/whatsappRecipient.service.ts`)
+- **Must preserve—enforced:** Existing students migrate to enrollment source
+  `LEGACY`; normal application creation records `MANUAL`, and import creation
+  records `IMPORT`. Welcome automation is prospective and can select only a
+  manually enrolled active student created after `automationEnabledAt`; it does
+  not backfill legacy/imported students. (`services/student.service.ts`,
+  `utils/studentBillingCycles.ts`)
+- **Must preserve—enforced:** Branch delivery, automation activation, rules,
+  local send time, daily/cycle frequency ceilings, configuration revision, and
+  monthly estimated budget are separate controls. Delivery and automation begin
+  disabled, enabling requires an assigned active same-tenant sender and all
+  required approved Utility bindings, and automation begins prospectively. A
+  manager cannot raise the owner-controlled budget. Branch delivery disable
+  atomically cancels every safely unsubmitted manual and automatic message and
+  releases `RESERVED` budget so an old manual batch cannot send after re-enable;
+  automation-only disable cancels automatic rows only. Both preserve rows,
+  accepted/ambiguous history, events, and committed budget.
+  (`services/whatsappAutomation.service.ts`)
+- **Must preserve—enforced:** Manual reminder preview is read-only and resolves
+  all final phone, payment, amount, due-date, grouping, template, variables,
+  schedule, and estimate values from tenant-scoped database state. Commit accepts
+  at most 100 payment IDs and 50 final recipient groups, requires
+  `send_whatsapp` plus payment visibility and branch writability, binds a bounded
+  idempotency key to a canonical request hash, revalidates eligibility, and
+  atomically creates one grouped message with payment joins and reservations.
+  It makes no Meta call. (`services/whatsappMessage.service.ts`)
+- **Must preserve—enforced:** `WhatsAppMessage` is the single durable outbox.
+  Its dedupe/frequency keys, non-null provider message IDs, and non-null lease
+  tokens are unique; message events are append-only and deduplicated. Provider
+  response/webhook events require a provider message ID; pre-provider `SYSTEM`
+  suppression events keep that field null rather than fabricating a Meta ID.
+  `WhatsAppMessagePayment` is the narrow many-to-many source join for grouped
+  reminders and never replaces `Payment` as financial truth. Estimated and
+  actual costs use INR micros while branch budget configuration uses paise;
+  budget reservation/release/commit and frequency reservation occur atomically.
+  A configured, versioned, effective rate card is an estimate, not a Meta invoice.
+- **Must preserve—enforced:** The automation planner advances durable circular
+  compound-key cursors instead of rescanning fixed head pages. Recipient work
+  advances only at a complete shared-phone boundary, and collection candidates
+  are built only when every current DUE source row for that phone group fits the
+  bounded scan; a truncated source set must fail closed rather than appear
+  debt-free. Payment-resolution scans remain bounded and revisit unfinished
+  events after reaching the tail. (`services/whatsappPlanner.service.ts`)
+- **Must preserve—enforced:** No Meta call runs inside a domain transaction.
+  Template provisioning and message delivery follow: short authorization/claim
+  transaction, commit, bounded provider request, then lease-owned finalization.
+  The dispatcher rechecks provider mode, integration/message flags, Live
+  delivery canary, tenant, entitlement, writability, sender assignment, consent
+  and mapping, approved managed binding, source payments/events, schedule,
+  frequency, and reserved budget immediately before submission.
+  (`services/whatsappTemplateProvisioning.service.ts`,
+  `services/whatsappDispatcher.service.ts`)
+- **Must preserve—enforced:** Meta message submission has no application
+  idempotency key. A valid response must contain exactly one bounded provider
+  message ID before local `ACCEPTED`. Definite bounded rate-limit failures may be
+  retried under a lease; ambiguous timeout/network/`5xx`/invalid-success results
+  and stale `SUBMITTING` leases become terminal `UNKNOWN`, keep budget committed,
+  and are never automatically retried. Only stale pre-submission claims may be
+  requeued, and a stale worker cannot finalize newer state.
+  (`lib/metaWhatsApp.ts`, `services/whatsappDispatcher.service.ts`)
+- **Must preserve—enforced:** The signed public webhook is bounded to 512 KiB,
+  verifies HMAC-SHA256 over exact raw bytes before parsing, durably leases
+  replay-safe receipts, and appends deduplicated sent/delivered/read/failed
+  events. Status projection uses provider time and precedence without regression;
+  events that arrive before API finalization may remain seven-day orphans for
+  later attachment. Each successfully claimed signed receipt opportunistically
+  purges at most 100 expired unattached events for the exact senders resolved
+  from that receipt; the sender/deadline predicates are rechecked when deleting.
+  Optional signed pricing/category/billable metadata is not an exact
+  charge, so webhook processing never derives `actualCostMicros`. It never
+  changes payment truth or sends a reply. (`services/whatsappWebhook.service.ts`,
+  `lib/whatsappMessageState.ts`)
+- **Must preserve—enforced:** Only normalized inbound text exactly `STOP` or the
+  exact managed quick-reply payload `LABLORDS_STOP_UPDATES` opts out. Processing
+  is idempotent, changes only effective consent transitions, disables mappings,
+  cancels/suppresses future unsubmitted messages for that sender/phone, preserves
+  accepted history, stores no raw text, sends no reply, and never interprets
+  `START`, `PAID`, or natural language as consent or payment evidence.
+- **Must preserve—enforced:** Payment resolution and student mutation paths may
+  reconcile local unsubmitted messages/mappings inside their existing domain
+  transaction only when delivery state can exist; they never call Meta. A
+  payment transition locks each linked message and leaves submitted history
+  immutable. A scheduled or pre-submission-claimed grouped manual/automatic
+  collection row may remain only when other current DUE payments still derive a
+  complete eligible managed message; the same row is requeued with recomputed
+  payment/student joins, binding, typed variables, preview, and fingerprint and
+  retains exactly one reservation. Otherwise it is cancelled and its reservation
+  is released. Payment identity, immutable `PaymentResolutionEvent`, allowed
+  payment transitions, anniversary-based generation, and later dues remain
+  authoritative and unchanged. Messaging cannot create, resolve, waive, or mark
+  a payment paid.
+  (`services/payment.service.ts`, `services/student.service.ts`,
+  `services/whatsappPaymentReconciliation.service.ts`,
+  `services/whatsappRecipient.service.ts`)
 - **Must preserve—enforced:** Existing AI `MessageDraft` records remain
-  human-reviewed copy suggestions and are neither Meta templates nor WhatsApp
-  outbox rows. AI output cannot select an external action or cause automatic
-  WhatsApp delivery.
+  human-reviewed copy suggestions, not managed templates or outbox rows. The
+  provider client exposes only controlled managed Utility-template creation and
+  one approved individual template send; there is no free-form, media,
+  marketing, authentication/OTP, arbitrary-recipient/template, automatic-reply,
+  daily-report, or AI-to-provider capability.
 
 ## Imports and AI boundaries
 

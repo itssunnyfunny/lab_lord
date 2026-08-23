@@ -55,3 +55,20 @@ export type MetaMessageTemplate = {
   status: string;
   components: unknown[];
 };
+
+export type MetaManagedUtilityTemplateCreateResult = {
+  providerTemplateId: string;
+  providerStatus: string;
+  category: "AUTHENTICATION" | "MARKETING" | "UTILITY" | "UNKNOWN";
+};
+
+export type MetaTemplateMessageSubmissionStatus =
+  | "ACCEPTED"
+  | "HELD_FOR_QUALITY_ASSESSMENT"
+  | "PAUSED";
+
+export type MetaApprovedUtilityTemplateSendResult = {
+  providerMessageId: string;
+  providerRecipientWaId: string | null;
+  submissionStatus: MetaTemplateMessageSubmissionStatus | null;
+};

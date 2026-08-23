@@ -11,6 +11,14 @@
     {
       "path": "/api/cron/imports/daily",
       "schedule": "30 0 * * *"
+    },
+    {
+      "path": "/api/cron/whatsapp/plan",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/whatsapp/send",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

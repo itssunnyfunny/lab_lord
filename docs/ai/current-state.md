@@ -2,8 +2,7 @@
 
 > Last verified: 2026-08-23
 >
-> Repository anchor: WhatsApp communication-foundation working tree based on
-> commit `6efc3c4`
+> Repository anchor: PR3 WhatsApp template-delivery and collections working tree
 >
 > Scope: repository implementation only
 
@@ -63,7 +62,8 @@ Authenticated import start / confirmed immutable plan
 Uploaded bytes, staged rows, branch configuration, complete mutation payloads,
 and authorization conclusions do not cross the Workflow input/output boundary.
 
-The inert WhatsApp foundation adds an independently gated provider path:
+WhatsApp adds independently gated onboarding, template, outbox, and webhook
+paths:
 
 ```text
 Authenticated organization owner + one-time hashed connection intent
@@ -71,12 +71,29 @@ Authenticated organization owner + one-time hashed connection intent
   -> server-side Meta code exchange and provider-authoritative WABA/phone checks
   -> idempotent system-user and WABA-subscription reconciliation
   -> short lease-owned sender/audit finalization transaction
+
+Owner-managed catalogue installation
+  -> local provisioning claim commits
+  -> provider lookup/create outside the transaction
+  -> lease-owned provider-authoritative template/binding finalization
+
+Authorized branch manual request or deterministic planner
+  -> current student/payment/recipient/consent/template validation
+  -> atomic outbox + frequency + estimated-budget reservation
+  -> bounded dispatcher claim commits
+  -> one approved Utility-template request outside the transaction
+  -> lease-owned ACCEPTED/FAILED/UNKNOWN finalization
+
+Signed webhook receipt
+  -> durable receipt lease
+  -> append-only status event / timestamp-safe projection
+  -> exact STOP opt-out and future unsubmitted-message cancellation
 ```
 
-Meta calls never run inside the database transaction. The resulting sender is
-owned by an organization and may be assigned to several same-organization
-branches, but branch automation remains disabled. This path contains no
-message-delivery operation.
+Meta calls never run inside a domain transaction. Ambiguous message acceptance
+becomes `UNKNOWN`, keeps estimated budget committed, and is not retried
+automatically. Repository capability is not deployment readiness: all new
+provider/planner flags fail closed and no real customer operation is verified.
 
 ### Declared runtime
 
@@ -102,7 +119,7 @@ Clerk is the identity provider. `proxy.ts` protects authenticated page families
 such as `/account`, `/app`, `/branch`, `/onboarding`, and `/org`. API routes are
 included in the middleware matcher but are not covered by `isProtectedRoute`.
 User-facing API handlers call `getSessionUser()` and enforce authorization;
-the three cron routes instead verify `CRON_SECRET`, Workflow's internal endpoint
+machine-owned cron routes instead verify `CRON_SECRET`, Workflow's internal endpoint
 uses the framework-controlled provider boundary, and the Razorpay webhook
 verifies its raw-body signature before processing. The public Meta endpoint at
 `/api/whatsapp/webhook` is also deliberately outside Clerk: GET uses Meta's
@@ -147,11 +164,12 @@ current guarantee.
   `ImportRowEvaluation`, `ImportPlan`, `ImportRun`, `ImportRunItem`, and
   `ImportRecipe`.
 - SaaS billing: `OwnerTrialGrant`, `SaasRazorpayPlan`, `RazorpayPlanProvisioning`, `BillingOffer`, `OrganizationOfferGrant`, `OrganizationSubscription`, `OrganizationBillingChange`, `OrganizationSubscriptionInvoice`, `OrganizationSubscriptionHistory`, and `RazorpayWebhookEvent`.
-- WhatsApp foundation: organization-owned `WhatsAppSender`, leased
-  `WhatsAppConnectionIntent`, `BranchWhatsAppSettings`, provider-authoritative
-  `WhatsAppTemplate`, current and append-only `WhatsAppConsent` history, empty
-  future `WhatsAppMessage`/`WhatsAppMessageEvent` outbox history,
-  `WhatsAppWebhookReceipt`, and append-only `WhatsAppAuditEvent`.
+- WhatsApp: organization-owned `WhatsAppSender`, leased connection and template
+  provisioning state, branch settings/rules, provider-authoritative templates
+  and managed bindings, current and append-only consent, explicit student
+  recipients, manual-send requests, one durable `WhatsAppMessage` outbox with
+  payment-source joins and append-only events, leased webhook receipts, and
+  append-only audit evidence.
 
 Two payment domains must not be confused:
 
@@ -225,79 +243,116 @@ Authoritative code: `services/payment.service.ts`, `analytics/payment.analytics.
 
 Authoritative code: `services/staff.service.ts`, `services/staffInvite.service.ts`, `services/staffInviteSecurity.ts`, `lib/branchCapabilities.ts`, and `app/api/branches/[branchId]/access/route.ts`.
 
-### WhatsApp communication foundation
+### WhatsApp managed Utility delivery and collections
 
-The repository now contains a direct official Meta Cloud API connection and
-configuration layer, deliberately limited to onboarding and provider reads:
+The working tree extends the PR2 sender foundation with a deliberately narrow
+official Meta Cloud API delivery capability. It is repository implementation,
+not evidence that any environment or provider account is ready.
 
-- organization owners can obtain a sanitized, authenticated Embedded Signup
-  browser configuration, create a short-lived one-time intent, and complete the
-  flow through server-side token/app/scope and provider-asset verification;
-- the browser uses one server-selected app, pinned Graph version, one
-  server-controlled Embedded Signup configuration ID, and fixed
-  `sessionInfoVersion: "3"`; there is no customer selector for any of them. It
-  accepts only strict HTTPS Facebook origins and
-  bounded `WA_EMBEDDED_SIGNUP` session data, keeps state/code/session material
-  in memory, and removes listeners and clears state after the attempt;
-- completion provider-authoritatively resolves the shared WABA, verifies phone
-  membership, and reconciles the configured Lab Lords system user's `MANAGE`
-  task. When webhook ingestion is enabled, it queries and idempotently adds the
-  WABA app subscription before recording readiness;
-- a number that still requires Meta registration is represented separately as
-  `NEEDS_REGISTRATION`. Its owner-only registration action accepts exactly six
-  ASCII digits, never persists or returns the PIN, and reconciles provider
-  state before and after the one permitted mutation;
-- template synchronization retrieves complete bounded pagination before one
-  local transaction, normalizes categories/statuses, versions canonical
-  content changes, and marks absent templates stale only after a complete
-  successful fetch. There is no provider template mutation;
-- local disconnect is non-destructive: it marks the sender disconnected,
-  clears branch assignments, and preserves sender, template, consent, webhook,
-  future message, and audit history without calling Meta; and
-- the public webhook route is Node.js/force-dynamic, fail-closed behind its own
-  ingest flag, bounded to 512 KiB, verifies Meta HMAC over exact raw bytes, and
-  stores mode-bound replay-safe receipt metadata. Signed unknown assets are
-  ignored generically. PR2 does not project delivery status, interpret inbound
-  replies, change consent, invoke AI, or mutate payments.
+- `lib/metaWhatsApp.ts` pins Graph API `v25.0`. The two PR3 provider writes are
+  controlled creation at `POST /{WABA_ID}/message_templates` and one individual
+  approved template at `POST /{PHONE_NUMBER_ID}/messages`. The client has no
+  free-form, media, marketing, authentication/OTP, arbitrary-template,
+  arbitrary-recipient, reply, credit-sharing, or provider-billing method.
+- `lib/whatsappManagedTemplates.ts` defines a versioned deterministic catalogue
+  for `en_IN` and `hi` only. Template creation hardcodes `UTILITY`, uses typed
+  components and synthetic samples, and requires owner authorization plus the
+  integration/template-write/mode/canary gates. Provisioning leases local work,
+  queries before create, and reconciles ambiguous creation before deciding
+  `UNKNOWN`; only an exact `APPROVED`/`UTILITY` provider template activates a
+  binding.
+- `WhatsAppStudentRecipient` proves which exact current normalized phone may be
+  used for a student through an assigned sender. Individual and bounded bulk
+  routes record versioned operational consent and mapping atomically. Existing
+  consent starts `UNKNOWN`; phone change, inactivation, disable, and exact STOP
+  update local mapping/future-message state without deleting history or calling
+  Meta.
+- Branch settings separate delivery, automation activation, deterministic stage
+  rules, language/tone, local send time, frequency ceilings, configuration
+  revision, and a monthly estimated budget. Existing branches remain disabled.
+  Existing students are `LEGACY`; only prospective `MANUAL` enrollment is
+  welcome-eligible, while imports are `IMPORT`. Disabling branch delivery
+  atomically cancels safe unsubmitted manual and automatic rows and releases
+  reserved budget; disabling automation cancels automatic rows only. Both
+  preserve accepted/ambiguous history.
+- Manual payment-reminder preview and commit accept payment identifiers rather
+  than final delivery values. The server resolves tenant-owned payments,
+  students, recipients, consent, approved binding, current amount/due date,
+  grouping, typed variables, schedule, and configured estimate. Commit binds an
+  idempotency key to the request hash and atomically creates the manual request,
+  grouped outbox messages, `WhatsAppMessagePayment` links, frequency keys, and
+  budget reservations; it makes no provider call.
+- The bounded planner persists circular recipient and payment-event keyset
+  cursors with the same transaction as its outbox reservations. Shared-phone
+  recipient groups are never split across candidate construction; DUE counts
+  select only whole groups whose complete source rows fit the per-run ceiling,
+  and event cursors wrap so an ineligible fixed head cannot starve later work.
+  Send-time source verification also fails closed if an exact source group
+  exceeds either scan ceiling.
+- The bounded dispatcher leases due outbox rows and revalidates current tenant,
+  entitlement, writability, sender, mapping/consent, template, source,
+  schedule/frequency, mode/gates, and reserved budget before setting
+  `SUBMITTING`. It commits before calling Meta. A valid response requires one
+  `wamid`; definite rate limits are bounded, definite rejection fails safely,
+  and ambiguous timeout/network/`5xx`/invalid-success state becomes terminal
+  `UNKNOWN` with no blind retry.
+- Signed webhooks lease durable receipts, append deduplicated status evidence,
+  retain seven-day orphan events that precede API finalization, opportunistically
+  purge at most 100 expired orphans for the receipt's resolved senders, and project
+  sent/delivered/read/failed without timestamp regression. Only bounded
+  authoritative billable/category and recipient values are stored; provider
+  pricing metadata is not an exact charge, so `actualCostMicros` remains null.
+  Only normalized text exactly `STOP` or exact
+  payload `LABLORDS_STOP_UPDATES` opts out; no raw body/text/error is stored, no
+  payment is mutated, and no automatic reply is sent.
+- Student phone/inactivation and payment-resolution services reconcile only
+  local unsubmitted delivery state inside their existing transaction when the
+  delivery schema can exist. Payment transitions lock linked outbox rows,
+  re-derive a still-justified grouped manual/automatic collection row around
+  its remaining DUE sources while retaining one reservation, and cancel/release
+  it when no complete valid candidate remains. Submitted history and unrelated
+  later dues are untouched. These paths do not call Meta and do not alter payment
+  identity, immutable resolution evidence, or allowed transitions.
 
-The environment boundary is explicit: Local Development and Vercel Preview
-accept `TEST`, Vercel Production accepts `LIVE`, and tests inject a fake client.
-The provider configuration requires an explicit bounded Graph `vNN.0` value;
-the 2026-08-23 official recheck chose `v26.0` because Meta's official Business
-SDK `v26.0.0` tracks Graph v26. The official tech-provider sample still shows an
-older example and is not operational version evidence; reverify WhatsApp
-endpoints, fields, App Review permissions, the selected configuration, and
-Meta's continued support for `sessionInfoVersion: "3"` before enablement.
-`WHATSAPP_INTEGRATION_ENABLED`,
-`WHATSAPP_META_ONBOARDING_WRITES_ENABLED`,
-`WHATSAPP_WEBHOOK_INGEST_ENABLED`, and the exact
-`WHATSAPP_LIVE_CANARY_ORG_IDS` allow-list fail closed. The webhook ingest gate
-is independent from onboarding writes. With all flags absent/false, ordinary
-application paths do not call Meta or query the new tables.
+The mutation paths are intentionally closed:
 
-The organization and branch settings pages expose safe sender readiness and
-assignment state without provider secrets or raw provider IDs. Organization
-connection, registration, template sync, assignment, and disconnect controls
-remain owner-only; branch automation is fixed off and the UI states that
-message delivery is unavailable.
+| Entry point | Local effect | External effect and authority |
+| --- | --- | --- |
+| Owner sender connection, registration, assignment, sync, disconnect | PR2 sender/template/audit state | Existing bounded onboarding mutations or provider reads; owner, entitlement, writability, onboarding flag, mode, and onboarding Live canary |
+| `POST .../managed-templates/install` | Lease/provisioning/template/binding/audit state | The only new template mutation; owner plus template-write flag and delivery Live canary; query/reconcile before create |
+| Recipient, settings, delivery, automation, and manual-reminder branch routes | Consent/mapping/settings/rules/manual request/outbox/budget only | No provider call; branch permission, payment permission where applicable, entitlement, writability, and tenant checks |
+| Payment/student domain mutations | Refresh, cancel/suppress, or stale only eligible local unsubmitted recipient/message state | No provider call; existing payment/student transaction remains authoritative |
+| Authenticated WhatsApp planner cron | Deterministic leases and automatic outbox/budget reservations | No provider call; planner flag plus tenant/entitlement/configuration eligibility |
+| Authenticated WhatsApp send cron | Lease and final message/budget/event state | The only new message mutation; message-write flag, mode, delivery canary, and full send-time revalidation |
+| Signed public webhook | Receipt/event/status/template/opt-out projection | No outbound provider or payment action; raw-byte HMAC, replay lease, bounded parsing |
 
-Most importantly, this implementation cannot send a WhatsApp message. The Meta
-client has no `/messages` request or delivery method; there is no send API,
-dispatcher, planner, cron, test-send control, credit-line operation, or normal
-application path that creates a `WhatsAppMessage` row. The message tables are
-an empty schema foundation for a separately designed and gated future release.
-Existing AI overdue drafts remain review-and-copy records and are not connected
-to this outbox.
+Local Development and Vercel Preview accept `TEST`; Vercel Production accepts
+`LIVE`; tests inject a fake provider. `WHATSAPP_INTEGRATION_ENABLED`, onboarding,
+managed-template, message-write, planner, and webhook flags all fail closed.
+`WHATSAPP_LIVE_CANARY_ORG_IDS` gates Live onboarding, while the separate
+`WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS` gates Live template and message writes.
+The utility rate, rate-card version, and UTC effective time are required for
+estimation and are never inferred from Meta status metadata.
 
-No real Meta app, Embedded Signup, WABA, phone registration, webhook delivery,
-customer asset, Preview configuration, Production configuration, or database
-migration has been verified from repository evidence. The architecture in
-`docs/decisions/0002-whatsapp-communication-foundation.md` remains Proposed and
-requires explicit human-owner approval.
+The organization WhatsApp panel adds managed-template installation state; branch
+settings expose delivery/budget/rules/prospective-automation controls and message
+history; student management exposes explicit recipient/consent controls; and the
+overdue workspace adds deterministic official-reminder preview/queueing alongside
+the separate AI review/copy workflow. Server-side services remain authoritative;
+UI visibility or a successful preview is never send authorization. Existing AI
+overdue drafts never enter the official outbox.
+
+No real Meta App Review/Advanced Access, app, Embedded Signup, WABA, template
+creation/approval, phone registration, message send, webhook delivery, customer
+asset, legal/privacy approval, effective rate-card signoff, Preview/Production
+configuration, deployment, migration, or Live canary has been verified from
+repository evidence. ADRs 0002 and 0003 remain Proposed and require explicit
+human-owner approval.
 
 Authoritative code: `lib/metaWhatsApp.ts`, `lib/whatsappFeature.ts`,
-`services/whatsapp*.ts`, the WhatsApp API routes, `components/whatsapp/`, the
-WhatsApp foundation migration, and the Proposed ADR.
+`lib/whatsappManagedTemplates.ts`, `lib/whatsappCost.ts`,
+`lib/whatsappMessageState.ts`, `services/whatsapp*.ts`, WhatsApp API/cron routes,
+the two WhatsApp migrations, focused tests, and the Proposed ADRs.
 
 ### Deterministic analytics
 
@@ -412,9 +467,9 @@ The repository contains both legacy billing and Workspace Billing V2.
 - `BASIC` is displayed as Basic and costs INR 299 per active branch per month.
 - Database plan `PRO` is displayed as Standard and costs INR 499 per active branch per month.
 - Standard grants staff management, advanced analytics, AI access, and the
-  internal `WHATSAPP_AUTOMATION` foundation entitlement. The unfinished
-  WhatsApp capability remains absent from public pricing output and does not
-  provide message delivery.
+  internal `WHATSAPP_AUTOMATION` entitlement. WhatsApp remains absent from
+  public pricing output; held repository delivery capability is not a launch or
+  customer promise.
 - Workspace Billing V2 derives subscription quantity from billable branch
   lifecycle state. Pending activation and scheduled removal affect quantity
   sequencing, so it is not simply a count of rows currently marked `ACTIVE`.
@@ -482,7 +537,9 @@ Message generation is human-triggered and does not send messages.
 - The prompt includes student name, oldest due date, total due, payment count, and days overdue; it does not include the stored phone number.
 - Invalid/missing Gemini output is replaced with deterministic English or Hinglish text.
 - Drafts are persisted by branch, student, language, and action configuration.
-- The UI supports review and copy only. There is no WhatsApp, SMS, or email sending integration.
+- This AI draft UI remains review/copy only and has no provider integration. The
+  separate PR3 official reminder flow rebuilds content from trusted typed values
+  and managed Utility templates; it never reads `MessageDraft.message`.
 
 ### Import mapping
 
@@ -511,13 +568,13 @@ The following modules exist but are not referenced by current application routes
 
 | Integration | Repository truth | Deployment state |
 | --- | --- | --- |
-| PostgreSQL / Prisma | Required; schema and 34 timestamped migrations exist | Database target, applied migration set, backups, and health are unknown |
+| PostgreSQL / Prisma | Required; schema and 35 timestamped migrations exist, including additive PR2 and PR3 WhatsApp expansions | Database target, applied migration set, backups, and health are unknown |
 | Clerk | Real auth and local-user linking are implemented | Active instance, keys, redirect/origin configuration, and account health are unknown |
 | Gemini | Reports, message drafts, and import mapping are wired with fallbacks | API key, selected model availability, quota, and data-processing configuration are unknown |
 | Razorpay | Server API client, Checkout, signatures, webhook receipts, reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
-| Meta WhatsApp Cloud API | Direct bounded provider client, owner-bound Embedded Signup, sender/branch state, phone registration, template reads, and signed replay-safe receipt ingestion exist; message delivery and credit sharing do not | App Review/Advanced Access, app/config/system-user credentials, Test/Live assets, callback reachability, flags, canary, real connection/registration, billing ownership, and provider health are unknown |
+| Meta WhatsApp Cloud API | Direct bounded `v25.0` provider client, owner-bound Embedded Signup, sender/branch state, phone registration, template reads/managed Utility creation, individual approved Utility-template delivery, durable outbox, signed status/STOP processing, and estimated-cost controls exist; arbitrary delivery and credit sharing do not | App Review/Advanced Access, app/config/system-user credentials, Test/Live assets, callback reachability, flags/canaries, template approval/category, effective rate-card signoff, customer billing/legal ownership, `UNKNOWN` review operations, and provider health are unknown |
 | Vercel Workflow | Workflow 4.6 integration, opaque-ID orchestration, and a PostgreSQL import ledger/runner are implemented | Production approval, Fluid Compute/runtime setup, provider retention/residency review, feature flag, mutation cap, benchmarks, SLOs, and active-run health are unknown |
-| Vercel Cron | Daily payment, hourly billing, and daily import-retention schedules are declared in `vercel.json` | Whether the deployment is Production, schedules are active, and recent runs succeeded is unknown |
+| Vercel Cron | Daily payment, hourly billing, daily import retention, WhatsApp planning every 15 minutes, and WhatsApp dispatch every 5 minutes are declared in `vercel.json`; both WhatsApp services return held before new-table/provider work when their controlling flags are false | Whether the deployment plan accepts these frequencies, the deployment is Production, schedules are active, and recent runs succeeded is unknown |
 | Google Analytics | Consent-aware GA bootstrap and event helpers are implemented | Measurement ID and live collection state are unknown |
 | Support email | Public pages and `mailto:` bug reports are implemented | Mailbox monitoring and response operations are unknown |
 
@@ -526,8 +583,8 @@ Never infer a deployed state from local `.env` files, ignored Vercel metadata, s
 ## Verification and test evidence
 
 At this anchor the repository contains focused WhatsApp unit, component,
-provider-contract, and migration-contract coverage in addition to the existing
-Vitest/Playwright suites, plus 34 timestamped migration directories. These
+provider-contract, service, route, webhook, and migration-contract coverage in
+addition to the existing Vitest/Playwright suites, plus 35 timestamped migration directories. These
 counts are orientation data, not invariants.
 
 ### Automated coverage by area
@@ -540,10 +597,13 @@ counts are orientation data, not invariants.
   `vitest.workflow.config.ts`; normal import ledger/runner behavior also has
   focused unit coverage.
 - Billing: extensive unit suites for policies, replacement trust/access, reconciliation, payment methods, deadlines, migration contracts, plan catalog, and checkout UI; integration billing lifecycle suites; browser billing specs.
-- WhatsApp: feature/mode/canary, provider client and no-delivery contract,
-  Embedded Signup event validation, phone normalization, migration SQL, staff
-  permission/entitlement, and safe settings component coverage. Automated tests
-  inject or mock provider/browser behavior and must not contact Meta.
+- WhatsApp: feature/mode/canary and rate-card failures, the intentionally narrow
+  provider contract, managed catalogue/provisioning, recipient/consent mapping,
+  manual reminder queueing, settings/schedule/state reducers, dispatcher,
+  webhook status/STOP behavior, student/payment reconciliation, migration SQL,
+  route security boundaries, and staff permission/entitlement behavior.
+  Automated tests inject or mock provider/browser behavior and must not contact
+  Meta.
 - Analytics: payment analytics integration coverage, analytics component tests, and audit scripts.
 - UI: selected component/page unit tests and Playwright specs under `tests/browser/`.
 
@@ -574,10 +634,12 @@ Production migrations have a separate manually dispatched workflow requiring the
   evidence is under `docs/evidence/`; it is compile-only and therefore does not
   establish the Production mutation cap or owner-approved SLOs.
 - Passing repository tests cannot establish provider configuration, signed webhook delivery, cron execution, deployed migrations, or production data integrity.
-- WhatsApp tests cannot establish Meta App Review, current account permissions,
-  a real Embedded Signup exchange, WABA/system-user state, phone registration,
-  callback reachability, customer billing ownership, or Test/Live deployment
-  configuration.
+- WhatsApp tests cannot establish Meta App Review/Advanced Access, current
+  account permissions, a real Embedded Signup exchange, WABA/system-user state,
+  template creation/approval/category, phone registration, a real message
+  submission or status/STOP delivery, callback reachability, customer billing
+  ownership, rate-card accuracy, legal/privacy approval, operator handling of
+  `UNKNOWN`, or Test/Live deployment configuration.
 
 ## Known limitations and cautions
 
@@ -609,15 +671,18 @@ Production migrations have a separate manually dispatched workflow requiring the
   cycle and day calculations use runtime-local dates rather than the stored
   organization timezone.
 - A failed AI report generation can still advance `aiLastCalledAt` and impose cooldown.
-- AI message generation is review/copy only; no delivery provider is wired.
-- The WhatsApp foundation can connect and inspect Meta assets when explicitly
-  gated, but it contains no message-delivery path. Its new tables, provider
-  credentials, feature flags, real callback, App Review, customer-owned billing,
-  and Test/Live assets have not been verified in Preview or Production.
-- The WhatsApp architecture ADR remains Proposed. Implementation does not
-  approve provider onboarding or a future delivery release, and there is no
-  centralized repository-owned Meta webhook/provider alerting or stable callback
-  hostname.
+- AI message generation is review/copy only and is structurally excluded from
+  the official provider-delivery path.
+- WhatsApp managed Utility-template delivery exists in the repository but every
+  provider/planner flag defaults held. New tables, provider credentials,
+  schedules, callback, App Review/Advanced Access, approved Utility templates,
+  customer-owned billing, rate card, legal/privacy gate, Test/Live assets, and
+  external behavior have not been verified in Preview or Production.
+- WhatsApp ADRs 0002 and 0003 remain Proposed. Implementation does not approve
+  onboarding or delivery activation. The repository has no centralized Meta
+  webhook/provider alerting, stable callback hostname, automatic rate-card
+  refresh, exact provider-cost reconciliation, or operator queue/process for
+  `UNKNOWN` message outcomes.
 - Import staging retention depends on deployed `purgeAfter` transitions and a
   healthy authenticated daily cron; repository code cannot prove either is
   operating in Production.
@@ -635,7 +700,11 @@ This file supersedes architecture/status claims in older phase-oriented or gener
   **Proposed**. This snapshot records implemented code and explicit rollout
   blockers; it does not convert the proposal into an Accepted decision.
 - `docs/decisions/0002-whatsapp-communication-foundation.md` also remains
-  **Proposed**. Customer/provider setup, message delivery, credit sharing, and
-  Production activation are not approved by the presence of foundation code.
+  **Proposed**. Customer/provider setup and Production activation are not
+  approved by the presence of foundation code.
+- `docs/decisions/0003-whatsapp-template-delivery-and-collections.md` remains
+  **Proposed**. Managed Utility delivery, estimated provider usage, automation,
+  and Live rollout require human-owner/security/legal/operations approval; the
+  implementation does not permit credit sharing or arbitrary/AI delivery.
 
 When this document and the implementation disagree, inspect the current schema, migrations, services, API routes, and tests, then update this document in the same change.

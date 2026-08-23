@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   assertBranchEntitlement: vi.fn(),
   assertBranchWritable: vi.fn(),
   transaction: vi.fn(),
+  queryRaw: vi.fn(),
   branchFindUnique: vi.fn(),
   senderFindFirst: vi.fn(),
   consentFindUnique: vi.fn(),
@@ -48,6 +49,7 @@ const INPUT = {
 };
 
 const tx = {
+  $queryRaw: mocks.queryRaw,
   branch: { findUnique: mocks.branchFindUnique },
   whatsAppSender: { findFirst: mocks.senderFindFirst },
   whatsAppConsent: {
@@ -62,6 +64,7 @@ const tx = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.branchFindUnique.mockResolvedValue({ organizationId: "org_1" });
+  mocks.queryRaw.mockResolvedValue([{ id: "sender_1" }]);
   mocks.senderFindFirst.mockResolvedValue({ id: "sender_1" });
   mocks.consentFindUnique.mockResolvedValue(null);
   mocks.consentCreate.mockResolvedValue({

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MessageCircle, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, MessageCircle, PackageCheck, RefreshCw, ShieldCheck } from "lucide-react";
 import { AppButton } from "@/components/ui/AppButton";
 import { Badge } from "@/components/ui/Badge";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -18,6 +18,7 @@ import {
   type WhatsAppSenderStatus,
   type WhatsAppSenderSummary,
   type WhatsAppSendersResponse,
+  type WhatsAppManagedTemplateInstallation,
 } from "@/lib/api/whatsapp";
 import type { WhatsAppBrowserConfig } from "@/types";
 
@@ -38,23 +39,45 @@ function safeDateLabel(value: string | null) {
   return Number.isNaN(date.getTime()) ? "Unavailable" : date.toLocaleString();
 }
 
+export async function loadManagedTemplateStatuses(
+  organizationId: string,
+  senderIds: readonly string[]
+) {
+  const results = await Promise.allSettled(
+    senderIds.map(senderId => whatsapp.getManagedTemplateStatus(organizationId, senderId))
+  );
+  return Object.fromEntries(results.flatMap((result, index) => {
+    if (result.status !== "fulfilled" || result.value.installation.templates.length === 0) {
+      return [];
+    }
+    return [[senderIds[index], result.value.installation]];
+  })) as Record<string, WhatsAppManagedTemplateInstallation>;
+}
+
 export function WhatsAppSenderSummaryCard({
   sender,
   canManage,
   activeOperation,
   onRegister,
   onSync,
+  onInstall,
   onDisconnect,
+  installation = null,
 }: {
   sender: WhatsAppSenderSummary;
   canManage: boolean;
   activeOperation: string | null;
   onRegister: (sender: WhatsAppSenderSummary) => void;
   onSync: (sender: WhatsAppSenderSummary) => void;
+  onInstall?: (sender: WhatsAppSenderSummary) => void;
   onDisconnect: (sender: WhatsAppSenderSummary) => void;
+  installation?: WhatsAppManagedTemplateInstallation | null;
 }) {
-  const busy = activeOperation?.endsWith(`:${sender.id}`) ?? false;
+  const busy = activeOperation !== null;
   const branchNames = sender.assignedBranches.map(branch => branch.name);
+  const installationLanguages = installation
+    ? [...new Set(installation.templates.map(template => template.language))]
+    : [];
 
   return (
     <SettingsCard className="space-y-4">
@@ -120,6 +143,67 @@ export function WhatsAppSenderSummaryCard({
         Templates: {sender.templateCounts.approved} approved, {sender.templateCounts.pending} pending, {sender.templateCounts.rejected} rejected, {sender.templateCounts.other} other.
       </div>
 
+      {installation ? (
+        <div className="space-y-2 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] bg-[color:var(--ui-form-muted-surface-bg)] p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-semibold text-[color:var(--text-primary)]">
+              Lab Lords Utility catalogue v{installation.catalogVersion}
+            </p>
+            <span className="text-xs text-[color:var(--text-muted)]">
+              {installation.templates.filter(template => template.active).length}/{installation.templates.length} active
+            </span>
+          </div>
+          <p className="text-xs text-[color:var(--text-muted)]">
+            Languages: {installationLanguages.map(language =>
+              language === "hi" ? "Hindi" : "English (India)"
+            ).join(", ")}
+          </p>
+          <ul className="grid gap-2 text-xs sm:grid-cols-2" aria-label="Managed Utility template status">
+            {installation.templates.map(template => {
+              const providerStatus = template.providerStatus
+                ? statusLabel(template.providerStatus)
+                : "Not synchronized";
+              const providerCategory = template.providerCategory
+                ? statusLabel(template.providerCategory)
+                : "Category unavailable";
+              return (
+                <li
+                  key={`${template.managedKey}:${template.language}`}
+                  className="space-y-1 rounded-[var(--ui-radius-control)] border border-[color:var(--ui-form-surface-border)] p-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate">{statusLabel(template.managedKey)} · {template.language === "hi" ? "Hindi" : "English (India)"}</span>
+                    <span className="shrink-0 font-medium">{statusLabel(template.status)}</span>
+                  </div>
+                  <p className="text-[color:var(--text-muted)]">
+                    Provider: {providerStatus} · {providerCategory}
+                  </p>
+                  <p className="text-[color:var(--text-muted)]">
+                    {template.active ? "Binding active" : "Binding inactive"} · Last synchronized: {safeDateLabel(template.lastSyncedAt)}
+                  </p>
+                  {template.errorCode ? (
+                    <p className="text-[color:var(--ui-form-error-text)]">
+                      Review code: {statusLabel(template.errorCode)}
+                    </p>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          {installation.templates.some(template => template.status === "UNKNOWN") ? (
+            <p className="flex items-start gap-2 text-xs text-[color:var(--ui-form-warning-text)]" role="alert">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              Meta may have accepted a template creation. Do not retry; synchronize or request operator review.
+            </p>
+          ) : null}
+          {installation.templates.some(template => template.status === "REJECTED" || template.status === "FAILED") ? (
+            <p className="text-xs text-[color:var(--ui-form-error-text)]" role="status">
+              One or more managed Utility templates need review before branch activation.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div>
         <p className="text-xs font-medium text-[color:var(--text-muted)]">Assigned branches</p>
         <p className="mt-1 text-sm text-[color:var(--text-primary)]">
@@ -138,6 +222,20 @@ export function WhatsAppSenderSummaryCard({
             >
               Complete registration
             </AppButton>
+          ) : null}
+          {sender.status !== "DISCONNECTED" ? (
+            onInstall ? (
+              <AppButton
+                size="sm"
+                variant="secondary"
+                icon={PackageCheck}
+                isLoading={activeOperation === `install:${sender.id}`}
+                disabled={busy || sender.status !== "ACTIVE"}
+                onClick={() => onInstall(sender)}
+              >
+                Install Lab Lords Utility templates
+              </AppButton>
+            ) : null
           ) : null}
           {sender.status !== "DISCONNECTED" ? (
             <AppButton
@@ -182,9 +280,11 @@ export function OrganizationWhatsAppPanel({
     message: string;
   } | null>(null);
   const [activeOperation, setActiveOperation] = useState<string | null>(null);
+  const [installations, setInstallations] = useState<Record<string, WhatsAppManagedTemplateInstallation>>({});
   const [registrationSender, setRegistrationSender] = useState<WhatsAppSenderSummary | null>(null);
   const [disconnectSender, setDisconnectSender] = useState<WhatsAppSenderSummary | null>(null);
   const availabilityHandlerRef = useRef(onAvailabilityChange);
+  const operationRef = useRef(false);
 
   useEffect(() => {
     availabilityHandlerRef.current = onAvailabilityChange;
@@ -193,6 +293,14 @@ export function OrganizationWhatsAppPanel({
   const loadSenders = useCallback(async () => {
     const response = await whatsapp.listSenders(organizationId);
     setSendersResponse(response);
+    const loadedInstallations = await loadManagedTemplateStatuses(
+      organizationId,
+      response.senders.map(sender => sender.id)
+    );
+    setInstallations(current => Object.fromEntries(response.senders.flatMap(sender => {
+      const installation = loadedInstallations[sender.id] ?? current[sender.id];
+      return installation ? [[sender.id, installation]] : [];
+    })));
     if (!response.enabled) {
       availabilityHandlerRef.current(false);
       setConfig(previous => previous ? { ...previous, enabled: false } : previous);
@@ -206,6 +314,7 @@ export function OrganizationWhatsAppPanel({
     setLoading(true);
     setConfig(null);
     setSendersResponse(null);
+    setInstallations({});
     setNotice(null);
 
     const load = async () => {
@@ -221,7 +330,13 @@ export function OrganizationWhatsAppPanel({
         setConfig(browserConfig);
         availabilityHandlerRef.current(true);
         const response = await whatsapp.listSenders(organizationId);
-        if (!cancelled) setSendersResponse(response);
+        if (cancelled) return;
+        setSendersResponse(response);
+        const loadedInstallations = await loadManagedTemplateStatuses(
+          organizationId,
+          response.senders.map(sender => sender.id)
+        );
+        if (!cancelled) setInstallations(loadedInstallations);
       } catch {
         if (!cancelled) {
           availabilityHandlerRef.current(false);
@@ -254,7 +369,8 @@ export function OrganizationWhatsAppPanel({
   const connectionReason = sendersResponse?.safeReason ?? config.safeReason;
 
   const syncTemplates = async (sender: WhatsAppSenderSummary) => {
-    if (activeOperation) return;
+    if (operationRef.current || activeOperation) return;
+    operationRef.current = true;
     setActiveOperation(`sync:${sender.id}`);
     setNotice({ tone: "status", message: "Synchronizing provider-approved templates..." });
     try {
@@ -264,13 +380,41 @@ export function OrganizationWhatsAppPanel({
     } catch {
       setNotice({ tone: "error", message: "Templates could not be synchronized safely." });
     } finally {
+      operationRef.current = false;
+      setActiveOperation(null);
+    }
+  };
+
+  const installManagedTemplates = async (sender: WhatsAppSenderSummary) => {
+    if (operationRef.current || activeOperation || sender.status !== "ACTIVE") return;
+    operationRef.current = true;
+    setActiveOperation(`install:${sender.id}`);
+    setNotice({ tone: "status", message: "Installing the fixed Lab Lords Utility catalogue in English and Hindi…" });
+    try {
+      const response = await whatsapp.installManagedTemplates(
+        organizationId,
+        sender.id,
+        ["en_IN", "hi"]
+      );
+      setInstallations(current => ({ ...current, [sender.id]: response.installation }));
+      await loadSenders();
+      const activeCount = response.installation.templates.filter(template => template.active).length;
+      setNotice({
+        tone: "status",
+        message: `${activeCount} managed template${activeCount === 1 ? " is" : "s are"} approved and active. Pending templates remain provider-authoritative.`,
+      });
+    } catch {
+      setNotice({ tone: "error", message: "Managed templates could not be installed safely." });
+    } finally {
+      operationRef.current = false;
       setActiveOperation(null);
     }
   };
 
   const disconnectLocally = async () => {
     const sender = disconnectSender;
-    if (!sender || activeOperation) return;
+    if (!sender || operationRef.current || activeOperation) return;
+    operationRef.current = true;
     setActiveOperation(`disconnect:${sender.id}`);
     try {
       await whatsapp.disconnectSender(organizationId, sender.id);
@@ -284,6 +428,7 @@ export function OrganizationWhatsAppPanel({
       setDisconnectSender(null);
       setNotice({ tone: "error", message: "The local sender could not be disconnected." });
     } finally {
+      operationRef.current = false;
       setActiveOperation(null);
     }
   };
@@ -293,7 +438,7 @@ export function OrganizationWhatsAppPanel({
       <SettingsPanel
         id="whatsapp"
         title="WhatsApp"
-        description="Connect customer-owned Meta assets and review foundational readiness. Message delivery is not active in this release."
+        description="Connect customer-owned Meta assets and install the fixed Lab Lords Utility-template catalogue. No custom, marketing, or authentication template can be entered here."
         icon={MessageCircle}
       >
         {notice ? (
@@ -355,7 +500,9 @@ export function OrganizationWhatsAppPanel({
                   activeOperation={activeOperation}
                   onRegister={setRegistrationSender}
                   onSync={senderToSync => void syncTemplates(senderToSync)}
+                  onInstall={senderToInstall => void installManagedTemplates(senderToInstall)}
                   onDisconnect={setDisconnectSender}
+                  installation={installations[sender.id] ?? null}
                 />
               ))}
             </div>

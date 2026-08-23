@@ -24,12 +24,36 @@ describe("WhatsApp route authentication boundaries", () => {
       "app/api/organizations/[orgId]/whatsapp/senders/[senderId]/register/route.ts",
       "app/api/organizations/[orgId]/whatsapp/senders/[senderId]/disconnect/route.ts",
       "app/api/organizations/[orgId]/whatsapp/senders/[senderId]/templates/sync/route.ts",
+      "app/api/organizations/[orgId]/whatsapp/senders/[senderId]/managed-templates/install/route.ts",
     ];
 
     for (const path of routes) {
       const route = source(path);
       expect(route, path).toContain("getSessionUser");
       expect(route, path).toContain('status: 401');
+    }
+  });
+
+  it("self-authenticates every branch-scoped WhatsApp route", () => {
+    const routes = [
+      "app/api/branches/[branchId]/whatsapp/settings/route.ts",
+      "app/api/branches/[branchId]/whatsapp/delivery/enable/route.ts",
+      "app/api/branches/[branchId]/whatsapp/delivery/disable/route.ts",
+      "app/api/branches/[branchId]/whatsapp/automation/enable/route.ts",
+      "app/api/branches/[branchId]/whatsapp/automation/disable/route.ts",
+      "app/api/branches/[branchId]/whatsapp/recipients/route.ts",
+      "app/api/branches/[branchId]/whatsapp/recipients/bulk/route.ts",
+      "app/api/branches/[branchId]/whatsapp/recipients/[recipientId]/route.ts",
+      "app/api/branches/[branchId]/whatsapp/recipients/student/[studentId]/route.ts",
+      "app/api/branches/[branchId]/whatsapp/payment-reminders/preview/route.ts",
+      "app/api/branches/[branchId]/whatsapp/payment-reminders/route.ts",
+      "app/api/branches/[branchId]/whatsapp/messages/route.ts",
+    ];
+
+    for (const path of routes) {
+      const route = source(path);
+      expect(route, path).toContain("getSessionUser");
+      expect(route, path).toContain("status: 401");
     }
   });
 
@@ -41,6 +65,17 @@ describe("WhatsApp route authentication boundaries", () => {
       "app/api/organizations/[orgId]/whatsapp/senders/[senderId]/register/route.ts",
       "app/api/organizations/[orgId]/whatsapp/senders/[senderId]/disconnect/route.ts",
       "app/api/organizations/[orgId]/whatsapp/senders/[senderId]/templates/sync/route.ts",
+      "app/api/organizations/[orgId]/whatsapp/senders/[senderId]/managed-templates/install/route.ts",
+      "app/api/branches/[branchId]/whatsapp/settings/route.ts",
+      "app/api/branches/[branchId]/whatsapp/delivery/enable/route.ts",
+      "app/api/branches/[branchId]/whatsapp/delivery/disable/route.ts",
+      "app/api/branches/[branchId]/whatsapp/automation/enable/route.ts",
+      "app/api/branches/[branchId]/whatsapp/automation/disable/route.ts",
+      "app/api/branches/[branchId]/whatsapp/recipients/route.ts",
+      "app/api/branches/[branchId]/whatsapp/recipients/bulk/route.ts",
+      "app/api/branches/[branchId]/whatsapp/recipients/[recipientId]/route.ts",
+      "app/api/branches/[branchId]/whatsapp/payment-reminders/preview/route.ts",
+      "app/api/branches/[branchId]/whatsapp/payment-reminders/route.ts",
     ];
 
     for (const path of mutationRoutes) {

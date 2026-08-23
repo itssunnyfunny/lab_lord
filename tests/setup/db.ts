@@ -32,6 +32,51 @@ export const testPrisma = new PrismaClient({
   }),
 });
 
+async function confirmExactDisposableDatabaseIdentity() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error("Refusing database reset without DATABASE_URL.");
+  }
+
+  const parsedDatabaseUrl = new URL(connectionString);
+  const expectedDatabaseName = decodeURIComponent(
+    parsedDatabaseUrl.pathname.replace(/^\//, "")
+  );
+  const isPostgres = ["postgres:", "postgresql:"].includes(
+    parsedDatabaseUrl.protocol
+  );
+
+  if (!isPostgres || !expectedDatabaseName.toLowerCase().includes("test")) {
+    throw new Error(
+      "Refusing database reset: DATABASE_URL must name a PostgreSQL test database."
+    );
+  }
+
+  if (
+    process.env.TEST_DATABASE_URL &&
+    process.env.TEST_DATABASE_RESET_CONFIRM !== expectedDatabaseName
+  ) {
+    throw new Error(
+      "Refusing database reset: TEST_DATABASE_RESET_CONFIRM must exactly match the explicit test database name."
+    );
+  }
+
+  const rows = await testPrisma.$queryRaw<Array<{ databaseName: string }>>`
+    SELECT current_database() AS "databaseName"
+  `;
+  const connectedDatabaseName = rows[0]?.databaseName;
+
+  if (
+    rows.length !== 1 ||
+    connectedDatabaseName !== expectedDatabaseName ||
+    !connectedDatabaseName.toLowerCase().includes("test")
+  ) {
+    throw new Error(
+      "Refusing database reset: connected database identity does not exactly match the configured test database."
+    );
+  }
+}
+
 /**
  * Call this in beforeEach() of every integration test file.
  * Deletes ALL data in dependency-safe order (children before parents).
@@ -39,17 +84,26 @@ export const testPrisma = new PrismaClient({
  * where the service itself calls prisma.$transaction internally.
  */
 export async function resetDatabase() {
+  // Reconfirm the live connection target immediately before every destructive reset.
+  await confirmExactDisposableDatabaseIdentity();
+
   // TRUNCATE is a single atomic operation - faster than chained deleteMany()
   // CASCADE handles FK dependencies automatically, so order doesn't matter.
   await testPrisma.$executeRawUnsafe(`
     TRUNCATE TABLE
       "WhatsAppMessageEvent",
+      "WhatsAppMessagePayment",
       "WhatsAppMessage",
+      "WhatsAppManualSendRequest",
+      "WhatsAppStudentRecipient",
       "WhatsAppConsentEvent",
       "WhatsAppConsent",
+      "WhatsAppTemplateBinding",
+      "WhatsAppManagedTemplateProvisioning",
       "WhatsAppTemplate",
       "WhatsAppWebhookReceipt",
       "WhatsAppAuditEvent",
+      "WhatsAppAutomationRule",
       "BranchWhatsAppSettings",
       "WhatsAppConnectionIntent",
       "WhatsAppSender",

@@ -15,6 +15,10 @@ import {
   type MetaWhatsAppProviderClient,
 } from "@/lib/metaWhatsApp";
 import { WhatsAppConfigurationError } from "@/lib/whatsappFeature";
+import {
+  getManagedWhatsAppTemplate,
+  WHATSAPP_MANAGED_STOP_PAYLOAD,
+} from "@/lib/whatsappManagedTemplates";
 
 function readRuntimeSources(directory: string): string[] {
   const absoluteDirectory = resolve(process.cwd(), directory);
@@ -33,7 +37,7 @@ const testEnvironment = {
   NODE_ENV: "test",
   VERCEL_ENV: "preview",
   META_WHATSAPP_MODE: "TEST",
-  META_GRAPH_API_VERSION: "v26.0",
+  META_GRAPH_API_VERSION: "v25.0",
   META_APP_ID: "10001",
   META_APP_SECRET: "app-secret-value",
   META_EMBEDDED_SIGNUP_CONFIG_ID: "20002",
@@ -71,7 +75,7 @@ describe("Meta WhatsApp provider configuration", () => {
   it("requires explicit mode, all server credentials, and a bounded pinned version", () => {
     expect(readMetaWhatsAppConfiguration(testEnvironment)).toEqual({
       providerMode: "TEST",
-      graphApiVersion: "v26.0",
+      graphApiVersion: "v25.0",
       appId: "10001",
       appSecret: "app-secret-value",
       embeddedSignupConfigId: "20002",
@@ -87,6 +91,10 @@ describe("Meta WhatsApp provider configuration", () => {
     })).toThrow(WhatsAppConfigurationError);
     expect(() => readMetaWhatsAppConfiguration({
       ...testEnvironment,
+      META_GRAPH_API_VERSION: "v26.0",
+    })).toThrow("must be pinned to v25.0");
+    expect(() => readMetaWhatsAppConfiguration({
+      ...testEnvironment,
       META_APP_SECRET: "",
     })).toThrow("META_APP_SECRET must be configured");
     expect(() => readMetaWhatsAppConfiguration({
@@ -95,35 +103,48 @@ describe("Meta WhatsApp provider configuration", () => {
     })).toThrow("Vercel Production requires META_WHATSAPP_MODE=LIVE");
   });
 
-  it("exposes only the narrow onboarding and synchronization facade", () => {
+  it("exposes only the narrow onboarding, synchronization, and two reviewed write methods", () => {
     const client = clientWithFetch(vi.fn());
 
     expect(Object.keys(client).sort()).toEqual([...META_WHATSAPP_PROVIDER_METHODS].sort());
   });
 
-  it("contains no hidden message-delivery or credit-sharing capability", () => {
+  it("keeps the PR3 provider cost boundary narrow", () => {
     const source = readFileSync(resolve(process.cwd(), "lib/metaWhatsApp.ts"), "utf8");
     const runtimeSource = [
       source,
       ...readRuntimeSources("services").filter(item => /WhatsApp/i.test(item)),
       ...readRuntimeSources("app/api/organizations/[orgId]/whatsapp"),
+      ...readRuntimeSources("app/api/branches/[branchId]/whatsapp"),
+      ...readRuntimeSources("app/api/cron/whatsapp"),
       ...readRuntimeSources("app/api/whatsapp"),
+      readFileSync(resolve(process.cwd(), "lib/api/whatsapp.ts"), "utf8"),
+      ...readRuntimeSources("components/whatsapp"),
+    ].join("\n");
+    const browserSource = [
+      readFileSync(resolve(process.cwd(), "lib/api/whatsapp.ts"), "utf8"),
       ...readRuntimeSources("components/whatsapp"),
     ].join("\n");
     const methods = META_WHATSAPP_PROVIDER_METHODS.join(" ");
 
-    expect(methods).not.toMatch(
-      /sendMessage|sendTemplate|sendWhatsApp|sendText|sendMedia|markMessageRead/i
-    );
+    expect(META_WHATSAPP_PROVIDER_METHODS.filter(method =>
+      method === "sendApprovedUtilityTemplate"
+    )).toEqual(["sendApprovedUtilityTemplate"]);
+    expect(methods).not.toMatch(/sendText|sendMedia|markMessageRead|sendOtp|sendMarketing/i);
     expect(runtimeSource).not.toMatch(
-      /sendMessage|sendTemplate|sendWhatsApp|sendText|sendMedia|markMessageRead|test[- ]send/i
+      /sendText|sendMedia|markMessageRead|sendOtp|sendMarketing|test[- ]send/i
     );
-    expect(runtimeSource).not.toMatch(/["'`]\/messages(?:[?"'`/]|$)/);
+    expect((source.match(/this\.graphUrl\(phoneNumberId, "messages"\)/g) ?? []))
+      .toHaveLength(1);
+    expect(source).toContain('type: "template"');
+    expect(source).toContain('recipient_type: "individual"');
+    expect(source).toContain('category: "UTILITY"');
+    expect(source).not.toMatch(/type:\s*["'](?:image|document|audio|video|location)["']/i);
     expect(runtimeSource).not.toMatch(
       /credit_line|extendedcredit|extended_credit|credit sharing|shareCredit/i
     );
-    expect(runtimeSource).not.toMatch(
-      /whatsAppMessage(?:Event)?\.(?:create|createMany|upsert|update|updateMany)\s*\(/i
+    expect(browserSource).not.toMatch(
+      /META_(?:APP_SECRET|SYSTEM_USER_ACCESS_TOKEN|WHATSAPP_WEBHOOK_VERIFY_TOKEN)/
     );
   });
 
@@ -167,7 +188,7 @@ describe("Meta WhatsApp HTTP safeguards", () => {
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(url.origin).toBe(META_GRAPH_ORIGIN);
-    expect(url.pathname).toBe("/v26.0/oauth/access_token");
+    expect(url.pathname).toBe("/v25.0/oauth/access_token");
     expect(url.search).toBe("");
     expect(String(init.body)).toContain("code=one-time-code");
     expect(String(init.body)).toContain("client_secret=app-secret-value");
@@ -270,6 +291,142 @@ describe("Meta WhatsApp HTTP safeguards", () => {
   });
 });
 
+describe("Meta WhatsApp managed utility-template mutations", () => {
+  it("creates only an exact catalogue utility template on the WABA endpoint", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      id: "70007",
+      status: "PENDING",
+      category: "UTILITY",
+    }));
+    const client = clientWithFetch(fetchMock);
+    const definition = getManagedWhatsAppTemplate("FEE_RENEWAL_POLITE", "en_IN");
+
+    await expect(client.createManagedUtilityTemplate({ wabaId: "50005", definition }))
+      .resolves.toEqual({
+        providerTemplateId: "70007",
+        providerStatus: "PENDING",
+        category: "UTILITY",
+      });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.toString()).toBe("https://graph.facebook.com/v25.0/50005/message_templates");
+    expect(init.headers).toMatchObject({
+      Authorization: "Bearer system-user-token",
+      "Content-Type": "application/json",
+    });
+    expect(JSON.parse(String(init.body))).toEqual({
+      name: "lablords_fee_renewal_polite_en_in_v1",
+      language: "en_IN",
+      category: "UTILITY",
+      parameter_format: "POSITIONAL",
+      components: definition.components,
+    });
+  });
+
+  it("sends one individual template with ordered text values and the managed STOP payload", async () => {
+    const providerMessageId = `wamid.${"!".repeat(499)}~`;
+    const fetchMock = vi.fn(async () => jsonResponse({
+      messaging_product: "whatsapp",
+      contacts: [{ input: "919876543210", wa_id: "919876543210" }],
+      messages: [{ id: providerMessageId, message_status: "accepted" }],
+    }));
+    const client = clientWithFetch(fetchMock);
+
+    await expect(client.sendApprovedUtilityTemplate({
+      phoneNumberId: "60006",
+      recipientPhoneE164: "+919876543210",
+      definition: getManagedWhatsAppTemplate("FEE_RENEWAL_POLITE", "en_IN"),
+      values: {
+        studentName: "Sample Student",
+        amount: "1,200",
+        branchName: "Sample Branch",
+        dueDate: "30 Aug 2026",
+      },
+      correlationId: "send_01J123",
+    })).resolves.toEqual({
+      providerMessageId,
+      providerRecipientWaId: "919876543210",
+      submissionStatus: "ACCEPTED",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.toString()).toBe("https://graph.facebook.com/v25.0/60006/messages");
+    expect(JSON.parse(String(init.body))).toEqual({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: "919876543210",
+      type: "template",
+      template: {
+        name: "lablords_fee_renewal_polite_en_in_v1",
+        language: { code: "en_IN" },
+        components: [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: "Sample Student" },
+              { type: "text", text: "1,200" },
+              { type: "text", text: "Sample Branch" },
+              { type: "text", text: "30 Aug 2026" },
+            ],
+          },
+          {
+            type: "button",
+            sub_type: "quick_reply",
+            index: "0",
+            parameters: [{ type: "payload", payload: WHATSAPP_MANAGED_STOP_PAYLOAD }],
+          },
+        ],
+      },
+      biz_opaque_callback_data: "send_01J123",
+    });
+  });
+
+  it("treats a malformed successful send response as ambiguous and never retries", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      messaging_product: "whatsapp",
+      messages: [],
+    }));
+    const client = clientWithFetch(fetchMock);
+
+    await expect(client.sendApprovedUtilityTemplate({
+      phoneNumberId: "60006",
+      recipientPhoneE164: "+919876543210",
+      definition: getManagedWhatsAppTemplate("WELCOME_GENERAL", "en_IN"),
+      values: {
+        studentName: "Sample Student",
+        branchName: "Sample Branch",
+        startDate: "23 Aug 2026",
+      },
+      correlationId: "send_01J123",
+    })).rejects.toBeInstanceOf(MetaWhatsAppAmbiguousMutationError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes Graph throttling codes even when Meta does not return HTTP 429", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(
+      { error: { code: 131056, message: "private provider detail" } },
+      { status: 400, headers: { "Retry-After": "16" } }
+    ));
+    const client = clientWithFetch(fetchMock);
+
+    const error = await client.createManagedUtilityTemplate({
+      wabaId: "50005",
+      definition: getManagedWhatsAppTemplate("WELCOME_GENERAL", "en_IN"),
+    }).catch(value => value);
+
+    expect(error).toBeInstanceOf(MetaWhatsAppProviderError);
+    expect(error).not.toBeInstanceOf(MetaWhatsAppAmbiguousMutationError);
+    expect(error).toMatchObject({
+      kind: "RATE_LIMIT",
+      providerCode: 131056,
+      retryAfterSeconds: 16,
+    });
+    expect(error.message).toBe("Meta request rate limit was reached");
+    expect(JSON.stringify(error)).not.toContain("private provider detail");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("Meta WhatsApp normalized onboarding operations", () => {
   it("normalizes token debug scopes and expiry", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({
@@ -300,7 +457,7 @@ describe("Meta WhatsApp normalized onboarding operations", () => {
       });
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
-    expect(url.pathname).toBe("/v26.0/debug_token");
+    expect(url.pathname).toBe("/v25.0/debug_token");
     expect(init.headers).toMatchObject({ Authorization: "Bearer 10001|app-secret-value" });
   });
 
@@ -326,7 +483,7 @@ describe("Meta WhatsApp normalized onboarding operations", () => {
           components: [],
         }],
         paging: {
-          next: "https://graph.facebook.com/v26.0/50005/message_templates?after=cursor-1&access_token=must-not-be-followed",
+          next: "https://graph.facebook.com/v25.0/50005/message_templates?after=cursor-1&access_token=must-not-be-followed",
         },
       }))
       .mockResolvedValueOnce(jsonResponse({
@@ -347,7 +504,7 @@ describe("Meta WhatsApp normalized onboarding operations", () => {
     ]);
     const [secondUrl, secondInit] = fetchMock.mock.calls[1] as unknown as [URL, RequestInit];
     expect(secondUrl.toString()).toBe(
-      "https://graph.facebook.com/v26.0/50005/message_templates?after=cursor-1"
+      "https://graph.facebook.com/v25.0/50005/message_templates?after=cursor-1"
     );
     expect(secondInit.headers).toMatchObject({ Authorization: "Bearer system-user-token" });
   });
@@ -355,7 +512,7 @@ describe("Meta WhatsApp normalized onboarding operations", () => {
   it("rejects pagination that escapes the fixed Graph boundary", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({
       data: [],
-      paging: { next: "https://graph.facebook.com.evil.example/v26.0/50005/message_templates?after=x" },
+      paging: { next: "https://graph.facebook.com.evil.example/v25.0/50005/message_templates?after=x" },
     }));
     const client = clientWithFetch(fetchMock);
 
@@ -367,7 +524,7 @@ describe("Meta WhatsApp normalized onboarding operations", () => {
   it("fails a pagination sequence that exceeds the explicit page bound", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({
       data: [],
-      paging: { next: "https://graph.facebook.com/v26.0/50005/message_templates?after=x" },
+      paging: { next: "https://graph.facebook.com/v25.0/50005/message_templates?after=x" },
     }));
     const client = clientWithFetch(fetchMock, { maxPages: 1 });
 

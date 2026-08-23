@@ -81,3 +81,30 @@ export function previousCyclesBefore(
 export function isCycleDue(cycle: StudentBillingCycle, asOf: Date) {
     return !isAfter(cycle.dueDate, normalizeDate(asOf));
 }
+
+/**
+ * Calculates prospective anniversary cycles without creating Payment rows.
+ * Messaging uses this only for pre-due planning; payment generation remains
+ * the sole authority for due-today and past-due payment truth.
+ */
+export function upcomingCyclesBetween(
+    joinedAt: Date,
+    from: Date,
+    through: Date,
+    billingStartAt?: Date | null
+): StudentBillingCycle[] {
+    const start = normalizeDate(from);
+    const end = normalizeDate(through);
+    if (isAfter(start, end)) return [];
+
+    const billingStart = billingStartAt ? normalizeDate(billingStartAt) : null;
+    const cycles: StudentBillingCycle[] = [];
+    for (let index = 0; index < 600; index++) {
+        const cycle = studentBillingCycle(joinedAt, index);
+        if (isAfter(cycle.dueDate, end)) break;
+        if (isBefore(cycle.dueDate, start)) continue;
+        if (billingStart && isBefore(cycle.periodStart, billingStart)) continue;
+        cycles.push(cycle);
+    }
+    return cycles;
+}

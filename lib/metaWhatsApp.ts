@@ -3,22 +3,36 @@ import { Buffer } from "node:buffer";
 import { z } from "zod";
 
 import {
+  prepareManagedWhatsAppTemplate,
+  resolveExactManagedWhatsAppTemplateDefinition,
+  WHATSAPP_MANAGED_STOP_PAYLOAD,
+  type WhatsAppManagedTemplateDefinition,
+} from "@/lib/whatsappManagedTemplates";
+import {
   resolveWhatsAppProviderMode,
   WhatsAppConfigurationError,
   type WhatsAppProviderModeValue,
 } from "@/lib/whatsappFeature";
 import type {
   MetaAssignedSystemUser,
+  MetaApprovedUtilityTemplateSendResult,
   MetaDebugToken,
+  MetaManagedUtilityTemplateCreateResult,
   MetaMessageTemplate,
   MetaPhoneNumber,
   MetaSubscribedApp,
   MetaWaba,
 } from "@/types/whatsapp";
+import {
+  META_WHATSAPP_MESSAGE_ID_MAX_LENGTH,
+  META_WHATSAPP_MESSAGE_ID_PATTERN,
+} from "@/lib/whatsappProviderMessageId";
 
 export type {
   MetaAssignedSystemUser,
+  MetaApprovedUtilityTemplateSendResult,
   MetaDebugToken,
+  MetaManagedUtilityTemplateCreateResult,
   MetaMessageTemplate,
   MetaPhoneNumber,
   MetaSubscribedApp,
@@ -26,7 +40,9 @@ export type {
 } from "@/types/whatsapp";
 
 export const META_GRAPH_ORIGIN = "https://graph.facebook.com" as const;
+export const META_WHATSAPP_GRAPH_API_VERSION = "v25.0" as const;
 export const META_GRAPH_DEFAULT_TIMEOUT_MS = 10_000;
+export const META_GRAPH_MAX_TIMEOUT_MS = 30_000;
 export const META_GRAPH_MAX_RESPONSE_BYTES = 1024 * 1024;
 export const META_GRAPH_MAX_PAGES = 20;
 export const META_GRAPH_MAX_ITEMS = 2_000;
@@ -37,8 +53,11 @@ const META_GRAPH_MAX_PAGE_ITEMS = 500;
 const META_GRAPH_MAX_URL_LENGTH = 4_096;
 const META_GRAPH_MAX_TOKEN_LENGTH = 8_192;
 const META_GRAPH_MAX_ERROR_REQUEST_ID_LENGTH = 256;
+const META_GRAPH_MAX_CORRELATION_ID_LENGTH = 512;
 const META_GRAPH_VERSION_PATTERN = /^v(?:[1-9]|[1-9][0-9])\.0$/;
 const META_PROVIDER_ID_PATTERN = /^[0-9]{1,64}$/;
+const META_E164_PATTERN = /^\+[1-9][0-9]{7,14}$/;
+const META_CORRELATION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,512}$/;
 
 const providerIdSchema = z.string().regex(META_PROVIDER_ID_PATTERN);
 const nullableBoundedString = (maximum: number) => z.string().max(maximum).nullable().optional();
@@ -122,6 +141,31 @@ const templateSchema = z.object({
   components: z.array(z.unknown()).max(100).optional(),
 });
 
+const managedTemplateCreateResponseSchema = z.object({
+  id: providerIdSchema,
+  status: z.string().min(1).max(64),
+  category: z.string().min(1).max(64),
+});
+
+const messageSubmissionStatusSchema = z.enum([
+  "accepted",
+  "held_for_quality_assessment",
+  "paused",
+]);
+const sendTemplateResponseSchema = z.object({
+  messaging_product: z.literal("whatsapp"),
+  contacts: z.array(z.object({
+    input: z.string().min(1).max(32),
+    wa_id: z.string().regex(/^[0-9]{8,32}$/),
+  })).max(1).optional(),
+  messages: z.array(z.object({
+    id: z.string()
+      .max(META_WHATSAPP_MESSAGE_ID_MAX_LENGTH)
+      .regex(META_WHATSAPP_MESSAGE_ID_PATTERN),
+    message_status: messageSubmissionStatusSchema.optional(),
+  })).length(1),
+});
+
 const successResponseSchema = z.object({
   success: z.union([z.boolean(), z.literal("true")]).transform(value => value === true || value === "true"),
 });
@@ -177,6 +221,7 @@ export class MetaWhatsAppProviderError extends Error {
   readonly providerCode: number | null;
   readonly providerSubcode: number | null;
   readonly requestId: string | null;
+  readonly retryAfterSeconds: number | null;
 
   constructor(
     message: string,
@@ -186,6 +231,7 @@ export class MetaWhatsAppProviderError extends Error {
       providerCode?: number | null;
       providerSubcode?: number | null;
       requestId?: string | null;
+      retryAfterSeconds?: number | null;
     }
   ) {
     super(message);
@@ -195,6 +241,7 @@ export class MetaWhatsAppProviderError extends Error {
     this.providerCode = input.providerCode ?? null;
     this.providerSubcode = input.providerSubcode ?? null;
     this.requestId = input.requestId ?? null;
+    this.retryAfterSeconds = input.retryAfterSeconds ?? null;
   }
 }
 
@@ -202,7 +249,7 @@ export class MetaWhatsAppAmbiguousMutationError extends MetaWhatsAppProviderErro
   readonly code = "META_PROVIDER_MUTATION_AMBIGUOUS";
 
   constructor(input: { requestId?: string | null; status?: number | null } = {}) {
-    super("Meta could not confirm whether the requested setup change completed", {
+    super("Meta could not confirm whether the requested mutation completed", {
       kind: "PROVIDER",
       status: input.status,
       requestId: input.requestId,
@@ -243,6 +290,17 @@ export interface MetaWhatsAppProviderClient {
   subscribeAppToWaba(input: { wabaId: string }): Promise<{ success: boolean }>;
   registerPhoneNumber(input: { phoneNumberId: string; pin: string }): Promise<{ success: boolean }>;
   listMessageTemplates(input: { wabaId: string }): Promise<MetaMessageTemplate[]>;
+  createManagedUtilityTemplate(input: {
+    wabaId: string;
+    definition: WhatsAppManagedTemplateDefinition;
+  }): Promise<MetaManagedUtilityTemplateCreateResult>;
+  sendApprovedUtilityTemplate(input: {
+    phoneNumberId: string;
+    recipientPhoneE164: string;
+    definition: WhatsAppManagedTemplateDefinition;
+    values: Readonly<Record<string, unknown>>;
+    correlationId: string;
+  }): Promise<MetaApprovedUtilityTemplateSendResult>;
 }
 
 export const META_WHATSAPP_PROVIDER_METHODS = [
@@ -258,6 +316,8 @@ export const META_WHATSAPP_PROVIDER_METHODS = [
   "subscribeAppToWaba",
   "registerPhoneNumber",
   "listMessageTemplates",
+  "createManagedUtilityTemplate",
+  "sendApprovedUtilityTemplate",
 ] as const satisfies readonly (keyof MetaWhatsAppProviderClient)[];
 
 type MetaWhatsAppClientOptions = {
@@ -328,8 +388,13 @@ export function readMetaWhatsAppConfiguration(
 ): MetaWhatsAppConfiguration {
   const providerMode = resolveWhatsAppProviderMode(env);
   const graphApiVersion = requiredEnvironmentValue(env, "META_GRAPH_API_VERSION", 6);
-  if (!META_GRAPH_VERSION_PATTERN.test(graphApiVersion)) {
-    throw new WhatsAppConfigurationError("META_GRAPH_API_VERSION must use the pinned vNN.0 format");
+  if (
+    !META_GRAPH_VERSION_PATTERN.test(graphApiVersion)
+    || graphApiVersion !== META_WHATSAPP_GRAPH_API_VERSION
+  ) {
+    throw new WhatsAppConfigurationError(
+      `META_GRAPH_API_VERSION must be pinned to ${META_WHATSAPP_GRAPH_API_VERSION}`
+    );
   }
 
   return {
@@ -366,6 +431,25 @@ function boundedSecret(value: string, label: string) {
     throw new MetaWhatsAppInputError(`${label} is invalid`);
   }
   return value;
+}
+
+function normalizedMessageRecipient(value: string) {
+  const normalized = value.trim();
+  if (!META_E164_PATTERN.test(normalized)) {
+    throw new MetaWhatsAppInputError("WhatsApp recipient must be a valid E.164 number");
+  }
+  return normalized.slice(1);
+}
+
+function normalizedCorrelationId(value: string) {
+  const normalized = value.trim();
+  if (
+    normalized.length > META_GRAPH_MAX_CORRELATION_ID_LENGTH
+    || !META_CORRELATION_ID_PATTERN.test(normalized)
+  ) {
+    throw new MetaWhatsAppInputError("WhatsApp message correlation ID is invalid");
+  }
+  return normalized;
 }
 
 function normalizedCode(value: string) {
@@ -419,12 +503,28 @@ function safeRequestId(response: Response, traceId?: string) {
     : null;
 }
 
-function providerErrorKind(status: number): MetaWhatsAppProviderErrorKind {
+const META_RATE_LIMIT_CODES = new Set([4, 80007, 130429, 131056]);
+
+function providerErrorKind(
+  status: number,
+  providerCode: number | null
+): MetaWhatsAppProviderErrorKind {
   if (status === 401 || status === 403) return "AUTHENTICATION";
   if (status === 404) return "NOT_FOUND";
-  if (status === 429) return "RATE_LIMIT";
+  if (status === 429 || providerCode !== null && META_RATE_LIMIT_CODES.has(providerCode)) {
+    return "RATE_LIMIT";
+  }
   if (status >= 500) return "PROVIDER";
   return "REQUEST";
+}
+
+function safeRetryAfterSeconds(response: Response) {
+  const raw = response.headers.get("retry-after")?.trim();
+  if (!raw || !/^[0-9]{1,6}$/.test(raw)) return null;
+  const seconds = Number(raw);
+  return Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= 86_400
+    ? seconds
+    : null;
 }
 
 function providerErrorMessage(kind: MetaWhatsAppProviderErrorKind) {
@@ -545,7 +645,7 @@ class DefaultMetaWhatsAppClient implements MetaWhatsAppProviderClient {
     this.timeoutMs = boundedInteger(
       options.timeoutMs ?? META_GRAPH_DEFAULT_TIMEOUT_MS,
       1,
-      30_000,
+      META_GRAPH_MAX_TIMEOUT_MS,
       "Meta request timeout"
     );
     this.maxResponseBytes = boundedInteger(
@@ -783,6 +883,91 @@ class DefaultMetaWhatsAppClient implements MetaWhatsAppProviderClient {
     });
   }
 
+  async createManagedUtilityTemplate(input: {
+    wabaId: string;
+    definition: WhatsAppManagedTemplateDefinition;
+  }): Promise<MetaManagedUtilityTemplateCreateResult> {
+    const wabaId = parseMetaProviderId(input.wabaId, "Meta WABA ID");
+    const definition = resolveExactManagedWhatsAppTemplateDefinition(input.definition);
+    const response = await this.request({
+      url: this.graphUrl(wabaId, "message_templates"),
+      method: "POST",
+      accessToken: this.configuration.systemUserAccessToken,
+      body: JSON.stringify({
+        name: definition.providerTemplateName,
+        language: definition.language,
+        category: "UTILITY",
+        parameter_format: "POSITIONAL",
+        components: definition.components,
+      }),
+      contentType: "application/json",
+      mutation: true,
+    }, managedTemplateCreateResponseSchema);
+    return {
+      providerTemplateId: response.id,
+      providerStatus: normalizeTemplateStatus(response.status),
+      category: normalizeTemplateCategory(response.category),
+    };
+  }
+
+  async sendApprovedUtilityTemplate(input: {
+    phoneNumberId: string;
+    recipientPhoneE164: string;
+    definition: WhatsAppManagedTemplateDefinition;
+    values: Readonly<Record<string, unknown>>;
+    correlationId: string;
+  }): Promise<MetaApprovedUtilityTemplateSendResult> {
+    const phoneNumberId = parseMetaProviderId(
+      input.phoneNumberId,
+      "Meta phone-number ID"
+    );
+    const prepared = prepareManagedWhatsAppTemplate(input.definition, input.values);
+    const recipient = normalizedMessageRecipient(input.recipientPhoneE164);
+    const correlationId = normalizedCorrelationId(input.correlationId);
+    const response = await this.request({
+      url: this.graphUrl(phoneNumberId, "messages"),
+      method: "POST",
+      accessToken: this.configuration.systemUserAccessToken,
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: recipient,
+        type: "template",
+        template: {
+          name: prepared.definition.providerTemplateName,
+          language: { code: prepared.definition.language },
+          components: [
+            {
+              type: "body",
+              parameters: prepared.orderedValues.map(value => ({ type: "text", text: value })),
+            },
+            {
+              type: "button",
+              sub_type: "quick_reply",
+              index: "0",
+              parameters: [{ type: "payload", payload: WHATSAPP_MANAGED_STOP_PAYLOAD }],
+            },
+          ],
+        },
+        biz_opaque_callback_data: correlationId,
+      }),
+      contentType: "application/json",
+      mutation: true,
+    }, sendTemplateResponseSchema);
+    const submissionStatus = response.messages[0].message_status;
+    return {
+      providerMessageId: response.messages[0].id,
+      providerRecipientWaId: response.contacts?.[0]?.wa_id ?? null,
+      submissionStatus: submissionStatus === "accepted"
+        ? "ACCEPTED"
+        : submissionStatus === "held_for_quality_assessment"
+          ? "HELD_FOR_QUALITY_ASSESSMENT"
+          : submissionStatus === "paused"
+            ? "PAUSED"
+            : null,
+    };
+  }
+
   private graphUrl(
     firstPathSegment: string,
     secondPathSegment?: string,
@@ -921,16 +1106,18 @@ class DefaultMetaWhatsAppClient implements MetaWhatsAppProviderClient {
 
     if (!response.ok) {
       const parsedError = graphErrorSchema.safeParse(payload);
-      const kind = providerErrorKind(response.status);
+      const providerCode = parsedError.success ? parsedError.data.error.code ?? null : null;
+      const kind = providerErrorKind(response.status, providerCode);
       throw new MetaWhatsAppProviderError(providerErrorMessage(kind), {
         kind,
         status: response.status,
-        providerCode: parsedError.success ? parsedError.data.error.code : null,
+        providerCode,
         providerSubcode: parsedError.success ? parsedError.data.error.error_subcode : null,
         requestId: safeRequestId(
           response,
           parsedError.success ? parsedError.data.error.fbtrace_id : undefined
         ),
+        retryAfterSeconds: kind === "RATE_LIMIT" ? safeRetryAfterSeconds(response) : null,
       });
     }
 
@@ -953,11 +1140,18 @@ function boundedInteger(value: number, minimum: number, maximum: number, label: 
   return value;
 }
 
-function normalizeTemplateCategory(value: string) {
+function normalizeTemplateCategory(
+  value: string
+): MetaManagedUtilityTemplateCreateResult["category"] {
   const normalized = value.trim().toUpperCase();
-  return ["AUTHENTICATION", "MARKETING", "UTILITY"].includes(normalized)
-    ? normalized
-    : "UNKNOWN";
+  switch (normalized) {
+    case "AUTHENTICATION":
+    case "MARKETING":
+    case "UTILITY":
+      return normalized;
+    default:
+      return "UNKNOWN";
+  }
 }
 
 function normalizeTemplateStatus(value: string) {
@@ -984,6 +1178,8 @@ export function createMetaWhatsAppClient(
     subscribeAppToWaba: input => implementation.subscribeAppToWaba(input),
     registerPhoneNumber: input => implementation.registerPhoneNumber(input),
     listMessageTemplates: input => implementation.listMessageTemplates(input),
+    createManagedUtilityTemplate: input => implementation.createManagedUtilityTemplate(input),
+    sendApprovedUtilityTemplate: input => implementation.sendApprovedUtilityTemplate(input),
   };
 }
 
