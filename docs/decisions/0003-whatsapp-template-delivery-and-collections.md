@@ -1,8 +1,9 @@
 # 0003: Managed WhatsApp Utility delivery and collections automation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-23
-- Deciders: Pending
+- Deciders: itssunnyfunny (human repository owner)
+- Approval date: 2026-08-24
 - Supersedes: None
 - Superseded by: None
 
@@ -17,9 +18,10 @@ the application loses the response. Tenant isolation is application-enforced,
 phone-scoped consent alone does not prove which student may use that phone, and
 Meta message submission supplies no application idempotency key.
 
-This proposal extends but does not supersede ADR 0002. Both remain Proposed.
-Implementation presence does not approve App Review, legal/privacy policy, a
-rate card, real provider setup, Preview/Production migration, or Live delivery.
+This decision builds on but does not supersede ADR 0002, which remains Proposed.
+Human-owner acceptance of this ADR does not approve App Review, legal/privacy
+policy, a rate card, real provider setup, Preview/Production migration, or Live
+delivery.
 
 ## Decision
 
@@ -210,10 +212,10 @@ paths support investigation without erasing accepted or ambiguous outcomes.
 
 ## Rollout and rollback
 
-1. Merge only after explicit `SECURITY.md` and Proposed-ADR review, with every
-   WhatsApp flag false and both canaries empty. Do not promote the PR3
-   application against the PR2 schema: ordinary student queries require the new
-   `enrollmentSource` column even when WhatsApp is held.
+1. Merge only after documented human-owner approval of `SECURITY.md` and this
+   ADR, with every WhatsApp flag false and both canaries empty. Do not promote
+   the PR3 application against the PR2 schema: ordinary student queries require
+   the new `enrollmentSource` column even when WhatsApp is held.
 2. With the previously compatible application serving, run the documented
    read-only preflight, establish the approved deployment/traffic hold, apply
    and verify the additive PR3 migration, and require unchanged existing
@@ -270,7 +272,9 @@ migration, schedule health, callback reachability, or Live canary.
 
 ## Approval
 
-Pending explicit human-owner, security, operations, and legal/privacy review.
-This proposal is not binding, must not be marked Accepted by an automated agent,
-and does not authorize real provider, Preview, Production, migration, or canary
-operations.
+Accepted on 2026-08-24 by itssunnyfunny, the human repository owner, with
+explicit approval of this decision and the accompanying `SECURITY.md` changes
+for PR #265. This approval makes the architecture decision binding but does not
+authorize real provider operations, Preview or Production migration, flag or
+canary enablement, or rollout. Operations and legal/privacy gates remain
+separate requirements.

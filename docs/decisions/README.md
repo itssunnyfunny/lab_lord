@@ -1,18 +1,15 @@
 # Architecture Decision Records
 
 This directory records important decision proposals, human-approved decisions,
-and their rationale. It starts with no historical Accepted decisions; do not
-reconstruct or invent approvals.
+and their rationale. Do not reconstruct or invent approvals.
 
 ## Accepted decision index
-
-No Accepted ADRs have been recorded yet.
 
 Add Accepted or Superseded records here in numeric order:
 
 | ADR | Status | Decision | Superseded by |
 | --- | --- | --- | --- |
-| _None_ | — | — | — |
+| [0003](./0003-whatsapp-template-delivery-and-collections.md) | Accepted | Managed WhatsApp Utility delivery and collections automation | — |
 
 ## Proposed decision index
 
@@ -23,7 +20,6 @@ or imply owner approval.
 | --- | --- | --- |
 | [0001](./0001-managed-workflow-for-import-execution.md) | Proposed | Managed Workflow for import execution |
 | [0002](./0002-whatsapp-communication-foundation.md) | Proposed | WhatsApp communication foundation and customer-owned Meta assets |
-| [0003](./0003-whatsapp-template-delivery-and-collections.md) | Proposed | Managed WhatsApp Utility delivery and collections automation |
 
 ## Naming and status
 
