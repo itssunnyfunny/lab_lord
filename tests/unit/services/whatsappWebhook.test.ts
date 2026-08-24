@@ -2,7 +2,10 @@ import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_META_WEBHOOK_BYTES,
+  MAX_META_WEBHOOK_EVENTS,
   META_WEBHOOK_ACCEPTED_RESPONSE,
+  extractMetaWebhookEvents,
+  isExactWhatsAppStopCommand,
   parseMetaWebhookEnvelope,
   readBoundedWebhookBody,
   verifyMetaWebhookChallenge,
@@ -79,5 +82,177 @@ describe("Meta webhook trust boundary", () => {
   it("defines one generic success projection for known, unknown, and duplicate events", () => {
     expect(META_WEBHOOK_ACCEPTED_RESPONSE).toEqual({ accepted: true });
     expect(Object.keys(META_WEBHOOK_ACCEPTED_RESPONSE)).toEqual(["accepted"]);
+  });
+
+  it("normalizes only supported status evidence and retains authoritative pricing fields", () => {
+    const parsed = parseMetaWebhookEnvelope(Buffer.from(JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "123",
+        changes: [{
+          field: "messages",
+          value: {
+            metadata: { phone_number_id: "456" },
+            statuses: [
+              {
+                id: "wamid.HBgMTA",
+                status: "delivered",
+                timestamp: "1700000000",
+                recipient_id: "919876543210",
+                pricing: { billable: true, category: "utility" },
+              },
+              { id: "wamid.ignored", status: "deleted", timestamp: "1700000001" },
+              {
+                id: "wamid.failed",
+                status: "failed",
+                timestamp: "1700000002",
+                errors: [{ code: 131026, title: "must not be retained" }],
+              },
+            ],
+          },
+        }],
+      }],
+    })));
+
+    expect(extractMetaWebhookEvents(parsed)).toEqual([
+      {
+        kind: "STATUS",
+        providerMessageId: "wamid.HBgMTA",
+        status: "DELIVERED",
+        providerTimestamp: new Date("2023-11-14T22:13:20.000Z"),
+        providerRecipientWaId: "919876543210",
+        providerBillable: true,
+        providerPricingCategory: "UTILITY",
+        safeErrorCode: null,
+      },
+      {
+        kind: "STATUS",
+        providerMessageId: "wamid.failed",
+        status: "FAILED",
+        providerTimestamp: new Date("2023-11-14T22:13:22.000Z"),
+        providerRecipientWaId: null,
+        providerBillable: null,
+        providerPricingCategory: null,
+        safeErrorCode: "META_131026",
+      },
+    ]);
+  });
+
+  it("accepts the same bounded opaque WAMID range as provider-response finalization", () => {
+    const providerMessageId = `wamid.${"!".repeat(499)}~`;
+    const parsed = parseMetaWebhookEnvelope(Buffer.from(JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "123",
+        changes: [{
+          field: "messages",
+          value: {
+            metadata: { phone_number_id: "456" },
+            statuses: [{
+              id: providerMessageId,
+              status: "sent",
+              timestamp: "1700000000",
+            }],
+          },
+        }],
+      }],
+    })));
+
+    expect(extractMetaWebhookEvents(parsed)).toEqual([
+      expect.objectContaining({
+        kind: "STATUS",
+        providerMessageId,
+        status: "SENT",
+      }),
+    ]);
+  });
+
+  it("accepts exact normalized STOP commands and the exact managed reply ID only", () => {
+    expect(isExactWhatsAppStopCommand({ type: "text", text: " stop " })).toBe(true);
+    expect(isExactWhatsAppStopCommand({
+      type: "button",
+      buttonPayload: "LABLORDS_STOP_UPDATES",
+    })).toBe(true);
+    expect(isExactWhatsAppStopCommand({
+      type: "interactive",
+      interactiveButtonId: "LABLORDS_STOP_UPDATES",
+    })).toBe(true);
+
+    for (const text of ["stop by tomorrow", "please don't stop", "PAID", "DONE", "START"] ) {
+      expect(isExactWhatsAppStopCommand({ type: "text", text })).toBe(false);
+    }
+    expect(isExactWhatsAppStopCommand({
+      type: "button",
+      buttonPayload: "STOP",
+    })).toBe(false);
+    expect(isExactWhatsAppStopCommand({
+      type: "button",
+      buttonPayload: " LABLORDS_STOP_UPDATES ",
+    })).toBe(false);
+    expect(isExactWhatsAppStopCommand({
+      type: "interactive",
+      interactiveButtonId: "lablords_stop_updates",
+    })).toBe(false);
+  });
+
+  it("extracts template status and category updates without retaining provider reasons", () => {
+    const parsed = parseMetaWebhookEnvelope(Buffer.from(JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "123",
+        changes: [
+          {
+            field: "message_template_status_update",
+            value: {
+              event: "PAUSED",
+              message_template_id: "template123",
+              message_template_name: "lablords_fee_v1",
+              message_template_language: "en_US",
+              reason: "provider text must be discarded",
+            },
+          },
+          {
+            field: "template_category_update",
+            value: {
+              message_template_id: "template123",
+              correct_category: "MARKETING",
+            },
+          },
+        ],
+      }],
+    })));
+
+    expect(extractMetaWebhookEvents(parsed)).toEqual([
+      {
+        kind: "TEMPLATE",
+        providerTemplateId: "template123",
+        name: "lablords_fee_v1",
+        language: "en_US",
+        providerStatus: "PAUSED",
+        category: null,
+      },
+      {
+        kind: "TEMPLATE",
+        providerTemplateId: "template123",
+        name: null,
+        language: null,
+        providerStatus: null,
+        category: "MARKETING",
+      },
+    ]);
+  });
+
+  it("rejects envelopes whose bounded event count is exceeded", () => {
+    expect(MAX_META_WEBHOOK_EVENTS).toBe(200);
+    expect(() => parseMetaWebhookEnvelope(Buffer.from(JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: Array.from({ length: 100 }, (_, entryIndex) => ({
+        id: String(entryIndex + 1),
+        changes: Array.from({ length: 3 }, (_, changeIndex) => ({
+          field: `field_${changeIndex}`,
+          value: {},
+        })),
+      })),
+    })))).toThrow();
   });
 });

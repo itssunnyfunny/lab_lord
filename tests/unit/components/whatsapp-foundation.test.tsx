@@ -66,7 +66,7 @@ describe("WhatsApp foundation UI", () => {
     expect(html).not.toContain("phone-number-id");
   });
 
-  it("keeps branch delivery automation fixed off and hides owner controls from viewers", () => {
+  it("shows the feature-safe activation checklist and hides mutation controls from viewers", () => {
     const response: WhatsAppBranchAssignmentResponse = {
       enabled: true,
       canManage: false,
@@ -100,11 +100,16 @@ describe("WhatsApp foundation UI", () => {
       />
     );
 
-    expect(html).toContain("Automation unavailable");
-    expect(html).toContain("No reminders or other WhatsApp messages are sent");
-    expect(html).toContain('disabled=""');
+    expect(html).toContain("Activation checklist");
+    expect(html).toContain("Managed templates installed");
+    expect(html).toContain("Required templates approved as Utility");
+    expect(html).toContain("Send time configured");
+    expect(html).toContain("Reminder stages selected");
+    expect(html).toContain("Automation explicitly enabled");
+    expect(html).toContain("Incomplete:");
     expect(html).not.toContain("Assign sender");
     expect(html).not.toContain("Send test");
+    expect(html).not.toContain("custom template");
   });
 
   it("accepts exactly six ASCII digits for Meta phone registration", () => {

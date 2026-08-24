@@ -23,6 +23,11 @@ import {
     type DateIdCursor,
 } from "@/lib/cursorPagination";
 import type { PagedResult } from "@/types/ui";
+import {
+    isWhatsAppDeliverySchemaAccessEnabled,
+} from "@/lib/whatsappFeature";
+import { isWhatsAppDeliverySchemaReady } from "@/lib/whatsappSchema";
+import { WhatsAppPaymentReconciliationService } from "@/services/whatsappPaymentReconciliation.service";
 
 const PAYMENT_LIST_INCLUDE = {
     student: {
@@ -56,6 +61,14 @@ const PAYMENT_INSERT_BATCH_SIZE = 1000;
 const PAYMENT_ACTION_RESOLUTION = {
     source: PaymentResolutionEventSource.PAYMENT_ACTION,
 } satisfies PaymentResolutionContext;
+
+async function whatsappDeliveryStateMayExist(
+    client: Pick<Prisma.TransactionClient, "$queryRaw">,
+    env: Readonly<Record<string, string | undefined>> = process.env
+) {
+    return isWhatsAppDeliverySchemaAccessEnabled(env)
+        || await isWhatsAppDeliverySchemaReady(client);
+}
 
 type PaymentGenerationSummary = {
     generatedCount: number;
@@ -636,6 +649,19 @@ export class PaymentService {
             ...resolutionContext,
         });
 
+        // This remains a local outbox reconciliation inside the payment
+        // transaction. It never calls Meta. The schema-access fence only avoids
+        // PR3 table access before the database-first expansion has been deployed.
+        if (await whatsappDeliveryStateMayExist(tx)) {
+            await WhatsAppPaymentReconciliationService.reconcileResolutionInTransaction({
+                tx,
+                branchId: payment.branchId,
+                paymentId: payment.id,
+                reason: "PAYMENT_RESOLVED",
+                now: transitionAt,
+            });
+        }
+
         return updatedPayment;
     }
 
@@ -706,6 +732,18 @@ export class PaymentService {
             occurredAt: transitionAt,
             ...resolutionContext,
         });
+
+        if (await whatsappDeliveryStateMayExist(tx)) {
+            await WhatsAppPaymentReconciliationService.reconcileResolutionInTransaction({
+                tx,
+                branchId: payment.branchId,
+                paymentId: payment.id,
+                reason: payment.status === PaymentStatus.PAID
+                    ? "PAYMENT_CONFIRMATION_CORRECTED"
+                    : "PAYMENT_RESOLVED",
+                now: transitionAt,
+            });
+        }
 
         return updatedPayment;
     }

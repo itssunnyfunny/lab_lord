@@ -54,6 +54,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { CapabilityDecision } from "@/types";
 import { payments as paymentApi } from "@/lib/api/payments";
+import { ApprovedPaymentReminderReview } from "@/components/whatsapp/ApprovedPaymentReminderReview";
 
 interface OverduePayment extends OverdueQueuePayment {
     studentName: string;
@@ -105,13 +106,22 @@ export default function OverduePage() {
                     key={branchId}
                     branchId={branchId}
                     recordDecision={getBranchCapabilityDecision(access, "paymentsRecord")}
+                    whatsAppSendDecision={getBranchCapabilityDecision(access, "whatsappSend")}
                 />
             )}
         </BranchAccessGuard>
     );
 }
 
-function OverdueContent({ branchId, recordDecision }: { branchId: string; recordDecision: CapabilityDecision }) {
+function OverdueContent({
+    branchId,
+    recordDecision,
+    whatsAppSendDecision,
+}: {
+    branchId: string;
+    recordDecision: CapabilityDecision;
+    whatsAppSendDecision: CapabilityDecision;
+}) {
     const router = useRouter();
     const { formatDate, formatDateTime, formatNumber } = useUserPreferences();
     const formatMoney = (amount: number) => formatNumber(amount, {
@@ -596,6 +606,13 @@ function OverdueContent({ branchId, recordDecision }: { branchId: string; record
                                 )}
                             </div>
                         </AppPanel>
+
+                        <ApprovedPaymentReminderReview
+                            branchId={branchId}
+                            paymentIds={selectedPayments.map(payment => payment.paymentId)}
+                            canSend={whatsAppSendDecision.allowed}
+                            blockedReason={whatsAppSendDecision.reason ?? undefined}
+                        />
 
                         {drafts.length > 0 && (
                             <AppPanel

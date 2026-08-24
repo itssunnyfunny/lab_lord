@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  areWhatsAppMessageWritesEnabled,
   areWhatsAppOnboardingWritesEnabled,
+  areWhatsAppTemplateWritesEnabled,
+  configuredWhatsAppLiveDeliveryCanaryOrganizationIds,
+  isWhatsAppAutomationPlannerEnabled,
+  isWhatsAppDeliverySchemaAccessEnabled,
   isWhatsAppIntegrationEnabled,
   isWhatsAppWebhookIngestEnabled,
   resolveWhatsAppProviderMode,
@@ -24,6 +29,18 @@ describe("WhatsApp feature gates", () => {
     expect(isWhatsAppWebhookIngestEnabled({})).toBe(false);
     expect(areWhatsAppOnboardingWritesEnabled("org_1", {
       NODE_ENV: "development",
+      META_WHATSAPP_MODE: "TEST",
+    })).toBe(false);
+    expect(areWhatsAppTemplateWritesEnabled("org_1", {
+      NODE_ENV: "test",
+      META_WHATSAPP_MODE: "TEST",
+    })).toBe(false);
+    expect(areWhatsAppMessageWritesEnabled("org_1", {
+      NODE_ENV: "test",
+      META_WHATSAPP_MODE: "TEST",
+    })).toBe(false);
+    expect(isWhatsAppAutomationPlannerEnabled({
+      NODE_ENV: "test",
       META_WHATSAPP_MODE: "TEST",
     })).toBe(false);
   });
@@ -71,6 +88,98 @@ describe("WhatsApp feature gates", () => {
       WHATSAPP_META_ONBOARDING_WRITES_ENABLED: "false",
       WHATSAPP_LIVE_CANARY_ORG_IDS: "org_1",
     })).toBe(false);
+  });
+
+  it("keeps template, message, and planner gates independent in Test mode", () => {
+    const env = {
+      NODE_ENV: "test",
+      VERCEL_ENV: "preview",
+      META_WHATSAPP_MODE: "TEST",
+      WHATSAPP_INTEGRATION_ENABLED: "true",
+      WHATSAPP_META_TEMPLATE_WRITES_ENABLED: "true",
+    };
+    expect(areWhatsAppTemplateWritesEnabled("org_1", env)).toBe(true);
+    expect(areWhatsAppMessageWritesEnabled("org_1", env)).toBe(false);
+    expect(isWhatsAppAutomationPlannerEnabled(env)).toBe(false);
+
+    expect(isWhatsAppAutomationPlannerEnabled({
+      ...env,
+      WHATSAPP_META_TEMPLATE_WRITES_ENABLED: "false",
+      WHATSAPP_AUTOMATION_PLANNER_ENABLED: "true",
+    })).toBe(true);
+  });
+
+  it("opens PR3 schema access only when integration and at least one PR3 flag are enabled", () => {
+    const base = {
+      NODE_ENV: "test",
+      META_WHATSAPP_MODE: "TEST",
+      WHATSAPP_INTEGRATION_ENABLED: "true",
+    };
+    expect(isWhatsAppDeliverySchemaAccessEnabled(base)).toBe(false);
+    expect(isWhatsAppDeliverySchemaAccessEnabled({
+      ...base,
+      WHATSAPP_META_TEMPLATE_WRITES_ENABLED: "true",
+    })).toBe(true);
+    expect(isWhatsAppDeliverySchemaAccessEnabled({
+      ...base,
+      WHATSAPP_META_MESSAGE_WRITES_ENABLED: "true",
+    })).toBe(true);
+    expect(isWhatsAppDeliverySchemaAccessEnabled({
+      ...base,
+      WHATSAPP_AUTOMATION_PLANNER_ENABLED: "true",
+    })).toBe(true);
+    expect(isWhatsAppDeliverySchemaAccessEnabled({
+      ...base,
+      WHATSAPP_INTEGRATION_ENABLED: "false",
+      WHATSAPP_META_MESSAGE_WRITES_ENABLED: "true",
+    })).toBe(false);
+  });
+
+  it("exposes only the validated exact Live delivery canary set", () => {
+    expect([...configuredWhatsAppLiveDeliveryCanaryOrganizationIds({
+      WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS: "org_2,org_1",
+    })].sort()).toEqual(["org_1", "org_2"]);
+    expect(configuredWhatsAppLiveDeliveryCanaryOrganizationIds({
+      WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS: "org_1,not valid",
+    }).size).toBe(0);
+    expect(configuredWhatsAppLiveDeliveryCanaryOrganizationIds({
+      WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS: "org_1,org_1",
+    }).size).toBe(0);
+  });
+
+  it("requires the separate exact Live delivery canary for template and message writes", () => {
+    const env = {
+      ...BASE_ENV,
+      WHATSAPP_META_TEMPLATE_WRITES_ENABLED: "true",
+      WHATSAPP_META_MESSAGE_WRITES_ENABLED: "true",
+      WHATSAPP_LIVE_CANARY_ORG_IDS: "org_wrong_boundary",
+      WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS: "org_1,org_20",
+    };
+    expect(areWhatsAppTemplateWritesEnabled("org_1", env)).toBe(true);
+    expect(areWhatsAppMessageWritesEnabled("org_1", env)).toBe(true);
+    expect(areWhatsAppTemplateWritesEnabled("org_2", env)).toBe(false);
+    expect(areWhatsAppMessageWritesEnabled("org_2", env)).toBe(false);
+  });
+
+  it("lets one malformed delivery-canary entry hold every Live provider write", () => {
+    const env = {
+      ...BASE_ENV,
+      WHATSAPP_META_TEMPLATE_WRITES_ENABLED: "true",
+      WHATSAPP_META_MESSAGE_WRITES_ENABLED: "true",
+      WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS: "org_1,not valid",
+    };
+    expect(areWhatsAppTemplateWritesEnabled("org_1", env)).toBe(false);
+    expect(areWhatsAppMessageWritesEnabled("org_1", env)).toBe(false);
+  });
+
+  it("does not let the planner flag independently authorize provider delivery", () => {
+    const env = {
+      ...BASE_ENV,
+      WHATSAPP_AUTOMATION_PLANNER_ENABLED: "true",
+    };
+    expect(isWhatsAppAutomationPlannerEnabled(env)).toBe(true);
+    expect(areWhatsAppTemplateWritesEnabled("org_1", env)).toBe(false);
+    expect(areWhatsAppMessageWritesEnabled("org_1", env)).toBe(false);
   });
 
   it("rejects Production/Test and Preview/Live mismatches", () => {

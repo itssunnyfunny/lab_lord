@@ -2,8 +2,8 @@
 
 > Repository policy for Codex Security and other security reviewers.
 >
-> Last reconciled with the WhatsApp communication-foundation working tree based
-> on commit `6efc3c4` on 2026-08-23.
+> Last reconciled with the PR3 WhatsApp template-delivery working tree on
+> 2026-08-23. This is repository policy, not evidence of deployment readiness.
 
 This file defines what to review, the mandatory security invariants, and how to
 calibrate findings. It is not a public vulnerability-disclosure channel,
@@ -16,7 +16,7 @@ human owner explicitly resolves it or approves a documented decision.
 
 Lab Lords is an internet-facing, multi-tenant Next.js application designed for
 Vercel. It stores organization, branch, staff, student, allocation, payment,
-subscription, invoice, import, AI-report, and audit data in PostgreSQL through
+  subscription, invoice, WhatsApp delivery, import, AI-report, and audit data in PostgreSQL through
 Prisma.
 
 Production-reachable review scope includes:
@@ -30,8 +30,9 @@ Production-reachable review scope includes:
 - Razorpay Checkout callbacks, REST calls, webhooks, reconciliation, billing
   mutations, feature gates, and Test/Live isolation;
 - Meta WhatsApp Cloud API onboarding, delegated system-user access, phone
-  registration, template synchronization, signed webhook receipts, provider
-  modes, release gates, and branch sender assignment;
+  registration, managed Utility-template provisioning, recipient mapping,
+  durable delivery, signed webhooks, provider modes, release gates, and branch
+  sender assignment;
 - imports, parsers, previews, immutable evaluations/plans, recipes, durable
   runs, Workflow orchestration, retention, and commit processing;
 - Gemini prompts, outbound data, output validation, persistence, and fallbacks;
@@ -55,8 +56,8 @@ Protect at least:
 - student names, phone numbers, fees, dues, allocations, import contents, staged
   evaluations/execution payloads, and import-run history;
 - payment history, audit records, subscription state, invoices, entitlements,
-  provider identifiers, WhatsApp sender/template/consent history, empty future
-  outbox foundations, signed webhook receipts, and idempotency state;
+  provider identifiers, WhatsApp sender/template/recipient/consent history,
+  outbox, estimated-budget state, signed webhook receipts, and idempotency state;
 - staff-invite bearer tokens and cron credentials;
 - database, Clerk, Gemini, Razorpay, Meta app/system-user, webhook, deployment,
   and environment credentials; and
@@ -118,7 +119,7 @@ operator workstation or CI runner that can access credentials.
 - Staff invitations remain owner-controlled, time-limited, email-bound,
   unpredictable, single-use, and race-safe.
 
-The three cron routes are machine-authenticated with `CRON_SECRET`. Workflow's
+Cron routes are machine-authenticated with `CRON_SECRET`. Workflow's
 framework-controlled `/.well-known/workflow/` endpoint is deliberately outside
 Clerk middleware and must remain restricted to provider-authenticated Workflow
 traffic. The Razorpay webhook is authenticated by its raw-body signature.
@@ -173,10 +174,13 @@ authentication boundaries, not open application routes.
   matches. A bare sender, WABA, phone, business, or branch ID is never
   authorization.
 - Only the current organization owner may start or complete Embedded Signup,
-  register a phone, reconcile organization-wide templates, assign or unassign
-  a sender, or locally disconnect it. Each mutation independently rechecks the
-  internal `WHATSAPP_AUTOMATION` entitlement, writable state, integration and
-  onboarding-write gates, Test/Live policy, and any Live canary.
+  register a phone, install or reconcile organization-wide templates, assign or
+  unassign a sender, or locally disconnect it. Branch recipient, settings,
+  automation, and manual-send operations independently require their documented
+  `view_whatsapp`, `manage_whatsapp`, or `send_whatsapp` permission plus any
+  underlying payment permission. Every mutation rechecks tenant scope, the
+  internal `WHATSAPP_AUTOMATION` entitlement, writable state, provider mode, its
+  specific fail-closed feature flag, and any applicable Live canary.
 - The Embedded Signup authorization code and temporary access token, the
   server-only system-user access token, app secret, verification token, phone
   registration PIN, raw signup session, and raw webhook body must never be
@@ -196,27 +200,94 @@ authentication boundaries, not open application routes.
   and unnecessary phone data are not receipt evidence.
 - TEST and LIVE sender assets, credentials, webhooks, database rows, and
   environments remain isolated. Configuration and provider mutations fail
-  closed on a mode mismatch. Onboarding writes and webhook ingestion are
-  separately gated; disabling either must not erase historical state.
+  closed on a mode mismatch. Integration, onboarding, managed-template writes,
+  provider-message writes, automation planning, webhook ingestion, onboarding
+  Live canaries, and delivery Live canaries are distinct fail-closed controls.
+  Disabling a control must preserve queued work, budget state, provider IDs,
+  signed receipts, consent, and history.
 - The customer owns its WABA, phone, Meta business assets, payment method, and
   provider charges. Lab Lords must not share or assign its credit line, absorb
   customer Meta usage, store a customer access token, use unofficial WhatsApp
   Web automation, or destructively alter provider assets during a local
   disconnect.
+- Provider creation and delivery are restricted to the versioned, code-defined
+  Lab Lords catalogue. Creation hardcodes `UTILITY`; delivery requires the
+  provider-authoritative template to be `APPROVED` and `UTILITY` and its active
+  binding to match the reviewed catalogue version and hash. The browser may not
+  choose the final recipient, amount, due date, provider template name,
+  category, language, or component array.
+- There is no provider capability for free-form text, media, marketing,
+  authentication/OTP, arbitrary templates or recipients, AI-generated external
+  content, payment links, credit sharing, billing aggregation, automatic replies,
+  or daily reports. Existing AI `MessageDraft` rows remain human-reviewed
+  copy/open-WhatsApp suggestions and can never feed provider delivery.
 - Consent begins `UNKNOWN`; existing students are not opted in or backfilled.
-  Consent history is append-only, sender-and-phone scoped, and unavailable
-  through an arbitrary mutation API.
-- The WhatsApp message and message-event models are schema foundations only.
-  This release has no Meta `/messages` operation, send API, dispatcher,
-  scheduler, reminder cron, test-send control, or application path that creates
-  a sendable outbox row. Later delivery requires a separately reviewed design
-  and release gate.
-- Existing AI `MessageDraft` records remain review/copy suggestions. They are
-  not WhatsApp templates or outbox rows, and neither AI output nor a provider
-  webhook may cause an automatic external message or payment mutation.
+  Send eligibility requires current `OPTED_IN` operational consent for the exact
+  sender and normalized phone, a versioned consent statement, and an active
+  student-recipient mapping for that same sender, phone, student, branch, and
+  organization. Phone changes and student reactivation never transfer or
+  silently restore consent. Consent and recipient history are preserved and are
+  unavailable through arbitrary mutation APIs.
+- Manual reminder inputs are identifiers and an idempotency key only. The server
+  resolves current payments, students, mappings, phone, amount, due date,
+  template, typed variables, schedule, cost estimate, and tenant ownership.
+  Messaging must never change payment truth; inbound `PAID`, natural-language
+  claims, or provider events cannot mutate a `Payment`.
+- Message queueing, business-event deduplication, frequency reservation, and
+  estimated-budget reservation are durable and atomic. Dedupe fingerprints are
+  derived from stable business evidence rather than a cron invocation, and the
+  narrow `WhatsAppMessagePayment` join records every payment represented by a
+  grouped message without replacing `Payment` as financial truth. Budget
+  estimates use a configured versioned rate card, are not a Meta invoice, and
+  must not be presented as an exact provider charge.
+- Resolving a payment may mutate only scheduled or claimed-before-submission
+  linked messages under a row lock in the same payment transaction. A grouped
+  collection row is refreshed in place only from complete, current DUE facts and
+  current recipient/binding truth, retains one reservation, and is otherwise
+  cancelled with that reservation released. Submitted rows and unrelated later
+  dues remain immutable; this reconciliation has no provider-call capability.
+- No Meta call may run inside a Prisma transaction used for student, payment,
+  consent, recipient, branch-settings, outbox, frequency, or budget mutation.
+  Provider work follows short database claim and validation, local commit,
+  bounded Meta request, then lease-fenced database finalization. Send-time
+  validation rechecks tenant, sender, mode, flags/canary, entitlement,
+  writability, active mapping/consent, managed template, source payment/event,
+  schedule/frequency, and reserved budget.
+- Meta provides no application idempotency key for message sends. A timeout,
+  connection loss, provider `5xx`, or invalid success body that may have been
+  accepted must commit the message and reserved budget to `UNKNOWN`, must never
+  be retried automatically, and requires operator reconciliation. A stale
+  `SUBMITTING` lease likewise becomes `UNKNOWN`; only a stale pre-submission
+  claim may be reclaimed safely. Definite retryable throttling is bounded and
+  lease-fenced; stale workers cannot finalize newer state.
+- Webhook status evidence is append-only, deduplicated, and projected without
+  regression by provider timestamp and status precedence. An event may arrive
+  before API finalization and remain as a bounded orphan for later attachment.
+  Signed status pricing may contain `billable`, category, `pricing_model`, or
+  `type`; the implementation stores only bounded authoritative billable/category
+  and recipient values. None is an exact charged amount, so
+  `actualCostMicros` remains null.
+- Only normalized inbound text exactly equal to `STOP`, or a managed quick-reply
+  payload exactly equal to `LABLORDS_STOP_UPDATES`, may opt a phone out. The
+  transition is replay-safe, applies to all consent types for that sender/phone,
+  disables recipient mappings, and cancels or suppresses future unsubmitted
+  messages while preserving accepted history. Raw bodies, inbound text, and raw
+  provider errors are neither stored nor logged; no automatic reply is sent.
+- Automation starts prospectively at `automationEnabledAt`; it may not welcome
+  legacy/imported students or blast historical students, dues, or payment
+  events. Machine-authenticated planner/dispatcher work remains tenant-scoped,
+  bounded, idempotent, and subject to entitlement and every send invariant; cron
+  authentication is not authority to bypass customer eligibility or initiate an
+  otherwise unauthorized provider charge.
+- Branch delivery disable atomically cancels every safely unsubmitted manual and
+  automatic message for that branch, releases `RESERVED` estimated budget, and
+  preserves rows and accepted/ambiguous history so an old manual batch cannot
+  send after re-enable. Automation-only disable is narrower and cancels only
+  safely unsubmitted automatic messages.
 - Local disconnect updates Lab Lords state, unassigns branches, and preserves
-  sender identifiers, templates, consents, signed receipts, future message
-  history, and append-only audit evidence. It must not deregister the phone,
+  sender identifiers, templates/bindings, mappings, consents, signed receipts,
+  message/event history, and append-only audit evidence. It must not deregister
+  the phone,
   unsubscribe other apps, revoke customer ownership, or delete provider assets.
 
 ### Cron, imports, and AI
@@ -393,13 +464,18 @@ Treat these as review context and remediation candidates, not accepted risks:
   approved until a human owner/security review covers provider processing and
   residency, Fluid Compute/runtime configuration, retention and operator
   access, benchmark evidence, SLOs, the mutation cap, and rollback authority;
-- the WhatsApp communication architecture ADR remains Proposed. No repository
-  evidence proves Meta App Review/Advanced Access, real Embedded Signup, WABA
-  or phone registration, signed provider delivery, webhook reachability,
-  customer billing ownership, or Preview/Production configuration; and
+- the WhatsApp communication-foundation ADR and managed Utility-delivery ADR
+  remain Proposed. No repository evidence proves Meta App Review/Advanced
+  Access, real Embedded Signup, WABA or phone registration, template approval,
+  signed provider delivery, webhook reachability, customer billing ownership,
+  legal/privacy approval, or Preview/Production configuration;
+- the configured utility rate card is an operator-maintained estimate, not
+  provider-authoritative billing truth, and the repository has no automated
+  rate refresh or exact-cost reconciliation; and
 - WhatsApp rate limits use the same process-local limitation described above,
   and the repository still does not establish centralized webhook/provider
-  alerting or a stable externally reachable callback host.
+  alerting, an operator queue for `UNKNOWN` outcomes, or a stable externally
+  reachable callback host.
 
 ## Review conduct
 

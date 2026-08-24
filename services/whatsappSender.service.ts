@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@/app/generated/prisma/client";
 import {
   getMetaWhatsAppClient,
   readMetaWhatsAppConfiguration,
@@ -7,6 +8,7 @@ import {
   assertWhatsAppIntegrationEnabled,
   assertWhatsAppOnboardingWritesEnabled,
   areWhatsAppOnboardingWritesEnabled,
+  isWhatsAppDeliverySchemaAccessEnabled,
   resolveWhatsAppProviderMode,
 } from "@/lib/whatsappFeature";
 import {
@@ -17,6 +19,8 @@ import {
 import { EntitlementService } from "@/services/entitlement.service";
 import { StaffService } from "@/services/staff.service";
 import { WhatsAppAuthorizationService } from "@/services/whatsappAuthorization.service";
+import { WhatsAppRecipientService } from "@/services/whatsappRecipient.service";
+import { isWhatsAppDeliverySchemaReady } from "@/lib/whatsappSchema";
 
 const SAFE_SENDER_SELECT = {
   id: true,
@@ -33,6 +37,14 @@ const SAFE_SENDER_SELECT = {
   lastHealthCheckAt: true,
   lastErrorCode: true,
 } as const;
+
+async function whatsappDeliveryStateMayExist(
+  client: Pick<Prisma.TransactionClient, "$queryRaw">,
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  return isWhatsAppDeliverySchemaAccessEnabled(env)
+    || await isWhatsAppDeliverySchemaReady(client);
+}
 
 export function parseWhatsAppRegistrationPin(value: unknown) {
   if (typeof value !== "string" || !/^[0-9]{6}$/.test(value)) {
@@ -308,6 +320,7 @@ export class WhatsAppSenderService {
           })
         : null;
       if (current?.senderId && !previousSender) throw new WhatsAppResourceNotFoundError();
+      const reconcileDelivery = await whatsappDeliveryStateMayExist(tx);
 
       await tx.branchWhatsAppSettings.upsert({
         where: { branchId: branch.id },
@@ -317,8 +330,26 @@ export class WhatsAppSenderService {
           senderId: sender.id,
           enabled: false,
         },
-        update: { senderId: sender.id, enabled: false },
+        update: {
+          senderId: sender.id,
+          enabled: false,
+          ...(reconcileDelivery
+            ? {
+                automationEnabledAt: null,
+                automationEnabledByUserId: null,
+                configurationRevision: { increment: 1 },
+              }
+            : {}),
+        },
+        select: { branchId: true },
       });
+      if (previousSender && reconcileDelivery) {
+        await WhatsAppRecipientService.cancelUnsubmittedMessagesInTransaction({
+          tx,
+          scope: { branchId: branch.id, senderId: previousSender.id },
+          reason: "SENDER_REASSIGNED",
+        });
+      }
       if (previousSender) {
         await tx.whatsAppAuditEvent.create({
           data: {
@@ -388,11 +419,30 @@ export class WhatsAppSenderService {
         select: { id: true },
       });
       if (!previousSender) throw new WhatsAppResourceNotFoundError();
+      const reconcileDelivery = await whatsappDeliveryStateMayExist(tx);
 
       await tx.branchWhatsAppSettings.update({
         where: { branchId: branch.id },
-        data: { senderId: null, enabled: false },
+        data: {
+          senderId: null,
+          enabled: false,
+          ...(reconcileDelivery
+            ? {
+                automationEnabledAt: null,
+                automationEnabledByUserId: null,
+                configurationRevision: { increment: 1 },
+              }
+            : {}),
+        },
+        select: { branchId: true },
       });
+      if (reconcileDelivery) {
+        await WhatsAppRecipientService.cancelUnsubmittedMessagesInTransaction({
+          tx,
+          scope: { branchId: branch.id, senderId: previousSender.id },
+          reason: "SENDER_UNASSIGNED",
+        });
+      }
       await tx.whatsAppAuditEvent.create({
         data: {
           organizationId: input.organizationId,
@@ -446,14 +496,32 @@ export class WhatsAppSenderService {
         },
         select: { branchId: true },
       });
+      const reconcileDelivery = await whatsappDeliveryStateMayExist(tx);
       await tx.branchWhatsAppSettings.updateMany({
         where: {
           organizationId: input.organizationId,
           senderId: sender.id,
           branch: { organizationId: input.organizationId },
         },
-        data: { senderId: null, enabled: false },
+        data: {
+          senderId: null,
+          enabled: false,
+          ...(reconcileDelivery
+            ? {
+                automationEnabledAt: null,
+                automationEnabledByUserId: null,
+                configurationRevision: { increment: 1 },
+              }
+            : {}),
+        },
       });
+      if (reconcileDelivery) {
+        await WhatsAppRecipientService.cancelUnsubmittedMessagesInTransaction({
+          tx,
+          scope: { organizationId: input.organizationId, senderId: sender.id },
+          reason: "SENDER_DISCONNECTED",
+        });
+      }
       await tx.whatsAppSender.update({
         where: { id: sender.id },
         data: {

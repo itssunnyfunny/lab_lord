@@ -10,7 +10,8 @@ import { BranchAccessGuard } from "@/components/auth/BranchAccessGuard";
 import {
     AlertCircle, ArrowLeft,
     Eye, Pencil, PowerOff, Power,
-    AlertTriangle, CheckCircle2, MinusCircle, Clock, ArrowRightLeft, Armchair, Download, Search, UserPlus,
+    AlertTriangle, CheckCircle2, MinusCircle, Clock, ArrowRightLeft, Armchair, Download, Search, UserPlus, MessageCircle,
+    Users,
 } from "lucide-react";
 import { useCallback, useEffect, useState, use, useMemo } from "react";
 import { students, type StudentListItem } from "@/lib/api/students";
@@ -55,6 +56,8 @@ import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 import type { CapabilityDecision, MultiShiftSummary, ShiftScope } from "@/types";
 import Link from "next/link";
 import { useUserPreferences } from "@/components/settings/UserPreferencesApplier";
+import { StudentWhatsAppConsentControls } from "@/components/whatsapp/StudentWhatsAppConsentControls";
+import { BulkWhatsAppConsentControls } from "@/components/whatsapp/BulkWhatsAppConsentControls";
 
 type DueResolution = "PAID" | "WAIVED" | "KEEP";
 type StudentRosterTab = "ACTIVE" | "INACTIVE";
@@ -338,6 +341,8 @@ export default function StudentsPage({ params }: { params: Promise<{ branchId: s
                     canViewAllocations={access.permissions.seat_allocation}
                     manageDecision={getBranchCapabilityDecision(access, "studentsManage")}
                     allocationDecision={getBranchCapabilityDecision(access, "allocationsManage")}
+                    canViewWhatsApp={getBranchCapabilityDecision(access, "whatsappView").allowed}
+                    canManageWhatsApp={getBranchCapabilityDecision(access, "whatsappManage").allowed}
                 />
             )}
         </BranchAccessGuard>
@@ -350,12 +355,16 @@ function StudentsContent({
     canViewAllocations,
     manageDecision,
     allocationDecision,
+    canViewWhatsApp,
+    canManageWhatsApp,
 }: {
     branchId: string;
     canViewPayments: boolean;
     canViewAllocations: boolean;
     manageDecision: CapabilityDecision;
     allocationDecision: CapabilityDecision;
+    canViewWhatsApp: boolean;
+    canManageWhatsApp: boolean;
 }) {
     const router = useRouter();
     const toast = useToast();
@@ -412,6 +421,8 @@ function StudentsContent({
     // Activate confirm dialog
     const [activateTarget, setActivateTarget] = useState<Student | null>(null);
     const [activateLoading, setActivateLoading] = useState(false);
+    const [whatsAppTarget, setWhatsAppTarget] = useState<Student | null>(null);
+    const [whatsAppBulkOpen, setWhatsAppBulkOpen] = useState(false);
 
     useEffect(() => {
         const timeout = window.setTimeout(() => {
@@ -682,6 +693,11 @@ function StudentsContent({
                         description: manageDecision.allowed ? undefined : manageDecision.reason,
                         onClick: () => handleActivateClick(item),
                     }] : []),
+                ...(canViewWhatsApp ? [{
+                    label: "WhatsApp consent",
+                    icon: MessageCircle,
+                    onClick: () => setWhatsAppTarget(item),
+                }] : []),
                 ...(item.status === "ACTIVE" && canViewAllocations
                     ? [{
                         label: "Allocate Seat",
@@ -812,6 +828,17 @@ function StudentsContent({
                     <AppButton variant="secondary" icon={Download} onClick={() => void handleExportStudents()} isLoading={exporting}>
                         Export
                     </AppButton>
+                    {canViewWhatsApp ? (
+                        <AppButton
+                            variant="secondary"
+                            icon={Users}
+                            onClick={() => setWhatsAppBulkOpen(true)}
+                            disabled={!canManageWhatsApp}
+                            title={canManageWhatsApp ? undefined : "You need WhatsApp management permission to record bulk consent."}
+                        >
+                            Bulk WhatsApp consent
+                        </AppButton>
+                    ) : null}
                     <AppButton
                         variant="primary"
                         icon={UserPlus}
@@ -1005,6 +1032,35 @@ function StudentsContent({
                     setEditTarget(null);
                 }}
             />
+
+            <Dialog
+                open={Boolean(whatsAppTarget)}
+                onClose={() => setWhatsAppTarget(null)}
+                title="WhatsApp recipient and consent"
+                description="Review or record explicit operational consent for the assigned branch sender."
+            >
+                {whatsAppTarget ? (
+                    <StudentWhatsAppConsentControls
+                        branchId={branchId}
+                        student={whatsAppTarget}
+                        canManage={canManageWhatsApp}
+                    />
+                ) : null}
+            </Dialog>
+
+            <Dialog
+                open={whatsAppBulkOpen}
+                onClose={() => setWhatsAppBulkOpen(false)}
+                title="Bulk WhatsApp operational consent"
+                description="Select only students currently loaded in this roster view. Each request is capped at 100 students."
+                className="max-w-2xl"
+            >
+                <BulkWhatsAppConsentControls
+                    branchId={branchId}
+                    students={allStudents}
+                    canManage={canManageWhatsApp}
+                />
+            </Dialog>
 
             {/* Inactivate dialog */}
             <InactivateDialog

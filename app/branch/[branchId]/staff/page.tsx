@@ -95,7 +95,7 @@ const PERMISSION_OPTIONS: {
     { action: "waive_payments", label: "Waive payments", summary: "Write off dues" },
     { action: "analytics", label: "Analytics and AI", summary: "Reports, insights, and branch analytics" },
     { action: "view_whatsapp", label: "View WhatsApp", summary: "See sender readiness and branch communication settings" },
-    { action: "send_whatsapp", label: "Send WhatsApp", summary: "Reserved for future reviewed message delivery; PR2 cannot send" },
+    { action: "send_whatsapp", label: "Send WhatsApp", summary: "Queue reviewed, managed-template payment reminders when branch delivery is configured; no arbitrary message text" },
     { action: "manage_whatsapp", label: "Manage WhatsApp", summary: "Manage branch WhatsApp configuration; provider ownership remains owner-only" },
 ];
 

@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getMetaWhatsAppClient } from "@/lib/metaWhatsApp";
 import {
   assertWhatsAppIntegrationEnabled,
   assertWhatsAppOnboardingWritesEnabled,
+  isWhatsAppDeliverySchemaAccessEnabled,
   resolveWhatsAppProviderMode,
 } from "@/lib/whatsappFeature";
 import {
@@ -13,6 +13,11 @@ import {
   WhatsAppResourceNotFoundError,
   WhatsAppValidationError,
 } from "@/lib/whatsappHttp";
+import {
+  getManagedWhatsAppTemplate,
+  hashWhatsAppTemplateComponents,
+  WhatsAppManagedTemplateError,
+} from "@/lib/whatsappManagedTemplates";
 import { WhatsAppAuthorizationService } from "@/services/whatsappAuthorization.service";
 import type { MetaMessageTemplate } from "@/types";
 
@@ -80,7 +85,7 @@ function normalizeProviderTemplate(template: MetaMessageTemplate) {
     category: normalizeCategory(template.category),
     providerStatus: normalizeStatus(template.status),
     components: JSON.parse(serialized) as Prisma.InputJsonValue,
-    componentHash: createHash("sha256").update(serialized).digest("hex"),
+    componentHash: hashWhatsAppTemplateComponents(canonicalComponents),
   } as const;
 }
 
@@ -96,6 +101,7 @@ export class WhatsAppTemplateService {
     );
     assertWhatsAppIntegrationEnabled();
     assertWhatsAppOnboardingWritesEnabled(input.organizationId);
+    const deliverySchemaAccessEnabled = isWhatsAppDeliverySchemaAccessEnabled();
     const providerMode = resolveWhatsAppProviderMode();
 
     const sender = await prisma.whatsAppSender.findFirst({
@@ -214,6 +220,123 @@ export class WhatsAppTemplateService {
         },
         data: { staleAt: now },
       });
+
+      if (deliverySchemaAccessEnabled) {
+        const [managedProvisionings, synchronizedTemplates] = await Promise.all([
+          tx.whatsAppManagedTemplateProvisioning.findMany({
+            where: { senderId: sender.id },
+          }),
+          tx.whatsAppTemplate.findMany({ where: { senderId: sender.id } }),
+        ]);
+        const synchronizedById = new Map(
+          synchronizedTemplates.map(template => [template.providerTemplateId, template])
+        );
+        const synchronizedByNameLanguage = new Map(
+          synchronizedTemplates.map(template => [`${template.name}\u0000${template.language}`, template])
+        );
+        for (const provisioning of managedProvisionings) {
+          if (provisioning.status === "CREATING") continue;
+          let definition;
+          try {
+            definition = getManagedWhatsAppTemplate(
+              provisioning.managedKey,
+              provisioning.language as never,
+              provisioning.catalogVersion
+            );
+          } catch (error) {
+            if (!(error instanceof WhatsAppManagedTemplateError)) throw error;
+            await tx.whatsAppTemplateBinding.updateMany({
+              where: { provisioningId: provisioning.id },
+              data: { active: false },
+            });
+            continue;
+          }
+          const template = provisioning.providerTemplateId
+            ? synchronizedById.get(provisioning.providerTemplateId)
+              ?? synchronizedByNameLanguage.get(
+                `${definition.providerTemplateName}\u0000${definition.language}`
+              )
+            : synchronizedByNameLanguage.get(
+              `${definition.providerTemplateName}\u0000${definition.language}`
+            );
+          const exactContent = Boolean(
+            template
+            && template.name === definition.providerTemplateName
+            && template.language === definition.language
+            && template.staleAt === null
+            && template.componentHash === hashWhatsAppTemplateComponents(definition.components)
+            && provisioning.catalogHash === definition.catalogHash
+          );
+          const ready = Boolean(
+            exactContent
+            && template?.category === "UTILITY"
+            && template.providerStatus === "APPROVED"
+          );
+          const unresolvedCreateAmbiguity = provisioning.status === "UNKNOWN"
+            && (!template || template.staleAt !== null);
+          const nextStatus = ready
+            ? "READY"
+            : exactContent && template?.providerStatus === "PENDING"
+              ? "WAITING_APPROVAL"
+              : exactContent && template?.providerStatus === "REJECTED"
+                ? "REJECTED"
+                : unresolvedCreateAmbiguity
+                  ? "UNKNOWN"
+                  : "FAILED";
+          const lastErrorCode = ready || nextStatus === "WAITING_APPROVAL"
+            ? null
+            : nextStatus === "REJECTED"
+              ? "PROVIDER_TEMPLATE_REJECTED"
+              : nextStatus === "UNKNOWN"
+                ? provisioning.lastErrorCode ?? "PROVIDER_RESULT_AMBIGUOUS"
+                : !exactContent
+                  ? "PROVIDER_TEMPLATE_MISMATCH"
+                  : template?.category !== "UTILITY"
+                    ? "PROVIDER_CATEGORY_NOT_UTILITY"
+                    : "PROVIDER_TEMPLATE_INACTIVE";
+          await tx.whatsAppManagedTemplateProvisioning.updateMany({
+            where: { id: provisioning.id, status: { not: "CREATING" } },
+            data: {
+              providerTemplateId: template?.providerTemplateId ?? provisioning.providerTemplateId,
+              status: nextStatus,
+              lastErrorCode,
+            },
+          });
+          if (exactContent && template) {
+            await tx.whatsAppTemplateBinding.upsert({
+              where: {
+                senderId_managedKey_language: {
+                  senderId: sender.id,
+                  managedKey: definition.managedKey,
+                  language: definition.language,
+                },
+              },
+              create: {
+                senderId: sender.id,
+                templateId: template.id,
+                provisioningId: provisioning.id,
+                managedKey: definition.managedKey,
+                language: definition.language,
+                catalogVersion: definition.catalogVersion,
+                catalogHash: definition.catalogHash,
+                active: ready,
+              },
+              update: {
+                templateId: template.id,
+                provisioningId: provisioning.id,
+                catalogVersion: definition.catalogVersion,
+                catalogHash: definition.catalogHash,
+                active: ready,
+              },
+            });
+          } else {
+            await tx.whatsAppTemplateBinding.updateMany({
+              where: { provisioningId: provisioning.id },
+              data: { active: false },
+            });
+          }
+        }
+      }
       await tx.whatsAppSender.update({
         where: { id: sender.id },
         data: {

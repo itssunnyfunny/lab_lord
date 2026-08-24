@@ -13,6 +13,11 @@ import { startOfDay } from "date-fns";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { EntitlementService } from "@/services/entitlement.service";
 import { recordPaymentResolutionEvents } from "@/services/paymentResolutionEvent.service";
+import { WhatsAppRecipientService } from "@/services/whatsappRecipient.service";
+import {
+    isWhatsAppDeliverySchemaAccessEnabled,
+} from "@/lib/whatsappFeature";
+import { isWhatsAppDeliverySchemaReady } from "@/lib/whatsappSchema";
 import {
     compactText,
     FORM_LIMITS,
@@ -72,6 +77,14 @@ type StudentListFilters = {
 
 function assertNever(value: never): never {
     throw new Error(`Unexpected due resolution: ${String(value)}`);
+}
+
+async function whatsappDeliveryStateMayExist(
+    client: Pick<Prisma.TransactionClient, "$queryRaw">,
+    env: Readonly<Record<string, string | undefined>> = process.env
+) {
+    return isWhatsAppDeliverySchemaAccessEnabled(env)
+        || await isWhatsAppDeliverySchemaReady(client);
 }
 
 export class StudentService {
@@ -258,6 +271,7 @@ export class StudentService {
                     name: nameResult.value,
                     phone: phoneResult.value,
                     status: StudentStatus.ACTIVE,
+                    enrollmentSource: "MANUAL",
                     monthlyFee: feeData.monthlyFee,
                     feeLinkedShiftId: feeData.feeLinkedShiftId,
                     feeLinkedMultiShiftId: feeData.feeLinkedMultiShiftId,
@@ -385,6 +399,7 @@ export class StudentService {
                 name: nameResult.value,
                 phone: phoneResult.value ?? null,
                 status: StudentStatus.ACTIVE,
+                enrollmentSource: "IMPORT",
                 monthlyFee: feeData.monthlyFee,
                 feeLinkedShiftId: feeData.feeLinkedShiftId,
                 feeLinkedMultiShiftId: feeData.feeLinkedMultiShiftId,
@@ -492,6 +507,20 @@ export class StudentService {
                     ...feeData,
                 },
             });
+
+            if (
+                phoneResult?.ok
+                && phoneResult.value !== verifiedStudent.phone
+                && await whatsappDeliveryStateMayExist(tx)
+            ) {
+                await WhatsAppRecipientService.reconcileStudentPhoneChangeInTransaction({
+                    tx,
+                    actorUserId: userId,
+                    branchId: verifiedStudent.branchId,
+                    studentId,
+                    newPhone: phoneResult.value,
+                });
+            }
 
             await tx.branch.update({
                 where: { id: verifiedStudent.branchId },
@@ -683,6 +712,16 @@ export class StudentService {
             });
 
             if (status === StudentStatus.INACTIVE) {
+                if (await whatsappDeliveryStateMayExist(tx)) {
+                    await WhatsAppRecipientService.reconcileStudentInactivationInTransaction({
+                        tx,
+                        actorUserId: userId,
+                        branchId: verifiedStudent.branchId,
+                        studentId,
+                        now,
+                    });
+                }
+
                 // 2. End all active seat allocations
                 await tx.seatAllocation.updateMany({
                     where: {

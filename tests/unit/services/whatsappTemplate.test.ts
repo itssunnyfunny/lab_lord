@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   assertIntegrationEnabled: vi.fn(),
   assertOnboardingWritesEnabled: vi.fn(),
+  isDeliverySchemaAccessEnabled: vi.fn(),
   assertOwnerCanWrite: vi.fn(),
   listMessageTemplates: vi.fn(),
   resolveProviderMode: vi.fn(),
@@ -14,6 +15,10 @@ const mocks = vi.hoisted(() => ({
   templateCreate: vi.fn(),
   templateUpdate: vi.fn(),
   templateUpdateMany: vi.fn(),
+  provisioningFindMany: vi.fn(),
+  provisioningUpdateMany: vi.fn(),
+  bindingUpsert: vi.fn(),
+  bindingUpdateMany: vi.fn(),
   senderUpdate: vi.fn(),
   auditCreate: vi.fn(),
 }));
@@ -34,6 +39,7 @@ vi.mock("@/lib/metaWhatsApp", () => ({
 vi.mock("@/lib/whatsappFeature", () => ({
   assertWhatsAppIntegrationEnabled: mocks.assertIntegrationEnabled,
   assertWhatsAppOnboardingWritesEnabled: mocks.assertOnboardingWritesEnabled,
+  isWhatsAppDeliverySchemaAccessEnabled: mocks.isDeliverySchemaAccessEnabled,
   resolveWhatsAppProviderMode: mocks.resolveProviderMode,
 }));
 
@@ -44,6 +50,7 @@ vi.mock("@/services/whatsappAuthorization.service", () => ({
 }));
 
 import { WhatsAppProviderOperationError } from "@/lib/whatsappHttp";
+import { getManagedWhatsAppTemplate } from "@/lib/whatsappManagedTemplates";
 import { WhatsAppTemplateService } from "@/services/whatsappTemplate.service";
 
 const INPUT = {
@@ -62,6 +69,14 @@ const tx = {
     create: mocks.templateCreate,
     update: mocks.templateUpdate,
     updateMany: mocks.templateUpdateMany,
+  },
+  whatsAppManagedTemplateProvisioning: {
+    findMany: mocks.provisioningFindMany,
+    updateMany: mocks.provisioningUpdateMany,
+  },
+  whatsAppTemplateBinding: {
+    upsert: mocks.bindingUpsert,
+    updateMany: mocks.bindingUpdateMany,
   },
   whatsAppAuditEvent: { create: mocks.auditCreate },
 };
@@ -86,6 +101,7 @@ function componentHash(components: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.isDeliverySchemaAccessEnabled.mockReturnValue(true);
   mocks.resolveProviderMode.mockReturnValue("TEST");
   mocks.senderFindFirst.mockResolvedValue({ id: "sender_1", wabaId: "waba_1" });
   mocks.txSenderFindFirst.mockResolvedValue({ id: "sender_1" });
@@ -93,12 +109,35 @@ beforeEach(() => {
   mocks.templateCreate.mockResolvedValue({ id: "template_new" });
   mocks.templateUpdate.mockResolvedValue({ id: "template_existing" });
   mocks.templateUpdateMany.mockResolvedValue({ count: 0 });
+  mocks.provisioningFindMany.mockResolvedValue([]);
+  mocks.provisioningUpdateMany.mockResolvedValue({ count: 0 });
+  mocks.bindingUpsert.mockResolvedValue({ id: "binding_1" });
+  mocks.bindingUpdateMany.mockResolvedValue({ count: 0 });
   mocks.senderUpdate.mockResolvedValue({ id: "sender_1" });
   mocks.auditCreate.mockResolvedValue({ id: "audit_1" });
   mocks.transaction.mockImplementation(async callback => callback(tx));
 });
 
 describe("WhatsAppTemplateService.sync", () => {
+  it("preserves PR2 template sync without touching managed delivery tables when PR3 flags are off", async () => {
+    mocks.isDeliverySchemaAccessEnabled.mockReturnValue(false);
+    mocks.listMessageTemplates.mockResolvedValue([]);
+
+    await expect(WhatsAppTemplateService.sync(INPUT)).resolves.toMatchObject({
+      fetched: 0,
+      inserted: 0,
+      updated: 0,
+      unchanged: 0,
+    });
+
+    expect(mocks.provisioningFindMany).not.toHaveBeenCalled();
+    expect(mocks.provisioningUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.bindingUpsert).not.toHaveBeenCalled();
+    expect(mocks.bindingUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.senderUpdate).toHaveBeenCalled();
+    expect(mocks.auditCreate).toHaveBeenCalled();
+  });
+
   it("maps unknown provider category and status values to bounded registry enums", async () => {
     mocks.listMessageTemplates.mockResolvedValue([
       {
@@ -229,5 +268,60 @@ describe("WhatsAppTemplateService.sync", () => {
     expect(mocks.templateUpdateMany).not.toHaveBeenCalled();
     expect(mocks.senderUpdate).not.toHaveBeenCalled();
     expect(mocks.auditCreate).not.toHaveBeenCalled();
+  });
+
+  it("activates an exact managed binding only after a complete sync proves approved Utility truth", async () => {
+    const definition = getManagedWhatsAppTemplate("WELCOME_GENERAL", "en_IN");
+    const provider = {
+      id: "70007",
+      name: definition.providerTemplateName,
+      language: definition.language,
+      category: "UTILITY",
+      status: "APPROVED",
+      components: definition.components,
+    };
+    const stored = {
+      id: "template_1",
+      senderId: "sender_1",
+      providerTemplateId: provider.id,
+      name: provider.name,
+      language: provider.language,
+      category: "UTILITY",
+      providerStatus: "APPROVED",
+      componentHash: componentHash(provider.components),
+      components: provider.components,
+      version: 1,
+      staleAt: null,
+    };
+    mocks.listMessageTemplates.mockResolvedValue([provider]);
+    mocks.templateFindMany
+      .mockResolvedValueOnce([stored])
+      .mockResolvedValueOnce([stored]);
+    mocks.provisioningFindMany.mockResolvedValue([{
+      id: "provisioning_1",
+      senderId: "sender_1",
+      managedKey: definition.managedKey,
+      language: definition.language,
+      catalogVersion: definition.catalogVersion,
+      catalogHash: definition.catalogHash,
+      providerTemplateName: definition.providerTemplateName,
+      providerTemplateId: provider.id,
+      status: "WAITING_APPROVAL",
+    }]);
+
+    await WhatsAppTemplateService.sync(INPUT);
+
+    expect(mocks.provisioningUpdateMany).toHaveBeenCalledWith({
+      where: { id: "provisioning_1", status: { not: "CREATING" } },
+      data: {
+        providerTemplateId: provider.id,
+        status: "READY",
+        lastErrorCode: null,
+      },
+    });
+    expect(mocks.bindingUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ active: true, templateId: "template_1" }),
+      update: expect.objectContaining({ active: true, templateId: "template_1" }),
+    }));
   });
 });

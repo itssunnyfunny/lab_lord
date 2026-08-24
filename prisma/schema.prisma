@@ -9,137 +9,148 @@ datasource db {
 }
 
 model User {
-  id                     String         @id @default(cuid())
-  clerkId                String?        @unique
-  email                  String         @unique
-  name                   String?
-  phone                  String?
-  timezone               String         @default("Asia/Kolkata")
-  locale                 String         @default("en-IN")
-  dateFormat             String         @default("dd MMM yyyy")
-  themePreference        String         @default("dark")
-  densityPreference      String         @default("comfortable")
-  defaultMessageLanguage String         @default("en")
-  defaultLandingPage     String         @default("org")
-  createdAt              DateTime       @default(now())
-  organizations          Organization[]
-  staff                  Staff[]
-  auditLogs              AuditLog[]
-  importSessionsUploaded ImportSession[] @relation("ImportSessionUploadedBy")
-  importCommits          ImportCommit[]  @relation("ImportCommitCommittedBy")
-  importPlansCompiled    ImportPlan[]    @relation("ImportPlanCompiledBy")
-  importRunsRequested    ImportRun[]     @relation("ImportRunRequestedBy")
-  importRunsCancelled    ImportRun[]     @relation("ImportRunCancelledBy")
-  importRecipesCreated   ImportRecipe[]  @relation("ImportRecipeCreatedBy")
-  paymentResolutionEvents PaymentResolutionEvent[] @relation("PaymentResolutionEventActor")
-  whatsAppSendersConnected  WhatsAppSender[]           @relation("WhatsAppSenderConnectedBy")
-  whatsAppConnectionIntents WhatsAppConnectionIntent[] @relation("WhatsAppConnectionIntentActor")
-  whatsAppConsentsRecorded  WhatsAppConsent[]          @relation("WhatsAppConsentRecordedBy")
-  whatsAppConsentEvents     WhatsAppConsentEvent[]     @relation("WhatsAppConsentEventActor")
-  whatsAppMessagesCreated   WhatsAppMessage[]          @relation("WhatsAppMessageCreatedBy")
-  whatsAppAuditEvents       WhatsAppAuditEvent[]       @relation("WhatsAppAuditEventActor")
-  ownerTrialGrant        OwnerTrialGrant?
+  id                         String                      @id @default(cuid())
+  clerkId                    String?                     @unique
+  email                      String                      @unique
+  name                       String?
+  phone                      String?
+  timezone                   String                      @default("Asia/Kolkata")
+  locale                     String                      @default("en-IN")
+  dateFormat                 String                      @default("dd MMM yyyy")
+  themePreference            String                      @default("dark")
+  densityPreference          String                      @default("comfortable")
+  defaultMessageLanguage     String                      @default("en")
+  defaultLandingPage         String                      @default("org")
+  createdAt                  DateTime                    @default(now())
+  organizations              Organization[]
+  staff                      Staff[]
+  auditLogs                  AuditLog[]
+  importSessionsUploaded     ImportSession[]             @relation("ImportSessionUploadedBy")
+  importCommits              ImportCommit[]              @relation("ImportCommitCommittedBy")
+  importPlansCompiled        ImportPlan[]                @relation("ImportPlanCompiledBy")
+  importRunsRequested        ImportRun[]                 @relation("ImportRunRequestedBy")
+  importRunsCancelled        ImportRun[]                 @relation("ImportRunCancelledBy")
+  importRecipesCreated       ImportRecipe[]              @relation("ImportRecipeCreatedBy")
+  paymentResolutionEvents    PaymentResolutionEvent[]    @relation("PaymentResolutionEventActor")
+  whatsAppSendersConnected   WhatsAppSender[]            @relation("WhatsAppSenderConnectedBy")
+  whatsAppConnectionIntents  WhatsAppConnectionIntent[]  @relation("WhatsAppConnectionIntentActor")
+  whatsAppConsentsRecorded   WhatsAppConsent[]           @relation("WhatsAppConsentRecordedBy")
+  whatsAppConsentEvents      WhatsAppConsentEvent[]      @relation("WhatsAppConsentEventActor")
+  whatsAppRecipientsCreated  WhatsAppStudentRecipient[]  @relation("WhatsAppStudentRecipientCreatedBy")
+  whatsAppAutomationsEnabled BranchWhatsAppSettings[]    @relation("BranchWhatsAppAutomationEnabledBy")
+  whatsAppManualSendRequests WhatsAppManualSendRequest[] @relation("WhatsAppManualSendRequestActor")
+  whatsAppMessagesCreated    WhatsAppMessage[]           @relation("WhatsAppMessageCreatedBy")
+  whatsAppAuditEvents        WhatsAppAuditEvent[]        @relation("WhatsAppAuditEventActor")
+  ownerTrialGrant            OwnerTrialGrant?
 }
 
 model Organization {
-  id                    String                    @id @default(cuid())
-  name                  String
-  ownerId               String
-  businessType          String?
-  legalName             String?
-  contactEmail          String?
-  contactPhone          String?
-  address               String?
-  timezone              String                    @default("Asia/Kolkata")
-  currency              String                    @default("INR")
-  weekStartsOn          Int                       @default(1)
-  paymentGraceDays      Int                       @default(0)
-  selectedPostTrialPlan SaasPlan?
-  billingModelVersion   BillingModelVersion       @default(LEGACY)
-  billingMutationSequence Int                     @default(0)
-  billingMutationLeaseToken String?
-  billingMutationLeaseUntil DateTime?
-  createdAt             DateTime                  @default(now())
-  branches              Branch[]
-  subscription          OrganizationSubscription? @relation("OrganizationCurrentSubscription")
-  pendingSubscriptionReplacement OrganizationSubscription? @relation("OrganizationPendingSubscriptionReplacement")
-  subscriptions         OrganizationSubscription[] @relation("OrganizationSubscriptionOwner")
-  subscriptionHistory   OrganizationSubscriptionHistory[]
-  razorpayWebhookEvents RazorpayWebhookEvent[]
-  ownerTrialGrant       OwnerTrialGrant?
-  billingChanges        OrganizationBillingChange[]
-  offerGrants           OrganizationOfferGrant[]
-  subscriptionInvoices  OrganizationSubscriptionInvoice[]
-  importRecipes         ImportRecipe[]
+  id                             String                            @id @default(cuid())
+  name                           String
+  ownerId                        String
+  businessType                   String?
+  legalName                      String?
+  contactEmail                   String?
+  contactPhone                   String?
+  address                        String?
+  timezone                       String                            @default("Asia/Kolkata")
+  currency                       String                            @default("INR")
+  weekStartsOn                   Int                               @default(1)
+  paymentGraceDays               Int                               @default(0)
+  selectedPostTrialPlan          SaasPlan?
+  billingModelVersion            BillingModelVersion               @default(LEGACY)
+  billingMutationSequence        Int                               @default(0)
+  billingMutationLeaseToken      String?
+  billingMutationLeaseUntil      DateTime?
+  createdAt                      DateTime                          @default(now())
+  branches                       Branch[]
+  subscription                   OrganizationSubscription?         @relation("OrganizationCurrentSubscription")
+  pendingSubscriptionReplacement OrganizationSubscription?         @relation("OrganizationPendingSubscriptionReplacement")
+  subscriptions                  OrganizationSubscription[]        @relation("OrganizationSubscriptionOwner")
+  subscriptionHistory            OrganizationSubscriptionHistory[]
+  razorpayWebhookEvents          RazorpayWebhookEvent[]
+  ownerTrialGrant                OwnerTrialGrant?
+  billingChanges                 OrganizationBillingChange[]
+  offerGrants                    OrganizationOfferGrant[]
+  subscriptionInvoices           OrganizationSubscriptionInvoice[]
+  importRecipes                  ImportRecipe[]
   whatsAppSenders                WhatsAppSender[]
   whatsAppConnectionIntents      WhatsAppConnectionIntent[]
   branchWhatsAppSettings         BranchWhatsAppSettings[]
+  whatsAppStudentRecipients      WhatsAppStudentRecipient[]
+  whatsAppAutomationRules        WhatsAppAutomationRule[]
+  whatsAppManualSendRequests     WhatsAppManualSendRequest[]
   whatsAppMessages               WhatsAppMessage[]
   whatsAppWebhookReceipts        WhatsAppWebhookReceipt[]
   whatsAppAuditEvents            WhatsAppAuditEvent[]
-  owner                 User                      @relation(fields: [ownerId], references: [id])
+  owner                          User                              @relation(fields: [ownerId], references: [id])
 }
 
 model Branch {
-  id                     String           @id @default(cuid())
-  organizationId         String
-  name                   String
-  city                   String?
-  address                String?
-  contactPhone           String?
-  openingTime            String?
-  closingTime            String?
-  defaultFee             Int?             @default(0)
-  defaultAdmissionFee    Int?             @default(0)
-  defaultMessageLanguage String           @default("en")
-  reminderTone           String           @default("polite")
-  aiEnabled              Boolean          @default(true)
-  createdAt              DateTime         @default(now())
-  lastDataChange         DateTime         @default(now())
-  aiLastCalledAt         DateTime?
-  aiStatus               BranchAIStatus   @default(IDLE)
-  billingStatus          BranchBillingStatus @default(ACTIVE)
-  billingActivatedAt     DateTime?
-  billingArchivedAt      DateTime?
-  organization           Organization     @relation(fields: [organizationId], references: [id])
-  aiReports              BranchAIReport[]
-  messageDrafts          MessageDraft[]
-  multiShifts            MultiShift[]
-  payments               Payment[]
-  paymentResolutionEvents PaymentResolutionEvent[]
-  seats                  Seat[]
-  shifts                 Shift[]
-  staff                  Staff[]
-  staffInvites           StaffInvite[]
-  students               Student[]
-  auditLogs              AuditLog[]
-  importSessions         ImportSession[]
-  importRecipes          ImportRecipe[]
-  importRuns             ImportRun[]
-  billingChanges         OrganizationBillingChange[]
-  whatsAppSettings        BranchWhatsAppSettings?
-  whatsAppMessages        WhatsAppMessage[]
-  whatsAppAuditEvents     WhatsAppAuditEvent[]
+  id                         String                      @id @default(cuid())
+  organizationId             String
+  name                       String
+  city                       String?
+  address                    String?
+  contactPhone               String?
+  openingTime                String?
+  closingTime                String?
+  defaultFee                 Int?                        @default(0)
+  defaultAdmissionFee        Int?                        @default(0)
+  defaultMessageLanguage     String                      @default("en")
+  reminderTone               String                      @default("polite")
+  aiEnabled                  Boolean                     @default(true)
+  createdAt                  DateTime                    @default(now())
+  lastDataChange             DateTime                    @default(now())
+  aiLastCalledAt             DateTime?
+  aiStatus                   BranchAIStatus              @default(IDLE)
+  billingStatus              BranchBillingStatus         @default(ACTIVE)
+  billingActivatedAt         DateTime?
+  billingArchivedAt          DateTime?
+  organization               Organization                @relation(fields: [organizationId], references: [id])
+  aiReports                  BranchAIReport[]
+  messageDrafts              MessageDraft[]
+  multiShifts                MultiShift[]
+  payments                   Payment[]
+  paymentResolutionEvents    PaymentResolutionEvent[]
+  seats                      Seat[]
+  shifts                     Shift[]
+  staff                      Staff[]
+  staffInvites               StaffInvite[]
+  students                   Student[]
+  auditLogs                  AuditLog[]
+  importSessions             ImportSession[]
+  importRecipes              ImportRecipe[]
+  importRuns                 ImportRun[]
+  billingChanges             OrganizationBillingChange[]
+  whatsAppSettings           BranchWhatsAppSettings?
+  whatsAppStudentRecipients  WhatsAppStudentRecipient[]
+  whatsAppAutomationRules    WhatsAppAutomationRule[]
+  whatsAppManualSendRequests WhatsAppManualSendRequest[]
+  whatsAppMessages           WhatsAppMessage[]
+  whatsAppAuditEvents        WhatsAppAuditEvent[]
 }
 
 model Student {
-  id              String           @id @default(cuid())
-  branchId        String
-  name            String
-  phone           String?
-  status          StudentStatus    @default(ACTIVE)
-  joinedAt        DateTime         @default(now())
-  billingStartAt  DateTime?
-  monthlyFee      Int              @default(0)
-  feeLinkedShiftId String?
+  id                    String                     @id @default(cuid())
+  branchId              String
+  name                  String
+  phone                 String?
+  status                StudentStatus              @default(ACTIVE)
+  enrollmentSource      StudentEnrollmentSource    @default(LEGACY)
+  joinedAt              DateTime                   @default(now())
+  billingStartAt        DateTime?
+  monthlyFee            Int                        @default(0)
+  feeLinkedShiftId      String?
   feeLinkedMultiShiftId String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  messageDrafts   MessageDraft[]
-  payments        Payment[]
-  seatAllocations SeatAllocation[]
+  createdAt             DateTime                   @default(now())
+  updatedAt             DateTime                   @updatedAt
+  messageDrafts         MessageDraft[]
+  payments              Payment[]
+  seatAllocations       SeatAllocation[]
   whatsAppMessages      WhatsAppMessage[]
-  branch          Branch           @relation(fields: [branchId], references: [id])
+  whatsAppRecipients    WhatsAppStudentRecipient[]
+  branch                Branch                     @relation(fields: [branchId], references: [id])
 
   @@index([branchId])
   @@index([branchId, billingStartAt])
@@ -222,48 +233,49 @@ model SeatAllocation {
 }
 
 model Payment {
-  id            String          @id @default(cuid())
-  branchId      String
-  studentId     String
-  periodStart   DateTime
-  periodEnd     DateTime
-  dueDate       DateTime
-  amount        Int
-  status        PaymentStatus   @default(DUE)
-  paidAt        DateTime?
-  paymentMethod PaymentMethod?
-  referenceId   String?
-  type          PaymentType     @default(MONTHLY)
-  createdAt     DateTime        @default(now())
-  branch        Branch          @relation(fields: [branchId], references: [id])
-  student       Student         @relation(fields: [studentId], references: [id])
-  resolutionEvents PaymentResolutionEvent[]
-  whatsAppMessages WhatsAppMessage[]
+  id                     String                   @id @default(cuid())
+  branchId               String
+  studentId              String
+  periodStart            DateTime
+  periodEnd              DateTime
+  dueDate                DateTime
+  amount                 Int
+  status                 PaymentStatus            @default(DUE)
+  paidAt                 DateTime?
+  paymentMethod          PaymentMethod?
+  referenceId            String?
+  type                   PaymentType              @default(MONTHLY)
+  createdAt              DateTime                 @default(now())
+  branch                 Branch                   @relation(fields: [branchId], references: [id])
+  student                Student                  @relation(fields: [studentId], references: [id])
+  resolutionEvents       PaymentResolutionEvent[]
+  whatsAppMessages       WhatsAppMessage[]
+  whatsAppMessageSources WhatsAppMessagePayment[]
 
   @@unique([studentId, type, periodStart], map: "Payment_studentId_type_periodStart_key")
   @@index([branchId, dueDate])
 }
 
 model PaymentResolutionEvent {
-  id            String                       @id @default(cuid())
-  paymentId     String
-  branchId      String
-  actorUserId   String?
-  source        PaymentResolutionEventSource
-  fromStatus    PaymentStatus
-  toStatus      PaymentStatus
-  amount        Int
-  paymentType   PaymentType
-  periodStart   DateTime
-  dueDate       DateTime
-  paidAt        DateTime?
-  paymentMethod PaymentMethod?
-  referenceId   String?
-  details       Json?
-  occurredAt    DateTime                     @default(now())
-  payment       Payment                      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  branch        Branch                       @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  actor         User?                        @relation("PaymentResolutionEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  id               String                       @id @default(cuid())
+  paymentId        String
+  branchId         String
+  actorUserId      String?
+  source           PaymentResolutionEventSource
+  fromStatus       PaymentStatus
+  toStatus         PaymentStatus
+  amount           Int
+  paymentType      PaymentType
+  periodStart      DateTime
+  dueDate          DateTime
+  paidAt           DateTime?
+  paymentMethod    PaymentMethod?
+  referenceId      String?
+  details          Json?
+  occurredAt       DateTime                     @default(now())
+  payment          Payment                      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  branch           Branch                       @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  actor            User?                        @relation("PaymentResolutionEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
   whatsAppMessages WhatsAppMessage[]
 
   @@index([paymentId, occurredAt, id])
@@ -271,13 +283,13 @@ model PaymentResolutionEvent {
 }
 
 model Staff {
-  id        String    @id @default(cuid())
-  userId    String
-  branchId  String
-  role      StaffRole
-  createdAt DateTime  @default(now())
-  branch    Branch    @relation(fields: [branchId], references: [id])
-  user      User      @relation(fields: [userId], references: [id])
+  id                  String                    @id @default(cuid())
+  userId              String
+  branchId            String
+  role                StaffRole
+  createdAt           DateTime                  @default(now())
+  branch              Branch                    @relation(fields: [branchId], references: [id])
+  user                User                      @relation(fields: [userId], references: [id])
   permissionOverrides StaffPermissionOverride[]
 
   @@unique([userId, branchId])
@@ -336,38 +348,42 @@ model MessageDraft {
 }
 
 model WhatsAppSender {
-  id                  String                   @id @default(cuid())
-  organizationId      String
-  provider            WhatsAppProvider
-  providerMode        WhatsAppProviderMode
-  providerBusinessId  String?
-  wabaId              String
-  phoneNumberId       String
-  displayPhoneNumber  String
-  verifiedName        String?
-  qualityRating       String?
-  accountMode         String?
-  status              WhatsAppSenderStatus     @default(PENDING)
-  phoneRegisteredAt   DateTime?
-  webhookSubscribedAt DateTime?
-  connectedByUserId   String?
-  connectedAt         DateTime?
-  disconnectedAt      DateTime?
-  lastSyncedAt        DateTime?
-  lastTemplateSyncAt  DateTime?
-  lastHealthCheckAt   DateTime?
-  lastErrorCode       String?
-  createdAt           DateTime                 @default(now())
-  updatedAt           DateTime                 @updatedAt
-  organization        Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  connectedBy         User?                    @relation("WhatsAppSenderConnectedBy", fields: [connectedByUserId], references: [id], onDelete: SetNull)
-  branchSettings      BranchWhatsAppSettings[]
-  templates           WhatsAppTemplate[]
-  consents            WhatsAppConsent[]
-  consentEvents       WhatsAppConsentEvent[]
-  messages            WhatsAppMessage[]
-  webhookReceipts     WhatsAppWebhookReceipt[]
-  auditEvents         WhatsAppAuditEvent[]
+  id                           String                                @id @default(cuid())
+  organizationId               String
+  provider                     WhatsAppProvider
+  providerMode                 WhatsAppProviderMode
+  providerBusinessId           String?
+  wabaId                       String
+  phoneNumberId                String
+  displayPhoneNumber           String
+  verifiedName                 String?
+  qualityRating                String?
+  accountMode                  String?
+  status                       WhatsAppSenderStatus                  @default(PENDING)
+  phoneRegisteredAt            DateTime?
+  webhookSubscribedAt          DateTime?
+  connectedByUserId            String?
+  connectedAt                  DateTime?
+  disconnectedAt               DateTime?
+  lastSyncedAt                 DateTime?
+  lastTemplateSyncAt           DateTime?
+  lastHealthCheckAt            DateTime?
+  lastErrorCode                String?
+  createdAt                    DateTime                              @default(now())
+  updatedAt                    DateTime                              @updatedAt
+  organization                 Organization                          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  connectedBy                  User?                                 @relation("WhatsAppSenderConnectedBy", fields: [connectedByUserId], references: [id], onDelete: SetNull)
+  branchSettings               BranchWhatsAppSettings[]
+  templates                    WhatsAppTemplate[]
+  managedTemplateProvisionings WhatsAppManagedTemplateProvisioning[]
+  templateBindings             WhatsAppTemplateBinding[]
+  consents                     WhatsAppConsent[]
+  consentEvents                WhatsAppConsentEvent[]
+  studentRecipients            WhatsAppStudentRecipient[]
+  messages                     WhatsAppMessage[]
+  messageEvents                WhatsAppMessageEvent[]
+  webhookReceipts              WhatsAppWebhookReceipt[]
+  auditEvents                  WhatsAppAuditEvent[]
 
   @@unique([provider, providerMode, phoneNumberId])
   @@index([organizationId, status])
@@ -400,21 +416,38 @@ model WhatsAppConnectionIntent {
 }
 
 model BranchWhatsAppSettings {
-  branchId           String          @id
-  organizationId     String
-  senderId           String?
-  enabled            Boolean         @default(false)
-  defaultLanguage    String          @default("en")
-  defaultTone        String          @default("polite")
-  monthlyBudgetMinor Int?
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
-  branch             Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  organization       Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  sender             WhatsAppSender? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  branchId                               String          @id
+  organizationId                         String
+  senderId                               String?
+  enabled                                Boolean         @default(false)
+  defaultLanguage                        String          @default("en")
+  defaultTone                            String          @default("polite")
+  monthlyBudgetMinor                     Int?
+  sendTimeLocal                          String          @default("10:00")
+  dailyAutomaticMessageLimit             Int             @default(50)
+  maxAutomaticCollectionMessagesPerCycle Int             @default(4)
+  automationEnabledAt                    DateTime?
+  automationEnabledByUserId              String?
+  configurationRevision                  Int             @default(1)
+  plannerLeaseToken                      String?         @unique
+  plannerLeaseUntil                      DateTime?
+  lastPlannedAt                          DateTime?
+  plannerRecipientCursorPhoneE164        String?
+  plannerCorrectionCursorAt              DateTime?
+  plannerCorrectionCursorId              String?
+  plannerPaidCursorAt                    DateTime?
+  plannerPaidCursorId                    String?
+  lastPlannerErrorCode                   String?
+  createdAt                              DateTime        @default(now())
+  updatedAt                              DateTime        @updatedAt
+  branch                                 Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  organization                           Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  sender                                 WhatsAppSender? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  automationEnabledBy                    User?           @relation("BranchWhatsAppAutomationEnabledBy", fields: [automationEnabledByUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([senderId])
+  @@index([enabled, automationEnabledAt, plannerLeaseUntil])
 }
 
 model WhatsAppTemplate {
@@ -434,6 +467,7 @@ model WhatsAppTemplate {
   updatedAt          DateTime                       @updatedAt
   sender             WhatsAppSender                 @relation(fields: [senderId], references: [id], onDelete: Restrict)
   messages           WhatsAppMessage[]
+  binding            WhatsAppTemplateBinding?
 
   @@unique([senderId, providerTemplateId])
   @@unique([senderId, name, language])
@@ -441,20 +475,22 @@ model WhatsAppTemplate {
 }
 
 model WhatsAppConsent {
-  id               String                 @id @default(cuid())
-  senderId         String
-  phoneE164        String
-  consentType      WhatsAppConsentType
-  status           WhatsAppConsentStatus  @default(UNKNOWN)
-  source           WhatsAppConsentSource
-  grantedAt        DateTime?
-  revokedAt        DateTime?
-  recordedByUserId String?
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
-  sender           WhatsAppSender         @relation(fields: [senderId], references: [id], onDelete: Restrict)
-  recordedBy       User?                  @relation("WhatsAppConsentRecordedBy", fields: [recordedByUserId], references: [id], onDelete: SetNull)
-  events           WhatsAppConsentEvent[]
+  id                String                     @id @default(cuid())
+  senderId          String
+  phoneE164         String
+  consentType       WhatsAppConsentType
+  status            WhatsAppConsentStatus      @default(UNKNOWN)
+  source            WhatsAppConsentSource
+  policyVersion     String?
+  grantedAt         DateTime?
+  revokedAt         DateTime?
+  recordedByUserId  String?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+  sender            WhatsAppSender             @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  recordedBy        User?                      @relation("WhatsAppConsentRecordedBy", fields: [recordedByUserId], references: [id], onDelete: SetNull)
+  events            WhatsAppConsentEvent[]
+  studentRecipients WhatsAppStudentRecipient[]
 
   @@unique([senderId, phoneE164, consentType])
 }
@@ -469,6 +505,7 @@ model WhatsAppConsentEvent {
   previousStatus WhatsAppConsentStatus
   nextStatus     WhatsAppConsentStatus
   source         WhatsAppConsentSource
+  policyVersion  String?
   details        Json?
   occurredAt     DateTime              @default(now())
   consent        WhatsAppConsent       @relation(fields: [consentId], references: [id], onDelete: Restrict)
@@ -479,8 +516,124 @@ model WhatsAppConsentEvent {
   @@index([senderId, occurredAt, id])
 }
 
+model WhatsAppStudentRecipient {
+  id              String                         @id @default(cuid())
+  organizationId  String
+  branchId        String
+  studentId       String
+  senderId        String
+  consentId       String
+  phoneE164       String
+  relationship    WhatsAppRecipientRelationship
+  status          WhatsAppStudentRecipientStatus @default(ACTIVE)
+  verifiedAt      DateTime
+  staleAt         DateTime?
+  disabledAt      DateTime?
+  createdByUserId String?
+  createdAt       DateTime                       @default(now())
+  updatedAt       DateTime                       @updatedAt
+  organization    Organization                   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  branch          Branch                         @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  student         Student                        @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  sender          WhatsAppSender                 @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  consent         WhatsAppConsent                @relation(fields: [consentId], references: [id], onDelete: Restrict)
+  createdBy       User?                          @relation("WhatsAppStudentRecipientCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([studentId, senderId])
+  @@index([branchId, status])
+  @@index([senderId, phoneE164, status])
+  @@index([consentId])
+}
+
+model WhatsAppManagedTemplateProvisioning {
+  id                   String                                    @id @default(cuid())
+  senderId             String
+  managedKey           WhatsAppManagedTemplateKey
+  language             String
+  catalogVersion       Int
+  catalogHash          String
+  providerTemplateName String
+  providerTemplateId   String?
+  status               WhatsAppManagedTemplateProvisioningStatus @default(PENDING)
+  attemptCount         Int                                       @default(0)
+  leaseToken           String?                                   @unique
+  leaseUntil           DateTime?
+  lastAttemptAt        DateTime?
+  lastErrorCode        String?
+  createdAt            DateTime                                  @default(now())
+  updatedAt            DateTime                                  @updatedAt
+  sender               WhatsAppSender                            @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  binding              WhatsAppTemplateBinding?
+
+  @@unique([senderId, managedKey, language, catalogVersion])
+  @@unique([senderId, providerTemplateName])
+  @@index([senderId, status])
+}
+
+model WhatsAppTemplateBinding {
+  id             String                              @id @default(cuid())
+  senderId       String
+  templateId     String                              @unique
+  provisioningId String                              @unique
+  managedKey     WhatsAppManagedTemplateKey
+  language       String
+  catalogVersion Int
+  catalogHash    String
+  active         Boolean                             @default(false)
+  createdAt      DateTime                            @default(now())
+  updatedAt      DateTime                            @updatedAt
+  sender         WhatsAppSender                      @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  template       WhatsAppTemplate                    @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  provisioning   WhatsAppManagedTemplateProvisioning @relation(fields: [provisioningId], references: [id], onDelete: Restrict)
+  messages       WhatsAppMessage[]
+
+  @@unique([senderId, managedKey, language])
+  @@index([senderId, active])
+}
+
+model WhatsAppAutomationRule {
+  id             String                  @id @default(cuid())
+  organizationId String
+  branchId       String
+  stage          WhatsAppAutomationStage
+  enabled        Boolean                 @default(false)
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  branch         Branch                  @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@unique([branchId, stage])
+  @@index([organizationId, enabled])
+  @@index([branchId, enabled])
+}
+
+model WhatsAppManualSendRequest {
+  id                     String                          @id @default(cuid())
+  organizationId         String
+  branchId               String
+  actorUserId            String
+  idempotencyKey         String
+  requestHash            String
+  status                 WhatsAppManualSendRequestStatus @default(PROCESSING)
+  selectedPaymentCount   Int                             @default(0)
+  eligibleRecipientCount Int                             @default(0)
+  queuedMessageCount     Int                             @default(0)
+  suppressedCount        Int                             @default(0)
+  estimatedCostMicros    BigInt                          @default(0)
+  createdAt              DateTime                        @default(now())
+  completedAt            DateTime?
+  organization           Organization                    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  branch                 Branch                          @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  actor                  User                            @relation("WhatsAppManualSendRequestActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  messages               WhatsAppMessage[]
+
+  @@unique([branchId, idempotencyKey])
+  @@index([branchId, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
 model WhatsAppMessage {
-  id                       String                  @id @default(cuid())
+  id                       String                      @id @default(cuid())
   organizationId           String
   branchId                 String?
   senderId                 String
@@ -488,56 +641,114 @@ model WhatsAppMessage {
   paymentId                String?
   paymentResolutionEventId String?
   templateId               String?
+  templateBindingId        String?
+  manualSendRequestId      String?
   createdByUserId          String?
   recipientPhoneE164       String
   purpose                  WhatsAppMessagePurpose
+  trigger                  WhatsAppMessageTrigger
+  automationStage          WhatsAppAutomationStage?
+  managedTemplateKey       WhatsAppManagedTemplateKey?
+  catalogVersion           Int?
+  catalogHash              String?
   templateVersion          Int?
   templateVariables        Json
   renderedPreview          String?
   scheduledFor             DateTime
   localScheduleDate        DateTime?
-  status                   WhatsAppMessageStatus   @default(SCHEDULED)
-  dedupeKey                String                  @unique
-  providerMessageId        String?                 @unique
-  attemptCount             Int                     @default(0)
-  leaseToken               String?                 @unique
+  status                   WhatsAppMessageStatus       @default(SCHEDULED)
+  dedupeKey                String                      @unique
+  frequencyKey             String?                     @unique
+  settingsRevision         Int?
+  sourceFingerprint        String
+  providerMessageId        String?                     @unique
+  providerRecipientWaId    String?
+  providerPricingCategory  String?
+  providerBillable         Boolean?
+  providerStatusTimestamp  DateTime?
+  attemptCount             Int                         @default(0)
+  leaseToken               String?                     @unique
   leaseUntil               DateTime?
-  estimatedCostMicros      Int?
-  actualCostMicros         Int?
-  currency                 String                  @default("INR")
+  budgetMonth              String?
+  budgetState              WhatsAppBudgetState         @default(NONE)
+  rateCardVersion          String?
+  estimatedCostMicros      BigInt?
+  actualCostMicros         BigInt?
+  currency                 String                      @default("INR")
   failureCode              String?
   safeFailureMessage       String?
-  createdAt                DateTime                @default(now())
-  updatedAt                DateTime                @updatedAt
-  organization             Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch                   Branch?                 @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  sender                   WhatsAppSender          @relation(fields: [senderId], references: [id], onDelete: Restrict)
-  student                  Student?                @relation(fields: [studentId], references: [id], onDelete: SetNull)
-  payment                  Payment?                @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  paymentResolutionEvent   PaymentResolutionEvent? @relation(fields: [paymentResolutionEventId], references: [id], onDelete: Restrict)
-  template                 WhatsAppTemplate?       @relation(fields: [templateId], references: [id], onDelete: Restrict)
-  createdBy                User?                   @relation("WhatsAppMessageCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  availableAt              DateTime
+  claimedAt                DateTime?
+  submissionStartedAt      DateTime?
+  acceptedAt               DateTime?
+  sentAt                   DateTime?
+  deliveredAt              DateTime?
+  readAt                   DateTime?
+  failedAt                 DateTime?
+  cancelledAt              DateTime?
+  suppressedAt             DateTime?
+  lastAttemptAt            DateTime?
+  createdAt                DateTime                    @default(now())
+  updatedAt                DateTime                    @updatedAt
+  organization             Organization                @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  branch                   Branch?                     @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  sender                   WhatsAppSender              @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  student                  Student?                    @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  payment                  Payment?                    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  paymentResolutionEvent   PaymentResolutionEvent?     @relation(fields: [paymentResolutionEventId], references: [id], onDelete: Restrict)
+  template                 WhatsAppTemplate?           @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  templateBinding          WhatsAppTemplateBinding?    @relation(fields: [templateBindingId], references: [id], onDelete: Restrict)
+  manualSendRequest        WhatsAppManualSendRequest?  @relation(fields: [manualSendRequestId], references: [id], onDelete: Restrict)
+  createdBy                User?                       @relation("WhatsAppMessageCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   events                   WhatsAppMessageEvent[]
+  paymentSources           WhatsAppMessagePayment[]
 
   @@index([organizationId, createdAt])
   @@index([branchId, createdAt])
+  @@index([status, availableAt, scheduledFor])
   @@index([senderId, status, scheduledFor])
+  @@index([branchId, budgetMonth, budgetState])
+  @@index([branchId, trigger, automationStage, scheduledFor])
+  @@index([senderId, recipientPhoneE164, localScheduleDate])
+  @@index([manualSendRequestId, createdAt])
   @@index([studentId, createdAt])
   @@index([paymentId, createdAt])
   @@index([paymentResolutionEventId, createdAt])
 }
 
-model WhatsAppMessageEvent {
-  id                String                @id @default(cuid())
-  messageId         String
-  eventKey          String                @unique
-  status            WhatsAppMessageStatus
-  providerTimestamp DateTime?
-  receivedAt        DateTime              @default(now())
-  payloadHash       String
-  message           WhatsAppMessage       @relation(fields: [messageId], references: [id], onDelete: Restrict)
+model WhatsAppMessagePayment {
+  messageId String
+  paymentId String
+  createdAt DateTime        @default(now())
+  message   WhatsAppMessage @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  payment   Payment         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 
+  @@id([messageId, paymentId])
+  @@index([paymentId])
+}
+
+model WhatsAppMessageEvent {
+  id                      String                     @id @default(cuid())
+  messageId               String?
+  senderId                String
+  providerMessageId       String?
+  eventKey                String                     @unique
+  source                  WhatsAppMessageEventSource
+  status                  WhatsAppMessageStatus
+  providerTimestamp       DateTime?
+  receivedAt              DateTime                   @default(now())
+  payloadHash             String
+  providerRecipientWaId   String?
+  providerBillable        Boolean?
+  providerPricingCategory String?
+  safeErrorCode           String?
+  expiresAt               DateTime?
+  message                 WhatsAppMessage?           @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  sender                  WhatsAppSender             @relation(fields: [senderId], references: [id], onDelete: Restrict)
+
+  @@index([providerMessageId, providerTimestamp, id])
   @@index([messageId, providerTimestamp, id])
+  @@index([senderId, expiresAt])
 }
 
 model WhatsAppWebhookReceipt {
@@ -552,6 +763,10 @@ model WhatsAppWebhookReceipt {
   phoneNumberId    String?
   eventType        String?
   status           WhatsAppWebhookReceiptStatus @default(RECEIVED)
+  attemptCount     Int                          @default(0)
+  leaseToken       String?                      @unique
+  leaseUntil       DateTime?
+  lastAttemptAt    DateTime?
   receivedAt       DateTime                     @default(now())
   processedAt      DateTime?
   failureCode      String?
@@ -562,6 +777,7 @@ model WhatsAppWebhookReceipt {
   @@index([senderId, receivedAt])
   @@index([wabaId, receivedAt])
   @@index([phoneNumberId, receivedAt])
+  @@index([status, leaseUntil, receivedAt])
 }
 
 model WhatsAppAuditEvent {
@@ -603,13 +819,13 @@ model ImportSession {
   createdAt                DateTime            @default(now())
   updatedAt                DateTime            @updatedAt
 
-  branch                    Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  uploadedBy                User             @relation("ImportSessionUploadedBy", fields: [uploadedByUserId], references: [id])
-  rows                      ImportRow[]
-  questions                 ImportQuestion[]
-  commits                   ImportCommit[]
-  plans                     ImportPlan[]
-  runs                      ImportRun[]
+  branch     Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  uploadedBy User             @relation("ImportSessionUploadedBy", fields: [uploadedByUserId], references: [id])
+  rows       ImportRow[]
+  questions  ImportQuestion[]
+  commits    ImportCommit[]
+  plans      ImportPlan[]
+  runs       ImportRun[]
 
   @@index([branchId])
   @@index([uploadedByUserId])
@@ -634,9 +850,9 @@ model ImportRow {
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
 
-  session          ImportSession          @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
-  evaluations      ImportRowEvaluation[]
-  runItems         ImportRunItem[]
+  session     ImportSession         @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
+  evaluations ImportRowEvaluation[]
+  runItems    ImportRunItem[]
 
   @@index([importSessionId])
   @@index([status])
@@ -654,7 +870,7 @@ model ImportQuestion {
   createdAt       DateTime             @default(now())
   answeredAt      DateTime?
 
-  session         ImportSession        @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
+  session ImportSession @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
 
   @@index([importSessionId])
   @@index([status])
@@ -669,95 +885,95 @@ model ImportCommit {
   errors            Json?
   createdAt         DateTime           @default(now())
 
-  session           ImportSession      @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
-  committedBy       User               @relation("ImportCommitCommittedBy", fields: [committedByUserId], references: [id])
+  session     ImportSession @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
+  committedBy User          @relation("ImportCommitCommittedBy", fields: [committedByUserId], references: [id])
 
   @@index([importSessionId])
 }
 
 model ImportRowEvaluation {
-  id              String          @id @default(cuid())
-  importRowId     String
-  revision        Int
-  engineVersion   Int
-  status          ImportRowStatus
-  mappedData      Json?
-  normalizedData  Json?
-  issues          Json
-  warnings        Json
-  confidence      Int?
-  skipped         Boolean         @default(false)
-  createdAt       DateTime        @default(now())
+  id             String          @id @default(cuid())
+  importRowId    String
+  revision       Int
+  engineVersion  Int
+  status         ImportRowStatus
+  mappedData     Json?
+  normalizedData Json?
+  issues         Json
+  warnings       Json
+  confidence     Int?
+  skipped        Boolean         @default(false)
+  createdAt      DateTime        @default(now())
 
-  row              ImportRow       @relation(fields: [importRowId], references: [id], onDelete: Cascade)
-  runItems         ImportRunItem[]
+  row      ImportRow       @relation(fields: [importRowId], references: [id], onDelete: Cascade)
+  runItems ImportRunItem[]
 
   @@unique([importRowId, revision])
   @@index([revision, status])
 }
 
 model ImportPlan {
-  id                  String                   @id @default(cuid())
-  importSessionId     String
-  revision            Int
-  engineVersion       Int
-  goal                ImportGoal
-  readinessPolicy     ImportReadinessPolicy
-  planVersion         String                   @unique
-  canRun              Boolean
-  totalRows           Int
-  readyRows           Int
-  blockedRows         Int
-  warningRows         Int
-  skippedRows         Int
-  snapshot            Json
-  checks              Json
-  summary             Json
-  compiledByUserId    String
-  createdAt           DateTime                 @default(now())
+  id               String                @id @default(cuid())
+  importSessionId  String
+  revision         Int
+  engineVersion    Int
+  goal             ImportGoal
+  readinessPolicy  ImportReadinessPolicy
+  planVersion      String                @unique
+  canRun           Boolean
+  totalRows        Int
+  readyRows        Int
+  blockedRows      Int
+  warningRows      Int
+  skippedRows      Int
+  snapshot         Json
+  checks           Json
+  summary          Json
+  compiledByUserId String
+  createdAt        DateTime              @default(now())
 
-  session             ImportSession            @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
-  compiledBy          User                     @relation("ImportPlanCompiledBy", fields: [compiledByUserId], references: [id])
-  runs                ImportRun[]
+  session    ImportSession @relation(fields: [importSessionId], references: [id], onDelete: Cascade)
+  compiledBy User          @relation("ImportPlanCompiledBy", fields: [compiledByUserId], references: [id])
+  runs       ImportRun[]
 
   @@unique([importSessionId, revision, readinessPolicy])
   @@index([importSessionId, createdAt])
 }
 
 model ImportRun {
-  id                        String           @id @default(cuid())
-  branchId                  String
-  importSessionId           String?
-  importPlanId              String?
-  targetRevision            Int
-  requestedByUserId         String
-  idempotencyKey            String           @unique
-  requestHash               String
-  workflowRunId             String?          @unique
-  kind                      ImportRunKind
-  status                    ImportRunStatus  @default(QUEUED)
-  maxAttempts               Int              @default(3)
-  totalItems                Int
-  completedItems            Int              @default(0)
-  succeededItems            Int              @default(0)
-  failedItems               Int              @default(0)
-  skippedItems              Int              @default(0)
-  cancelledItems            Int              @default(0)
-  cancelRequestedAt         DateTime?
-  cancelRequestedByUserId   String?
-  startedAt                 DateTime?
-  finishedAt                DateTime?
-  lastHeartbeatAt           DateTime?
-  error                     Json?
-  createdAt                 DateTime          @default(now())
-  updatedAt                 DateTime          @updatedAt
+  id                      String          @id @default(cuid())
+  branchId                String
+  importSessionId         String?
+  importPlanId            String?
+  targetRevision          Int
+  requestedByUserId       String
+  idempotencyKey          String          @unique
+  requestHash             String
+  workflowRunId           String?         @unique
+  kind                    ImportRunKind
+  status                  ImportRunStatus @default(QUEUED)
+  maxAttempts             Int             @default(3)
+  totalItems              Int
+  completedItems          Int             @default(0)
+  succeededItems          Int             @default(0)
+  failedItems             Int             @default(0)
+  skippedItems            Int             @default(0)
+  cancelledItems          Int             @default(0)
+  cancelRequestedAt       DateTime?
+  cancelRequestedByUserId String?
+  startedAt               DateTime?
+  finishedAt              DateTime?
+  lastHeartbeatAt         DateTime?
+  error                   Json?
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
 
-  session                   ImportSession?    @relation(fields: [importSessionId], references: [id], onDelete: SetNull)
-  plan                      ImportPlan?       @relation(fields: [importPlanId], references: [id], onDelete: SetNull)
-  branch                    Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  requestedBy               User              @relation("ImportRunRequestedBy", fields: [requestedByUserId], references: [id])
-  cancelRequestedBy         User?             @relation("ImportRunCancelledBy", fields: [cancelRequestedByUserId], references: [id])
-  items                     ImportRunItem[]
+  session           ImportSession?  @relation(fields: [importSessionId], references: [id], onDelete: SetNull)
+  plan              ImportPlan?     @relation(fields: [importPlanId], references: [id], onDelete: SetNull)
+  branch            Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  requestedBy       User            @relation("ImportRunRequestedBy", fields: [requestedByUserId], references: [id])
+  cancelRequestedBy User?           @relation("ImportRunCancelledBy", fields: [cancelRequestedByUserId], references: [id])
+  items             ImportRunItem[]
 
   /// One active run per session is enforced by a partial unique index in the migration.
   @@index([importSessionId, kind, createdAt])
@@ -766,33 +982,33 @@ model ImportRun {
 }
 
 model ImportRunItem {
-  id                 String              @id @default(cuid())
-  importRunId        String
-  importRowId        String?
-  evaluationId       String?
-  ordinal            Int
-  itemKey            String
-  kind               ImportRunItemKind
-  idempotencyKey     String              @unique
-  requestHash        String
-  status             ImportRunItemStatus @default(QUEUED)
-  attemptCount       Int                 @default(0)
-  availableAt        DateTime            @default(now())
-  leaseToken         String?             @unique
-  leaseOwner         String?
-  leaseExpiresAt     DateTime?
-  lastHeartbeatAt    DateTime?
-  startedAt          DateTime?
-  finishedAt         DateTime?
-  payload            Json?
-  result             Json?
-  error              Json?
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
+  id              String              @id @default(cuid())
+  importRunId     String
+  importRowId     String?
+  evaluationId    String?
+  ordinal         Int
+  itemKey         String
+  kind            ImportRunItemKind
+  idempotencyKey  String              @unique
+  requestHash     String
+  status          ImportRunItemStatus @default(QUEUED)
+  attemptCount    Int                 @default(0)
+  availableAt     DateTime            @default(now())
+  leaseToken      String?             @unique
+  leaseOwner      String?
+  leaseExpiresAt  DateTime?
+  lastHeartbeatAt DateTime?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  payload         Json?
+  result          Json?
+  error           Json?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
 
-  run                ImportRun           @relation(fields: [importRunId], references: [id], onDelete: Cascade)
-  row                ImportRow?          @relation(fields: [importRowId], references: [id], onDelete: SetNull)
-  evaluation         ImportRowEvaluation? @relation(fields: [evaluationId], references: [id], onDelete: SetNull)
+  run        ImportRun            @relation(fields: [importRunId], references: [id], onDelete: Cascade)
+  row        ImportRow?           @relation(fields: [importRowId], references: [id], onDelete: SetNull)
+  evaluation ImportRowEvaluation? @relation(fields: [evaluationId], references: [id], onDelete: SetNull)
 
   @@unique([importRunId, itemKey])
   @@unique([importRunId, ordinal])
@@ -801,28 +1017,28 @@ model ImportRunItem {
 }
 
 model ImportRecipe {
-  id                  String        @id @default(cuid())
-  organizationId      String
-  branchId            String?
-  createdByUserId     String
-  name                String
-  revision            Int           @default(1)
-  schemaVersion       Int           @default(1)
-  engineVersion       Int
-  goal                ImportGoal
-  sourceType          ImportSourceType
+  id                        String           @id @default(cuid())
+  organizationId            String
+  branchId                  String?
+  createdByUserId           String
+  name                      String
+  revision                  Int              @default(1)
+  schemaVersion             Int              @default(1)
+  engineVersion             Int
+  goal                      ImportGoal
+  sourceType                ImportSourceType
   normalizedHeaderSignature String
-  entityTypes         Json
-  columnMappings      Json
-  useCount            Int           @default(0)
-  lastUsedAt          DateTime?
-  archivedAt          DateTime?
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
+  entityTypes               Json
+  columnMappings            Json
+  useCount                  Int              @default(0)
+  lastUsedAt                DateTime?
+  archivedAt                DateTime?
+  createdAt                 DateTime         @default(now())
+  updatedAt                 DateTime         @updatedAt
 
-  organization        Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  branch              Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  createdBy           User          @relation("ImportRecipeCreatedBy", fields: [createdByUserId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  createdBy    User         @relation("ImportRecipeCreatedBy", fields: [createdByUserId], references: [id])
 
   @@unique([organizationId, name, revision])
   @@index([organizationId, goal, archivedAt])
@@ -833,6 +1049,12 @@ model ImportRecipe {
 enum StudentStatus {
   ACTIVE
   INACTIVE
+}
+
+enum StudentEnrollmentSource {
+  LEGACY
+  MANUAL
+  IMPORT
 }
 
 enum ShiftStatus {
@@ -936,12 +1158,86 @@ enum WhatsAppConsentSource {
   SYSTEM
 }
 
+enum WhatsAppManagedTemplateKey {
+  WELCOME_GENERAL
+  WELCOME_ALLOCATED
+  FEE_RENEWAL_POLITE
+  FEE_RENEWAL_FRIENDLY
+  PAST_DUE_POLITE
+  PAST_DUE_FIRM
+  MULTI_STUDENT_COLLECTION_SUMMARY
+  PAYMENT_CONFIRMATION
+  PAYMENT_CORRECTION
+}
+
+enum WhatsAppManagedTemplateProvisioningStatus {
+  PENDING
+  CREATING
+  WAITING_APPROVAL
+  READY
+  REJECTED
+  FAILED
+  UNKNOWN
+}
+
+enum WhatsAppAutomationStage {
+  WELCOME
+  FEE_DUE_MINUS_7
+  FEE_DUE_MINUS_3
+  FEE_DUE_MINUS_1
+  FEE_DUE_TODAY
+  PAST_DUE_PLUS_1
+  PAST_DUE_PLUS_3
+  PAST_DUE_PLUS_7
+  PAYMENT_CONFIRMATION
+  PAYMENT_CORRECTION
+}
+
+enum WhatsAppMessageTrigger {
+  MANUAL
+  AUTOMATION
+}
+
+enum WhatsAppBudgetState {
+  NONE
+  RESERVED
+  COMMITTED
+  RELEASED
+}
+
+enum WhatsAppMessageEventSource {
+  PROVIDER_RESPONSE
+  PROVIDER_WEBHOOK
+  SYSTEM
+}
+
+enum WhatsAppRecipientRelationship {
+  SELF
+  GUARDIAN
+  OTHER
+}
+
+enum WhatsAppStudentRecipientStatus {
+  ACTIVE
+  STALE
+  DISABLED
+}
+
+enum WhatsAppManualSendRequestStatus {
+  PROCESSING
+  QUEUED
+  PARTIAL
+  COMPLETED
+  FAILED
+}
+
 enum WhatsAppMessagePurpose {
   MANUAL_REMINDER
   WELCOME
   FEE_RENEWAL
   PAST_DUE
   PAYMENT_CONFIRMATION
+  PAYMENT_CORRECTION
   DAILY_BRANCH_REPORT
   DAILY_ORGANIZATION_REPORT
   SERVICE_NOTICE
@@ -963,6 +1259,7 @@ enum WhatsAppMessageStatus {
 
 enum WhatsAppWebhookReceiptStatus {
   RECEIVED
+  PROCESSING
   PROCESSED
   IGNORED
   FAILED
@@ -979,6 +1276,20 @@ enum WhatsAppAuditAction {
   BRANCH_UNASSIGNED
   LOCAL_DISCONNECTED
   CONSENT_CHANGED
+  MANAGED_TEMPLATE_INSTALL_STARTED
+  MANAGED_TEMPLATE_INSTALL_COMPLETED
+  MANAGED_TEMPLATE_INSTALL_FAILED
+  RECIPIENT_ASSOCIATED
+  RECIPIENT_MARKED_STALE
+  RECIPIENT_DISABLED
+  BULK_OPERATIONAL_CONSENT_RECORDED
+  BRANCH_DELIVERY_ENABLED
+  BRANCH_DELIVERY_DISABLED
+  AUTOMATION_SETTINGS_CHANGED
+  AUTOMATION_ENABLED
+  AUTOMATION_DISABLED
+  MANUAL_SEND_QUEUED
+  MANUAL_SEND_REPLAYED
 }
 
 enum PaymentType {
@@ -1230,18 +1541,18 @@ enum OrganizationOfferGrantStatus {
 }
 
 model OwnerTrialGrant {
-  id              String           @id @default(cuid())
-  ownerId         String           @unique
-  organizationId  String?          @unique
-  source          OwnerTrialSource
-  status          OwnerTrialStatus @default(AVAILABLE)
-  grantedAt       DateTime         @default(now())
-  claimedAt       DateTime?
-  trialStartedAt  DateTime?
-  trialEndsAt     DateTime?
-  consumedAt      DateTime?
-  owner           User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  organization    Organization?    @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  id             String           @id @default(cuid())
+  ownerId        String           @unique
+  organizationId String?          @unique
+  source         OwnerTrialSource
+  status         OwnerTrialStatus @default(AVAILABLE)
+  grantedAt      DateTime         @default(now())
+  claimedAt      DateTime?
+  trialStartedAt DateTime?
+  trialEndsAt    DateTime?
+  consumedAt     DateTime?
+  owner          User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  organization   Organization?    @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([trialEndsAt])
@@ -1279,8 +1590,8 @@ model BillingDatabaseIdentity {
 }
 
 model RazorpayPlanProvisioning {
-  id             String                           @id @default(cuid())
-  catalogKey     String                           @unique
+  id             String                         @id @default(cuid())
+  catalogKey     String                         @unique
   providerMode   RazorpayMode
   plan           SaasPlan
   amount         Int
@@ -1288,114 +1599,114 @@ model RazorpayPlanProvisioning {
   currency       String
   period         String
   interval       Int
-  status         RazorpayPlanProvisioningStatus   @default(PENDING)
+  status         RazorpayPlanProvisioningStatus @default(PENDING)
   leaseToken     String?
   leaseUntil     DateTime?
-  attemptCount   Int                              @default(0)
+  attemptCount   Int                            @default(0)
   razorpayPlanId String?
   lastError      String?
-  createdAt      DateTime                         @default(now())
-  updatedAt      DateTime                         @updatedAt
+  createdAt      DateTime                       @default(now())
+  updatedAt      DateTime                       @updatedAt
 
   @@index([providerMode, plan, status])
   @@index([status, leaseUntil])
 }
 
 model BillingOffer {
-  id                 String                   @id @default(cuid())
-  providerMode       RazorpayMode
-  name               String
-  plan               SaasPlan
-  razorpayOfferId    String                   @unique
-  discountType       BillingOfferDiscountType
-  discountValue      Int
-  durationType       BillingOfferDurationType
-  durationCycles     Int                      @default(1)
-  priority           Int                      @default(0)
-  active             Boolean                  @default(true)
-  validFrom          DateTime?
-  validUntil         DateTime?
-  isCompositeStack   Boolean                  @default(false)
-  createdAt          DateTime                 @default(now())
-  updatedAt          DateTime                 @updatedAt
-  subscriptions      OrganizationSubscription[]
-  grants             OrganizationOfferGrant[]
+  id               String                     @id @default(cuid())
+  providerMode     RazorpayMode
+  name             String
+  plan             SaasPlan
+  razorpayOfferId  String                     @unique
+  discountType     BillingOfferDiscountType
+  discountValue    Int
+  durationType     BillingOfferDurationType
+  durationCycles   Int                        @default(1)
+  priority         Int                        @default(0)
+  active           Boolean                    @default(true)
+  validFrom        DateTime?
+  validUntil       DateTime?
+  isCompositeStack Boolean                    @default(false)
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+  subscriptions    OrganizationSubscription[]
+  grants           OrganizationOfferGrant[]
 
   @@index([providerMode, plan, active])
   @@index([providerMode, razorpayOfferId])
 }
 
 model OrganizationOfferGrant {
-  id                 String                       @id @default(cuid())
-  organizationId     String
-  billingOfferId     String
-  status             OrganizationOfferGrantStatus @default(ELIGIBLE)
-  eligibleFrom       DateTime?
-  eligibleUntil      DateTime?
-  reservedAt         DateTime?
-  redeemedAt         DateTime?
-  subscriptionId     String?
-  createdAt          DateTime                     @default(now())
-  updatedAt          DateTime                     @updatedAt
-  organization       Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  billingOffer       BillingOffer                 @relation(fields: [billingOfferId], references: [id])
+  id             String                       @id @default(cuid())
+  organizationId String
+  billingOfferId String
+  status         OrganizationOfferGrantStatus @default(ELIGIBLE)
+  eligibleFrom   DateTime?
+  eligibleUntil  DateTime?
+  reservedAt     DateTime?
+  redeemedAt     DateTime?
+  subscriptionId String?
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
+  organization   Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  billingOffer   BillingOffer                 @relation(fields: [billingOfferId], references: [id])
 
   @@unique([organizationId, billingOfferId])
   @@index([organizationId, status])
 }
 
 model OrganizationSubscription {
-  id                     String                 @id @default(cuid())
-  organizationId         String
-  currentOrganizationId  String?                @unique
-  pendingReplacementOrganizationId String?       @unique
-  replacesSubscriptionId String?
-  providerMode           RazorpayMode
-  plan                   SaasPlan
-  amount                 Int
-  amountSubunits         Int
-  currency               String                 @default("INR")
-  period                 String                 @default("monthly")
-  interval               Int                    @default(1)
-  totalCount             Int
-  quantity               Int                    @default(1)
-  razorpayPlanId         String
-  razorpaySubscriptionId String                 @unique
-  razorpayCustomerId     String?
-  status                 SaasSubscriptionStatus @default(CREATED)
-  authPaymentId          String?                @unique
-  providerStartAt        DateTime?
-  authorizationExpiresAt DateTime?
-  providerPaymentMethod  ProviderPaymentMethod  @default(UNKNOWN)
-  paidThrough            DateTime?
-  lastConfirmedInvoiceId String?
-  lastConfirmedPaymentId String?
-  lastPaymentConfirmedAt DateTime?
-  authorizationLapsedAt  DateTime?
-  billingOfferId         String?
-  lastReconciledAt       DateTime?
-  currentStart           DateTime?
-  currentEnd             DateTime?
-  chargeAt               DateTime?
-  endedAt                DateTime?
-  cancelAtCycleEnd        Boolean                @default(false)
-  cancellationRequestedAt DateTime?
-  cancellationScheduledAt DateTime?
-  cancelledAt            DateTime?
-  createdByUserId        String?
-  createdAt              DateTime               @default(now())
-  updatedAt              DateTime               @updatedAt
-  organization           Organization           @relation("OrganizationSubscriptionOwner", fields: [organizationId], references: [id])
-  currentForOrganization Organization?          @relation("OrganizationCurrentSubscription", fields: [currentOrganizationId], references: [id], onDelete: SetNull)
-  pendingReplacementForOrganization Organization? @relation("OrganizationPendingSubscriptionReplacement", fields: [pendingReplacementOrganizationId], references: [id], onDelete: SetNull)
-  replacesSubscription   OrganizationSubscription? @relation("OrganizationSubscriptionReplacementLineage", fields: [replacesSubscriptionId], references: [id], onDelete: SetNull)
-  replacementSubscriptions OrganizationSubscription[] @relation("OrganizationSubscriptionReplacementLineage")
-  billingOffer           BillingOffer?           @relation(fields: [billingOfferId], references: [id])
-  webhookEvents          RazorpayWebhookEvent[]
-  history                OrganizationSubscriptionHistory[]
-  billingChanges         OrganizationBillingChange[] @relation("BillingChangeSourceSubscription")
-  replacementBillingChange OrganizationBillingChange? @relation("BillingChangeReplacementSubscription")
-  invoices               OrganizationSubscriptionInvoice[]
+  id                                String                            @id @default(cuid())
+  organizationId                    String
+  currentOrganizationId             String?                           @unique
+  pendingReplacementOrganizationId  String?                           @unique
+  replacesSubscriptionId            String?
+  providerMode                      RazorpayMode
+  plan                              SaasPlan
+  amount                            Int
+  amountSubunits                    Int
+  currency                          String                            @default("INR")
+  period                            String                            @default("monthly")
+  interval                          Int                               @default(1)
+  totalCount                        Int
+  quantity                          Int                               @default(1)
+  razorpayPlanId                    String
+  razorpaySubscriptionId            String                            @unique
+  razorpayCustomerId                String?
+  status                            SaasSubscriptionStatus            @default(CREATED)
+  authPaymentId                     String?                           @unique
+  providerStartAt                   DateTime?
+  authorizationExpiresAt            DateTime?
+  providerPaymentMethod             ProviderPaymentMethod             @default(UNKNOWN)
+  paidThrough                       DateTime?
+  lastConfirmedInvoiceId            String?
+  lastConfirmedPaymentId            String?
+  lastPaymentConfirmedAt            DateTime?
+  authorizationLapsedAt             DateTime?
+  billingOfferId                    String?
+  lastReconciledAt                  DateTime?
+  currentStart                      DateTime?
+  currentEnd                        DateTime?
+  chargeAt                          DateTime?
+  endedAt                           DateTime?
+  cancelAtCycleEnd                  Boolean                           @default(false)
+  cancellationRequestedAt           DateTime?
+  cancellationScheduledAt           DateTime?
+  cancelledAt                       DateTime?
+  createdByUserId                   String?
+  createdAt                         DateTime                          @default(now())
+  updatedAt                         DateTime                          @updatedAt
+  organization                      Organization                      @relation("OrganizationSubscriptionOwner", fields: [organizationId], references: [id])
+  currentForOrganization            Organization?                     @relation("OrganizationCurrentSubscription", fields: [currentOrganizationId], references: [id], onDelete: SetNull)
+  pendingReplacementForOrganization Organization?                     @relation("OrganizationPendingSubscriptionReplacement", fields: [pendingReplacementOrganizationId], references: [id], onDelete: SetNull)
+  replacesSubscription              OrganizationSubscription?         @relation("OrganizationSubscriptionReplacementLineage", fields: [replacesSubscriptionId], references: [id], onDelete: SetNull)
+  replacementSubscriptions          OrganizationSubscription[]        @relation("OrganizationSubscriptionReplacementLineage")
+  billingOffer                      BillingOffer?                     @relation(fields: [billingOfferId], references: [id])
+  webhookEvents                     RazorpayWebhookEvent[]
+  history                           OrganizationSubscriptionHistory[]
+  billingChanges                    OrganizationBillingChange[]       @relation("BillingChangeSourceSubscription")
+  replacementBillingChange          OrganizationBillingChange?        @relation("BillingChangeReplacementSubscription")
+  invoices                          OrganizationSubscriptionInvoice[]
 
   @@index([providerMode, status])
   @@index([providerMode, plan])
@@ -1405,16 +1716,16 @@ model OrganizationSubscription {
 }
 
 model OrganizationBillingChange {
-  id                         String                   @id @default(cuid())
+  id                         String                    @id @default(cuid())
   organizationId             String
   organizationSubscriptionId String?
-  replacementSubscriptionId  String?                  @unique
+  replacementSubscriptionId  String?                   @unique
   branchId                   String?
   sequence                   Int
-  idempotencyKey             String                   @unique
+  idempotencyKey             String                    @unique
   type                       BillingChangeType
-  status                     BillingChangeStatus      @default(QUEUED)
-  operationStatus            BillingOperationStatus   @default(AWAITING_PROVIDER_CONFIRMATION)
+  status                     BillingChangeStatus       @default(QUEUED)
+  operationStatus            BillingOperationStatus    @default(AWAITING_PROVIDER_CONFIRMATION)
   fromPlan                   SaasPlan?
   toPlan                     SaasPlan?
   fromQuantity               Int?
@@ -1423,7 +1734,7 @@ model OrganizationBillingChange {
   undoCutoffAt               DateTime?
   providerInvoiceId          String?
   providerPaymentId          String?
-  attemptCount               Int                      @default(0)
+  attemptCount               Int                       @default(0)
   processingStartedAt        DateTime?
   appliedAt                  DateTime?
   undoneAt                   DateTime?
@@ -1443,12 +1754,12 @@ model OrganizationBillingChange {
   declinedAt                 DateTime?
   resolvedAt                 DateTime?
   createdByUserId            String?
-  createdAt                  DateTime                 @default(now())
-  updatedAt                  DateTime                 @updatedAt
-  organization               Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+  organization               Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   organizationSubscription   OrganizationSubscription? @relation("BillingChangeSourceSubscription", fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
   replacementSubscription    OrganizationSubscription? @relation("BillingChangeReplacementSubscription", fields: [replacementSubscriptionId], references: [id], onDelete: SetNull)
-  branch                     Branch?                  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  branch                     Branch?                   @relation(fields: [branchId], references: [id], onDelete: SetNull)
 
   @@unique([organizationId, sequence])
   @@index([organizationId, status, sequence])
