@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import {
   assertWhatsAppWebhookIngestEnabled,
   isWhatsAppDeliverySchemaAccessEnabled,
+  isWhatsAppReportsEnabled,
   resolveWhatsAppProviderMode,
   WhatsAppConfigurationError,
 } from "@/lib/whatsappFeature";
@@ -18,6 +19,10 @@ import {
 } from "@/lib/whatsappProviderMessageId";
 import { isWhatsAppDeliverySchemaReady } from "@/lib/whatsappSchema";
 import { WhatsAppRecipientService } from "@/services/whatsappRecipient.service";
+import { WhatsAppReportService } from "@/services/whatsappReport.service";
+import { WhatsAppIncidentService } from "@/services/whatsappIncident.service";
+import { WhatsAppSenderSafetyService } from "@/services/whatsappSenderSafety.service";
+import { WhatsAppServiceNoticeService } from "@/services/whatsappServiceNotice.service";
 
 export const MAX_META_WEBHOOK_BYTES = 512 * 1024;
 export const MAX_META_WEBHOOK_EVENTS = 200;
@@ -54,11 +59,13 @@ const inboundMessageSchema = z.object({
   text: z.object({ body: z.string().max(4_096) }).optional(),
   button: z.object({
     payload: z.string().max(256).optional(),
+    text: z.string().max(256).optional(),
   }).optional(),
   interactive: z.object({
     type: z.string().min(1).max(32),
     button_reply: z.object({
       id: z.string().max(256),
+      title: z.string().max(256).optional(),
     }).optional(),
   }).optional(),
 });
@@ -121,6 +128,17 @@ type NormalizedStopEvent = Readonly<{
   phoneE164: string;
 }>;
 
+type NormalizedReportStopEvent = Readonly<{
+  kind: "STOP_REPORTS";
+  phoneE164: string;
+}>;
+
+type NormalizedReportConfirmationEvent = Readonly<{
+  kind: "REPORT_CONFIRMATION";
+  phoneE164: string;
+  code: string;
+}>;
+
 type NormalizedTemplateEvent = Readonly<{
   kind: "TEMPLATE";
   providerTemplateId: string | null;
@@ -133,6 +151,8 @@ type NormalizedTemplateEvent = Readonly<{
 type NormalizedWebhookEvent =
   | NormalizedStatusEvent
   | NormalizedStopEvent
+  | NormalizedReportStopEvent
+  | NormalizedReportConfirmationEvent
   | NormalizedTemplateEvent;
 
 type NormalizedWebhookEventGroup = Readonly<{
@@ -231,6 +251,33 @@ export function isExactWhatsAppStopCommand(input: {
   return false;
 }
 
+export function parseExactWhatsAppReportCommand(input: {
+  type: string;
+  text?: string;
+  buttonPayload?: string;
+  buttonText?: string;
+  interactiveButtonId?: string;
+  interactiveButtonTitle?: string;
+}): { kind: "STOP_REPORTS" } | { kind: "REPORT_CONFIRMATION"; code: string } | null {
+  if (input.type === "text") {
+    const normalized = input.text?.normalize("NFKC").trim();
+    if (normalized === "STOP REPORTS") return { kind: "STOP_REPORTS" };
+    const confirmation = /^START REPORTS ([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{10})$/
+      .exec(normalized ?? "");
+    return confirmation ? { kind: "REPORT_CONFIRMATION", code: confirmation[1]! } : null;
+  }
+  const replyValues = input.type === "button"
+    ? [input.buttonPayload, input.buttonText]
+    : input.type === "interactive"
+      ? [input.interactiveButtonId, input.interactiveButtonTitle]
+      : [];
+  return replyValues.some(value =>
+    value === "LABLORDS_STOP_REPORTS" || value?.normalize("NFKC").trim() === "Stop reports"
+  )
+    ? { kind: "STOP_REPORTS" }
+    : null;
+}
+
 function normalizeTemplateStatus(value: string | undefined) {
   if (!value) return null;
   const normalized = value.toUpperCase();
@@ -248,14 +295,14 @@ function extractMetaWebhookEventGroups(envelope: WebhookEnvelope) {
     wabaId: string;
     phoneNumberId: string | null;
     events: NormalizedWebhookEvent[];
-    stopPhones: Set<string>;
+    inboundKeys: Set<string>;
   }>();
 
   const groupFor = (wabaId: string, phoneNumberId: string | null) => {
     const key = JSON.stringify([wabaId, phoneNumberId]);
     const existing = groups.get(key);
     if (existing) return existing;
-    const group = { wabaId, phoneNumberId, events: [], stopPhones: new Set<string>() };
+    const group = { wabaId, phoneNumberId, events: [], inboundKeys: new Set<string>() };
     groups.set(key, group);
     return group;
   };
@@ -264,6 +311,9 @@ function extractMetaWebhookEventGroups(envelope: WebhookEnvelope) {
     for (const change of entry.changes) {
       const phoneNumberId = change.value.metadata?.phone_number_id ?? null;
       if (change.field === "messages") {
+        // Preserve known-sender evidence even when every provider value is an
+        // unknown future status or unrelated inbound command.
+        groupFor(entry.id, phoneNumberId);
         for (const status of change.value.statuses ?? []) {
           const normalizedStatus = STATUS_MAP[status.status.toLowerCase() as keyof typeof STATUS_MAP];
           if (!normalizedStatus) continue;
@@ -282,7 +332,10 @@ function extractMetaWebhookEventGroups(envelope: WebhookEnvelope) {
         }
 
         for (const message of change.value.messages ?? []) {
-          if (!isExactWhatsAppStopCommand({
+          const phoneE164 = normalizeProviderPhone(message.from);
+          if (!phoneE164) continue;
+          const group = groupFor(entry.id, phoneNumberId);
+          if (isExactWhatsAppStopCommand({
             type: message.type,
             text: message.text?.body,
             buttonPayload: message.button?.payload,
@@ -290,14 +343,32 @@ function extractMetaWebhookEventGroups(envelope: WebhookEnvelope) {
               ? message.interactive.button_reply?.id
               : undefined,
           })) {
+            const key = `STOP:${phoneE164}`;
+            if (!group.inboundKeys.has(key)) {
+              group.inboundKeys.add(key);
+              group.events.push({ kind: "STOP", phoneE164 });
+            }
             continue;
           }
-          const phoneE164 = normalizeProviderPhone(message.from);
-          if (!phoneE164) continue;
-          const group = groupFor(entry.id, phoneNumberId);
-          if (group.stopPhones.has(phoneE164)) continue;
-          group.stopPhones.add(phoneE164);
-          group.events.push({ kind: "STOP", phoneE164 });
+          const reportCommand = parseExactWhatsAppReportCommand({
+            type: message.type,
+            text: message.text?.body,
+            buttonPayload: message.button?.payload,
+            buttonText: message.button?.text,
+            interactiveButtonId: message.interactive?.type === "button_reply"
+              ? message.interactive.button_reply?.id
+              : undefined,
+            interactiveButtonTitle: message.interactive?.type === "button_reply"
+              ? message.interactive.button_reply?.title
+              : undefined,
+          });
+          if (!reportCommand) continue;
+          const key = `${reportCommand.kind}:${phoneE164}`;
+          if (group.inboundKeys.has(key)) continue;
+          group.inboundKeys.add(key);
+          group.events.push(reportCommand.kind === "STOP_REPORTS"
+            ? { kind: "STOP_REPORTS", phoneE164 }
+            : { kind: "REPORT_CONFIRMATION", phoneE164, code: reportCommand.code });
         }
         continue;
       }
@@ -766,7 +837,14 @@ async function processStatusEvent(input: {
       senderId: input.sender.id,
       providerMessageId: input.event.providerMessageId,
     },
-    select: { id: true },
+    select: {
+      id: true,
+      organizationId: true,
+      branchId: true,
+      senderId: true,
+      serviceNoticeId: true,
+      status: true,
+    },
   });
   const eventKey = statusEventKey(input.sender.id, input.event);
   await input.tx.whatsAppMessageEvent.createMany({
@@ -808,6 +886,31 @@ async function processStatusEvent(input: {
     });
   }
   await projectStatusEvent(input.tx, message.id, input.event, input.now);
+  if (input.event.status === "DELIVERED" || input.event.status === "READ") {
+    await WhatsAppSenderSafetyService.recordDeliveredInTransaction({
+      tx: input.tx,
+      organizationId: message.organizationId,
+      senderId: message.senderId,
+      at: input.event.providerTimestamp ?? input.now,
+    });
+  }
+  if (message.status === "UNKNOWN") {
+    await WhatsAppIncidentService.resolveInTransaction({
+      tx: input.tx,
+      dedupeKey: `message:${message.id}:unknown`,
+      resolutionCode: input.event.status === "FAILED"
+        ? "PROVIDER_FAILURE_CONFIRMED"
+        : "PROVIDER_DELIVERY_CONFIRMED",
+      now: input.now,
+    });
+  }
+  if (message.serviceNoticeId) {
+    await WhatsAppServiceNoticeService.reconcileStatusInTransaction({
+      tx: input.tx,
+      noticeId: message.serviceNoticeId,
+      now: input.now,
+    });
+  }
 }
 
 async function optOutConsentTypes(input: {
@@ -815,6 +918,8 @@ async function optOutConsentTypes(input: {
   sender: ResolvedSender;
   phoneE164: string;
   now: Date;
+  consentTypes?: readonly (typeof CONSENT_TYPES)[number][];
+  reason?: "INBOUND_STOP" | "INBOUND_STOP_REPORTS";
 }) {
   // Dashboard consent mutations lock the same sender row. Taking that lock
   // here serializes distinct signed STOP receipts (including missing consent
@@ -828,7 +933,7 @@ async function optOutConsentTypes(input: {
   if (lockedSender.length !== 1) return 0;
 
   let changedCount = 0;
-  for (const consentType of CONSENT_TYPES) {
+  for (const consentType of input.consentTypes ?? CONSENT_TYPES) {
     const existing = await input.tx.whatsAppConsent.findUnique({
       where: {
         senderId_phoneE164_consentType: {
@@ -872,7 +977,7 @@ async function optOutConsentTypes(input: {
         nextStatus: "OPTED_OUT",
         source: "WHATSAPP_REPLY",
         policyVersion: consent.policyVersion,
-        details: { reason: "INBOUND_STOP" },
+        details: { reason: input.reason ?? "INBOUND_STOP" },
         occurredAt: input.now,
       },
     });
@@ -887,6 +992,20 @@ async function processStopEvent(input: {
   event: NormalizedStopEvent;
   now: Date;
 }) {
+  const affectedNoticeRows = await input.tx.whatsAppMessage.findMany({
+    where: {
+      organizationId: input.sender.organizationId,
+      senderId: input.sender.id,
+      recipientPhoneE164: input.event.phoneE164,
+      serviceNoticeId: { not: null },
+      OR: [
+        { status: "SCHEDULED" },
+        { status: "CLAIMED", submissionStartedAt: null },
+      ],
+    },
+    select: { serviceNoticeId: true },
+    distinct: ["serviceNoticeId"],
+  });
   const consentChangedCount = await optOutConsentTypes({
     tx: input.tx,
     sender: input.sender,
@@ -900,10 +1019,35 @@ async function processStopEvent(input: {
     phoneE164: input.event.phoneE164,
     now: input.now,
   });
+  const pausedSubscriptions = await input.tx.whatsAppReportSubscription.updateMany({
+    where: {
+      organizationId: input.sender.organizationId,
+      senderId: input.sender.id,
+      phoneE164: input.event.phoneE164,
+      status: { in: ["PENDING_CONFIRMATION", "ACTIVE"] },
+    },
+    data: {
+      status: "PAUSED",
+      pausedAt: input.now,
+      confirmationCodeHash: null,
+      confirmationExpiresAt: null,
+      plannerLeaseToken: null,
+      plannerLeaseUntil: null,
+    },
+  });
+  for (const row of affectedNoticeRows) {
+    if (!row.serviceNoticeId) continue;
+    await WhatsAppServiceNoticeService.reconcileStatusInTransaction({
+      tx: input.tx,
+      noticeId: row.serviceNoticeId,
+      now: input.now,
+    });
+  }
   if (
     consentChangedCount > 0
     || disabled.disabledCount > 0
     || disabled.cancelledCount > 0
+    || pausedSubscriptions.count > 0
   ) {
     await input.tx.whatsAppAuditEvent.create({
       data: {
@@ -918,6 +1062,84 @@ async function processStopEvent(input: {
           disabledRecipientCount: disabled.disabledCount,
           cancelledMessageCount: disabled.cancelledCount,
           releasedReservationCount: disabled.releasedReservationCount,
+          pausedReportSubscriptionCount: pausedSubscriptions.count,
+        },
+      },
+    });
+  }
+}
+
+async function processReportStopEvent(input: {
+  tx: Prisma.TransactionClient;
+  sender: ResolvedSender;
+  event: NormalizedReportStopEvent;
+  now: Date;
+}) {
+  const consentChangedCount = await optOutConsentTypes({
+    tx: input.tx,
+    sender: input.sender,
+    phoneE164: input.event.phoneE164,
+    now: input.now,
+    consentTypes: ["OWNER_REPORT"],
+    reason: "INBOUND_STOP_REPORTS",
+  });
+  const paused = await input.tx.whatsAppReportSubscription.updateMany({
+    where: {
+      organizationId: input.sender.organizationId,
+      senderId: input.sender.id,
+      phoneE164: input.event.phoneE164,
+      status: { in: ["PENDING_CONFIRMATION", "ACTIVE"] },
+    },
+    data: {
+      status: "PAUSED",
+      pausedAt: input.now,
+      confirmationCodeHash: null,
+      confirmationExpiresAt: null,
+      plannerLeaseToken: null,
+      plannerLeaseUntil: null,
+    },
+  });
+  const branchReports = await WhatsAppRecipientService.cancelUnsubmittedMessagesInTransaction({
+    tx: input.tx,
+    scope: {
+      organizationId: input.sender.organizationId,
+      senderId: input.sender.id,
+      recipientPhoneE164: input.event.phoneE164,
+      purpose: "DAILY_BRANCH_REPORT",
+    },
+    reason: "OWNER_REPORT_CONSENT_OPTED_OUT",
+    now: input.now,
+  });
+  const organizationReports = await WhatsAppRecipientService
+    .cancelUnsubmittedMessagesInTransaction({
+      tx: input.tx,
+      scope: {
+        organizationId: input.sender.organizationId,
+        senderId: input.sender.id,
+        recipientPhoneE164: input.event.phoneE164,
+        purpose: "DAILY_ORGANIZATION_REPORT",
+      },
+      reason: "OWNER_REPORT_CONSENT_OPTED_OUT",
+      now: input.now,
+    });
+  const cancelledMessageCount = branchReports.cancelledCount
+    + organizationReports.cancelledCount;
+  const releasedReservationCount = branchReports.releasedReservationCount
+    + organizationReports.releasedReservationCount;
+  if (consentChangedCount > 0 || paused.count > 0 || cancelledMessageCount > 0) {
+    await input.tx.whatsAppAuditEvent.create({
+      data: {
+        organizationId: input.sender.organizationId,
+        branchId: null,
+        senderId: input.sender.id,
+        actorUserId: null,
+        action: "REPORT_SUBSCRIPTION_PAUSED",
+        details: {
+          reason: "INBOUND_STOP_REPORTS",
+          consentChangedCount,
+          pausedSubscriptionCount: paused.count,
+          cancelledMessageCount,
+          releasedReservationCount,
         },
       },
     });
@@ -962,7 +1184,30 @@ async function processTemplateEvent(input: {
     },
   });
 
-  if (providerStatus === "APPROVED" && category === "UTILITY") return;
+  const incidentDedupeKey = `template-unavailable:${input.sender.id}:${template.id}`;
+  if (providerStatus === "APPROVED" && category === "UTILITY") {
+    await WhatsAppIncidentService.resolveInTransaction({
+      tx: input.tx,
+      dedupeKey: incidentDedupeKey,
+      resolutionCode: "PROVIDER_TEMPLATE_READY",
+      now: input.now,
+    });
+    return;
+  }
+  await WhatsAppIncidentService.createOrTouchInTransaction({
+    tx: input.tx,
+    organizationId: input.sender.organizationId,
+    senderId: input.sender.id,
+    type: "TEMPLATE_UNAVAILABLE",
+    severity: "WARNING",
+    dedupeKey: incidentDedupeKey,
+    safeCode: category !== "UTILITY" ? "TEMPLATE_NOT_UTILITY" : "TEMPLATE_NOT_APPROVED",
+    details: {
+      providerStatus,
+      providerCategory: category,
+    },
+    now: input.now,
+  });
   if (template.binding) {
     await input.tx.whatsAppTemplateBinding.updateMany({
       where: { id: template.binding.id, active: true },
@@ -1022,6 +1267,23 @@ async function processWebhookEvents(input: {
         event,
         now: input.now,
       });
+    } else if (event.kind === "STOP_REPORTS") {
+      await processReportStopEvent({
+        tx: input.tx,
+        sender: input.sender,
+        event,
+        now: input.now,
+      });
+    } else if (event.kind === "REPORT_CONFIRMATION") {
+      if (isWhatsAppReportsEnabled()) {
+        await WhatsAppReportService.confirmSubscriptionInTransaction({
+          tx: input.tx,
+          senderId: input.sender.id,
+          phoneE164: event.phoneE164,
+          code: event.code,
+          now: input.now,
+        });
+      }
     } else {
       await processTemplateEvent({
         tx: input.tx,
@@ -1148,14 +1410,14 @@ export class WhatsAppWebhookService {
       ? resolvedEventGroups[0]!.sender
       : null;
 
-    const stopKeys = new Set<string>();
+    const inboundKeys = new Set<string>();
     const processableEventGroups = resolvedEventGroups.map(group => ({
       sender: group.sender,
       events: group.events.filter(event => {
-        if (event.kind !== "STOP") return true;
-        const key = `${group.sender.id}:${event.phoneE164}`;
-        if (stopKeys.has(key)) return false;
-        stopKeys.add(key);
+        if (event.kind === "STATUS" || event.kind === "TEMPLATE") return true;
+        const key = `${event.kind}:${group.sender.id}:${event.phoneE164}`;
+        if (inboundKeys.has(key)) return false;
+        inboundKeys.add(key);
         return true;
       }),
     })).filter(group => group.events.length > 0)
@@ -1197,6 +1459,16 @@ export class WhatsAppWebhookService {
           select: { id: true },
         });
         if (!ownedReceipt) throw new WhatsAppWebhookLeaseLostError();
+
+        const knownSenderIds = [...new Set(
+          resolvedEventGroups.map(group => group.sender.id)
+        )];
+        if (knownSenderIds.length > 0) {
+          await tx.whatsAppSender.updateMany({
+            where: { id: { in: knownSenderIds }, providerMode },
+            data: { lastWebhookReceivedAt: now },
+          });
+        }
 
         await purgeExpiredOrphanEvents({
           tx,

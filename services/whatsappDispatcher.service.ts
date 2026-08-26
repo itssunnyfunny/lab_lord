@@ -15,11 +15,15 @@ import {
   areWhatsAppMessageWritesEnabled,
   configuredWhatsAppLiveDeliveryCanaryOrganizationIds,
   isWhatsAppIntegrationEnabled,
+  isWhatsAppLiveAutomationOrganizationEnabled,
+  isWhatsAppServiceNoticesEnabled,
   resolveWhatsAppProviderMode,
   WHATSAPP_META_MESSAGE_WRITES_FLAG,
 } from "@/lib/whatsappFeature";
 import {
+  getWhatsAppRateCardStatus,
   paiseToInrMicros,
+  readWhatsAppRateCard,
   resolveWhatsAppUtilityRate,
   validateWhatsAppMonthlyBudgetMinor,
 } from "@/lib/whatsappCost";
@@ -40,6 +44,14 @@ import {
   deriveWhatsAppManualCollectionContent,
 } from "@/services/whatsappMessage.service";
 import { verifyAutomaticMessageSource } from "@/services/whatsappPlanner.service";
+import { WhatsAppIncidentService } from "@/services/whatsappIncident.service";
+import { verifyWhatsAppReportMessageSource } from "@/services/whatsappReport.service";
+import { WhatsAppSenderSafetyService } from "@/services/whatsappSenderSafety.service";
+import {
+  verifyWhatsAppServiceNoticeSource,
+  WhatsAppServiceNoticeService,
+} from "@/services/whatsappServiceNotice.service";
+import { WhatsAppJobRunService } from "@/services/whatsappJobRun.service";
 
 export const MAX_WHATSAPP_DISPATCH_BATCH = 50;
 export const DEFAULT_WHATSAPP_DISPATCH_BATCH = 20;
@@ -122,6 +134,7 @@ async function suppressClaimedMessage(input: {
   leaseToken: string;
   code: string;
   now: Date;
+  releaseReservedBudget: boolean;
 }) {
   const result = await input.tx.whatsAppMessage.updateMany({
     where: {
@@ -134,7 +147,7 @@ async function suppressClaimedMessage(input: {
       status: "SUPPRESSED",
       suppressedAt: input.now,
       failureCode: input.code,
-      budgetState: "RELEASED",
+      ...(input.releaseReservedBudget ? { budgetState: "RELEASED" as const } : {}),
       leaseToken: null,
       leaseUntil: null,
     },
@@ -159,6 +172,28 @@ async function suppressClaimedMessage(input: {
       },
     });
   }
+  return result.count === 1;
+}
+
+async function holdClaimedMessage(input: {
+  tx: Prisma.TransactionClient;
+  messageId: string;
+  leaseToken: string;
+}) {
+  const result = await input.tx.whatsAppMessage.updateMany({
+    where: {
+      id: input.messageId,
+      leaseToken: input.leaseToken,
+      status: "CLAIMED",
+      submissionStartedAt: null,
+    },
+    data: {
+      status: "SCHEDULED",
+      claimedAt: null,
+      leaseToken: null,
+      leaseUntil: null,
+    },
+  });
   return result.count === 1;
 }
 
@@ -190,7 +225,8 @@ export function resolveWhatsAppDispatchOrganizationScope(
 async function claimMessages(
   now: Date,
   limit: number,
-  organizationIds: readonly string[] | null
+  organizationIds: readonly string[] | null,
+  providerMode: "TEST" | "LIVE"
 ) {
   return prisma.$transaction(async tx => {
     const scheduledOrganizationFilter = organizationIds === null
@@ -198,21 +234,54 @@ async function claimMessages(
       : organizationIds.length === 0
         ? Prisma.sql`AND FALSE`
         : Prisma.sql`AND "organizationId" IN (${Prisma.join(organizationIds)})`;
-    const staleSubmittingRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT "id"
+    const staleSubmittingRows = await tx.$queryRaw<Array<{
+      id: string;
+      organizationId: string;
+      branchId: string | null;
+      senderId: string;
+      providerCallAdmittedAt: Date | null;
+    }>>(Prisma.sql`
+      SELECT "id", "organizationId", "branchId", "senderId", "providerCallAdmittedAt"
       FROM "WhatsAppMessage"
       WHERE "status" = 'SUBMITTING'::"WhatsAppMessageStatus"
         AND "leaseUntil" < ${now}
+        AND EXISTS (
+          SELECT 1
+          FROM "WhatsAppSender" AS sender
+          WHERE sender."id" = "WhatsAppMessage"."senderId"
+            AND sender."providerMode" = ${providerMode}::"WhatsAppProviderMode"
+        )
       ORDER BY "leaseUntil" ASC, "id" ASC
       FOR UPDATE SKIP LOCKED
       LIMIT ${limit}
     `);
-    const staleSubmitting = staleSubmittingRows.length === 0
-      ? { count: 0 }
-      : await tx.whatsAppMessage.updateMany({
+    let staleSubmittingCount = 0;
+    let stalePreSubmissionRecovered = 0;
+    for (const row of staleSubmittingRows) {
+      if (!row.providerCallAdmittedAt) {
+        const recovered = await tx.whatsAppMessage.updateMany({
           where: {
-            id: { in: staleSubmittingRows.map(row => row.id) },
+            id: row.id,
             status: "SUBMITTING",
+            providerCallAdmittedAt: null,
+            leaseUntil: { lt: now },
+          },
+          data: {
+            status: "SCHEDULED",
+            claimedAt: null,
+            submissionStartedAt: null,
+            leaseToken: null,
+            leaseUntil: null,
+          },
+        });
+        stalePreSubmissionRecovered += recovered.count;
+        continue;
+      }
+      const staleSubmitting = await tx.whatsAppMessage.updateMany({
+          where: {
+            id: row.id,
+            status: "SUBMITTING",
+            providerCallAdmittedAt: { not: null },
             leaseUntil: { lt: now },
           },
           data: {
@@ -223,12 +292,35 @@ async function claimMessages(
             leaseUntil: null,
           },
         });
+      if (staleSubmitting.count !== 1) continue;
+      staleSubmittingCount += 1;
+      await WhatsAppSenderSafetyService.recordAmbiguousOutcomeInTransaction({
+        tx,
+        organizationId: row.organizationId,
+        branchId: row.branchId,
+        senderId: row.senderId,
+        messageId: row.id,
+        now,
+      });
+      await WhatsAppSenderSafetyService.finalizeRequestedPauseInTransaction({
+        tx,
+        organizationId: row.organizationId,
+        senderId: row.senderId,
+        now,
+      });
+    }
     const staleClaimedRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT "id"
       FROM "WhatsAppMessage"
       WHERE "status" = 'CLAIMED'::"WhatsAppMessageStatus"
         AND "submissionStartedAt" IS NULL
         AND "leaseUntil" < ${now}
+        AND EXISTS (
+          SELECT 1
+          FROM "WhatsAppSender" AS sender
+          WHERE sender."id" = "WhatsAppMessage"."senderId"
+            AND sender."providerMode" = ${providerMode}::"WhatsAppProviderMode"
+        )
       ORDER BY "leaseUntil" ASC, "id" ASC
       FOR UPDATE SKIP LOCKED
       LIMIT ${limit}
@@ -256,13 +348,28 @@ async function claimMessages(
           "id",
           "scheduledFor",
           ROW_NUMBER() OVER (
-            PARTITION BY "branchId"
+            PARTITION BY "organizationId", COALESCE("branchId", '__ORGANIZATION__')
             ORDER BY "scheduledFor" ASC, "id" ASC
           ) AS branch_rank
         FROM "WhatsAppMessage"
         WHERE "status" = 'SCHEDULED'::"WhatsAppMessageStatus"
           AND "availableAt" <= ${now}
           AND "scheduledFor" <= ${now}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "WhatsAppSenderSafetyState" AS safety
+            WHERE safety."senderId" = "WhatsAppMessage"."senderId"
+              AND (
+                safety."pausedAt" IS NOT NULL
+                OR safety."pauseRequestedAt" IS NOT NULL
+              )
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM "WhatsAppSender" AS sender
+            WHERE sender."id" = "WhatsAppMessage"."senderId"
+              AND sender."providerMode" = ${providerMode}::"WhatsAppProviderMode"
+          )
           ${scheduledOrganizationFilter}
       )
       SELECT message."id"
@@ -293,27 +400,270 @@ async function claimMessages(
         if (message) claimed.push({ id: row.id, organizationId: message.organizationId, leaseToken });
       }
     }
-    return { claimed, staleClaimed: staleClaimed.count, staleSubmitting: staleSubmitting.count };
+    return {
+      claimed,
+      staleClaimed: staleClaimed.count + stalePreSubmissionRecovered,
+      staleSubmitting: staleSubmittingCount,
+    };
   });
 }
 
-type PreparedSubmission = {
+export type PreparedWhatsAppSubmission = {
   messageId: string;
   leaseToken: string;
+  organizationId: string;
+  branchId: string | null;
   senderId: string;
+  serviceNoticeId: string | null;
   phoneNumberId: string;
   recipientPhoneE164: string;
   definition: ReturnType<typeof getManagedWhatsAppTemplate>;
   values: Record<string, unknown>;
   attemptCount: number;
+  previousAttemptCount: number;
+  previousLastAttemptAt: Date | null;
 };
+
+export type WhatsAppPreparedSubmissionPauseGuardResult = "READY" | "HELD" | "STALE";
+
+type PreparedSubmissionRestoration = Readonly<{
+  messageId: string;
+  senderId: string;
+  leaseToken: string;
+}>;
+
+function preparedSubmissionRestorationArgs(
+  input: PreparedSubmissionRestoration
+): Prisma.WhatsAppMessageUpdateManyArgs {
+  return {
+    where: {
+      id: input.messageId,
+      senderId: input.senderId,
+      leaseToken: input.leaseToken,
+      status: "SUBMITTING",
+      providerMessageId: null,
+      providerCallAdmittedAt: null,
+    },
+    data: {
+      status: "SCHEDULED",
+      claimedAt: null,
+      submissionStartedAt: null,
+      providerCallAdmittedAt: null,
+      leaseToken: null,
+      leaseUntil: null,
+    },
+  };
+}
+
+async function restorePreparedWhatsAppSubmissionInTransaction(input: {
+  tx: Prisma.TransactionClient;
+} & PreparedSubmissionRestoration) {
+  const restored = await input.tx.whatsAppMessage.updateMany(
+    preparedSubmissionRestorationArgs(input)
+  );
+  return restored.count === 1 ? "HELD" as const : "STALE" as const;
+}
+
+export async function restorePreparedWhatsAppSubmissionAfterAdmissionErrorInTransaction(input: {
+  tx: Prisma.TransactionClient;
+  organizationId: string;
+  messageId: string;
+  senderId: string;
+  leaseToken: string;
+  admittedAt: Date;
+  attemptCount: number;
+  previousAttemptCount: number;
+  previousLastAttemptAt: Date | null;
+  now: Date;
+}): Promise<Exclude<WhatsAppPreparedSubmissionPauseGuardResult, "READY">> {
+  const lockedMessage = await input.tx.$queryRaw<Array<{
+    id: string;
+    providerCallAdmittedAt: Date | null;
+  }>>(Prisma.sql`
+    SELECT "id", "providerCallAdmittedAt"
+    FROM "WhatsAppMessage"
+    WHERE "id" = ${input.messageId}
+      AND "senderId" = ${input.senderId}
+      AND "leaseToken" = ${input.leaseToken}
+      AND "status" = 'SUBMITTING'::"WhatsAppMessageStatus"
+      AND "providerMessageId" IS NULL
+      AND (
+        (
+          "providerCallAdmittedAt" IS NULL
+          AND "attemptCount" = ${input.previousAttemptCount}
+          AND "lastAttemptAt" IS NOT DISTINCT FROM ${input.previousLastAttemptAt}
+        )
+        OR (
+          "providerCallAdmittedAt" = ${input.admittedAt}
+          AND "attemptCount" = ${input.attemptCount}
+          AND "lastAttemptAt" = ${input.admittedAt}
+        )
+      )
+    FOR UPDATE
+  `);
+  const message = lockedMessage[0];
+  if (!message) return "STALE";
+
+  const lockedSafety = await input.tx.$queryRaw<Array<{ senderId: string }>>(Prisma.sql`
+    SELECT "senderId"
+    FROM "WhatsAppSenderSafetyState"
+    WHERE "senderId" = ${input.senderId}
+    FOR UPDATE
+  `);
+  if (lockedSafety.length !== 1) return "STALE";
+
+  const admissionCommitted = message.providerCallAdmittedAt !== null;
+  const restored = await input.tx.whatsAppMessage.updateMany({
+    where: {
+      id: input.messageId,
+      senderId: input.senderId,
+      leaseToken: input.leaseToken,
+      status: "SUBMITTING",
+      providerMessageId: null,
+      providerCallAdmittedAt: admissionCommitted ? input.admittedAt : null,
+      attemptCount: admissionCommitted ? input.attemptCount : input.previousAttemptCount,
+      lastAttemptAt: admissionCommitted ? input.admittedAt : input.previousLastAttemptAt,
+    },
+    data: {
+      status: "SCHEDULED",
+      claimedAt: null,
+      submissionStartedAt: null,
+      providerCallAdmittedAt: null,
+      attemptCount: input.previousAttemptCount,
+      lastAttemptAt: input.previousLastAttemptAt,
+      leaseToken: null,
+      leaseUntil: null,
+    },
+  });
+  if (restored.count !== 1) return "STALE";
+
+  await WhatsAppSenderSafetyService.finalizeRequestedPauseInTransaction({
+    tx: input.tx,
+    organizationId: input.organizationId,
+    senderId: input.senderId,
+    now: input.now,
+  });
+  return "HELD";
+}
+
+export async function guardPreparedWhatsAppSubmissionAgainstPauseInTransaction(input: {
+  tx: Prisma.TransactionClient;
+  organizationId: string;
+  messageId: string;
+  senderId: string;
+  leaseToken: string;
+  admittedAt: Date;
+}): Promise<WhatsAppPreparedSubmissionPauseGuardResult> {
+  const lockedMessage = await input.tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id"
+    FROM "WhatsAppMessage"
+    WHERE "id" = ${input.messageId}
+      AND "senderId" = ${input.senderId}
+      AND "leaseToken" = ${input.leaseToken}
+      AND "status" = 'SUBMITTING'::"WhatsAppMessageStatus"
+      AND "providerMessageId" IS NULL
+      AND "providerCallAdmittedAt" IS NULL
+    FOR UPDATE
+  `);
+  if (lockedMessage.length !== 1) return "STALE";
+  const lockedSafety = await input.tx.$queryRaw<Array<{ senderId: string }>>(Prisma.sql`
+    SELECT "senderId"
+    FROM "WhatsAppSenderSafetyState"
+    WHERE "senderId" = ${input.senderId}
+    FOR UPDATE
+  `);
+  if (lockedSafety.length !== 1) return "STALE";
+  const safetyState = await input.tx.whatsAppSenderSafetyState.findUnique({
+    where: { senderId: input.senderId },
+    select: { pausedAt: true, pauseRequestedAt: true },
+  });
+  if (!safetyState) return "STALE";
+  if (safetyState.pausedAt || safetyState.pauseRequestedAt) {
+    const restored = await restorePreparedWhatsAppSubmissionInTransaction({
+      tx: input.tx,
+      messageId: input.messageId,
+      senderId: input.senderId,
+      leaseToken: input.leaseToken,
+    });
+    if (restored === "HELD" && safetyState.pauseRequestedAt) {
+      await WhatsAppSenderSafetyService.finalizeRequestedPauseInTransaction({
+        tx: input.tx,
+        organizationId: input.organizationId,
+        senderId: input.senderId,
+        now: input.admittedAt,
+      });
+    }
+    return restored;
+  }
+  const admitted = await input.tx.whatsAppMessage.updateMany({
+    where: {
+      id: input.messageId,
+      senderId: input.senderId,
+      leaseToken: input.leaseToken,
+      status: "SUBMITTING",
+      providerMessageId: null,
+      providerCallAdmittedAt: null,
+    },
+    data: {
+      providerCallAdmittedAt: input.admittedAt,
+      lastAttemptAt: input.admittedAt,
+      attemptCount: { increment: 1 },
+    },
+  });
+  return admitted.count === 1 ? "READY" : "STALE";
+}
+
+async function admitPreparedWhatsAppSubmission(input: {
+  submission: PreparedWhatsAppSubmission;
+  admittedAt: Date;
+  clock: DispatchClock;
+}): Promise<WhatsAppPreparedSubmissionPauseGuardResult> {
+  try {
+    return await prisma.$transaction(tx =>
+      guardPreparedWhatsAppSubmissionAgainstPauseInTransaction({
+          tx,
+          organizationId: input.submission.organizationId,
+          messageId: input.submission.messageId,
+          senderId: input.submission.senderId,
+          leaseToken: input.submission.leaseToken,
+          admittedAt: input.admittedAt,
+        })
+    );
+  } catch (error) {
+    try {
+      await prisma.$transaction(tx =>
+        restorePreparedWhatsAppSubmissionAfterAdmissionErrorInTransaction({
+          tx,
+          organizationId: input.submission.organizationId,
+          messageId: input.submission.messageId,
+          senderId: input.submission.senderId,
+          leaseToken: input.submission.leaseToken,
+          admittedAt: input.admittedAt,
+          attemptCount: input.submission.attemptCount,
+          previousAttemptCount: input.submission.previousAttemptCount,
+          previousLastAttemptAt: input.submission.previousLastAttemptAt,
+          now: input.clock(),
+        }),
+      { isolationLevel: "ReadCommitted" });
+    } catch {
+      // If restoration cannot be proved, stale recovery uses the durable
+      // admission marker to distinguish an unsent row from an ambiguous call.
+    }
+    throw error;
+  }
+}
 
 async function prepareSubmission(input: {
   messageId: string;
   leaseToken: string;
   clock: DispatchClock;
   env: Readonly<Record<string, string | undefined>>;
-}): Promise<{ kind: "READY"; submission: PreparedSubmission } | { kind: "SUPPRESSED"; code: string } | { kind: "STALE" }> {
+}): Promise<
+  | { kind: "READY"; submission: PreparedWhatsAppSubmission }
+  | { kind: "SUPPRESSED"; code: string }
+  | { kind: "HELD"; code: string }
+  | { kind: "STALE" }
+> {
   return prisma.$transaction(async tx => {
     const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT "id"
@@ -326,8 +676,9 @@ async function prepareSubmission(input: {
     const message = await tx.whatsAppMessage.findFirst({
       where: { id: input.messageId, leaseToken: input.leaseToken, status: "CLAIMED" },
       include: {
+        organization: true,
         branch: { include: { organization: true } },
-        sender: true,
+        sender: { include: { safetyState: true } },
         student: true,
         paymentResolutionEvent: { include: { payment: true } },
         paymentSources: { include: { payment: { include: { student: true } } } },
@@ -337,41 +688,74 @@ async function prepareSubmission(input: {
     if (!message) return { kind: "STALE" as const };
 
     const suppress = async (code: string) => {
-      await suppressClaimedMessage({
+      const changed = await suppressClaimedMessage({
         tx,
         messageId: message.id,
         senderId: message.senderId,
         leaseToken: input.leaseToken,
         code,
         now: validationNow,
+        releaseReservedBudget: message.budgetState === "RESERVED",
       });
+      if (changed && message.serviceNoticeId) {
+        await WhatsAppServiceNoticeService.reconcileStatusInTransaction({
+          tx,
+          noticeId: message.serviceNoticeId,
+          now: validationNow,
+        });
+      }
       return { kind: "SUPPRESSED" as const, code };
     };
-    if (!message.branch || message.branch.organizationId !== message.organizationId) {
+    const hold = async (code: string) => {
+      await holdClaimedMessage({
+        tx,
+        messageId: message.id,
+        leaseToken: input.leaseToken,
+      });
+      return { kind: "HELD" as const, code };
+    };
+    const isBranchReport = message.purpose === "DAILY_BRANCH_REPORT";
+    const isOrganizationReport = message.purpose === "DAILY_ORGANIZATION_REPORT";
+    const isReport = isBranchReport || isOrganizationReport;
+    const isServiceNotice = message.purpose === "SERVICE_NOTICE";
+    const isCollectionPurpose = !isReport && !isServiceNotice;
+    if (
+      message.organization.id !== message.organizationId
+      || (isOrganizationReport
+        ? message.branchId !== null || message.branch !== null
+        : !message.branch || message.branch.organizationId !== message.organizationId)
+    ) {
       return suppress("TENANT_MISMATCH");
     }
-    const settingsRows = await tx.$queryRaw<Array<{ branchId: string }>>(Prisma.sql`
-      SELECT "branchId"
-      FROM "BranchWhatsAppSettings"
-      WHERE "branchId" = ${message.branch.id}
-      FOR UPDATE
-    `);
-    if (settingsRows.length !== 1) return suppress("BRANCH_DISABLED");
-    const settings = await tx.branchWhatsAppSettings.findFirst({
-      where: {
-        branchId: message.branch.id,
-        organizationId: message.organizationId,
-        senderId: message.senderId,
-      },
-    });
-    if (!settings?.enabled) return suppress("BRANCH_DISABLED");
+    let settings: Awaited<ReturnType<typeof tx.branchWhatsAppSettings.findFirst>> = null;
+    if (message.branch) {
+      const settingsRows = await tx.$queryRaw<Array<{ branchId: string }>>(Prisma.sql`
+        SELECT "branchId"
+        FROM "BranchWhatsAppSettings"
+        WHERE "branchId" = ${message.branch.id}
+        FOR UPDATE
+      `);
+      if (settingsRows.length !== 1) return suppress("BRANCH_DISABLED");
+      settings = await tx.branchWhatsAppSettings.findFirst({
+        where: {
+          branchId: message.branch.id,
+          organizationId: message.organizationId,
+          senderId: message.senderId,
+        },
+      });
+      if (!settings?.enabled) return suppress("BRANCH_DISABLED");
+    }
     try {
       await EntitlementService.assertOrganizationEntitlement(
         message.organizationId,
         "WHATSAPP_AUTOMATION",
         tx
       );
-      await EntitlementService.assertBranchWritable(message.branch.id, tx);
+      if (message.branch) {
+        await EntitlementService.assertBranchWritable(message.branch.id, tx);
+      } else {
+        await EntitlementService.assertOrganizationWritable(message.organizationId, tx);
+      }
     } catch {
       return suppress("ENTITLEMENT_REQUIRED");
     }
@@ -382,6 +766,36 @@ async function prepareSubmission(input: {
     ) {
       return suppress("SENDER_INACTIVE");
     }
+    await tx.whatsAppSenderSafetyState.upsert({
+      where: { senderId: message.senderId },
+      create: { senderId: message.senderId },
+      update: {},
+    });
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "senderId"
+      FROM "WhatsAppSenderSafetyState"
+      WHERE "senderId" = ${message.senderId}
+      FOR UPDATE
+    `);
+    const safetyState = await tx.whatsAppSenderSafetyState.findUnique({
+      where: { senderId: message.senderId },
+      select: { pausedAt: true, pauseRequestedAt: true },
+    });
+    if (safetyState?.pausedAt || safetyState?.pauseRequestedAt) {
+      return hold("SENDER_SAFETY_PAUSED");
+    }
+    if (!/^[a-f0-9]{64}$/.test(message.dedupeKey)) {
+      return suppress("DEDUPE_INVALID");
+    }
+    if (isServiceNotice && !isWhatsAppServiceNoticesEnabled(input.env)) {
+      return suppress("SERVICE_NOTICES_DISABLED");
+    }
+    if (
+      message.trigger === "AUTOMATION"
+      && !isWhatsAppLiveAutomationOrganizationEnabled(message.organizationId, input.env)
+    ) {
+      return suppress("AUTOMATION_CANARY_REQUIRED");
+    }
     if (
       message.budgetState !== "RESERVED"
       || message.estimatedCostMicros === null
@@ -391,23 +805,47 @@ async function prepareSubmission(input: {
       return suppress("BUDGET_RESERVATION_INVALID");
     }
     if (
-      message.trigger === "AUTOMATION"
+      isCollectionPurpose
+      && message.trigger === "AUTOMATION"
       && (
-        !settings.automationEnabledAt
+        !settings
+        || !message.branch
+        || !settings.automationEnabledAt
         || settings.configurationRevision !== message.settingsRevision
         || !message.automationStage
       )
     ) {
       return suppress("SETTINGS_REVISION_CHANGED");
     }
-    if (message.trigger === "AUTOMATION" && message.automationStage) {
+    if (isCollectionPurpose && message.trigger === "AUTOMATION" && message.automationStage) {
+      if (!message.branch) return suppress("TENANT_MISMATCH");
       const rule = await tx.whatsAppAutomationRule.findUnique({
         where: { branchId_stage: { branchId: message.branch.id, stage: message.automationStage } },
       });
       if (!rule?.enabled) return suppress("AUTOMATION_DISABLED");
     }
 
-    const language = normalizeLanguage(settings.defaultLanguage);
+    let language: WhatsAppManagedTemplateLanguage | null = null;
+    if (isReport) {
+      const source = await verifyWhatsAppReportMessageSource({
+        tx,
+        messageId: message.id,
+        now: validationNow,
+        env: input.env,
+      });
+      if (!source.valid) return suppress(source.code);
+      language = source.language;
+    } else if (isServiceNotice) {
+      const source = await verifyWhatsAppServiceNoticeSource({
+        tx,
+        messageId: message.id,
+        now: validationNow,
+      });
+      if (!source.valid) return suppress(source.code);
+      language = source.language;
+    } else if (settings) {
+      language = normalizeLanguage(settings.defaultLanguage);
+    }
     if (
       !language
       || !message.managedTemplateKey
@@ -476,160 +914,163 @@ async function prepareSubmission(input: {
       return suppress("SOURCE_CHANGED");
     }
 
-    const studentIds = new Set<string>();
-    if (message.studentId) studentIds.add(message.studentId);
-    for (const source of message.paymentSources) studentIds.add(source.payment.studentId);
-    if (message.student && message.student.status !== "ACTIVE") return suppress("STUDENT_INACTIVE");
-    if (message.paymentSources.some(source => source.payment.student.status !== "ACTIVE")) {
-      return suppress("STUDENT_INACTIVE");
-    }
-    if (message.trigger === "MANUAL" && message.paymentSources.some(source => {
-      const phone = source.payment.student.phone;
-      if (!phone) return true;
-      try {
-        return normalizeWhatsAppPhone(phone, { defaultCountry: "IN" })
-          !== message.recipientPhoneE164;
-      } catch {
-        return true;
+    if (isCollectionPurpose) {
+      if (!message.branch || !settings) return suppress("BRANCH_DISABLED");
+      const studentIds = new Set<string>();
+      if (message.studentId) studentIds.add(message.studentId);
+      for (const source of message.paymentSources) studentIds.add(source.payment.studentId);
+      if (message.student && message.student.status !== "ACTIVE") return suppress("STUDENT_INACTIVE");
+      if (message.paymentSources.some(source => source.payment.student.status !== "ACTIVE")) {
+        return suppress("STUDENT_INACTIVE");
       }
-    })) {
-      return suppress("RECIPIENT_ASSOCIATION_STALE");
-    }
-    let activeRecipients: Array<{ id: string; studentId: string }> = [];
-    if (studentIds.size > 0) {
-      activeRecipients = await tx.whatsAppStudentRecipient.findMany({
-        where: {
-          organizationId: message.organizationId,
-          branchId: message.branch.id,
-          senderId: message.senderId,
-          phoneE164: message.recipientPhoneE164,
-          studentId: { in: [...studentIds] },
-          status: "ACTIVE",
-          consent: {
+      if (message.trigger === "MANUAL" && message.paymentSources.some(source => {
+        const phone = source.payment.student.phone;
+        if (!phone) return true;
+        try {
+          return normalizeWhatsAppPhone(phone, { defaultCountry: "IN" })
+            !== message.recipientPhoneE164;
+        } catch {
+          return true;
+        }
+      })) {
+        return suppress("RECIPIENT_ASSOCIATION_STALE");
+      }
+      let activeRecipients: Array<{ id: string; studentId: string }> = [];
+      if (studentIds.size > 0) {
+        activeRecipients = await tx.whatsAppStudentRecipient.findMany({
+          where: {
+            organizationId: message.organizationId,
+            branchId: message.branch.id,
             senderId: message.senderId,
             phoneE164: message.recipientPhoneE164,
-            consentType: "OPERATIONAL",
-            status: "OPTED_IN",
+            studentId: { in: [...studentIds] },
+            status: "ACTIVE",
+            consent: {
+              senderId: message.senderId,
+              phoneE164: message.recipientPhoneE164,
+              consentType: "OPERATIONAL",
+              status: "OPTED_IN",
+            },
           },
-        },
-        select: { id: true, studentId: true },
-      });
-      if (
-        activeRecipients.length !== studentIds.size
-        || new Set(activeRecipients.map(recipient => recipient.studentId)).size !== studentIds.size
-      ) return suppress("RECIPIENT_ASSOCIATION_STALE");
-    }
-
-    if (message.trigger === "AUTOMATION") {
-      const source = await verifyAutomaticMessageSource({
-        tx,
-        messageId: message.id,
-        now: validationNow,
-      });
-      if (!source.valid) return suppress(source.code);
-    } else {
-      if (
-        message.purpose !== "MANUAL_REMINDER"
-        || message.settingsRevision === null
-        || message.settingsRevision !== settings.configurationRevision
-        || message.paymentSources.length < 1
-      ) return suppress("SOURCE_CHANGED");
-      let content: ReturnType<typeof deriveWhatsAppManualCollectionContent>;
-      try {
-        content = deriveWhatsAppManualCollectionContent({
-          payments: message.paymentSources.map(source => source.payment),
-          language,
-          tone: settings.defaultTone,
-          branchName: message.branch.name,
-          timeZone: message.branch.organization.timezone,
-          at: validationNow,
+          select: { id: true, studentId: true },
         });
-      } catch {
-        return suppress("SOURCE_CHANGED");
+        if (
+          activeRecipients.length !== studentIds.size
+          || new Set(activeRecipients.map(recipient => recipient.studentId)).size !== studentIds.size
+        ) return suppress("RECIPIENT_ASSOCIATION_STALE");
       }
-      if (content.managedTemplateKey !== message.managedTemplateKey) {
-        return suppress("SOURCE_CHANGED");
-      }
-      let currentPrepared: ReturnType<typeof prepareManagedWhatsAppTemplate>;
-      try {
-        currentPrepared = prepareManagedWhatsAppTemplate(definition, content.values);
-      } catch {
-        return suppress("SOURCE_CHANGED");
-      }
-      if (JSON.stringify(currentPrepared.orderedValues) !== JSON.stringify(preparedValues.orderedValues)) {
-        return suppress("SOURCE_CHANGED");
-      }
-      const expectedFingerprint = createWhatsAppManualSourceFingerprint({
-        branchId: message.branch.id,
-        branchName: message.branch.name,
-        senderId: message.senderId,
-        recipientIds: activeRecipients.map(recipient => recipient.id),
-        paymentFacts: message.paymentSources.map(source => ({
-          id: source.payment.id,
-          status: source.payment.status,
-          amount: source.payment.amount,
-          dueDate: source.payment.dueDate,
-          studentId: source.payment.studentId,
-          studentName: source.payment.student.name,
-        })),
-        templateBindingId: message.templateBinding.id,
-        catalogHash: message.catalogHash,
-        settingsRevision: settings.configurationRevision,
-        managedTemplateKey: message.managedTemplateKey,
-        templateVariables: content.values,
-      });
-      if (expectedFingerprint !== message.sourceFingerprint) return suppress("SOURCE_CHANGED");
-    }
 
-    if (["MANUAL_REMINDER", "FEE_RENEWAL", "PAST_DUE"].includes(message.purpose)) {
-      if (message.paymentSources.length > 0 && message.paymentSources.some(source => source.payment.status !== "DUE")) {
-        return suppress("PAYMENT_RESOLVED");
+      if (message.trigger === "AUTOMATION") {
+        const source = await verifyAutomaticMessageSource({
+          tx,
+          messageId: message.id,
+          now: validationNow,
+        });
+        if (!source.valid) return suppress(source.code);
+      } else {
+        if (
+          message.purpose !== "MANUAL_REMINDER"
+          || message.settingsRevision === null
+          || message.settingsRevision !== settings.configurationRevision
+          || message.paymentSources.length < 1
+        ) return suppress("SOURCE_CHANGED");
+        let content: ReturnType<typeof deriveWhatsAppManualCollectionContent>;
+        try {
+          content = deriveWhatsAppManualCollectionContent({
+            payments: message.paymentSources.map(source => source.payment),
+            language,
+            tone: settings.defaultTone,
+            branchName: message.branch.name,
+            timeZone: message.branch.organization.timezone,
+            at: validationNow,
+          });
+        } catch {
+          return suppress("SOURCE_CHANGED");
+        }
+        if (content.managedTemplateKey !== message.managedTemplateKey) {
+          return suppress("SOURCE_CHANGED");
+        }
+        let currentPrepared: ReturnType<typeof prepareManagedWhatsAppTemplate>;
+        try {
+          currentPrepared = prepareManagedWhatsAppTemplate(definition, content.values);
+        } catch {
+          return suppress("SOURCE_CHANGED");
+        }
+        if (JSON.stringify(currentPrepared.orderedValues) !== JSON.stringify(preparedValues.orderedValues)) {
+          return suppress("SOURCE_CHANGED");
+        }
+        const expectedFingerprint = createWhatsAppManualSourceFingerprint({
+          branchId: message.branch.id,
+          branchName: message.branch.name,
+          senderId: message.senderId,
+          recipientIds: activeRecipients.map(recipient => recipient.id),
+          paymentFacts: message.paymentSources.map(source => ({
+            id: source.payment.id,
+            status: source.payment.status,
+            amount: source.payment.amount,
+            dueDate: source.payment.dueDate,
+            studentId: source.payment.studentId,
+            studentName: source.payment.student.name,
+          })),
+          templateBindingId: message.templateBinding.id,
+          catalogHash: message.catalogHash,
+          settingsRevision: settings.configurationRevision,
+          managedTemplateKey: message.managedTemplateKey,
+          templateVariables: content.values,
+        });
+        if (expectedFingerprint !== message.sourceFingerprint) return suppress("SOURCE_CHANGED");
       }
-      // Pre-due FEE_RENEWAL messages intentionally have no Payment rows: they
-      // are derived from upcoming billing cycles. Shared-phone groups can also
-      // span students, leaving studentId null. Their exact source truth is
-      // revalidated above by verifyAutomaticMessageSource.
-      if (
-        message.purpose !== "FEE_RENEWAL"
-        && message.paymentSources.length === 0
-        && !message.studentId
-      ) {
-        return suppress("SOURCE_CHANGED");
+
+      if (["MANUAL_REMINDER", "FEE_RENEWAL", "PAST_DUE"].includes(message.purpose)) {
+        if (message.paymentSources.length > 0 && message.paymentSources.some(source => source.payment.status !== "DUE")) {
+          return suppress("PAYMENT_RESOLVED");
+        }
+        // Pre-due FEE_RENEWAL messages intentionally have no Payment rows: they
+        // are derived from upcoming billing cycles. Shared-phone groups can also
+        // span students, leaving studentId null. Their exact source truth is
+        // revalidated above by verifyAutomaticMessageSource.
+        if (
+          message.purpose !== "FEE_RENEWAL"
+          && message.paymentSources.length === 0
+          && !message.studentId
+        ) {
+          return suppress("SOURCE_CHANGED");
+        }
       }
-    }
-    if (message.purpose === "WELCOME") {
-      if (
-        !message.student
-        || message.student.enrollmentSource !== "MANUAL"
-        || !settings.automationEnabledAt
-        || message.student.createdAt < settings.automationEnabledAt
-      ) {
-        return suppress("SOURCE_CHANGED");
+      if (message.purpose === "WELCOME") {
+        if (
+          !message.student
+          || message.student.enrollmentSource !== "MANUAL"
+          || !settings.automationEnabledAt
+          || message.student.createdAt < settings.automationEnabledAt
+        ) {
+          return suppress("SOURCE_CHANGED");
+        }
       }
-    }
-    if (message.purpose === "PAYMENT_CONFIRMATION") {
-      const event = message.paymentResolutionEvent;
-      if (
-        !event
-        || event.source !== "PAYMENT_ACTION"
-        || event.toStatus !== "PAID"
-        || event.payment.status !== "PAID"
-        || !settings.automationEnabledAt
-        || event.occurredAt < settings.automationEnabledAt
-      ) {
-        return suppress("PAYMENT_RESOLVED");
+      if (message.purpose === "PAYMENT_CONFIRMATION") {
+        const event = message.paymentResolutionEvent;
+        if (
+          !event
+          || event.source !== "PAYMENT_ACTION"
+          || event.toStatus !== "PAID"
+          || event.payment.status !== "PAID"
+          || !settings.automationEnabledAt
+          || event.occurredAt < settings.automationEnabledAt
+        ) {
+          return suppress("PAYMENT_RESOLVED");
+        }
       }
-    }
-    if (message.purpose === "PAYMENT_CORRECTION") {
-      const event = message.paymentResolutionEvent;
-      if (
-        !event
-        || event.source !== "PAYMENT_ACTION"
-        || event.fromStatus !== "PAID"
-        || event.toStatus !== "WAIVED"
-        || event.payment.status !== "WAIVED"
-      ) {
-        return suppress("SOURCE_CHANGED");
+      if (message.purpose === "PAYMENT_CORRECTION") {
+        const event = message.paymentResolutionEvent;
+        if (
+          !event
+          || event.source !== "PAYMENT_ACTION"
+          || event.fromStatus !== "PAID"
+          || event.toStatus !== "WAIVED"
+          || event.payment.status !== "WAIVED"
+        ) {
+          return suppress("SOURCE_CHANGED");
+        }
       }
     }
 
@@ -645,26 +1086,84 @@ async function prepareSubmission(input: {
         env: input.env,
       });
     } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "DESTINATION_UNSUPPORTED")) {
+        try {
+          const configuredCard = readWhatsAppRateCard(input.env);
+          if (getWhatsAppRateCardStatus(configuredCard, submissionNow) === "EXPIRED") {
+            await WhatsAppIncidentService.createOrTouchInTransaction({
+              tx,
+              organizationId: message.organizationId,
+              branchId: message.branchId,
+              senderId: message.senderId,
+              type: "RATE_CARD_EXPIRED",
+              severity: "CRITICAL",
+              dedupeKey: `sender:${message.senderId}:rate-card`,
+              safeCode: "RATE_CARD_EXPIRED",
+              details: { rateCardVersion: configuredCard.version },
+              now: submissionNow,
+            });
+          }
+        } catch {
+          // Missing or malformed configuration fails closed without inventing
+          // an expiry incident whose provider/operator truth is unknown.
+        }
+      }
       return suppress(error instanceof Error && "code" in error && error.code === "DESTINATION_UNSUPPORTED"
         ? "DESTINATION_UNSUPPORTED"
         : "RATE_UNAVAILABLE");
     }
     let budgetMicros: number;
+    let budgetMonth: string;
+    let used: { _sum: { estimatedCostMicros: bigint | null } };
     try {
-      budgetMicros = paiseToInrMicros(validateWhatsAppMonthlyBudgetMinor(settings.monthlyBudgetMinor));
+      if (isOrganizationReport) {
+        await tx.$queryRaw(Prisma.sql`
+          SELECT "organizationId"
+          FROM "OrganizationWhatsAppReportSettings"
+          WHERE "organizationId" = ${message.organizationId}
+          FOR UPDATE
+        `);
+        const organizationSettings = await tx.organizationWhatsAppReportSettings.findFirst({
+          where: {
+            organizationId: message.organizationId,
+            senderId: message.senderId,
+            enabled: true,
+          },
+        });
+        budgetMicros = paiseToInrMicros(
+          validateWhatsAppMonthlyBudgetMinor(organizationSettings?.monthlyBudgetMinor)
+        );
+        budgetMonth = whatsappBudgetMonth(submissionNow, message.organization.timezone);
+        used = await tx.whatsAppMessage.aggregate({
+          where: {
+            organizationId: message.organizationId,
+            branchId: null,
+            purpose: "DAILY_ORGANIZATION_REPORT",
+            budgetMonth,
+            budgetState: { in: ["RESERVED", "COMMITTED"] },
+            id: { not: message.id },
+          },
+          _sum: { estimatedCostMicros: true },
+        });
+      } else {
+        if (!message.branch || !settings) throw new Error("Branch budget is unavailable");
+        budgetMicros = paiseToInrMicros(
+          validateWhatsAppMonthlyBudgetMinor(settings.monthlyBudgetMinor)
+        );
+        budgetMonth = whatsappBudgetMonth(submissionNow, message.branch.organization.timezone);
+        used = await tx.whatsAppMessage.aggregate({
+          where: {
+            branchId: message.branch.id,
+            budgetMonth,
+            budgetState: { in: ["RESERVED", "COMMITTED"] },
+            id: { not: message.id },
+          },
+          _sum: { estimatedCostMicros: true },
+        });
+      }
     } catch {
       return suppress("BUDGET_EXHAUSTED");
     }
-    const budgetMonth = whatsappBudgetMonth(submissionNow, message.branch.organization.timezone);
-    const used = await tx.whatsAppMessage.aggregate({
-      where: {
-        branchId: message.branch.id,
-        budgetMonth,
-        budgetState: { in: ["RESERVED", "COMMITTED"] },
-        id: { not: message.id },
-      },
-      _sum: { estimatedCostMicros: true },
-    });
     if ((used._sum.estimatedCostMicros ?? 0n) + BigInt(rateCard.rateMicros) > BigInt(budgetMicros)) {
       return suppress("BUDGET_EXHAUSTED");
     }
@@ -674,8 +1173,7 @@ async function prepareSubmission(input: {
       data: {
         status: "SUBMITTING",
         submissionStartedAt: submissionNow,
-        lastAttemptAt: submissionNow,
-        attemptCount: { increment: 1 },
+        providerCallAdmittedAt: null,
         budgetMonth,
         budgetState: "RESERVED",
         rateCardVersion: rateCard.version,
@@ -691,12 +1189,17 @@ async function prepareSubmission(input: {
       submission: {
         messageId: message.id,
         leaseToken: input.leaseToken,
+        organizationId: message.organizationId,
+        branchId: message.branchId,
         senderId: message.senderId,
+        serviceNoticeId: message.serviceNoticeId,
         phoneNumberId: message.sender.phoneNumberId,
         recipientPhoneE164: message.recipientPhoneE164,
         definition,
         values,
         attemptCount: message.attemptCount + 1,
+        previousAttemptCount: message.attemptCount,
+        previousLastAttemptAt: message.lastAttemptAt,
       },
     };
   });
@@ -757,7 +1260,7 @@ export function projectAttachedWhatsAppWebhookEvents(
 }
 
 async function finalizeAccepted(input: {
-  submission: PreparedSubmission;
+  submission: PreparedWhatsAppSubmission;
   result: Awaited<ReturnType<MetaWhatsAppProviderClient["sendApprovedUtilityTemplate"]>>;
   now: Date;
 }) {
@@ -789,6 +1292,12 @@ async function finalizeAccepted(input: {
       },
     });
     if (updated.count !== 1) return false;
+    await WhatsAppSenderSafetyService.recordAcceptedInTransaction({
+      tx,
+      organizationId: input.submission.organizationId,
+      senderId: input.submission.senderId,
+      at: input.now,
+    });
     await tx.whatsAppMessageEvent.create({
       data: {
         messageId: input.submission.messageId,
@@ -842,13 +1351,34 @@ async function finalizeAccepted(input: {
             projection.providerRecipientWaId ?? input.result.providerRecipientWaId,
         },
       });
+      if (projection.status === "DELIVERED" || projection.status === "READ") {
+        await WhatsAppSenderSafetyService.recordDeliveredInTransaction({
+          tx,
+          organizationId: input.submission.organizationId,
+          senderId: input.submission.senderId,
+          at: projection.deliveredAt ?? input.now,
+        });
+      }
     }
+    if (input.submission.serviceNoticeId) {
+      await WhatsAppServiceNoticeService.reconcileStatusInTransaction({
+        tx,
+        noticeId: input.submission.serviceNoticeId,
+        now: input.now,
+      });
+    }
+    await WhatsAppSenderSafetyService.finalizeRequestedPauseInTransaction({
+      tx,
+      organizationId: input.submission.organizationId,
+      senderId: input.submission.senderId,
+      now: input.now,
+    });
     return true;
   });
 }
 
 async function finalizeProviderFailure(input: {
-  submission: PreparedSubmission;
+  submission: PreparedWhatsAppSubmission;
   disposition: DispatchErrorDisposition;
   error: unknown;
   now: Date;
@@ -861,44 +1391,92 @@ async function finalizeProviderFailure(input: {
         ? input.error.retryAfterSeconds
         : null,
     });
-    const result = await prisma.whatsAppMessage.updateMany({
+    return prisma.$transaction(async tx => {
+      const result = await tx.whatsAppMessage.updateMany({
+        where: {
+          id: input.submission.messageId,
+          leaseToken: input.submission.leaseToken,
+          status: "SUBMITTING",
+        },
+        data: {
+          status: "SCHEDULED",
+          submissionStartedAt: null,
+          providerCallAdmittedAt: null,
+          availableAt: retryAt,
+          failureCode: "PROVIDER_RATE_LIMIT",
+          budgetState: "RESERVED",
+          leaseToken: null,
+          leaseUntil: null,
+        },
+      });
+      if (result.count !== 1) return "STALE" as const;
+      await WhatsAppSenderSafetyService.finalizeRequestedPauseInTransaction({
+        tx,
+        organizationId: input.submission.organizationId,
+        senderId: input.submission.senderId,
+        now: input.now,
+      });
+      return "RETRIED" as const;
+    });
+  }
+  const ambiguous = input.disposition === "AMBIGUOUS";
+  return prisma.$transaction(async tx => {
+    const result = await tx.whatsAppMessage.updateMany({
       where: {
         id: input.submission.messageId,
         leaseToken: input.submission.leaseToken,
         status: "SUBMITTING",
       },
       data: {
-        status: "SCHEDULED",
-        submissionStartedAt: null,
-        availableAt: retryAt,
-        failureCode: "PROVIDER_RATE_LIMIT",
-        budgetState: "RESERVED",
+        status: ambiguous ? "UNKNOWN" : "FAILED",
+        failureCode: ambiguous ? "PROVIDER_UNKNOWN_OUTCOME" : "PROVIDER_REJECTED",
+        safeFailureMessage: ambiguous
+          ? "Provider acceptance could not be confirmed. Lab Lords will not retry automatically because that could send a duplicate message."
+          : "The provider did not accept this message",
+        ...(ambiguous ? {} : { failedAt: input.now }),
+        budgetState: ambiguous ? "COMMITTED" : "RELEASED",
         leaseToken: null,
         leaseUntil: null,
       },
     });
-    return result.count === 1 ? "RETRIED" as const : "STALE" as const;
-  }
-  const ambiguous = input.disposition === "AMBIGUOUS";
-  const result = await prisma.whatsAppMessage.updateMany({
-    where: {
-      id: input.submission.messageId,
-      leaseToken: input.submission.leaseToken,
-      status: "SUBMITTING",
-    },
-    data: {
-      status: ambiguous ? "UNKNOWN" : "FAILED",
-      failureCode: ambiguous ? "PROVIDER_UNKNOWN_OUTCOME" : "PROVIDER_REJECTED",
-      safeFailureMessage: ambiguous
-        ? "Provider acceptance could not be confirmed. Lab Lords will not retry automatically because that could send a duplicate message."
-        : "The provider did not accept this message",
-      ...(ambiguous ? {} : { failedAt: input.now }),
-      budgetState: ambiguous ? "COMMITTED" : "RELEASED",
-      leaseToken: null,
-      leaseUntil: null,
-    },
+    if (result.count !== 1) return "STALE" as const;
+    if (ambiguous) {
+      await WhatsAppSenderSafetyService.recordAmbiguousOutcomeInTransaction({
+        tx,
+        organizationId: input.submission.organizationId,
+        branchId: input.submission.branchId,
+        senderId: input.submission.senderId,
+        messageId: input.submission.messageId,
+        now: input.now,
+      });
+    } else if (input.error instanceof MetaWhatsAppProviderError) {
+      await WhatsAppSenderSafetyService.recordDefiniteFailureInTransaction({
+        tx,
+        organizationId: input.submission.organizationId,
+        senderId: input.submission.senderId,
+        evidence: {
+          kind: input.error.kind,
+          providerCode: input.error.providerCode,
+          providerSubcode: input.error.providerSubcode,
+        },
+        now: input.now,
+      });
+    }
+    if (input.submission.serviceNoticeId) {
+      await WhatsAppServiceNoticeService.reconcileStatusInTransaction({
+        tx,
+        noticeId: input.submission.serviceNoticeId,
+        now: input.now,
+      });
+    }
+    await WhatsAppSenderSafetyService.finalizeRequestedPauseInTransaction({
+      tx,
+      organizationId: input.submission.organizationId,
+      senderId: input.submission.senderId,
+      now: input.now,
+    });
+    return ambiguous ? "UNKNOWN" as const : "FAILED" as const;
   });
-  return result.count !== 1 ? "STALE" as const : ambiguous ? "UNKNOWN" as const : "FAILED" as const;
 }
 
 export class WhatsAppDispatcherService {
@@ -906,6 +1484,7 @@ export class WhatsAppDispatcherService {
     now?: Date;
     clock?: DispatchClock;
     limit?: number;
+    invocationId?: string;
     env?: Readonly<Record<string, string | undefined>>;
     provider?: MetaWhatsAppProviderClient;
   } = {}) {
@@ -932,10 +1511,50 @@ export class WhatsAppDispatcherService {
       };
     }
 
-    const organizationScope = resolveWhatsAppDispatchOrganizationScope(env);
-    const claim = await claimMessages(batchNow, limit, organizationScope);
-    const counts = {
+    const started = await WhatsAppJobRunService.start({
+      jobType: "DISPATCHER",
+      invocationId: input.invocationId ?? `dispatcher:${randomUUID()}`,
+      providerMode: resolveWhatsAppProviderMode(env),
+      now: batchNow,
+    });
+    if (!started.created) {
+      return {
+        held: started.run.status === "HELD",
+        replayed: true as const,
+        status: started.run.status,
+        messagesClaimed: 0,
+        messagesAccepted: 0,
+        messagesRetried: 0,
+        messagesFailed: 0,
+        messagesUnknown: 0,
+        messagesSuppressed: 0,
+        staleClaimsRecovered: 0,
+        staleSubmissionsMarkedUnknown: 0,
+        backlogRemaining: 0,
+      };
+    }
+    const evidenceCounts = {
+      messagesClaimed: 0,
+      messagesAccepted: 0,
+      messagesRetried: 0,
+      messagesFailed: 0,
+      messagesUnknown: 0,
+      messagesSuppressed: 0,
+      staleClaimsRecovered: 0,
+      staleSubmissionsMarkedUnknown: 0,
+      backlogRemaining: 0,
+    };
+    try {
+      const organizationScope = resolveWhatsAppDispatchOrganizationScope(env);
+      const claim = await claimMessages(
+        batchNow,
+        limit,
+        organizationScope,
+        resolveWhatsAppProviderMode(env)
+      );
+      const counts = {
       held: false,
+      replayed: false as const,
       messagesClaimed: claim.claimed.length,
       messagesAccepted: 0,
       messagesRetried: 0,
@@ -945,9 +1564,9 @@ export class WhatsAppDispatcherService {
       staleClaimsRecovered: claim.staleClaimed,
       staleSubmissionsMarkedUnknown: claim.staleSubmitting,
       backlogRemaining: 0,
-    };
-    const provider = input.provider ?? getMetaWhatsAppClient();
-    for (const claimed of claim.claimed) {
+      };
+      const provider = input.provider ?? getMetaWhatsAppClient();
+      for (const claimed of claim.claimed) {
       if (!areWhatsAppMessageWritesEnabled(claimed.organizationId, env)) {
         await releaseClaim({ messageId: claimed.id, leaseToken: claimed.leaseToken });
         continue;
@@ -963,6 +1582,12 @@ export class WhatsAppDispatcherService {
         continue;
       }
       if (prepared.kind !== "READY") continue;
+      const admission = await admitPreparedWhatsAppSubmission({
+        submission: prepared.submission,
+        admittedAt: operationClock(),
+        clock: operationClock,
+      });
+      if (admission !== "READY") continue;
       try {
         const result = await provider.sendApprovedUtilityTemplate({
           phoneNumberId: prepared.submission.phoneNumberId,
@@ -989,16 +1614,47 @@ export class WhatsAppDispatcherService {
         if (outcome === "FAILED") counts.messagesFailed += 1;
         if (outcome === "UNKNOWN") counts.messagesUnknown += 1;
       }
+      }
+      counts.backlogRemaining = await prisma.whatsAppMessage.count({
+        where: {
+          status: "SCHEDULED",
+          availableAt: { lte: batchNow },
+          ...(organizationScope === null
+            ? {}
+            : { organizationId: { in: organizationScope } }),
+        },
+      });
+      Object.assign(evidenceCounts, {
+        messagesClaimed: counts.messagesClaimed,
+        messagesAccepted: counts.messagesAccepted,
+        messagesRetried: counts.messagesRetried,
+        messagesFailed: counts.messagesFailed,
+        messagesUnknown: counts.messagesUnknown,
+        messagesSuppressed: counts.messagesSuppressed,
+        staleClaimsRecovered: counts.staleClaimsRecovered,
+        staleSubmissionsMarkedUnknown: counts.staleSubmissionsMarkedUnknown,
+        backlogRemaining: counts.backlogRemaining,
+      });
+      const jobStatus = counts.messagesFailed > 0 || counts.messagesUnknown > 0
+        ? "PARTIAL" as const
+        : "SUCCEEDED" as const;
+      await WhatsAppJobRunService.finish({
+        runId: started.run.id,
+        status: jobStatus,
+        counts: evidenceCounts,
+        safeErrorCode: jobStatus === "PARTIAL" ? "DISPATCH_REVIEW_REQUIRED" : null,
+        now: operationClock(),
+      });
+      return { ...counts, status: jobStatus };
+    } catch (error) {
+      await WhatsAppJobRunService.finish({
+        runId: started.run.id,
+        status: "FAILED",
+        counts: evidenceCounts,
+        safeErrorCode: "DISPATCHER_FAILED",
+        now: operationClock(),
+      });
+      throw error;
     }
-    counts.backlogRemaining = await prisma.whatsAppMessage.count({
-      where: {
-        status: "SCHEDULED",
-        availableAt: { lte: batchNow },
-        ...(organizationScope === null
-          ? {}
-          : { organizationId: { in: organizationScope } }),
-      },
-    });
-    return counts;
   }
 }

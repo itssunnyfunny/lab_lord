@@ -4,12 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const tx = {
     $queryRaw: vi.fn(),
+    whatsAppSender: {
+      updateMany: vi.fn(),
+    },
+    whatsAppReportSubscription: {
+      updateMany: vi.fn(),
+    },
     whatsAppWebhookReceipt: {
       findFirst: vi.fn(),
       updateMany: vi.fn(),
     },
     whatsAppMessage: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       findUnique: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -48,6 +55,9 @@ const mocks = vi.hoisted(() => {
     schemaProbe: vi.fn(),
     transaction: vi.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
     disableSenderPhone: vi.fn(),
+    recordDelivered: vi.fn(),
+    resolveIncident: vi.fn(),
+    createOrTouchIncident: vi.fn(),
   };
 });
 
@@ -74,6 +84,19 @@ vi.mock("@/lib/whatsappSchema", () => ({
 vi.mock("@/services/whatsappRecipient.service", () => ({
   WhatsAppRecipientService: {
     disableSenderPhoneInTransaction: mocks.disableSenderPhone,
+  },
+}));
+
+vi.mock("@/services/whatsappSenderSafety.service", () => ({
+  WhatsAppSenderSafetyService: {
+    recordDeliveredInTransaction: mocks.recordDelivered,
+  },
+}));
+
+vi.mock("@/services/whatsappIncident.service", () => ({
+  WhatsAppIncidentService: {
+    resolveInTransaction: mocks.resolveIncident,
+    createOrTouchInTransaction: mocks.createOrTouchIncident,
   },
 }));
 
@@ -144,11 +167,17 @@ beforeEach(() => {
   mocks.schemaProbe.mockResolvedValue(false);
   mocks.tx.whatsAppWebhookReceipt.findFirst.mockResolvedValue({ id: "receipt_1" });
   mocks.tx.$queryRaw.mockResolvedValue([{ id: "sender_1" }]);
+  mocks.tx.whatsAppSender.updateMany.mockResolvedValue({ count: 1 });
+  mocks.tx.whatsAppReportSubscription.updateMany.mockResolvedValue({ count: 0 });
   mocks.tx.whatsAppWebhookReceipt.updateMany.mockResolvedValue({ count: 1 });
   mocks.tx.whatsAppMessageEvent.createMany.mockResolvedValue({ count: 1 });
   mocks.tx.whatsAppMessageEvent.deleteMany.mockResolvedValue({ count: 0 });
   mocks.tx.whatsAppMessageEvent.updateMany.mockResolvedValue({ count: 1 });
+  mocks.tx.whatsAppMessage.findMany.mockResolvedValue([]);
   mocks.tx.whatsAppMessage.updateMany.mockResolvedValue({ count: 1 });
+  mocks.recordDelivered.mockResolvedValue(undefined);
+  mocks.resolveIncident.mockResolvedValue({ count: 0 });
+  mocks.createOrTouchIncident.mockResolvedValue({ id: "incident_1" });
   mocks.disableSenderPhone.mockResolvedValue({
     disabledCount: 0,
     cancelledCount: 0,
@@ -574,6 +603,7 @@ describe("WhatsApp webhook durable processing", () => {
           disabledRecipientCount: 2,
           cancelledMessageCount: 3,
           releasedReservationCount: 3,
+          pausedReportSubscriptionCount: 0,
         },
       }),
     });
