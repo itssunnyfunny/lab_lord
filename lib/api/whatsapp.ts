@@ -354,6 +354,321 @@ export type WhatsAppMessageHistoryResponse = {
   total: number;
 };
 
+export type WhatsAppReportScope = "BRANCH" | "ORGANIZATION";
+export type WhatsAppReportSubscriptionStatus =
+  | "PENDING_CONFIRMATION"
+  | "ACTIVE"
+  | "PAUSED"
+  | "REVOKED"
+  | "STALE"
+  | "EXPIRED";
+
+/** Browser-safe report subscription. Raw phones and confirmation hashes are absent. */
+export type WhatsAppReportSubscription = {
+  id: string;
+  organizationId: string;
+  branchId: string | null;
+  scope: WhatsAppReportScope;
+  senderId: string;
+  maskedPhone: string;
+  language: WhatsAppManagedLanguage;
+  sendTimeLocal: string;
+  status: WhatsAppReportSubscriptionStatus;
+  confirmationExpiresAt: string | null;
+  confirmationAttemptCount: number;
+  activatedAt: string | null;
+  pausedAt: string | null;
+  revokedAt: string | null;
+  staleAt: string | null;
+  lastPlannedAt: string | null;
+  lastPlannedLocalDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WhatsAppReportSubscriptionResponse = {
+  /** Missing is treated as false so older or held servers fail closed. */
+  operationsUiEnabled?: boolean;
+  subscription: WhatsAppReportSubscription | null;
+};
+
+export type WhatsAppReportConfirmationResponse = {
+  subscription: WhatsAppReportSubscription;
+  confirmationCode: string;
+};
+
+export type WhatsAppReportSubscriptionMutationResponse = {
+  changed: boolean;
+  cancelledMessages: number;
+  subscription: WhatsAppReportSubscription;
+};
+
+export type WhatsAppOrganizationReportSettings = {
+  enabled: boolean;
+  sender: {
+    id: string;
+    verifiedName: string | null;
+    maskedPhone: string;
+    status: WhatsAppSenderStatus;
+  } | null;
+  monthlyBudgetMinor: number | null;
+  configurationRevision: number;
+  updatedAt: string | null;
+};
+
+export type WhatsAppOrganizationReportSettingsResponse = {
+  /** Missing is treated as false so older or held servers fail closed. */
+  operationsUiEnabled?: boolean;
+  settings: WhatsAppOrganizationReportSettings;
+};
+
+export type WhatsAppOrganizationReportSettingsUpdate = Partial<{
+  senderId: string | null;
+  enabled: boolean;
+  monthlyBudgetMinor: number | null;
+}>;
+
+export type WhatsAppOrganizationReportSettingsMutationResponse = {
+  updated: true;
+  settings: {
+    enabled: boolean;
+    senderId: string | null;
+    monthlyBudgetMinor: number | null;
+    configurationRevision: number;
+    updatedAt: string;
+  };
+  staleSubscriptions: number;
+  cancelledMessages: number;
+};
+
+export type WhatsAppDailyReportMetrics = {
+  localReportDate: string;
+  asOfLocalTime: string;
+  paymentsRecordedTodayCount: number;
+  paymentsRecordedTodayAmount: number;
+  newStudentsToday: number;
+  activeStudents: number;
+  usedShiftSlots: number;
+  totalShiftCapacity: number;
+  openDueCount: number;
+  openDueAmount: number;
+  overdueCount: number;
+  overdueAmount: number;
+  whatsAppAcceptedToday: number;
+  whatsAppDeliveredToday: number;
+  whatsAppFailedToday: number;
+  whatsAppUnknownToday: number;
+} & (
+  | { branchName: string }
+  | { organizationName: string; branchCount: number }
+);
+
+export type WhatsAppDailyReportPreview = {
+  scope: WhatsAppReportScope;
+  localReportDate: string;
+  scheduledCutoffAt: string;
+  catchUpEndsAt: string;
+  metricsVersion: number;
+  metrics: WhatsAppDailyReportMetrics;
+  template: {
+    managedKey: string;
+    language: WhatsAppManagedLanguage;
+    renderedPreview: string;
+  };
+  estimate: {
+    currency: "INR";
+    estimatedCostMicros: string;
+    rateCardVersion: string;
+    rateCardExpiresAt: string;
+    disclaimer: string;
+  };
+  alreadyQueued: boolean;
+};
+
+export type WhatsAppDailyReportQueueResult = {
+  replayed: boolean;
+  localReportDate: string;
+  message: {
+    id: string;
+    status: string;
+    trigger: "MANUAL" | "AUTOMATION";
+    scheduledFor: string;
+    localScheduleDate: string | null;
+    rateCardVersion: string | null;
+    estimatedCostMicros: string | null;
+    dailyReportSnapshotId: string | null;
+    reportSubscriptionId: string | null;
+    createdAt: string;
+  };
+};
+
+export type WhatsAppServiceNoticeDraft = {
+  type: "BRANCH_CLOSED" | "HOURS_CHANGED" | "MAINTENANCE_WINDOW";
+  reason: "PUBLIC_HOLIDAY" | "LOCAL_HOLIDAY" | "MAINTENANCE" | "EMERGENCY" | "ADMINISTRATIVE";
+  localEffectiveDate: string;
+  resumeLocalDate: string | null;
+  openingTimeLocal: string | null;
+  closingTimeLocal: string | null;
+  maintenanceStartTimeLocal: string | null;
+  maintenanceEndTimeLocal: string | null;
+  delivery: "IMMEDIATE" | "SCHEDULED";
+  scheduledForLocal: string | null;
+};
+
+export type WhatsAppServiceNoticePreview = {
+  renderedPreview: string;
+  eligibleRecipientCount: number;
+  suppressedCount: number;
+  estimatedCostMicros: string;
+  currency: "INR";
+  rateCardVersion: string;
+  scheduledFor: string;
+  budgetRemainingAfterMicros: string;
+  estimateDisclaimer: string;
+};
+
+export type WhatsAppServiceNotice = {
+  id: string;
+  type: WhatsAppServiceNoticeDraft["type"];
+  reason: WhatsAppServiceNoticeDraft["reason"];
+  localEffectiveDate: string;
+  status: "QUEUED" | "PARTIAL" | "COMPLETED" | "CANCELLED" | "FAILED";
+  eligibleRecipientCount: number;
+  queuedMessageCount: number;
+  suppressedCount: number;
+  scheduledFor: string;
+  estimatedCostMicros: string;
+  rateCardVersion: string;
+  canCancel: boolean;
+  queuedAt: string | null;
+  cancelledAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+};
+
+export type WhatsAppServiceNoticeListResponse = {
+  notices: WhatsAppServiceNotice[];
+};
+
+export type WhatsAppServiceNoticeQueueResult = {
+  replayed?: boolean;
+  noticeId: string;
+  status: WhatsAppServiceNotice["status"];
+  queuedMessageCount: number;
+  suppressedCount: number;
+  preview?: WhatsAppServiceNoticePreview;
+};
+
+export type WhatsAppOperationalIncident = {
+  id: string;
+  organizationId: string;
+  branchId: string | null;
+  senderId: string | null;
+  messageId: string | null;
+  type:
+    | "UNKNOWN_DELIVERY"
+    | "SENDER_RESTRICTED"
+    | "TEMPLATE_UNAVAILABLE"
+    | "WEBHOOK_STALE"
+    | "PLANNER_STALE"
+    | "DISPATCH_BACKLOG"
+    | "RATE_CARD_EXPIRED"
+    | "REPORT_FAILURE"
+    | "CIRCUIT_BREAKER_OPEN";
+  severity: "INFO" | "WARNING" | "CRITICAL";
+  status: "OPEN" | "ACKNOWLEDGED" | "RESOLVED";
+  safeCode: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  occurrenceCount: number;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+  resolutionCode: string | null;
+};
+
+export type WhatsAppUnknownMessage = {
+  id: string;
+  organizationId: string;
+  branchId: string | null;
+  senderId: string;
+  purpose: string;
+  scheduledFor: string;
+  submissionStartedAt: string | null;
+  estimatedCostMicros: string | null;
+  reportSubscriptionId: string | null;
+  dailyReportSnapshotId: string | null;
+  serviceNoticeId: string | null;
+  paymentResolutionEventId: string | null;
+  providerStatusTimestamp: string | null;
+  maskedRecipient: string;
+  laterWebhookArrived: boolean;
+};
+
+export type WhatsAppIncidentListResponse = {
+  incidents: WhatsAppOperationalIncident[];
+  unknownMessages: WhatsAppUnknownMessage[];
+};
+
+export type WhatsAppSenderSafety = {
+  senderLabel: string;
+  senderStatus: "ACTIVE" | "INACTIVE" | "RESTRICTED" | "UNKNOWN";
+  paused: boolean;
+  pausePending: boolean;
+  pauseReason:
+    | "AMBIGUOUS_OUTCOME_BURST"
+    | "DEFINITE_FAILURE_BURST"
+    | "PROVIDER_RESTRICTED"
+    | "RATE_CARD_EXPIRED"
+    | "OWNER_PAUSED"
+    | "OPERATOR_PAUSED"
+    | null;
+  pausedAt: string | null;
+  pauseRequestedAt: string | null;
+  pauseRevision: number;
+  ambiguousOutcomeCount: number;
+  ambiguousWindowStartedAt: string | null;
+  definiteFailureCount: number;
+  failureWindowStartedAt: string | null;
+  unknownOutcomeCount: number;
+  openCriticalIncidentCount: number;
+  lastAcceptedAt: string | null;
+  lastDeliveredAt: string | null;
+  lastHealthCheckAt: string | null;
+  lastHealthyAt: string | null;
+  providerRestricted: boolean;
+  templatesHealthy: boolean;
+  rateCardState: "CURRENT" | "EXPIRING" | "EXPIRED" | "UNAVAILABLE";
+  rateCardVersion: string | null;
+  rateCardExpiresAt: string | null;
+  resumeEligible: boolean;
+  resumeBlockers: Array<
+    | "PAUSE_DRAINING"
+    | "SENDER_NOT_ACTIVE"
+    | "RATE_CARD_NOT_CURRENT"
+    | "HEALTH_RECONCILIATION_STALE"
+    | "PROVIDER_RESTRICTED"
+    | "TEMPLATES_UNHEALTHY"
+    | "CRITICAL_INCIDENT_OPEN"
+  >;
+};
+
+export type WhatsAppSenderPauseResult = {
+  changed: boolean;
+  paused: boolean;
+  pausePending: boolean;
+  pauseReason: WhatsAppSenderSafety["pauseReason"];
+  pauseRequestedAt: string | null;
+  pauseRevision: number;
+};
+
+export type WhatsAppSenderResumeResult = {
+  changed: boolean;
+  paused: boolean;
+  pausePending: boolean;
+  pauseRevision: number | null;
+  unknownRetried: false;
+};
+
 function organizationBase(organizationId: string) {
   return `/organizations/${encodeURIComponent(organizationId)}/whatsapp`;
 }
@@ -598,5 +913,219 @@ export const whatsapp = {
     if (input.limit !== undefined) query.set("limit", String(input.limit));
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
     return apiClient.get(`${branchBase(branchId)}/messages${suffix}`);
+  },
+
+  getBranchReportSubscription(branchId: string): Promise<WhatsAppReportSubscriptionResponse> {
+    return apiClient.get(`${branchBase(branchId)}/report-subscription`);
+  },
+
+  createBranchReportSubscription(
+    branchId: string,
+    input: { phone: string; language: WhatsAppManagedLanguage; sendTimeLocal: string }
+  ): Promise<WhatsAppReportConfirmationResponse> {
+    return apiClient.post(`${branchBase(branchId)}/report-subscription`, input, {
+      headers: mutationHeaders(),
+    });
+  },
+
+  reissueBranchReportSubscription(branchId: string): Promise<WhatsAppReportConfirmationResponse> {
+    return apiClient.post(`${branchBase(branchId)}/report-subscription/reissue`, {}, {
+      headers: mutationHeaders(),
+    });
+  },
+
+  pauseBranchReportSubscription(branchId: string): Promise<WhatsAppReportSubscriptionMutationResponse> {
+    return apiClient.post(`${branchBase(branchId)}/report-subscription/pause`, {}, {
+      headers: mutationHeaders(),
+    });
+  },
+
+  revokeBranchReportSubscription(
+    branchId: string,
+    subscriptionId?: string
+  ): Promise<WhatsAppReportSubscriptionMutationResponse> {
+    return apiClient.post(
+      `${branchBase(branchId)}/report-subscription/revoke`,
+      subscriptionId ? { subscriptionId } : {},
+      { headers: mutationHeaders() }
+    );
+  },
+
+  getOrganizationReportSubscription(organizationId: string): Promise<WhatsAppReportSubscriptionResponse> {
+    return apiClient.get(`${organizationBase(organizationId)}/report-subscription`);
+  },
+
+  createOrganizationReportSubscription(
+    organizationId: string,
+    input: { phone: string; language: WhatsAppManagedLanguage; sendTimeLocal: string }
+  ): Promise<WhatsAppReportConfirmationResponse> {
+    return apiClient.post(`${organizationBase(organizationId)}/report-subscription`, input, {
+      headers: mutationHeaders(),
+    });
+  },
+
+  reissueOrganizationReportSubscription(organizationId: string): Promise<WhatsAppReportConfirmationResponse> {
+    return apiClient.post(`${organizationBase(organizationId)}/report-subscription/reissue`, {}, {
+      headers: mutationHeaders(),
+    });
+  },
+
+  pauseOrganizationReportSubscription(organizationId: string): Promise<WhatsAppReportSubscriptionMutationResponse> {
+    return apiClient.post(`${organizationBase(organizationId)}/report-subscription/pause`, {}, {
+      headers: mutationHeaders(),
+    });
+  },
+
+  revokeOrganizationReportSubscription(
+    organizationId: string,
+    subscriptionId?: string
+  ): Promise<WhatsAppReportSubscriptionMutationResponse> {
+    return apiClient.post(
+      `${organizationBase(organizationId)}/report-subscription/revoke`,
+      subscriptionId ? { subscriptionId } : {},
+      { headers: mutationHeaders() }
+    );
+  },
+
+  getOrganizationReportSettings(
+    organizationId: string
+  ): Promise<WhatsAppOrganizationReportSettingsResponse> {
+    return apiClient.get(`${organizationBase(organizationId)}/report-settings`);
+  },
+
+  updateOrganizationReportSettings(
+    organizationId: string,
+    changes: WhatsAppOrganizationReportSettingsUpdate
+  ): Promise<WhatsAppOrganizationReportSettingsMutationResponse> {
+    return apiClient.patch(`${organizationBase(organizationId)}/report-settings`, changes, {
+      headers: mutationHeaders(),
+    });
+  },
+
+  previewBranchDailyReport(branchId: string): Promise<WhatsAppDailyReportPreview> {
+    return apiClient.post(`${branchBase(branchId)}/reports/preview`, {});
+  },
+
+  queueBranchDailyReport(
+    branchId: string,
+    idempotencyKey: string
+  ): Promise<WhatsAppDailyReportQueueResult> {
+    return apiClient.post(`${branchBase(branchId)}/reports/queue-today`, {}, {
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+  },
+
+  previewOrganizationDailyReport(
+    organizationId: string
+  ): Promise<WhatsAppDailyReportPreview> {
+    return apiClient.post(`${organizationBase(organizationId)}/reports/preview`, {});
+  },
+
+  queueOrganizationDailyReport(
+    organizationId: string,
+    idempotencyKey: string
+  ): Promise<WhatsAppDailyReportQueueResult> {
+    return apiClient.post(`${organizationBase(organizationId)}/reports/queue-today`, {}, {
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+  },
+
+  listBranchServiceNotices(
+    branchId: string,
+    limit = 20
+  ): Promise<WhatsAppServiceNoticeListResponse> {
+    return apiClient.get(`${branchBase(branchId)}/service-notices?limit=${limit}`);
+  },
+
+  previewBranchServiceNotice(
+    branchId: string,
+    draft: WhatsAppServiceNoticeDraft
+  ): Promise<WhatsAppServiceNoticePreview> {
+    return apiClient.post(`${branchBase(branchId)}/service-notices/preview`, draft);
+  },
+
+  queueBranchServiceNotice(
+    branchId: string,
+    draft: WhatsAppServiceNoticeDraft,
+    idempotencyKey: string
+  ): Promise<WhatsAppServiceNoticeQueueResult> {
+    return apiClient.post(
+      `${branchBase(branchId)}/service-notices`,
+      { ...draft, confirmCustomerCharge: true },
+      { headers: { "Idempotency-Key": idempotencyKey } }
+    );
+  },
+
+  cancelBranchServiceNotice(
+    branchId: string,
+    noticeId: string
+  ): Promise<WhatsAppServiceNoticeQueueResult> {
+    return apiClient.post(
+      `${branchBase(branchId)}/service-notices/${encodeURIComponent(noticeId)}/cancel`,
+      { confirmation: true },
+      { headers: mutationHeaders() }
+    );
+  },
+
+  listBranchIncidents(branchId: string, limit = 50): Promise<WhatsAppIncidentListResponse> {
+    return apiClient.get(`${branchBase(branchId)}/incidents?limit=${limit}`);
+  },
+
+  acknowledgeBranchIncident(
+    branchId: string,
+    incidentId: string
+  ): Promise<WhatsAppOperationalIncident> {
+    return apiClient.post(
+      `${branchBase(branchId)}/incidents/${encodeURIComponent(incidentId)}/acknowledge`,
+      { confirmation: true },
+      { headers: mutationHeaders() }
+    );
+  },
+
+  listOrganizationIncidents(
+    organizationId: string,
+    limit = 50
+  ): Promise<WhatsAppIncidentListResponse> {
+    return apiClient.get(`${organizationBase(organizationId)}/incidents?limit=${limit}`);
+  },
+
+  acknowledgeOrganizationIncident(
+    organizationId: string,
+    incidentId: string
+  ): Promise<WhatsAppOperationalIncident> {
+    return apiClient.post(
+      `${organizationBase(organizationId)}/incidents/${encodeURIComponent(incidentId)}/acknowledge`,
+      { confirmation: true },
+      { headers: mutationHeaders() }
+    );
+  },
+
+  getSenderSafety(
+    organizationId: string,
+    senderId: string
+  ): Promise<WhatsAppSenderSafety> {
+    return apiClient.get(`${senderBase(organizationId, senderId)}/safety`);
+  },
+
+  pauseSenderDelivery(
+    organizationId: string,
+    senderId: string
+  ): Promise<WhatsAppSenderPauseResult> {
+    return apiClient.post(
+      `${senderBase(organizationId, senderId)}/pause`,
+      { confirmation: true },
+      { headers: mutationHeaders() }
+    );
+  },
+
+  resumeSenderDelivery(
+    organizationId: string,
+    senderId: string
+  ): Promise<WhatsAppSenderResumeResult> {
+    return apiClient.post(
+      `${senderBase(organizationId, senderId)}/resume`,
+      { confirmation: true },
+      { headers: mutationHeaders() }
+    );
   },
 };
