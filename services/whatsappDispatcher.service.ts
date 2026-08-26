@@ -704,6 +704,28 @@ async function prepareSubmission(input: {
           now: validationNow,
         });
       }
+      if (
+        changed
+        && ["DAILY_BRANCH_REPORT", "DAILY_ORGANIZATION_REPORT"].includes(message.purpose)
+        && ["REPORT_TRUST_WINDOW_EXPIRED", "REPORT_METRICS_UNAVAILABLE"].includes(code)
+      ) {
+        await WhatsAppIncidentService.createOrTouchInTransaction({
+          tx,
+          organizationId: message.organizationId,
+          branchId: message.branchId,
+          senderId: message.senderId,
+          messageId: message.id,
+          type: "REPORT_FAILURE",
+          severity: "WARNING",
+          dedupeKey: `report-message-untrustworthy:${message.id}`,
+          safeCode: code,
+          details: {
+            scope: message.purpose === "DAILY_BRANCH_REPORT" ? "BRANCH" : "ORGANIZATION",
+            reasonCode: code,
+          },
+          now: validationNow,
+        });
+      }
       return { kind: "SUPPRESSED" as const, code };
     };
     const hold = async (code: string) => {

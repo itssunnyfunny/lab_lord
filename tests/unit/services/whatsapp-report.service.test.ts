@@ -3,14 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import { hashWhatsAppReportConfirmationCode } from "@/lib/whatsappReportConfirmation";
 import {
-  createWhatsAppReportSourceFingerprint,
-  hashWhatsAppReportMetrics,
-} from "@/lib/whatsappReportMetrics";
-import {
   loadOrCreateWhatsAppReportSnapshotInTransaction,
   verifyWhatsAppReportMessageSource,
   WhatsAppReportService,
 } from "@/services/whatsappReport.service";
+
+const mocks = vi.hoisted(() => ({
+  getDailyReportMetrics: vi.fn(),
+}));
+
+vi.mock("@/analytics/whatsapp-report.analytics", () => ({
+  getWhatsAppDailyReportMetrics: mocks.getDailyReportMetrics,
+}));
 
 const ENABLED_ENV = {
   WHATSAPP_INTEGRATION_ENABLED: "true",
@@ -20,12 +24,18 @@ const ENABLED_ENV = {
 };
 
 describe("WhatsApp report service safety", () => {
-  it("reuses an immutable same-cutoff snapshot and rejects a conflicting cutoff", async () => {
-    const cutoff = new Date("2026-08-23T15:30:00.000Z");
-    const metrics = {
+  it("shares one immutable snapshot for the same cutoff and creates one per distinct cutoff", async () => {
+    const firstCutoff = new Date("2026-08-23T15:30:00.000Z");
+    const firstMetricsAsOf = new Date("2026-08-23T15:35:00.000Z");
+    const laterSameCutoffAsOf = new Date("2026-08-23T15:40:00.000Z");
+    const secondCutoff = new Date("2026-08-23T16:00:00.000Z");
+    const secondMetricsAsOf = new Date("2026-08-23T16:05:00.000Z");
+    const snapshots = new Map<string, Record<string, unknown>>();
+    const metricsFor = (metricsAsOfAt: Date, asOfLocalTime: string) => ({
       branchName: "Central",
       localReportDate: "2026-08-23",
-      asOfLocalTime: "21:00",
+      metricsAsOfAt: metricsAsOfAt.toISOString(),
+      asOfLocalTime,
       paymentsRecordedTodayCount: 3,
       paymentsRecordedTodayAmount: 12_000,
       newStudentsToday: 2,
@@ -40,36 +50,32 @@ describe("WhatsApp report service safety", () => {
       whatsAppDeliveredToday: 7,
       whatsAppFailedToday: 1,
       whatsAppUnknownToday: 0,
-    };
-    const snapshot = {
-      id: "snapshot_1",
-      organizationId: "org_1",
-      branchId: "branch_1",
-      scope: "BRANCH" as const,
-      scopeKey: "branch_1",
-      localReportDate: "2026-08-23",
-      timeZone: "Asia/Kolkata",
-      scheduledCutoffAt: cutoff,
-      generatedAt: cutoff,
-      metricsVersion: 1,
-      metrics,
-      metricsHash: hashWhatsAppReportMetrics(metrics),
-      sourceFingerprint: createWhatsAppReportSourceFingerprint({
-        scope: "BRANCH",
-        scopeKey: "branch_1",
-        localReportDate: "2026-08-23",
-        scheduledCutoffAt: cutoff,
-      }),
-      createdAt: cutoff,
-    };
-    const snapshotCreate = vi.fn();
-    const messageCreate = vi.fn();
+    });
+    mocks.getDailyReportMetrics.mockImplementation(async (_tx, input) => (
+      metricsFor(
+        input.metricsAsOfAt,
+        input.metricsAsOfAt.getTime() === firstMetricsAsOf.getTime() ? "21:05" : "21:35"
+      )
+    ));
+    const snapshotFindUnique = vi.fn(async input => {
+      const identity = input.where
+        .scope_scopeKey_localReportDate_scheduledCutoffAt_metricsVersion;
+      return snapshots.get(identity.scheduledCutoffAt.toISOString()) ?? null;
+    });
+    const snapshotCreate = vi.fn(async input => {
+      const snapshot = {
+        id: `snapshot_${snapshots.size + 1}`,
+        ...input.data,
+        createdAt: input.data.metricsAsOfAt,
+      };
+      snapshots.set(input.data.scheduledCutoffAt.toISOString(), snapshot);
+      return snapshot;
+    });
     const tx = {
       whatsAppDailyReportSnapshot: {
-        findUnique: vi.fn().mockResolvedValue(snapshot),
+        findUnique: snapshotFindUnique,
         create: snapshotCreate,
       },
-      whatsAppMessage: { create: messageCreate },
     } as unknown as Prisma.TransactionClient;
     const scope = {
       scope: "BRANCH" as const,
@@ -80,22 +86,48 @@ describe("WhatsApp report service safety", () => {
       ownerId: "owner_1",
     };
 
-    await expect(loadOrCreateWhatsAppReportSnapshotInTransaction({
+    const first = await loadOrCreateWhatsAppReportSnapshotInTransaction({
       tx,
       scope,
       localReportDate: "2026-08-23",
-      scheduledCutoffAt: cutoff,
-      now: new Date("2026-08-23T15:35:00.000Z"),
-    })).resolves.toEqual({ snapshot, metrics });
-    await expect(loadOrCreateWhatsAppReportSnapshotInTransaction({
+      scheduledCutoffAt: firstCutoff,
+      metricsAsOfAt: firstMetricsAsOf,
+    });
+    const sameCutoff = await loadOrCreateWhatsAppReportSnapshotInTransaction({
       tx,
       scope,
       localReportDate: "2026-08-23",
-      scheduledCutoffAt: new Date("2026-08-23T16:00:00.000Z"),
-      now: new Date("2026-08-23T16:05:00.000Z"),
-    })).rejects.toThrow("Daily report snapshot is unavailable");
-    expect(snapshotCreate).not.toHaveBeenCalled();
-    expect(messageCreate).not.toHaveBeenCalled();
+      scheduledCutoffAt: firstCutoff,
+      metricsAsOfAt: laterSameCutoffAsOf,
+    });
+    const differentCutoff = await loadOrCreateWhatsAppReportSnapshotInTransaction({
+      tx,
+      scope,
+      localReportDate: "2026-08-23",
+      scheduledCutoffAt: secondCutoff,
+      metricsAsOfAt: secondMetricsAsOf,
+    });
+
+    expect(snapshotCreate).toHaveBeenCalledTimes(2);
+    expect(mocks.getDailyReportMetrics).toHaveBeenCalledTimes(2);
+    expect(sameCutoff.snapshot.id).toBe(first.snapshot.id);
+    expect(sameCutoff.snapshot.metricsAsOfAt).toEqual(firstMetricsAsOf);
+    expect(sameCutoff.metrics.metricsAsOfAt).toBe(firstMetricsAsOf.toISOString());
+    expect(differentCutoff.snapshot.id).not.toBe(first.snapshot.id);
+    expect(differentCutoff.snapshot.scheduledCutoffAt).toEqual(secondCutoff);
+    expect(differentCutoff.snapshot.metricsAsOfAt).toEqual(secondMetricsAsOf);
+    expect(differentCutoff.metrics.metricsAsOfAt).toBe(secondMetricsAsOf.toISOString());
+    expect(first.snapshot.sourceFingerprint).not.toBe(
+      differentCutoff.snapshot.sourceFingerprint
+    );
+    expect(snapshotFindUnique.mock.calls.map(call => (
+      call[0].where.scope_scopeKey_localReportDate_scheduledCutoffAt_metricsVersion
+        .scheduledCutoffAt.toISOString()
+    ))).toEqual([
+      firstCutoff.toISOString(),
+      firstCutoff.toISOString(),
+      secondCutoff.toISOString(),
+    ]);
   });
 
   it("increments and expires failed challenges exactly once per attempt", async () => {
@@ -159,5 +191,69 @@ describe("WhatsApp report service safety", () => {
       now: new Date("2026-08-23T15:30:00.000Z"),
       env: ENABLED_ENV,
     })).resolves.toEqual({ valid: false, code: "REPORT_SOURCE_CHANGED" });
+  });
+
+  it("rejects a queued report at the exclusive catch-up boundary before authorization", async () => {
+    const scheduledCutoffAt = new Date("2026-08-23T15:30:00.000Z");
+    const tx = {
+      whatsAppMessage: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "message_1",
+          organizationId: "org_1",
+          branchId: "branch_1",
+          senderId: "sender_1",
+          recipientPhoneE164: "+919876543210",
+          purpose: "DAILY_BRANCH_REPORT",
+          trigger: "AUTOMATION",
+          createdByUserId: null,
+          reportSubscriptionId: "subscription_1",
+          dailyReportSnapshotId: "snapshot_1",
+          templateBindingId: "binding_1",
+          templateId: "template_1",
+          managedTemplateKey: "DAILY_BRANCH_REPORT",
+          catalogVersion: 1,
+          catalogHash: "catalog-hash",
+          templateVersion: 1,
+          settingsRevision: 1,
+          localScheduleDate: new Date("2026-08-23T00:00:00.000Z"),
+          studentId: null,
+          paymentId: null,
+          paymentResolutionEventId: null,
+          manualSendRequestId: null,
+          serviceNoticeId: null,
+          automationStage: null,
+          frequencyKey: null,
+          scheduledFor: scheduledCutoffAt,
+          availableAt: new Date("2026-08-23T15:35:00.000Z"),
+          sender: {},
+          reportSubscription: {
+            scope: "BRANCH",
+            organizationId: "org_1",
+            branchId: "branch_1",
+            senderId: "sender_1",
+            phoneE164: "+919876543210",
+            scopeKey: "branch_1",
+            consent: {},
+          },
+          dailyReportSnapshot: {
+            scope: "BRANCH",
+            organizationId: "org_1",
+            branchId: "branch_1",
+            scopeKey: "branch_1",
+            timeZone: "Asia/Kolkata",
+            scheduledCutoffAt,
+          },
+          templateBinding: {},
+          paymentSources: [],
+        }),
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(verifyWhatsAppReportMessageSource({
+      tx,
+      messageId: "message_1",
+      now: new Date("2026-08-23T16:30:00.000Z"),
+      env: ENABLED_ENV,
+    })).resolves.toEqual({ valid: false, code: "REPORT_TRUST_WINDOW_EXPIRED" });
   });
 });

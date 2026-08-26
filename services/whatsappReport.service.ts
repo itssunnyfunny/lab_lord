@@ -54,10 +54,10 @@ import {
 import {
   getWhatsAppLocalDateParts,
   getWhatsAppLocalDateTimeParts,
+  getWhatsAppReportCatchUpEndsAt,
   getWhatsAppReportPlanningWindow,
   parseWhatsAppReportSendTime,
   scheduleWhatsAppReportForLocalDate,
-  WHATSAPP_REPORT_CATCH_UP_MS,
   whatsappBudgetMonth,
 } from "@/lib/whatsappSchedule";
 import { EntitlementService } from "@/services/entitlement.service";
@@ -111,6 +111,60 @@ const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 
 function sha256(value: string) {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+class WhatsAppReportMetricsUnavailableError extends WhatsAppConflictError {
+  constructor() {
+    super("A trustworthy daily report is unavailable for this schedule");
+    this.name = "WhatsAppReportMetricsUnavailableError";
+  }
+}
+
+function isReportMetricsIntegrityError(error: unknown) {
+  return error instanceof WhatsAppReportMetricsUnavailableError
+    || (error instanceof Error && (
+      error.name === "ZodError"
+      || /^REPORT_[A-Z0-9_]+$/.test(error.message)
+    ));
+}
+
+function assertTrustworthyReportMetricsAsOf(input: {
+  scheduledCutoffAt: Date;
+  metricsAsOfAt: Date;
+  timeZone: string;
+}) {
+  const catchUpEndsAt = getWhatsAppReportCatchUpEndsAt({
+    scheduledCutoffAt: input.scheduledCutoffAt,
+    timeZone: input.timeZone,
+  });
+  if (
+    Number.isNaN(input.metricsAsOfAt.getTime())
+    || input.metricsAsOfAt.getTime() < input.scheduledCutoffAt.getTime()
+    || input.metricsAsOfAt.getTime() >= catchUpEndsAt.getTime()
+  ) {
+    throw new WhatsAppReportMetricsUnavailableError();
+  }
+  return catchUpEndsAt;
+}
+
+async function resolveReportMetricsAsOfAt(
+  tx: Prisma.TransactionClient,
+  override?: Date
+) {
+  if (override) {
+    if (Number.isNaN(override.getTime())) {
+      throw new WhatsAppReportMetricsUnavailableError();
+    }
+    return override;
+  }
+  const rows = await tx.$queryRaw<Array<{ metricsAsOfAt: Date }>>(Prisma.sql`
+    SELECT statement_timestamp() AS "metricsAsOfAt"
+  `);
+  const metricsAsOfAt = rows[0]?.metricsAsOfAt;
+  if (rows.length !== 1 || !metricsAsOfAt || Number.isNaN(metricsAsOfAt.getTime())) {
+    throw new WhatsAppReportMetricsUnavailableError();
+  }
+  return metricsAsOfAt;
 }
 
 function assertId(value: string) {
@@ -472,12 +526,14 @@ function reportDedupeKey(input: {
   senderId: string;
   subscriptionId: string;
   localReportDate: string;
+  scheduledCutoffAt: Date;
 }) {
   return sha256(JSON.stringify({
-    kind: "whatsapp-daily-report-v1",
+    kind: "whatsapp-daily-report-v2",
     senderId: input.senderId,
     subscriptionId: input.subscriptionId,
     localReportDate: input.localReportDate,
+    scheduledCutoffAt: input.scheduledCutoffAt.toISOString(),
     metricsVersion: WHATSAPP_REPORT_METRICS_VERSION,
   }));
 }
@@ -681,69 +737,99 @@ export async function loadOrCreateWhatsAppReportSnapshotInTransaction(input: {
   scope: AuthorizedReportScope;
   localReportDate: string;
   scheduledCutoffAt: Date;
-  now: Date;
+  metricsAsOfAt: Date;
 }) {
+  assertTrustworthyReportMetricsAsOf({
+    scheduledCutoffAt: input.scheduledCutoffAt,
+    metricsAsOfAt: input.metricsAsOfAt,
+    timeZone: input.scope.timeZone,
+  });
   const identity = {
     scope: input.scope.scope,
     scopeKey: input.scope.scopeKey,
     localReportDate: input.localReportDate,
+    scheduledCutoffAt: input.scheduledCutoffAt,
     metricsVersion: WHATSAPP_REPORT_METRICS_VERSION,
   } as const;
-  const expectedSourceFingerprint = createWhatsAppReportSourceFingerprint({
-    scope: input.scope.scope,
-    scopeKey: input.scope.scopeKey,
-    localReportDate: input.localReportDate,
-    scheduledCutoffAt: input.scheduledCutoffAt,
-  });
   const existing = await input.tx.whatsAppDailyReportSnapshot.findUnique({
-    where: { scope_scopeKey_localReportDate_metricsVersion: identity },
+    where: {
+      scope_scopeKey_localReportDate_scheduledCutoffAt_metricsVersion: identity,
+    },
   });
   if (existing) {
     let metrics: WhatsAppReportMetrics;
     let expectedAsOfLocalTime: string;
+    let expectedSourceFingerprint: string;
     try {
+      assertTrustworthyReportMetricsAsOf({
+        scheduledCutoffAt: existing.scheduledCutoffAt,
+        metricsAsOfAt: existing.metricsAsOfAt,
+        timeZone: existing.timeZone,
+      });
       metrics = canonicalizeWhatsAppReportMetrics(existing.metrics);
-      const cutoff = getWhatsAppLocalDateTimeParts(
-        input.scheduledCutoffAt,
-        input.scope.timeZone
+      const asOf = getWhatsAppLocalDateTimeParts(
+        existing.metricsAsOfAt,
+        existing.timeZone
       );
-      expectedAsOfLocalTime = `${String(cutoff.hour).padStart(2, "0")}:${String(
-        cutoff.minute
+      expectedAsOfLocalTime = `${String(asOf.hour).padStart(2, "0")}:${String(
+        asOf.minute
       ).padStart(2, "0")}`;
+      expectedSourceFingerprint = createWhatsAppReportSourceFingerprint({
+        scope: existing.scope,
+        scopeKey: existing.scopeKey,
+        localReportDate: existing.localReportDate,
+        scheduledCutoffAt: existing.scheduledCutoffAt,
+        metricsAsOfAt: existing.metricsAsOfAt,
+        metricsVersion: existing.metricsVersion,
+      });
     } catch {
-      throw new WhatsAppConflictError("Daily report snapshot is unavailable");
+      throw new WhatsAppReportMetricsUnavailableError();
     }
     if (
       existing.organizationId !== input.scope.organizationId
       || existing.branchId !== input.scope.branchId
       || existing.timeZone !== input.scope.timeZone
       || existing.scheduledCutoffAt.getTime() !== input.scheduledCutoffAt.getTime()
-      || existing.generatedAt.getTime() < existing.scheduledCutoffAt.getTime()
-      || existing.generatedAt.getTime() > input.now.getTime()
+      || existing.generatedAt.getTime() !== existing.metricsAsOfAt.getTime()
       || existing.sourceFingerprint !== expectedSourceFingerprint
       || hashWhatsAppReportMetrics(metrics) !== existing.metricsHash
       || metrics.localReportDate !== input.localReportDate
+      || metrics.metricsAsOfAt !== existing.metricsAsOfAt.toISOString()
       || existing.localReportDate !== utcReportLocalDate(
         getWhatsAppLocalDateParts(existing.scheduledCutoffAt, existing.timeZone)
       ).toISOString().slice(0, 10)
       || metrics.asOfLocalTime !== expectedAsOfLocalTime
       || (input.scope.scope === "BRANCH") !== ("branchName" in metrics)
     ) {
-      throw new WhatsAppConflictError("Daily report snapshot is unavailable");
+      throw new WhatsAppReportMetricsUnavailableError();
     }
     return { snapshot: existing, metrics };
   }
 
-  const metrics = canonicalizeWhatsAppReportMetrics(
-    await getWhatsAppDailyReportMetrics(input.tx, {
-      scope: input.scope.scope,
-      organizationId: input.scope.organizationId,
-      branchId: input.scope.branchId,
-      localReportDate: input.localReportDate,
-      scheduledCutoffAt: input.scheduledCutoffAt,
-    })
-  );
+  let metrics: WhatsAppReportMetrics;
+  try {
+    metrics = canonicalizeWhatsAppReportMetrics(
+      await getWhatsAppDailyReportMetrics(input.tx, {
+        scope: input.scope.scope,
+        organizationId: input.scope.organizationId,
+        branchId: input.scope.branchId,
+        localReportDate: input.localReportDate,
+        scheduledCutoffAt: input.scheduledCutoffAt,
+        metricsAsOfAt: input.metricsAsOfAt,
+      })
+    );
+  } catch (error) {
+    if (!isReportMetricsIntegrityError(error)) throw error;
+    throw new WhatsAppReportMetricsUnavailableError();
+  }
   const metricsHash = hashWhatsAppReportMetrics(metrics);
+  const expectedSourceFingerprint = createWhatsAppReportSourceFingerprint({
+    scope: input.scope.scope,
+    scopeKey: input.scope.scopeKey,
+    localReportDate: input.localReportDate,
+    scheduledCutoffAt: input.scheduledCutoffAt,
+    metricsAsOfAt: input.metricsAsOfAt,
+  });
   const snapshot = await input.tx.whatsAppDailyReportSnapshot.create({
     data: {
       organizationId: input.scope.organizationId,
@@ -753,7 +839,8 @@ export async function loadOrCreateWhatsAppReportSnapshotInTransaction(input: {
       localReportDate: input.localReportDate,
       timeZone: input.scope.timeZone,
       scheduledCutoffAt: input.scheduledCutoffAt,
-      generatedAt: input.now,
+      metricsAsOfAt: input.metricsAsOfAt,
+      generatedAt: input.metricsAsOfAt,
       metricsVersion: WHATSAPP_REPORT_METRICS_VERSION,
       metrics: metrics as Prisma.InputJsonValue,
       metricsHash,
@@ -813,10 +900,17 @@ async function queueCurrentReportInTransaction(input: {
   scopeInput: WhatsAppReportScopeInput;
   trigger: "MANUAL" | "AUTOMATION";
   expectedSubscriptionId?: string;
-  now: Date;
+  metricsAsOfAt?: Date;
   env?: Readonly<Record<string, string | undefined>>;
 }) {
   assertWhatsAppReportsEnabled(input.env);
+  // In production this is the transaction's first application query, so the
+  // report label and the RepeatableRead/Serializable database snapshot begin
+  // at the same statement boundary.
+  const metricsAsOfAt = await resolveReportMetricsAsOfAt(
+    input.tx,
+    input.metricsAsOfAt
+  );
   let authorized = await authorizeReportScope({
     actorUserId: input.actorUserId,
     scope: input.scopeInput,
@@ -861,12 +955,18 @@ async function queueCurrentReportInTransaction(input: {
   const window = assertEligibleReportWindow({
     subscription,
     timeZone: authorized.timeZone,
-    now: input.now,
+    now: metricsAsOfAt,
+  });
+  assertTrustworthyReportMetricsAsOf({
+    scheduledCutoffAt: window.scheduledCutoffAt,
+    metricsAsOfAt,
+    timeZone: authorized.timeZone,
   });
   const dedupeKey = reportDedupeKey({
     senderId: delivery.sender.id,
     subscriptionId: subscription.id,
     localReportDate: window.localDateKey,
+    scheduledCutoffAt: window.scheduledCutoffAt,
   });
   const existing = await input.tx.whatsAppMessage.findUnique({ where: { dedupeKey } });
   if (existing) {
@@ -876,13 +976,14 @@ async function queueCurrentReportInTransaction(input: {
       || existing.senderId !== delivery.sender.id
       || existing.reportSubscriptionId !== subscription.id
       || existing.purpose !== reportPurpose(authorized.scope)
+      || existing.scheduledFor.getTime() !== window.scheduledCutoffAt.getTime()
     ) {
       throw new WhatsAppConflictError("Daily report deduplication is unavailable");
     }
     await input.tx.whatsAppReportSubscription.update({
       where: { id: subscription.id },
       data: {
-        lastPlannedAt: input.now,
+        lastPlannedAt: metricsAsOfAt,
         lastPlannedLocalDate: window.localDateKey,
         lastPlannerErrorCode: null,
         plannerLeaseToken: null,
@@ -905,7 +1006,7 @@ async function queueCurrentReportInTransaction(input: {
   });
   const rateCard = resolveWhatsAppUtilityRate({
     recipientPhoneE164: subscription.phoneE164,
-    at: input.now,
+    at: metricsAsOfAt,
     env: input.env,
   });
   const monthlyBudgetMinor = validateWhatsAppMonthlyBudgetMinor(
@@ -958,7 +1059,7 @@ async function queueCurrentReportInTransaction(input: {
     scope: authorized,
     localReportDate: window.localDateKey,
     scheduledCutoffAt: window.scheduledCutoffAt,
-    now: input.now,
+    metricsAsOfAt,
   });
   const values = reportTemplateValues(metrics);
   const prepared = prepareManagedWhatsAppTemplate(definition, values);
@@ -1001,7 +1102,7 @@ async function queueCurrentReportInTransaction(input: {
       templateVariables: values,
       renderedPreview: prepared.renderedPreview,
       scheduledFor: window.scheduledCutoffAt,
-      availableAt: input.now,
+      availableAt: metricsAsOfAt,
       localScheduleDate,
       status: "SCHEDULED",
       dedupeKey,
@@ -1017,7 +1118,7 @@ async function queueCurrentReportInTransaction(input: {
   await input.tx.whatsAppReportSubscription.update({
     where: { id: subscription.id },
     data: {
-      lastPlannedAt: input.now,
+      lastPlannedAt: metricsAsOfAt,
       lastPlannedLocalDate: window.localDateKey,
       lastPlannerErrorCode: null,
       plannerLeaseToken: null,
@@ -1877,8 +1978,8 @@ export class WhatsAppReportService {
 
   static async preview(input: WhatsAppReportPreviewInput) {
     assertWhatsAppReportsEnabled(input.env);
-    const now = input.now ?? new Date();
     return prisma.$transaction(async tx => {
+      const metricsAsOfAt = await resolveReportMetricsAsOfAt(tx, input.now);
       const authorized = await authorizeReportScope({
         actorUserId: input.actorUserId,
         scope: input,
@@ -1914,7 +2015,12 @@ export class WhatsAppReportService {
       const window = assertEligibleReportWindow({
         subscription,
         timeZone: authorized.timeZone,
-        now,
+        now: metricsAsOfAt,
+      });
+      assertTrustworthyReportMetricsAsOf({
+        scheduledCutoffAt: window.scheduledCutoffAt,
+        metricsAsOfAt,
+        timeZone: authorized.timeZone,
       });
       const language = normalizeReportLanguage(subscription.language);
       const { definition, managedKey } = await resolveReportBinding({
@@ -1925,15 +2031,16 @@ export class WhatsAppReportService {
       });
       const rateCard = resolveWhatsAppUtilityRate({
         recipientPhoneE164: subscription.phoneE164,
-        at: now,
+        at: metricsAsOfAt,
         env: input.env,
       });
       const existingSnapshot = await tx.whatsAppDailyReportSnapshot.findUnique({
         where: {
-          scope_scopeKey_localReportDate_metricsVersion: {
+          scope_scopeKey_localReportDate_scheduledCutoffAt_metricsVersion: {
             scope: authorized.scope,
             scopeKey: authorized.scopeKey,
             localReportDate: window.localDateKey,
+            scheduledCutoffAt: window.scheduledCutoffAt,
             metricsVersion: WHATSAPP_REPORT_METRICS_VERSION,
           },
         },
@@ -1945,23 +2052,32 @@ export class WhatsAppReportService {
             scope: authorized,
             localReportDate: window.localDateKey,
             scheduledCutoffAt: window.scheduledCutoffAt,
-            now,
+            metricsAsOfAt,
           })).metrics
-        : canonicalizeWhatsAppReportMetrics(
-            await getWhatsAppDailyReportMetrics(tx, {
-              scope: authorized.scope,
-              organizationId: authorized.organizationId,
-              branchId: authorized.branchId,
-              localReportDate: window.localDateKey,
-              scheduledCutoffAt: window.scheduledCutoffAt,
-            })
-          );
+        : await (async () => {
+            try {
+              return canonicalizeWhatsAppReportMetrics(
+                await getWhatsAppDailyReportMetrics(tx, {
+                  scope: authorized.scope,
+                  organizationId: authorized.organizationId,
+                  branchId: authorized.branchId,
+                  localReportDate: window.localDateKey,
+                  scheduledCutoffAt: window.scheduledCutoffAt,
+                  metricsAsOfAt,
+                })
+              );
+            } catch (error) {
+              if (!isReportMetricsIntegrityError(error)) throw error;
+              throw new WhatsAppReportMetricsUnavailableError();
+            }
+          })();
       const values = reportTemplateValues(metrics);
       const prepared = prepareManagedWhatsAppTemplate(definition, values);
       const dedupeKey = reportDedupeKey({
         senderId: delivery.sender.id,
         subscriptionId: subscription.id,
         localReportDate: window.localDateKey,
+        scheduledCutoffAt: window.scheduledCutoffAt,
       });
       const alreadyQueued = Boolean(await tx.whatsAppMessage.findUnique({
         where: { dedupeKey },
@@ -1971,6 +2087,7 @@ export class WhatsAppReportService {
         scope: authorized.scope,
         localReportDate: window.localDateKey,
         scheduledCutoffAt: window.scheduledCutoffAt.toISOString(),
+        metricsAsOfAt: metrics.metricsAsOfAt,
         catchUpEndsAt: window.catchUpEndsAt.toISOString(),
         metricsVersion: WHATSAPP_REPORT_METRICS_VERSION,
         metrics,
@@ -1997,13 +2114,12 @@ export class WhatsAppReportService {
   static async queueToday(input: WhatsAppReportQueueInput) {
     assertWhatsAppReportsEnabled(input.env);
     assertIdempotencyKey(input.idempotencyKey);
-    const now = input.now ?? new Date();
     return prisma.$transaction(tx => queueCurrentReportInTransaction({
       tx,
       actorUserId: input.actorUserId,
       scopeInput: input,
       trigger: "MANUAL",
-      now,
+      metricsAsOfAt: input.now,
       env: input.env,
     }), { isolationLevel: "Serializable" });
   }
@@ -2089,10 +2205,15 @@ export class WhatsAppReportService {
     subscriptionId: string;
     leaseToken: string;
     now: Date;
+    metricsAsOfAt?: Date;
     env?: Readonly<Record<string, string | undefined>>;
   }) {
     const subscriptionId = assertId(input.subscriptionId);
     const leaseToken = assertId(input.leaseToken);
+    const metricsAsOfAt = await resolveReportMetricsAsOfAt(
+      input.tx,
+      input.metricsAsOfAt
+    );
     const claimed = await input.tx.whatsAppReportSubscription.findUnique({
       where: { id: subscriptionId },
     });
@@ -2192,45 +2313,19 @@ export class WhatsAppReportService {
     }
 
     const window = getWhatsAppReportPlanningWindow({
-      now: input.now,
+      now: metricsAsOfAt,
       sendTimeLocal: subscription.sendTimeLocal,
       timeZone: authorized.timeZone,
     });
-    if (
-      subscription.lastPlannedLocalDate
-      && subscription.lastPlannedLocalDate >= window.localDateKey
-    ) {
+    const skipUntrustworthyReport = async (
+      safeCode: "REPORT_TRUST_WINDOW_MISSED" | "REPORT_METRICS_UNAVAILABLE"
+    ) => {
       await input.tx.whatsAppReportSubscription.updateMany({
         where: { id: subscription.id, plannerLeaseToken: leaseToken },
         data: {
-          plannerLeaseToken: null,
-          plannerLeaseUntil: null,
-          lastPlannedAt: input.now,
-          lastPlannerErrorCode: null,
-        },
-      });
-      return { outcome: "ALREADY_PLANNED" as const, localReportDate: window.localDateKey };
-    }
-    if (window.scheduledCutoffAt.getTime() < subscription.activatedAt.getTime()) {
-      await input.tx.whatsAppReportSubscription.updateMany({
-        where: { id: subscription.id, plannerLeaseToken: leaseToken },
-        data: {
-          lastPlannedAt: input.now,
+          lastPlannedAt: metricsAsOfAt,
           lastPlannedLocalDate: window.localDateKey,
-          lastPlannerErrorCode: null,
-          plannerLeaseToken: null,
-          plannerLeaseUntil: null,
-        },
-      });
-      return { outcome: "BEFORE_ACTIVATION" as const, localReportDate: window.localDateKey };
-    }
-    if (window.missed) {
-      await input.tx.whatsAppReportSubscription.updateMany({
-        where: { id: subscription.id, plannerLeaseToken: leaseToken },
-        data: {
-          lastPlannedAt: input.now,
-          lastPlannedLocalDate: window.localDateKey,
-          lastPlannerErrorCode: "REPORT_CATCH_UP_MISSED",
+          lastPlannerErrorCode: safeCode,
           plannerLeaseToken: null,
           plannerLeaseUntil: null,
         },
@@ -2242,19 +2337,57 @@ export class WhatsAppReportService {
         senderId: subscription.senderId,
         type: "REPORT_FAILURE",
         severity: "WARNING",
-        dedupeKey: `report-missed:${sha256(JSON.stringify([
+        dedupeKey: `report-untrustworthy:${sha256(JSON.stringify([
           subscription.id,
           window.localDateKey,
+          window.scheduledCutoffAt.toISOString(),
           WHATSAPP_REPORT_METRICS_VERSION,
+          safeCode,
         ]))}`,
-        safeCode: "REPORT_CATCH_UP_MISSED",
+        safeCode,
         details: {
           scope: subscription.scope,
           localDate: window.localDateKey,
         },
-        now: input.now,
+        now: metricsAsOfAt,
       });
-      return { outcome: "MISSED" as const, localReportDate: window.localDateKey };
+      return {
+        outcome: safeCode === "REPORT_TRUST_WINDOW_MISSED"
+          ? "MISSED" as const
+          : "SKIPPED" as const,
+        localReportDate: window.localDateKey,
+      };
+    };
+    if (
+      subscription.lastPlannedLocalDate
+      && subscription.lastPlannedLocalDate >= window.localDateKey
+    ) {
+      await input.tx.whatsAppReportSubscription.updateMany({
+        where: { id: subscription.id, plannerLeaseToken: leaseToken },
+        data: {
+          plannerLeaseToken: null,
+          plannerLeaseUntil: null,
+          lastPlannedAt: metricsAsOfAt,
+          lastPlannerErrorCode: null,
+        },
+      });
+      return { outcome: "ALREADY_PLANNED" as const, localReportDate: window.localDateKey };
+    }
+    if (window.scheduledCutoffAt.getTime() < subscription.activatedAt.getTime()) {
+      await input.tx.whatsAppReportSubscription.updateMany({
+        where: { id: subscription.id, plannerLeaseToken: leaseToken },
+        data: {
+          lastPlannedAt: metricsAsOfAt,
+          lastPlannedLocalDate: window.localDateKey,
+          lastPlannerErrorCode: null,
+          plannerLeaseToken: null,
+          plannerLeaseUntil: null,
+        },
+      });
+      return { outcome: "BEFORE_ACTIVATION" as const, localReportDate: window.localDateKey };
+    }
+    if (window.missed) {
+      return skipUntrustworthyReport("REPORT_TRUST_WINDOW_MISSED");
     }
     if (!window.eligible) {
       await input.tx.whatsAppReportSubscription.updateMany({
@@ -2263,15 +2396,21 @@ export class WhatsAppReportService {
       });
       return { outcome: "NOT_DUE" as const, localReportDate: window.localDateKey };
     }
-    const queued = await queueCurrentReportInTransaction({
-      tx: input.tx,
-      actorUserId: subscription.userId,
-      scopeInput,
-      trigger: "AUTOMATION",
-      expectedSubscriptionId: subscription.id,
-      now: input.now,
-      env: input.env,
-    });
+    let queued: Awaited<ReturnType<typeof queueCurrentReportInTransaction>>;
+    try {
+      queued = await queueCurrentReportInTransaction({
+        tx: input.tx,
+        actorUserId: subscription.userId,
+        scopeInput,
+        trigger: "AUTOMATION",
+        expectedSubscriptionId: subscription.id,
+        metricsAsOfAt,
+        env: input.env,
+      });
+    } catch (error) {
+      if (!(error instanceof WhatsAppReportMetricsUnavailableError)) throw error;
+      return skipUntrustworthyReport("REPORT_METRICS_UNAVAILABLE");
+    }
     return { outcome: queued.replayed ? "DEDUPED" as const : "QUEUED" as const, ...queued };
   }
 }
@@ -2354,6 +2493,15 @@ export async function verifyWhatsAppReportMessageSource(input: {
   const subscription = message.reportSubscription;
   const snapshot = message.dailyReportSnapshot;
   const expectedScope = message.purpose === "DAILY_BRANCH_REPORT" ? "BRANCH" : "ORGANIZATION";
+  let catchUpEndsAt: Date;
+  try {
+    catchUpEndsAt = getWhatsAppReportCatchUpEndsAt({
+      scheduledCutoffAt: snapshot.scheduledCutoffAt,
+      timeZone: snapshot.timeZone,
+    });
+  } catch {
+    return invalidReportSource("REPORT_METRICS_UNAVAILABLE");
+  }
   if (
     subscription.scope !== expectedScope
     || snapshot.scope !== expectedScope
@@ -2372,10 +2520,10 @@ export async function verifyWhatsAppReportMessageSource(input: {
     || snapshot.metricsVersion !== WHATSAPP_REPORT_METRICS_VERSION
     || snapshot.scheduledCutoffAt.getTime() !== message.scheduledFor.getTime()
     || input.now.getTime() < snapshot.scheduledCutoffAt.getTime()
-    || input.now.getTime() > snapshot.scheduledCutoffAt.getTime() + WHATSAPP_REPORT_CATCH_UP_MS
+    || input.now.getTime() >= catchUpEndsAt.getTime()
     || message.availableAt.getTime() < snapshot.scheduledCutoffAt.getTime()
-    || message.availableAt.getTime() > snapshot.scheduledCutoffAt.getTime() + WHATSAPP_REPORT_CATCH_UP_MS
-  ) return invalidReportSource("REPORT_SOURCE_EXPIRED");
+    || message.availableAt.getTime() >= catchUpEndsAt.getTime()
+  ) return invalidReportSource("REPORT_TRUST_WINDOW_EXPIRED");
 
   const scopeInput: WhatsAppReportScopeInput = expectedScope === "BRANCH"
     ? { scope: "BRANCH", branchId: message.branchId! }
@@ -2445,6 +2593,7 @@ export async function verifyWhatsAppReportMessageSource(input: {
       scopeKey: snapshot.scopeKey,
       localReportDate: snapshot.localReportDate,
       scheduledCutoffAt: snapshot.scheduledCutoffAt,
+      metricsAsOfAt: snapshot.metricsAsOfAt,
       metricsVersion: snapshot.metricsVersion,
     });
     expectedLocalScheduleDate = utcReportLocalDate(
@@ -2455,29 +2604,35 @@ export async function verifyWhatsAppReportMessageSource(input: {
       sendTimeLocal: subscription.sendTimeLocal,
       timeZone: snapshot.timeZone,
     });
-    const cutoff = getWhatsAppLocalDateTimeParts(
-      snapshot.scheduledCutoffAt,
+    assertTrustworthyReportMetricsAsOf({
+      scheduledCutoffAt: snapshot.scheduledCutoffAt,
+      metricsAsOfAt: snapshot.metricsAsOfAt,
+      timeZone: snapshot.timeZone,
+    });
+    const asOf = getWhatsAppLocalDateTimeParts(
+      snapshot.metricsAsOfAt,
       snapshot.timeZone
     );
-    expectedAsOfLocalTime = `${String(cutoff.hour).padStart(2, "0")}:${String(
-      cutoff.minute
+    expectedAsOfLocalTime = `${String(asOf.hour).padStart(2, "0")}:${String(
+      asOf.minute
     ).padStart(2, "0")}`;
     metrics = canonicalizeWhatsAppReportMetrics(snapshot.metrics);
   } catch {
-    return invalidReportSource();
+    return invalidReportSource("REPORT_METRICS_UNAVAILABLE");
   }
   if (
     snapshot.sourceFingerprint !== expectedSnapshotSource
     || hashWhatsAppReportMetrics(metrics) !== snapshot.metricsHash
     || (expectedScope === "BRANCH") !== ("branchName" in metrics)
     || metrics.localReportDate !== snapshot.localReportDate
+    || metrics.metricsAsOfAt !== snapshot.metricsAsOfAt.toISOString()
     || snapshot.localReportDate !== expectedLocalScheduleDate.toISOString().slice(0, 10)
     || currentSubscriptionCutoff.getTime() !== snapshot.scheduledCutoffAt.getTime()
     || metrics.asOfLocalTime !== expectedAsOfLocalTime
-    || snapshot.generatedAt.getTime() < snapshot.scheduledCutoffAt.getTime()
-    || snapshot.generatedAt.getTime() > input.now.getTime()
+    || snapshot.generatedAt.getTime() !== snapshot.metricsAsOfAt.getTime()
+    || snapshot.metricsAsOfAt.getTime() > input.now.getTime()
     || message.localScheduleDate.getTime() !== expectedLocalScheduleDate.getTime()
-  ) return invalidReportSource();
+  ) return invalidReportSource("REPORT_METRICS_UNAVAILABLE");
 
   let language: WhatsAppManagedTemplateLanguage;
   try {
@@ -2542,6 +2697,7 @@ export async function verifyWhatsAppReportMessageSource(input: {
       senderId: message.senderId,
       subscriptionId: subscription.id,
       localReportDate: snapshot.localReportDate,
+      scheduledCutoffAt: snapshot.scheduledCutoffAt,
     }) !== message.dedupeKey
     || prepared.renderedPreview !== message.renderedPreview
     || message.budgetState !== "RESERVED"
