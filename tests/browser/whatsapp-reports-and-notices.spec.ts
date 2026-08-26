@@ -13,8 +13,8 @@ test.beforeEach(() => {
   test.skip(!hasAuthState, "Set PLAYWRIGHT_AUTH_STATE to run authenticated WhatsApp operations UI coverage.");
 });
 
-const ORG_ID = "playwright-report-org";
-const BRANCH_ID = "playwright-report-branch";
+const ORG_ID = process.env.PLAYWRIGHT_OWNER_ORG_ID ?? "playwright-report-org";
+const BRANCH_ID = process.env.PLAYWRIGHT_OWNER_BRANCH_ID ?? "playwright-report-branch";
 const SENDER_ID = "playwright-report-sender";
 
 function json(route: Route, body: unknown, status = 200) {

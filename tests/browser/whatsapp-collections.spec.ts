@@ -26,8 +26,8 @@ test.beforeEach(async ({ page }, testInfo) => {
   );
 });
 
-const ORG_ID = "playwright-pr3-org";
-const BRANCH_ID = "playwright-pr3-branch";
+const ORG_ID = process.env.PLAYWRIGHT_OWNER_ORG_ID ?? "playwright-pr3-org";
+const BRANCH_ID = process.env.PLAYWRIGHT_OWNER_BRANCH_ID ?? "playwright-pr3-branch";
 const SENDER_ID = "sender_pr3_1";
 const STUDENT_ONE_ID = "student_pr3_1";
 const STUDENT_TWO_ID = "student_pr3_2";
