@@ -1,3 +1,7 @@
+import type { Prisma } from "@/app/generated/prisma/client";
+import {
+  getManagedWhatsAppTemplate,
+} from "@/lib/whatsappManagedTemplates";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -22,7 +26,10 @@ vi.mock("@/services/whatsappAuthorization.service", () => ({
   },
 }));
 
-import { WhatsAppSenderSafetyService } from "@/services/whatsappSenderSafety.service";
+import {
+  getWhatsAppSenderRequiredTemplateHealth,
+  WhatsAppSenderSafetyService,
+} from "@/services/whatsappSenderSafety.service";
 
 const requestedAt = new Date("2026-08-24T10:00:00.000Z");
 const finalizedAt = new Date("2026-08-24T10:00:08.000Z");
@@ -67,6 +74,91 @@ function transaction(activeAdmissions: number) {
       create: vi.fn().mockResolvedValue({ id: "audit_1" }),
     },
     $queryRaw: vi.fn().mockResolvedValue([{ senderId: "sender_1" }]),
+  };
+}
+
+function managedBinding(
+  managedKey: Parameters<typeof getManagedWhatsAppTemplate>[0],
+  language: Parameters<typeof getManagedWhatsAppTemplate>[1] = "en_IN"
+) {
+  const definition = getManagedWhatsAppTemplate(managedKey, language);
+  const suffix = `${managedKey.toLowerCase()}-${language.toLowerCase()}`;
+  return {
+    id: `binding-${suffix}`,
+    senderId: "sender_1",
+    templateId: `template-${suffix}`,
+    provisioningId: `provisioning-${suffix}`,
+    managedKey,
+    language,
+    catalogVersion: definition.catalogVersion,
+    catalogHash: definition.catalogHash,
+    active: true,
+    template: {
+      id: `template-${suffix}`,
+      senderId: "sender_1",
+      providerTemplateId: `provider-${suffix}`,
+      name: definition.providerTemplateName,
+      language,
+      category: "UTILITY",
+      providerStatus: "APPROVED",
+      version: 1,
+      components: definition.components as unknown as Prisma.JsonValue,
+      staleAt: null,
+    },
+    provisioning: {
+      id: `provisioning-${suffix}`,
+      senderId: "sender_1",
+      managedKey,
+      language,
+      catalogVersion: definition.catalogVersion,
+      catalogHash: definition.catalogHash,
+      providerTemplateName: definition.providerTemplateName,
+      providerTemplateId: `provider-${suffix}`,
+      status: "READY",
+    },
+  };
+}
+
+function templateHealthClient(input: {
+  queuedMessages?: unknown[];
+  branchSettings?: unknown[];
+  enabledRules?: unknown[];
+  reportSubscriptions?: unknown[];
+  organizationReportSettings?: unknown;
+  bindings?: unknown[];
+}) {
+  const queries = {
+    queuedMessages: vi.fn().mockResolvedValue(input.queuedMessages ?? []),
+    branchSettings: vi.fn().mockResolvedValue(input.branchSettings ?? []),
+    enabledRules: vi.fn().mockResolvedValue(input.enabledRules ?? []),
+    reportSubscriptions: vi.fn().mockResolvedValue(input.reportSubscriptions ?? []),
+    organizationReportSettings: vi.fn().mockResolvedValue(
+      input.organizationReportSettings ?? null
+    ),
+    bindings: vi.fn().mockResolvedValue(input.bindings ?? []),
+  };
+  return {
+    client: {
+      whatsAppMessage: { groupBy: queries.queuedMessages },
+      branchWhatsAppSettings: { findMany: queries.branchSettings },
+      whatsAppAutomationRule: { findMany: queries.enabledRules },
+      whatsAppReportSubscription: { findMany: queries.reportSubscriptions },
+      organizationWhatsAppReportSettings: { findFirst: queries.organizationReportSettings },
+      whatsAppTemplateBinding: { findMany: queries.bindings },
+    } as never,
+    queries,
+  };
+}
+
+function queuedMessageFor(binding: ReturnType<typeof managedBinding>) {
+  return {
+    managedTemplateKey: binding.managedKey,
+    catalogVersion: binding.catalogVersion,
+    catalogHash: binding.catalogHash,
+    templateId: binding.templateId,
+    templateBindingId: binding.id,
+    templateVersion: binding.template.version,
+    templateBinding: binding,
   };
 }
 
@@ -169,5 +261,110 @@ describe("WhatsApp sender pause drain", () => {
         details: { pauseReason: "OWNER_PAUSED", pauseRevision: 1 },
       },
     });
+  });
+});
+
+describe("WhatsApp sender resume template requirements", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("accepts an English-only configured sender and ignores a rejected unused template", async () => {
+    const renewal = managedBinding("FEE_RENEWAL_POLITE");
+    const summary = managedBinding("MULTI_STUDENT_COLLECTION_SUMMARY");
+    const rejectedOptional = managedBinding("BRANCH_MAINTENANCE_NOTICE");
+    rejectedOptional.active = false;
+    rejectedOptional.provisioning.status = "REJECTED";
+    rejectedOptional.template.providerStatus = "REJECTED";
+    const { client, queries } = templateHealthClient({
+      branchSettings: [{
+        branchId: "branch_1",
+        defaultLanguage: "en",
+        defaultTone: "polite",
+        automationEnabledAt: null,
+      }],
+      bindings: [renewal, summary, rejectedOptional],
+    });
+
+    await expect(getWhatsAppSenderRequiredTemplateHealth({
+      organizationId: "org_1",
+      senderId: "sender_1",
+      client,
+    })).resolves.toBe(true);
+
+    expect(queries.bindings).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        senderId: "sender_1",
+        sender: { organizationId: "org_1" },
+      },
+    }));
+    expect(queries.branchSettings).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        organizationId: "org_1",
+        senderId: "sender_1",
+        enabled: true,
+      },
+    }));
+  });
+
+  it("rejects a queued message whose exact optional binding is unavailable", async () => {
+    const renewal = managedBinding("FEE_RENEWAL_POLITE");
+    const summary = managedBinding("MULTI_STUDENT_COLLECTION_SUMMARY");
+    const rejected = managedBinding("BRANCH_MAINTENANCE_NOTICE");
+    rejected.active = false;
+    rejected.provisioning.status = "REJECTED";
+    rejected.template.providerStatus = "REJECTED";
+    const { client } = templateHealthClient({
+      queuedMessages: [queuedMessageFor(rejected)],
+      branchSettings: [{
+        branchId: "branch_1",
+        defaultLanguage: "en_IN",
+        defaultTone: "polite",
+        automationEnabledAt: null,
+      }],
+      bindings: [renewal, summary, rejected],
+    });
+
+    await expect(getWhatsAppSenderRequiredTemplateHealth({
+      organizationId: "org_1",
+      senderId: "sender_1",
+      client,
+    })).resolves.toBe(false);
+  });
+
+  it("requires only configured automation stages and active report languages", async () => {
+    const bindings = [
+      managedBinding("FEE_RENEWAL_POLITE"),
+      managedBinding("MULTI_STUDENT_COLLECTION_SUMMARY"),
+      managedBinding("WELCOME_GENERAL"),
+      managedBinding("WELCOME_ALLOCATED"),
+    ];
+    const configured = {
+      branchSettings: [{
+        branchId: "branch_1",
+        defaultLanguage: "en_IN",
+        defaultTone: "polite",
+        automationEnabledAt: finalizedAt,
+      }],
+      enabledRules: [{ branchId: "branch_1", stage: "WELCOME" }],
+      reportSubscriptions: [{ branchId: "branch_1", scope: "BRANCH", language: "hi" }],
+    };
+    const missingReport = templateHealthClient({ ...configured, bindings });
+
+    await expect(getWhatsAppSenderRequiredTemplateHealth({
+      organizationId: "org_1",
+      senderId: "sender_1",
+      client: missingReport.client,
+    })).resolves.toBe(false);
+
+    const complete = templateHealthClient({
+      ...configured,
+      bindings: [...bindings, managedBinding("DAILY_BRANCH_REPORT", "hi")],
+    });
+    await expect(getWhatsAppSenderRequiredTemplateHealth({
+      organizationId: "org_1",
+      senderId: "sender_1",
+      client: complete.client,
+    })).resolves.toBe(true);
   });
 });

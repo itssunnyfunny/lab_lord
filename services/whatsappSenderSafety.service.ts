@@ -13,7 +13,10 @@ import {
   readWhatsAppRateCard,
 } from "@/lib/whatsappCost";
 import {
-  hasCompleteManagedWhatsAppTemplateCatalog,
+  getManagedWhatsAppTemplate,
+  managedProviderTemplateMatches,
+  type WhatsAppManagedTemplateKey,
+  type WhatsAppManagedTemplateLanguage,
   WHATSAPP_MANAGED_TEMPLATE_CATALOG_VERSION,
 } from "@/lib/whatsappManagedTemplates";
 import {
@@ -29,6 +32,7 @@ import {
   WhatsAppValidationError,
 } from "@/lib/whatsappHttp";
 import { WhatsAppAuthorizationService } from "@/services/whatsappAuthorization.service";
+import { requiredManagedTemplateKeysForAutomation } from "@/services/whatsappAutomation.service";
 import { WhatsAppIncidentService } from "@/services/whatsappIncident.service";
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -193,38 +197,321 @@ export type WhatsAppResumeBlocker =
   | "TEMPLATES_UNHEALTHY"
   | "CRITICAL_INCIDENT_OPEN";
 
-async function templateHealth(
-  senderId: string,
-  client: Prisma.TransactionClient | typeof prisma = prisma
+type SenderSafetyClient = Prisma.TransactionClient | typeof prisma;
+
+type RequiredTemplateIdentity = Readonly<{
+  managedKey: WhatsAppManagedTemplateKey;
+  language: WhatsAppManagedTemplateLanguage;
+}>;
+
+function normalizeManagedLanguage(value: string): WhatsAppManagedTemplateLanguage | null {
+  if (value === "en") return "en_IN";
+  return value === "en_IN" || value === "hi" ? value : null;
+}
+
+function templateIdentity(input: RequiredTemplateIdentity) {
+  return `${input.managedKey}\u0000${input.language}`;
+}
+
+function isExactHealthyBinding(
+  binding: {
+    id: string;
+    senderId: string;
+    templateId: string;
+    provisioningId: string;
+    managedKey: WhatsAppManagedTemplateKey;
+    language: string;
+    catalogVersion: number;
+    catalogHash: string;
+    active: boolean;
+    template: {
+      id: string;
+      senderId: string;
+      providerTemplateId: string;
+      name: string;
+      language: string;
+      category: string;
+      providerStatus: string;
+      version: number;
+      components: Prisma.JsonValue;
+      staleAt: Date | null;
+    };
+    provisioning: {
+      id: string;
+      senderId: string;
+      managedKey: WhatsAppManagedTemplateKey;
+      language: string;
+      catalogVersion: number;
+      catalogHash: string;
+      providerTemplateName: string;
+      providerTemplateId: string | null;
+      status: string;
+    };
+  },
+  requirement: RequiredTemplateIdentity,
+  expectedSenderId: string
 ) {
-  const provisionings = await client.whatsAppManagedTemplateProvisioning.findMany({
-    where: {
-      senderId,
-      catalogVersion: WHATSAPP_MANAGED_TEMPLATE_CATALOG_VERSION,
-    },
-    select: {
-      managedKey: true,
-      language: true,
-      catalogVersion: true,
-      status: true,
-      binding: {
-        select: {
-          active: true,
-          template: {
-            select: { providerStatus: true, category: true, staleAt: true },
+  let definition: ReturnType<typeof getManagedWhatsAppTemplate>;
+  try {
+    definition = getManagedWhatsAppTemplate(
+      requirement.managedKey,
+      requirement.language,
+      WHATSAPP_MANAGED_TEMPLATE_CATALOG_VERSION
+    );
+  } catch {
+    return false;
+  }
+  return binding.senderId === expectedSenderId
+    && binding.managedKey === requirement.managedKey
+    && binding.language === requirement.language
+    && binding.catalogVersion === definition.catalogVersion
+    && binding.catalogHash === definition.catalogHash
+    && binding.active
+    && binding.templateId === binding.template.id
+    && binding.template.senderId === binding.senderId
+    && binding.provisioningId === binding.provisioning.id
+    && binding.provisioning.senderId === binding.senderId
+    && binding.provisioning.managedKey === requirement.managedKey
+    && binding.provisioning.language === requirement.language
+    && binding.provisioning.catalogVersion === definition.catalogVersion
+    && binding.provisioning.catalogHash === definition.catalogHash
+    && binding.provisioning.providerTemplateName === definition.providerTemplateName
+    && binding.provisioning.providerTemplateId === binding.template.providerTemplateId
+    && binding.provisioning.status === "READY"
+    && binding.template.providerStatus === "APPROVED"
+    && binding.template.category === "UTILITY"
+    && binding.template.staleAt === null
+    && binding.template.language === requirement.language
+    && Array.isArray(binding.template.components)
+    && managedProviderTemplateMatches({
+      name: binding.template.name,
+      language: binding.template.language,
+      category: binding.template.category,
+      components: binding.template.components,
+    }, definition);
+}
+
+export async function getWhatsAppSenderRequiredTemplateHealth(input: {
+  organizationId: string;
+  senderId: string;
+  client?: SenderSafetyClient;
+}) {
+  const client = input.client ?? prisma;
+  const [
+    queuedMessageRequirements,
+    branchSettings,
+    reportSubscriptions,
+    organizationReportSettings,
+    bindings,
+  ] = await Promise.all([
+    client.whatsAppMessage.groupBy({
+      by: [
+        "managedTemplateKey",
+        "catalogVersion",
+        "catalogHash",
+        "templateId",
+        "templateBindingId",
+        "templateVersion",
+      ],
+      where: {
+        organizationId: input.organizationId,
+        senderId: input.senderId,
+        OR: [
+          { status: { in: ["SCHEDULED", "CLAIMED"] } },
+          {
+            status: "SUBMITTING",
+            providerMessageId: null,
+            providerCallAdmittedAt: null,
+          },
+        ],
+      },
+    }),
+    client.branchWhatsAppSettings.findMany({
+      where: {
+        organizationId: input.organizationId,
+        senderId: input.senderId,
+        enabled: true,
+      },
+      select: {
+        branchId: true,
+        defaultLanguage: true,
+        defaultTone: true,
+        automationEnabledAt: true,
+      },
+    }),
+    client.whatsAppReportSubscription.findMany({
+      where: {
+        organizationId: input.organizationId,
+        senderId: input.senderId,
+        status: "ACTIVE",
+      },
+      select: { branchId: true, scope: true, language: true },
+    }),
+    client.organizationWhatsAppReportSettings.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        senderId: input.senderId,
+        enabled: true,
+      },
+      select: { organizationId: true },
+    }),
+    client.whatsAppTemplateBinding.findMany({
+      where: {
+        senderId: input.senderId,
+        sender: { organizationId: input.organizationId },
+      },
+      select: {
+        id: true,
+        senderId: true,
+        templateId: true,
+        provisioningId: true,
+        managedKey: true,
+        language: true,
+        catalogVersion: true,
+        catalogHash: true,
+        active: true,
+        template: {
+          select: {
+            id: true,
+            senderId: true,
+            providerTemplateId: true,
+            name: true,
+            language: true,
+            category: true,
+            providerStatus: true,
+            version: true,
+            components: true,
+            staleAt: true,
+          },
+        },
+        provisioning: {
+          select: {
+            id: true,
+            senderId: true,
+            managedKey: true,
+            language: true,
+            catalogVersion: true,
+            catalogHash: true,
+            providerTemplateName: true,
+            providerTemplateId: true,
+            status: true,
           },
         },
       },
-    },
+    }),
+  ]);
+
+  const activeAutomationBranchIds = branchSettings
+    .filter(settings => settings.automationEnabledAt !== null)
+    .map(settings => settings.branchId);
+  const enabledRules = activeAutomationBranchIds.length === 0
+    ? []
+    : await client.whatsAppAutomationRule.findMany({
+        where: {
+          organizationId: input.organizationId,
+          branchId: { in: activeAutomationBranchIds },
+          enabled: true,
+        },
+        select: { branchId: true, stage: true },
+      });
+  const bindingById = new Map(bindings.map(binding => [binding.id, binding]));
+  const bindingByIdentity = new Map<string, typeof bindings[number]>();
+  for (const binding of bindings) {
+    const language = normalizeManagedLanguage(binding.language);
+    if (!language) continue;
+    bindingByIdentity.set(templateIdentity({ managedKey: binding.managedKey, language }), binding);
+  }
+
+  for (const message of queuedMessageRequirements) {
+    const binding = message.templateBindingId
+      ? bindingById.get(message.templateBindingId)
+      : null;
+    const language = binding ? normalizeManagedLanguage(binding.language) : null;
+    if (
+      !message.managedTemplateKey
+      || !language
+      || message.catalogVersion !== WHATSAPP_MANAGED_TEMPLATE_CATALOG_VERSION
+      || !message.catalogHash
+      || !message.templateId
+      || !message.templateBindingId
+      || message.templateVersion === null
+      || !binding
+      || binding.templateId !== message.templateId
+      || binding.template.version !== message.templateVersion
+      || !isExactHealthyBinding(binding, {
+        managedKey: message.managedTemplateKey,
+        language,
+      }, input.senderId)
+      || message.catalogHash !== binding.catalogHash
+    ) return false;
+  }
+
+  const requirements = new Map<string, RequiredTemplateIdentity>();
+  let invalidConfiguration = false;
+  const addRequirements = (
+    managedKeys: readonly WhatsAppManagedTemplateKey[],
+    rawLanguage: string
+  ) => {
+    const language = normalizeManagedLanguage(rawLanguage);
+    if (!language) {
+      invalidConfiguration = true;
+      return;
+    }
+    for (const managedKey of managedKeys) {
+      const requirement = { managedKey, language };
+      requirements.set(templateIdentity(requirement), requirement);
+    }
+  };
+
+  const settingsByBranch = new Map(branchSettings.map(settings => [settings.branchId, settings]));
+  const rulesByBranch = new Map<string, typeof enabledRules>();
+  for (const rule of enabledRules) {
+    const rules = rulesByBranch.get(rule.branchId) ?? [];
+    rules.push(rule);
+    rulesByBranch.set(rule.branchId, rules);
+  }
+  for (const settings of branchSettings) {
+    if (!["polite", "friendly", "firm"].includes(settings.defaultTone)) {
+      invalidConfiguration = true;
+      continue;
+    }
+    addRequirements(requiredManagedTemplateKeysForAutomation({
+      stages: ["FEE_DUE_TODAY"],
+      tone: settings.defaultTone,
+    }), settings.defaultLanguage);
+    if (settings.automationEnabledAt) {
+      addRequirements(requiredManagedTemplateKeysForAutomation({
+        stages: (rulesByBranch.get(settings.branchId) ?? []).map(rule => rule.stage),
+        tone: settings.defaultTone,
+      }), settings.defaultLanguage);
+    }
+  }
+
+  for (const subscription of reportSubscriptions) {
+    const currentlyEnabled = subscription.scope === "BRANCH"
+      ? Boolean(subscription.branchId && settingsByBranch.has(subscription.branchId))
+      : Boolean(organizationReportSettings);
+    if (!currentlyEnabled) continue;
+    addRequirements([
+      subscription.scope === "BRANCH"
+        ? "DAILY_BRANCH_REPORT"
+        : "DAILY_ORGANIZATION_REPORT",
+    ], subscription.language);
+  }
+  if (invalidConfiguration) return false;
+
+  return [...requirements].every(([identity, requirement]) => {
+    const binding = bindingByIdentity.get(identity);
+    return Boolean(binding && isExactHealthyBinding(binding, requirement, input.senderId));
   });
-  return hasCompleteManagedWhatsAppTemplateCatalog(provisionings)
-    && provisionings.every(item =>
-    item.status === "READY"
-    && item.binding?.active === true
-    && item.binding.template.providerStatus === "APPROVED"
-    && item.binding.template.category === "UTILITY"
-    && item.binding.template.staleAt === null
-  );
+}
+
+async function templateHealth(
+  organizationId: string,
+  senderId: string,
+  client: SenderSafetyClient = prisma
+) {
+  return getWhatsAppSenderRequiredTemplateHealth({ organizationId, senderId, client });
 }
 
 function rateCardView(
@@ -487,7 +774,7 @@ export class WhatsAppSenderSafetyService {
     if (!sender) throw new WhatsAppResourceNotFoundError();
     const now = input.now ?? new Date();
     const [templatesHealthy, unknownOutcomeCount, openCriticalIncidentCount] = await Promise.all([
-      templateHealth(sender.id),
+      templateHealth(input.organizationId, sender.id),
       prisma.whatsAppMessage.count({ where: { senderId: sender.id, status: "UNKNOWN" } }),
       prisma.whatsAppOperationalIncident.count({
         where: {
@@ -600,7 +887,7 @@ export class WhatsAppSenderSafetyService {
       const rate = rateCardView(now, input.env);
       if (!rate.current) throw new WhatsAppValidationError("Sender delivery is not ready to resume");
       const [templatesHealthy, blocking] = await Promise.all([
-        templateHealth(input.senderId, tx),
+        templateHealth(input.organizationId, input.senderId, tx),
         tx.whatsAppOperationalIncident.count({
           where: {
             senderId: input.senderId,

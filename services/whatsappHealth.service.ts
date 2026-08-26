@@ -561,11 +561,14 @@ async function finalizeHealthSuccess(input: {
       create: {
         senderId: sender.id,
         lastHealthCheckAt: input.now,
-        ...(restricted || !templateResult.templatesHealthy ? {} : { lastHealthyAt: input.now }),
+        ...(!restricted ? { lastHealthyAt: input.now } : {}),
       },
       update: {
         lastHealthCheckAt: input.now,
-        ...(restricted || !templateResult.templatesHealthy ? {} : { lastHealthyAt: input.now }),
+        // Freshness proves that the bounded provider reads succeeded and that
+        // the sender is unrestricted. Resume separately checks only templates
+        // required by queued work and currently enabled configuration.
+        ...(!restricted ? { lastHealthyAt: input.now } : {}),
       },
     });
     if (restricted) {
