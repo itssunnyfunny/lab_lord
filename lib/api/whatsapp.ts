@@ -443,6 +443,7 @@ export type WhatsAppOrganizationReportSettingsMutationResponse = {
 
 export type WhatsAppDailyReportMetrics = {
   localReportDate: string;
+  metricsAsOfAt: string;
   asOfLocalTime: string;
   paymentsRecordedTodayCount: number;
   paymentsRecordedTodayAmount: number;
@@ -467,6 +468,7 @@ export type WhatsAppDailyReportPreview = {
   scope: WhatsAppReportScope;
   localReportDate: string;
   scheduledCutoffAt: string;
+  metricsAsOfAt: string;
   catchUpEndsAt: string;
   metricsVersion: number;
   metrics: WhatsAppDailyReportMetrics;

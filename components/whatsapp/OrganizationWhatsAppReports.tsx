@@ -42,6 +42,7 @@ export interface WhatsAppDailyReportMetricsView {
 export interface WhatsAppDailyReportPreviewView {
   scope: "BRANCH" | "ORGANIZATION";
   localReportDate: string;
+  metricsAsOfAt: string;
   asOfLocalTime: string;
   renderedPreview: string;
   metrics: WhatsAppDailyReportMetricsView;
@@ -131,6 +132,7 @@ export function presentWhatsAppDailyReportPreview(
   return {
     scope: preview.scope,
     localReportDate: preview.localReportDate,
+    metricsAsOfAt: preview.metricsAsOfAt,
     asOfLocalTime: metrics.asOfLocalTime,
     renderedPreview: preview.template.renderedPreview,
     metrics: {

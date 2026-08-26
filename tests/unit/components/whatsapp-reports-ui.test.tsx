@@ -23,8 +23,9 @@ import { WhatsAppSenderSafety } from "@/components/whatsapp/WhatsAppSenderSafety
 const reportPreview: WhatsAppDailyReportPreviewView = {
   scope: "BRANCH",
   localReportDate: "2026-08-24",
-  asOfLocalTime: "20:45",
-  renderedPreview: "Central Branch daily report for 24 August 2026, as of 20:45.",
+  metricsAsOfAt: "2026-08-24T15:45:00.000Z",
+  asOfLocalTime: "21:15",
+  renderedPreview: "Central Branch daily report for 24 August 2026, as of 21:15.",
   metrics: {
     paymentsRecordedTodayCount: 4,
     paymentsRecordedTodayAmount: "₹4,500.00",
@@ -57,12 +58,14 @@ describe("WhatsApp PR4 presentational UI", () => {
       scope: "BRANCH",
       localReportDate: "2026-08-24",
       scheduledCutoffAt: "2026-08-24T15:30:00.000Z",
-      catchUpEndsAt: "2026-08-24T17:30:00.000Z",
-      metricsVersion: 1,
+      metricsAsOfAt: "2026-08-24T15:45:00.000Z",
+      catchUpEndsAt: "2026-08-24T16:30:00.000Z",
+      metricsVersion: 2,
       metrics: {
         branchName: "Central Branch",
         localReportDate: "2026-08-24",
-        asOfLocalTime: "20:45",
+        metricsAsOfAt: "2026-08-24T15:45:00.000Z",
+        asOfLocalTime: "21:15",
         paymentsRecordedTodayCount: 4,
         paymentsRecordedTodayAmount: 4500,
         newStudentsToday: 2,
@@ -110,6 +113,7 @@ describe("WhatsApp PR4 presentational UI", () => {
     });
 
     expect(preview.renderedPreview).toBe("Deterministic branch report.");
+    expect(preview.metricsAsOfAt).toBe("2026-08-24T15:45:00.000Z");
     expect(preview.metrics.paymentsRecordedTodayAmount).toMatch(/₹\s?4,500/);
     expect(preview.estimateDisclaimer).toContain("Meta is authoritative");
     expect(queued.status).toBe("DUPLICATE");

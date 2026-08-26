@@ -54,7 +54,8 @@ function subscription(scope: "BRANCH" | "ORGANIZATION", status = "ACTIVE") {
 function reportPreview(scope: "BRANCH" | "ORGANIZATION") {
   const aggregate = {
     localReportDate: "2026-08-24",
-    asOfLocalTime: "20:45",
+    metricsAsOfAt: "2026-08-24T15:45:00.000Z",
+    asOfLocalTime: "21:15",
     paymentsRecordedTodayCount: 4,
     paymentsRecordedTodayAmount: 4500,
     newStudentsToday: 2,
@@ -74,8 +75,9 @@ function reportPreview(scope: "BRANCH" | "ORGANIZATION") {
     scope,
     localReportDate: "2026-08-24",
     scheduledCutoffAt: "2026-08-24T15:30:00.000Z",
-    catchUpEndsAt: "2026-08-24T17:30:00.000Z",
-    metricsVersion: 1,
+    metricsAsOfAt: "2026-08-24T15:45:00.000Z",
+    catchUpEndsAt: "2026-08-24T16:30:00.000Z",
+    metricsVersion: 2,
     metrics: scope === "ORGANIZATION"
       ? { ...aggregate, organizationName: "Playwright Study Hall", branchCount: 3 }
       : { ...aggregate, branchName: "Playwright Central Branch" },
