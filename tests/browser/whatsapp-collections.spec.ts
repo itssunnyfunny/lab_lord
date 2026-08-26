@@ -12,7 +12,7 @@ const authStatePath = process.env.PLAYWRIGHT_OWNER_AUTH_STATE
 const hasAuthenticatedSession = Boolean(authStatePath && fs.existsSync(authStatePath));
 
 test.use({ storageState: hasAuthenticatedSession ? authStatePath! : EMPTY_STATE });
-test.beforeEach(({}, testInfo) => {
+test.beforeEach(async ({ page }, testInfo) => {
   test.skip(
     !hasAuthenticatedSession,
     "Set PLAYWRIGHT_OWNER_AUTH_STATE or PLAYWRIGHT_AUTH_STATE to run authenticated WhatsApp collections coverage."
@@ -20,6 +20,9 @@ test.beforeEach(({}, testInfo) => {
   test.skip(
     testInfo.project.name !== "chromium",
     "The deterministic PR3 collections workflow runs once in desktop Chromium."
+  );
+  await page.route("https://graph.facebook.com/**", route =>
+    route.abort("blockedbyclient")
   );
 });
 
