@@ -12,7 +12,12 @@ function permissions(allowed: StaffAction[]) {
 describe("branch page access mapping", () => {
     it("maps restricted pages to their effective staff permission", () => {
         expect(BRANCH_PAGE_ACCESS.analytics).toBe("analytics");
-        expect(BRANCH_PAGE_ACCESS.settings).toBe("manage_branch");
+        expect(BRANCH_PAGE_ACCESS.settings).toEqual({
+            anyOf: [
+                "manage_branch",
+                ["view_whatsapp", "receive_whatsapp_reports", "view_payments", "analytics"],
+            ],
+        });
         expect(BRANCH_PAGE_ACCESS.staff).toBe("manage_branch");
         expect(BRANCH_PAGE_ACCESS.shifts).toBe("seat_allocation");
         expect(BRANCH_PAGE_ACCESS.seats).toBe("seat_allocation");
@@ -36,6 +41,20 @@ describe("branch page access mapping", () => {
     it("requires every permission configured for a page", () => {
         expect(hasBranchPageAccess({ permissions: permissions(["analytics"]) }, "aiMessages")).toBe(false);
         expect(hasBranchPageAccess({ permissions: permissions(["analytics", "view_payments"]) }, "aiMessages")).toBe(true);
+    });
+
+    it("lets an exact report recipient reach settings without manage_branch", () => {
+        const reportRecipient = permissions([
+            "view_whatsapp",
+            "receive_whatsapp_reports",
+            "view_payments",
+            "analytics",
+        ]);
+
+        expect(hasBranchPageAccess({ permissions: reportRecipient }, "settings")).toBe(true);
+        expect(hasBranchPageAccess({
+            permissions: { ...reportRecipient, analytics: false },
+        }, "settings")).toBe(false);
     });
 
     it("denies access when no branch access payload is available", () => {
