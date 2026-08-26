@@ -724,6 +724,7 @@ model WhatsAppDailyReportSnapshot {
   localReportDate   String
   timeZone          String
   scheduledCutoffAt DateTime
+  metricsAsOfAt     DateTime
   generatedAt       DateTime
   metricsVersion    Int
   metrics           Json
@@ -734,7 +735,7 @@ model WhatsAppDailyReportSnapshot {
   branch            Branch?             @relation(fields: [branchId], references: [id], onDelete: Restrict)
   messages          WhatsAppMessage[]
 
-  @@unique([scope, scopeKey, localReportDate, metricsVersion])
+  @@unique([scope, scopeKey, localReportDate, scheduledCutoffAt, metricsVersion], map: "WhatsAppReportSnapshot_scope_date_cutoff_version_key")
   @@index([organizationId, localReportDate])
   @@index([branchId, localReportDate])
   @@index([generatedAt])

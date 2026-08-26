@@ -82,11 +82,25 @@ describe("WhatsApp reports, notices, and hardening migration", () => {
       "WhatsAppReportSubscription_senderId_userId_scope_scopeKey_key",
       "WhatsAppReportSubscription_confirmationCodeHash_key",
       "WhatsAppReportSubscription_plannerLeaseToken_key",
-      "WhatsAppDailyReportSnapshot_scope_scopeKey_localReportDate_metricsVersion_key",
+      "WhatsAppReportSnapshot_scope_date_cutoff_version_key",
       "WhatsAppServiceNotice_branchId_idempotencyKey_key",
       "WhatsAppOperationalIncident_dedupeKey_key",
       "WhatsAppJobRun_invocationId_key",
     ]) expect(migration).toContain(index);
+  });
+
+  it("keys report snapshots by scheduled cutoff and stores an explicit metrics as-of", () => {
+    expect(schema).toContain("metricsAsOfAt     DateTime");
+    expect(schema).toContain(
+      '@@unique([scope, scopeKey, localReportDate, scheduledCutoffAt, metricsVersion], map: "WhatsAppReportSnapshot_scope_date_cutoff_version_key")'
+    );
+    expect(migration).toContain('"metricsAsOfAt" TIMESTAMP(3) NOT NULL');
+    expect(migration).toMatch(
+      /CREATE UNIQUE INDEX "WhatsAppReportSnapshot_scope_date_cutoff_version_key"\s+ON "WhatsAppDailyReportSnapshot"\(\s*"scope",\s*"scopeKey",\s*"localReportDate",\s*"scheduledCutoffAt",\s*"metricsVersion"\s*\);/u
+    );
+    expect(migration).not.toContain(
+      "WhatsAppDailyReportSnapshot_scope_scopeKey_localReportDate_metricsVersion_key"
+    );
   });
 
   it("extends the single outbox and sender health projection without rewriting history", () => {

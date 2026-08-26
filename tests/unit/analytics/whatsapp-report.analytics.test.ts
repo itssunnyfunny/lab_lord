@@ -56,19 +56,22 @@ describe("WhatsApp daily-report analytics", () => {
       .mockResolvedValueOnce(0);
   });
 
-  it("uses the deterministic local cutoff and caps occupancy by shift capacity", async () => {
+  it("uses one explicit metrics as-of timestamp for every temporal query and label", async () => {
     const cutoff = new Date("2026-08-23T15:30:00.000Z");
+    const metricsAsOfAt = new Date("2026-08-23T15:45:00.000Z");
     const result = await getWhatsAppDailyReportMetrics(transaction(), {
       scope: "BRANCH",
       organizationId: "org_1",
       branchId: "branch_1",
       localReportDate: "2026-08-23",
       scheduledCutoffAt: cutoff,
+      metricsAsOfAt,
     });
     expect(result).toMatchObject({
       branchName: "Central",
       localReportDate: "2026-08-23",
-      asOfLocalTime: "21:00",
+      metricsAsOfAt: metricsAsOfAt.toISOString(),
+      asOfLocalTime: "21:15",
       usedShiftSlots: 27,
       totalShiftCapacity: 40,
       paymentsRecordedTodayCount: 3,
@@ -80,16 +83,55 @@ describe("WhatsApp daily-report analytics", () => {
         resolutionEvents: { none: {} },
         paidAt: {
           gte: new Date("2026-08-22T18:30:00.000Z"),
-          lte: cutoff,
+          lte: metricsAsOfAt,
+        },
+        createdAt: { lte: metricsAsOfAt },
+      }),
+    }));
+    expect(mocks.paymentResolutionEvents).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        occurredAt: {
+          gte: new Date("2026-08-22T18:30:00.000Z"),
+          lte: metricsAsOfAt,
+        },
+        paidAt: {
+          gte: new Date("2026-08-22T18:30:00.000Z"),
+          lte: metricsAsOfAt,
         },
       }),
     }));
     expect(mocks.paymentAggregate).toHaveBeenNthCalledWith(2, expect.objectContaining({
       where: expect.objectContaining({
         status: "DUE",
+        createdAt: { lte: metricsAsOfAt },
         dueDate: { lte: new Date("2026-08-23T18:29:59.999Z") },
       }),
     }));
+    expect(mocks.studentCount).toHaveBeenNthCalledWith(1, {
+      where: expect.objectContaining({
+        createdAt: {
+          gte: new Date("2026-08-22T18:30:00.000Z"),
+          lte: metricsAsOfAt,
+        },
+      }),
+    });
+    expect(mocks.studentCount).toHaveBeenNthCalledWith(2, {
+      where: expect.objectContaining({ createdAt: { lte: metricsAsOfAt } }),
+    });
+    expect(mocks.allocationGroupBy).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        startDate: { lte: metricsAsOfAt },
+        OR: [{ endDate: null }, { endDate: { gt: metricsAsOfAt } }],
+      }),
+    }));
+    expect(mocks.messageCount).toHaveBeenNthCalledWith(1, {
+      where: expect.objectContaining({
+        acceptedAt: {
+          gte: new Date("2026-08-22T18:30:00.000Z"),
+          lte: metricsAsOfAt,
+        },
+      }),
+    });
     expect(JSON.stringify(result)).not.toMatch(/studentName|phoneE164|seatLabel/);
   });
 
@@ -100,12 +142,35 @@ describe("WhatsApp daily-report analytics", () => {
       branchId: "branch_1",
       localReportDate: "2026-08-22",
       scheduledCutoffAt: new Date("2026-08-23T15:30:00.000Z"),
+      metricsAsOfAt: new Date("2026-08-23T15:45:00.000Z"),
     })).rejects.toThrow("REPORT_CUTOFF_SCOPE_MISMATCH");
     expect(mocks.paymentAggregate).not.toHaveBeenCalled();
   });
 
-  it("preserves a paid outcome when the payment is waived during catch-up after the cutoff", async () => {
+  it("rejects metrics as-of timestamps before the cutoff or outside the report day", async () => {
     const cutoff = new Date("2026-08-23T15:30:00.000Z");
+    await expect(getWhatsAppDailyReportMetrics(transaction(), {
+      scope: "BRANCH",
+      organizationId: "org_1",
+      branchId: "branch_1",
+      localReportDate: "2026-08-23",
+      scheduledCutoffAt: cutoff,
+      metricsAsOfAt: new Date("2026-08-23T15:29:59.999Z"),
+    })).rejects.toThrow("REPORT_METRICS_AS_OF_SCOPE_MISMATCH");
+    await expect(getWhatsAppDailyReportMetrics(transaction(), {
+      scope: "BRANCH",
+      organizationId: "org_1",
+      branchId: "branch_1",
+      localReportDate: "2026-08-23",
+      scheduledCutoffAt: cutoff,
+      metricsAsOfAt: new Date("2026-08-23T18:30:00.000Z"),
+    })).rejects.toThrow("REPORT_METRICS_AS_OF_SCOPE_MISMATCH");
+    expect(mocks.paymentAggregate).not.toHaveBeenCalled();
+  });
+
+  it("applies payment corrections between the scheduled cutoff and metrics as-of", async () => {
+    const cutoff = new Date("2026-08-23T15:30:00.000Z");
+    const metricsAsOfAt = new Date("2026-08-23T15:45:00.000Z");
     mocks.paymentResolutionEvents.mockResolvedValue([
       {
         id: "event_paid_before_cutoff",
@@ -147,21 +212,25 @@ describe("WhatsApp daily-report analytics", () => {
       branchId: "branch_1",
       localReportDate: "2026-08-23",
       scheduledCutoffAt: cutoff,
+      metricsAsOfAt,
     });
 
     expect(result).toMatchObject({
-      paymentsRecordedTodayCount: 2,
-      paymentsRecordedTodayAmount: 6_000,
+      metricsAsOfAt: metricsAsOfAt.toISOString(),
+      asOfLocalTime: "21:15",
+      paymentsRecordedTodayCount: 0,
+      paymentsRecordedTodayAmount: 0,
     });
     expect(mocks.paymentResolutionEvents).toHaveBeenCalledWith({
       where: {
         branchId: { in: ["branch_1"] },
         occurredAt: {
           gte: new Date("2026-08-22T18:30:00.000Z"),
+          lte: metricsAsOfAt,
         },
         paidAt: {
           gte: new Date("2026-08-22T18:30:00.000Z"),
-          lte: cutoff,
+          lte: metricsAsOfAt,
         },
       },
       select: {

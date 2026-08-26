@@ -22,6 +22,7 @@ export type WhatsAppReportAnalyticsInput = Readonly<{
   branchId?: string | null;
   localReportDate: string;
   scheduledCutoffAt: Date;
+  metricsAsOfAt: Date;
 }>;
 
 function parseLocalDate(value: string): LocalDateParts {
@@ -77,53 +78,30 @@ function compareResolutionEvidence(
     : left.id.localeCompare(right.id);
 }
 
-function paidResolutionTotalsAtCutoff(
+function paidResolutionTotalsAtAsOf(
   events: readonly PaymentResolutionEvidence[],
   dayStart: Date,
-  scheduledCutoffAt: Date
+  metricsAsOfAt: Date
 ) {
-  const evidenceByPayment = new Map<string, {
-    latestAtOrBefore: PaymentResolutionEvidence | null;
-    earliestAfter: PaymentResolutionEvidence | null;
-  }>();
+  const evidenceByPayment = new Map<string, PaymentResolutionEvidence>();
   for (const event of events) {
-    const evidence = evidenceByPayment.get(event.paymentId) ?? {
-      latestAtOrBefore: null,
-      earliestAfter: null,
-    };
-    if (event.occurredAt.getTime() <= scheduledCutoffAt.getTime()) {
-      if (
-        !evidence.latestAtOrBefore
-        || compareResolutionEvidence(event, evidence.latestAtOrBefore) > 0
-      ) {
-        evidence.latestAtOrBefore = event;
-      }
-    } else if (
-      !evidence.earliestAfter
-      || compareResolutionEvidence(event, evidence.earliestAfter) < 0
+    const existing = evidenceByPayment.get(event.paymentId);
+    if (
+      event.occurredAt.getTime() <= metricsAsOfAt.getTime()
+      && (!existing || compareResolutionEvidence(event, existing) > 0)
     ) {
-      evidence.earliestAfter = event;
+      evidenceByPayment.set(event.paymentId, event);
     }
-    evidenceByPayment.set(event.paymentId, evidence);
   }
 
   let count = 0;
   let amount = 0;
-  for (const evidence of evidenceByPayment.values()) {
-    const event = evidence.latestAtOrBefore ?? evidence.earliestAfter;
-    if (!event) continue;
-
-    // A pre-cutoff event's after-state is authoritative at the cutoff. When a
-    // legacy paid payment has no pre-cutoff ledger row, the first later
-    // correction's immutable before-state proves what was true at the cutoff.
-    const statusAtCutoff = evidence.latestAtOrBefore
-      ? event.toStatus
-      : event.fromStatus;
+  for (const event of evidenceByPayment.values()) {
     if (
-      statusAtCutoff === "PAID"
+      event.toStatus === "PAID"
       && event.paidAt
       && event.paidAt.getTime() >= dayStart.getTime()
-      && event.paidAt.getTime() <= scheduledCutoffAt.getTime()
+      && event.paidAt.getTime() <= metricsAsOfAt.getTime()
     ) {
       count += 1;
       amount += event.amount;
@@ -132,12 +110,12 @@ function paidResolutionTotalsAtCutoff(
   return { count, amount };
 }
 
-async function getPaymentsRecordedThroughCutoff(
+async function getPaymentsRecordedThroughAsOf(
   tx: Prisma.TransactionClient,
   input: {
     branchIds: readonly string[];
     dayStart: Date;
-    scheduledCutoffAt: Date;
+    metricsAsOfAt: Date;
   }
 ) {
   const [resolutionEvents, legacyPayments] = await Promise.all([
@@ -147,12 +125,10 @@ async function getPaymentsRecordedThroughCutoff(
           where: {
             branchId: { in: [...input.branchIds] },
             // A payment's first PAID transition uses the same instant for
-            // occurredAt and paidAt, and every correction follows it. Starting
-            // at the report day therefore retains all evidence that can affect
-            // this cutoff while keeping the catch-up query on the
-            // (branchId, occurredAt, id) ledger index.
-            occurredAt: { gte: input.dayStart },
-            paidAt: { gte: input.dayStart, lte: input.scheduledCutoffAt },
+            // occurredAt and paidAt, and every correction follows it. Bound
+            // both timestamps to the single report metrics instant.
+            occurredAt: { gte: input.dayStart, lte: input.metricsAsOfAt },
+            paidAt: { gte: input.dayStart, lte: input.metricsAsOfAt },
           },
           select: {
             id: true,
@@ -173,8 +149,8 @@ async function getPaymentsRecordedThroughCutoff(
       where: {
         branchId: { in: [...input.branchIds] },
         status: "PAID",
-        createdAt: { lte: input.scheduledCutoffAt },
-        paidAt: { gte: input.dayStart, lte: input.scheduledCutoffAt },
+        createdAt: { lte: input.metricsAsOfAt },
+        paidAt: { gte: input.dayStart, lte: input.metricsAsOfAt },
         // Historical resolutions predate the append-only ledger. They remain
         // compatible only while no later resolution event can prove otherwise.
         resolutionEvents: { none: {} },
@@ -183,10 +159,10 @@ async function getPaymentsRecordedThroughCutoff(
       _sum: { amount: true },
     }),
   ]);
-  const ledgerTotals = paidResolutionTotalsAtCutoff(
+  const ledgerTotals = paidResolutionTotalsAtAsOf(
     resolutionEvents,
     input.dayStart,
-    input.scheduledCutoffAt
+    input.metricsAsOfAt
   );
   return {
     count: ledgerTotals.count + legacyPayments._count._all,
@@ -207,6 +183,7 @@ export async function getWhatsAppDailyReportMetrics(
     || (input.scope === "BRANCH" && !/^[A-Za-z0-9_-]{1,128}$/.test(input.branchId ?? ""))
     || (input.scope === "ORGANIZATION" && input.branchId != null)
     || Number.isNaN(input.scheduledCutoffAt.getTime())
+    || Number.isNaN(input.metricsAsOfAt.getTime())
   ) {
     throw new Error("REPORT_SCOPE_INVALID");
   }
@@ -218,6 +195,12 @@ export async function getWhatsAppDailyReportMetrics(
   if (!organization) throw new Error("REPORT_SCOPE_NOT_FOUND");
   if (whatsappLocalDateKey(input.scheduledCutoffAt, organization.timezone) !== input.localReportDate) {
     throw new Error("REPORT_CUTOFF_SCOPE_MISMATCH");
+  }
+  if (
+    input.metricsAsOfAt.getTime() < input.scheduledCutoffAt.getTime()
+    || whatsappLocalDateKey(input.metricsAsOfAt, organization.timezone) !== input.localReportDate
+  ) {
+    throw new Error("REPORT_METRICS_AS_OF_SCOPE_MISMATCH");
   }
 
   const branches = await tx.branch.findMany({
@@ -249,10 +232,9 @@ export async function getWhatsAppDailyReportMetrics(
   );
   const messageWhere = messageScopeWhere(input);
 
-  // Payment outcomes are reconstructed at the labelled cutoff from immutable
-  // resolution evidence. Student status, active seats/shifts, allocations, and
-  // open/overdue debt intentionally remain current canonical facts (while
-  // excluding records that did not yet exist or apply by the cutoff).
+  // Payment outcomes are reconstructed through the same transaction-snapshot
+  // instant that labels every current canonical fact. This keeps report copy
+  // truthful without adding broad historical event sourcing.
 
   const [
     paymentsRecorded,
@@ -266,29 +248,29 @@ export async function getWhatsAppDailyReportMetrics(
     whatsAppFailedToday,
     whatsAppUnknownToday,
   ] = await Promise.all([
-    getPaymentsRecordedThroughCutoff(tx, {
+    getPaymentsRecordedThroughAsOf(tx, {
       branchIds,
       dayStart,
-      scheduledCutoffAt: input.scheduledCutoffAt,
+      metricsAsOfAt: input.metricsAsOfAt,
     }),
     tx.student.count({
       where: {
         ...branchWhere,
-        createdAt: { gte: dayStart, lte: input.scheduledCutoffAt },
+        createdAt: { gte: dayStart, lte: input.metricsAsOfAt },
       },
     }),
     tx.student.count({
       where: {
         ...branchWhere,
         status: "ACTIVE",
-        createdAt: { lte: input.scheduledCutoffAt },
+        createdAt: { lte: input.metricsAsOfAt },
       },
     }),
     tx.payment.aggregate({
       where: {
         ...branchWhere,
         status: "DUE",
-        createdAt: { lte: input.scheduledCutoffAt },
+        createdAt: { lte: input.metricsAsOfAt },
         dueDate: { lte: dayEnd },
       },
       _count: { _all: true },
@@ -298,7 +280,7 @@ export async function getWhatsAppDailyReportMetrics(
       where: {
         ...branchWhere,
         status: "DUE",
-        createdAt: { lte: input.scheduledCutoffAt },
+        createdAt: { lte: input.metricsAsOfAt },
         dueDate: { lt: overdueBefore },
       },
       _count: { _all: true },
@@ -313,12 +295,12 @@ export async function getWhatsAppDailyReportMetrics(
             student: {
               branchId: { in: branchIds },
               status: "ACTIVE",
-              createdAt: { lte: input.scheduledCutoffAt },
+              createdAt: { lte: input.metricsAsOfAt },
             },
-            startDate: { lte: input.scheduledCutoffAt },
+            startDate: { lte: input.metricsAsOfAt },
             OR: [
               { endDate: null },
-              { endDate: { gt: input.scheduledCutoffAt } },
+              { endDate: { gt: input.metricsAsOfAt } },
             ],
           },
           _count: { _all: true },
@@ -327,26 +309,26 @@ export async function getWhatsAppDailyReportMetrics(
     tx.whatsAppMessage.count({
       where: {
         ...messageWhere,
-        acceptedAt: { gte: dayStart, lte: input.scheduledCutoffAt },
+        acceptedAt: { gte: dayStart, lte: input.metricsAsOfAt },
       },
     }),
     tx.whatsAppMessage.count({
       where: {
         ...messageWhere,
-        deliveredAt: { gte: dayStart, lte: input.scheduledCutoffAt },
+        deliveredAt: { gte: dayStart, lte: input.metricsAsOfAt },
       },
     }),
     tx.whatsAppMessage.count({
       where: {
         ...messageWhere,
-        failedAt: { gte: dayStart, lte: input.scheduledCutoffAt },
+        failedAt: { gte: dayStart, lte: input.metricsAsOfAt },
       },
     }),
     tx.whatsAppMessage.count({
       where: {
         ...messageWhere,
         status: "UNKNOWN",
-        submissionStartedAt: { gte: dayStart, lte: input.scheduledCutoffAt },
+        submissionStartedAt: { gte: dayStart, lte: input.metricsAsOfAt },
       },
     }),
   ]);
@@ -366,11 +348,12 @@ export async function getWhatsAppDailyReportMetrics(
   }
 
   const time = getWhatsAppLocalDateTimeParts(
-    input.scheduledCutoffAt,
+    input.metricsAsOfAt,
     organization.timezone
   );
   const common = {
     localReportDate: input.localReportDate,
+    metricsAsOfAt: input.metricsAsOfAt.toISOString(),
     asOfLocalTime: `${String(time.hour).padStart(2, "0")}:${String(time.minute).padStart(2, "0")}`,
     paymentsRecordedTodayCount: paymentsRecorded.count,
     paymentsRecordedTodayAmount: paymentsRecorded.amount,

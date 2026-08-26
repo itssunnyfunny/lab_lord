@@ -2,16 +2,21 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-export const WHATSAPP_REPORT_METRICS_VERSION = 1 as const;
+export const WHATSAPP_REPORT_METRICS_VERSION = 2 as const;
 
 const boundedName = z.string().normalize("NFKC").trim().min(1).max(120);
 const localDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const localTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
+const metricsTimestamp = z.string().datetime({ offset: true }).refine(
+  value => new Date(value).toISOString() === value,
+  "Metrics timestamp must be canonical UTC"
+);
 const count = z.number().int().nonnegative().max(9_999_999);
 const amount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 const aggregateMetrics = {
   localReportDate: localDate,
+  metricsAsOfAt: metricsTimestamp,
   asOfLocalTime: localTime,
   paymentsRecordedTodayCount: count,
   paymentsRecordedTodayAmount: amount,
@@ -113,6 +118,7 @@ export function createWhatsAppReportSourceFingerprint(input: {
   scopeKey: string;
   localReportDate: string;
   scheduledCutoffAt: Date;
+  metricsAsOfAt: Date;
   metricsVersion?: number;
 }) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.scopeKey)) {
@@ -122,16 +128,20 @@ export function createWhatsAppReportSourceFingerprint(input: {
   if (Number.isNaN(input.scheduledCutoffAt.getTime())) {
     throw new Error("Report cutoff is invalid");
   }
+  if (Number.isNaN(input.metricsAsOfAt.getTime())) {
+    throw new Error("Report metrics timestamp is invalid");
+  }
   const metricsVersion = input.metricsVersion ?? WHATSAPP_REPORT_METRICS_VERSION;
   if (!Number.isSafeInteger(metricsVersion) || metricsVersion < 1) {
     throw new Error("Report metrics version is invalid");
   }
   return createHash("sha256").update(JSON.stringify({
-    kind: "whatsapp-daily-report-source-v1",
+    kind: "whatsapp-daily-report-source-v2",
     scope: input.scope,
     scopeKey: input.scopeKey,
     localReportDate: input.localReportDate,
     scheduledCutoffAt: input.scheduledCutoffAt.toISOString(),
+    metricsAsOfAt: input.metricsAsOfAt.toISOString(),
     metricsVersion,
   }), "utf8").digest("hex");
 }

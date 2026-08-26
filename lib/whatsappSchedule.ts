@@ -4,7 +4,7 @@ export const WHATSAPP_SEND_WINDOW_END_MINUTE = 20 * 60;
 export const WHATSAPP_REPORT_SEND_WINDOW_START_MINUTE = 18 * 60;
 export const WHATSAPP_REPORT_SEND_WINDOW_END_MINUTE = 23 * 60 + 30;
 export const DEFAULT_WHATSAPP_REPORT_SEND_TIME = "21:00" as const;
-export const WHATSAPP_REPORT_CATCH_UP_MS = 6 * 60 * 60 * 1_000;
+export const WHATSAPP_REPORT_CATCH_UP_MS = 60 * 60 * 1_000;
 
 export type LocalDateParts = Readonly<{
   year: number;
@@ -198,6 +198,30 @@ export function scheduleWhatsAppReportForLocalDate(input: {
   });
 }
 
+/**
+ * Returns the exclusive end of the report catch-up window. Catch-up is bounded
+ * to one hour and can never continue into the next local report day.
+ */
+export function getWhatsAppReportCatchUpEndsAt(input: {
+  scheduledCutoffAt: Date;
+  timeZone: string;
+}) {
+  if (Number.isNaN(input.scheduledCutoffAt.getTime())) {
+    throw new Error("Report cutoff is invalid");
+  }
+  const localDate = getWhatsAppLocalDateParts(input.scheduledCutoffAt, input.timeZone);
+  const nextLocalMidnight = whatsappLocalDateTimeToUtc({
+    date: addWhatsAppLocalDays(localDate, 1),
+    hour: 0,
+    minute: 0,
+    timeZone: input.timeZone,
+  });
+  return new Date(Math.min(
+    input.scheduledCutoffAt.getTime() + WHATSAPP_REPORT_CATCH_UP_MS,
+    nextLocalMidnight.getTime()
+  ));
+}
+
 export function getWhatsAppReportPlanningWindow(input: {
   now: Date;
   sendTimeLocal: string;
@@ -219,15 +243,18 @@ export function getWhatsAppReportPlanningWindow(input: {
         sendTimeLocal: input.sendTimeLocal,
         timeZone: input.timeZone,
       });
-  const catchUpEndsAt = new Date(scheduledCutoffAt.getTime() + WHATSAPP_REPORT_CATCH_UP_MS);
+  const catchUpEndsAt = getWhatsAppReportCatchUpEndsAt({
+    scheduledCutoffAt,
+    timeZone: input.timeZone,
+  });
   return {
     localDate,
     localDateKey: whatsappLocalDatePartsKey(localDate),
     scheduledCutoffAt,
     catchUpEndsAt,
     eligible: input.now.getTime() >= scheduledCutoffAt.getTime()
-      && input.now.getTime() <= catchUpEndsAt.getTime(),
-    missed: input.now.getTime() > catchUpEndsAt.getTime(),
+      && input.now.getTime() < catchUpEndsAt.getTime(),
+    missed: input.now.getTime() >= catchUpEndsAt.getTime(),
   } as const;
 }
 

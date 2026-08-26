@@ -10,7 +10,8 @@ import {
 
 const common = {
   localReportDate: "2026-08-23",
-  asOfLocalTime: "21:00",
+  metricsAsOfAt: "2026-08-23T15:45:00.000Z",
+  asOfLocalTime: "21:15",
   paymentsRecordedTodayCount: 3,
   paymentsRecordedTodayAmount: 12_000,
   newStudentsToday: 2,
@@ -41,6 +42,11 @@ describe("WhatsApp report metric contracts", () => {
       studentName: "Direct identity is forbidden",
       ...common,
     })).toThrow();
+    expect(() => WhatsAppBranchReportMetricsSchema.parse({
+      branchName: "Central",
+      ...common,
+      metricsAsOfAt: "2026-08-23T21:15:00+05:30",
+    })).toThrow("canonical UTC");
   });
 
   it("rejects internally inconsistent aggregates", () => {
@@ -65,12 +71,13 @@ describe("WhatsApp report metric contracts", () => {
     expect(hashWhatsAppReportMetrics(first)).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("binds source fingerprints to scope, date, cutoff, and version", () => {
+  it("binds source fingerprints to scope, date, cutoff, metrics as-of, and version", () => {
     const base = {
       scope: "BRANCH" as const,
       scopeKey: "branch_1",
       localReportDate: "2026-08-23",
       scheduledCutoffAt: new Date("2026-08-23T15:30:00.000Z"),
+      metricsAsOfAt: new Date("2026-08-23T15:45:00.000Z"),
     };
     const fingerprint = createWhatsAppReportSourceFingerprint(base);
     expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
@@ -78,6 +85,14 @@ describe("WhatsApp report metric contracts", () => {
     expect(createWhatsAppReportSourceFingerprint({
       ...base,
       scheduledCutoffAt: new Date("2026-08-23T15:31:00.000Z"),
+    })).not.toBe(fingerprint);
+    expect(createWhatsAppReportSourceFingerprint({
+      ...base,
+      metricsAsOfAt: new Date("2026-08-23T15:46:00.000Z"),
+    })).not.toBe(fingerprint);
+    expect(createWhatsAppReportSourceFingerprint({
+      ...base,
+      metricsVersion: 1,
     })).not.toBe(fingerprint);
   });
 });

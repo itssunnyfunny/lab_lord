@@ -192,6 +192,7 @@ CREATE TABLE "WhatsAppDailyReportSnapshot" (
   "localReportDate" TEXT NOT NULL,
   "timeZone" TEXT NOT NULL,
   "scheduledCutoffAt" TIMESTAMP(3) NOT NULL,
+  "metricsAsOfAt" TIMESTAMP(3) NOT NULL,
   "generatedAt" TIMESTAMP(3) NOT NULL,
   "metricsVersion" INTEGER NOT NULL,
   "metrics" JSONB NOT NULL,
@@ -336,8 +337,14 @@ CREATE INDEX "OrganizationWhatsAppReportSettings_senderId_idx"
 CREATE INDEX "OrganizationWhatsAppReportSettings_enabled_senderId_idx"
   ON "OrganizationWhatsAppReportSettings"("enabled", "senderId");
 
-CREATE UNIQUE INDEX "WhatsAppDailyReportSnapshot_scope_scopeKey_localReportDate_metricsVersion_key"
-  ON "WhatsAppDailyReportSnapshot"("scope", "scopeKey", "localReportDate", "metricsVersion");
+CREATE UNIQUE INDEX "WhatsAppReportSnapshot_scope_date_cutoff_version_key"
+  ON "WhatsAppDailyReportSnapshot"(
+    "scope",
+    "scopeKey",
+    "localReportDate",
+    "scheduledCutoffAt",
+    "metricsVersion"
+  );
 CREATE INDEX "WhatsAppDailyReportSnapshot_organizationId_localReportDate_idx"
   ON "WhatsAppDailyReportSnapshot"("organizationId", "localReportDate");
 CREATE INDEX "WhatsAppDailyReportSnapshot_branchId_localReportDate_idx"
