@@ -14,15 +14,28 @@ export const WHATSAPP_MANAGED_TEMPLATE_KEYS = [
   "MULTI_STUDENT_COLLECTION_SUMMARY",
   "PAYMENT_CONFIRMATION",
   "PAYMENT_CORRECTION",
+  "DAILY_BRANCH_REPORT",
+  "DAILY_ORGANIZATION_REPORT",
+  "BRANCH_CLOSED_NOTICE",
+  "BRANCH_HOURS_CHANGED_NOTICE",
+  "BRANCH_MAINTENANCE_NOTICE",
 ] as const;
 
 export const WHATSAPP_MANAGED_STOP_LABEL = "Stop updates" as const;
 export const WHATSAPP_MANAGED_STOP_LABELS = ["Stop updates", "अपडेट रोकें"] as const;
 export const WHATSAPP_MANAGED_STOP_PAYLOAD = "LABLORDS_STOP_UPDATES" as const;
+export const WHATSAPP_MANAGED_REPORT_STOP_LABEL = "Stop reports" as const;
+export const WHATSAPP_MANAGED_REPORT_STOP_LABELS = ["Stop reports", "रिपोर्ट रोकें"] as const;
+export const WHATSAPP_MANAGED_REPORT_STOP_PAYLOAD = "LABLORDS_STOP_REPORTS" as const;
 
 export type WhatsAppManagedTemplateLanguage =
   typeof WHATSAPP_MANAGED_TEMPLATE_LANGUAGES[number];
 export type WhatsAppManagedTemplateKey = typeof WHATSAPP_MANAGED_TEMPLATE_KEYS[number];
+export type WhatsAppManagedTemplateCatalogIdentity = Readonly<{
+  managedKey: unknown;
+  language: unknown;
+  catalogVersion: number;
+}>;
 export type WhatsAppManagedTemplateVariableKey =
   | "studentName"
   | "branchName"
@@ -36,7 +49,31 @@ export type WhatsAppManagedTemplateVariableKey =
   | "earliestDueDate"
   | "paymentDate"
   | "paymentMethod"
-  | "newStatus";
+  | "newStatus"
+  | "organizationName"
+  | "reportDate"
+  | "asOfTime"
+  | "branchCount"
+  | "paidCount"
+  | "paidAmount"
+  | "newStudents"
+  | "activeStudents"
+  | "usedSlots"
+  | "totalSlots"
+  | "dueCount"
+  | "dueAmount"
+  | "overdueCount"
+  | "overdueAmount"
+  | "deliveredCount"
+  | "attentionCount"
+  | "closureDate"
+  | "resumeDate"
+  | "effectiveDate"
+  | "openingTime"
+  | "closingTime"
+  | "startTime"
+  | "endTime"
+  | "reason";
 
 export type WhatsAppManagedTemplateVariable = Readonly<{
   key: WhatsAppManagedTemplateVariableKey;
@@ -66,7 +103,9 @@ export type WhatsAppManagedTemplateDefinition = Readonly<{
   parameterFormat: "POSITIONAL";
   variables: readonly WhatsAppManagedTemplateVariable[];
   components: readonly WhatsAppManagedTemplateComponent[];
-  stopPayload: typeof WHATSAPP_MANAGED_STOP_PAYLOAD;
+  stopPayload:
+    | typeof WHATSAPP_MANAGED_STOP_PAYLOAD
+    | typeof WHATSAPP_MANAGED_REPORT_STOP_PAYLOAD;
 }>;
 
 export type PreparedManagedWhatsAppTemplate = Readonly<{
@@ -105,6 +144,30 @@ const VARIABLE_LIMITS: Readonly<Record<WhatsAppManagedTemplateVariableKey, numbe
   paymentDate: 32,
   paymentMethod: 40,
   newStatus: 32,
+  organizationName: 120,
+  reportDate: 32,
+  asOfTime: 16,
+  branchCount: 8,
+  paidCount: 8,
+  paidAmount: 32,
+  newStudents: 8,
+  activeStudents: 8,
+  usedSlots: 8,
+  totalSlots: 8,
+  dueCount: 8,
+  dueAmount: 32,
+  overdueCount: 8,
+  overdueAmount: 32,
+  deliveredCount: 8,
+  attentionCount: 8,
+  closureDate: 32,
+  resumeDate: 32,
+  effectiveDate: 32,
+  openingTime: 16,
+  closingTime: 16,
+  startTime: 16,
+  endTime: 16,
+  reason: 48,
 };
 
 const VARIABLE_EXAMPLES: Readonly<
@@ -124,6 +187,30 @@ const VARIABLE_EXAMPLES: Readonly<
     paymentDate: "23 Aug 2026",
     paymentMethod: "UPI",
     newStatus: "waived",
+    organizationName: "Sample Organization",
+    reportDate: "23 Aug 2026",
+    asOfTime: "9:00 pm",
+    branchCount: "3",
+    paidCount: "12",
+    paidAmount: "18,500",
+    newStudents: "2",
+    activeStudents: "84",
+    usedSlots: "76",
+    totalSlots: "100",
+    dueCount: "14",
+    dueAmount: "22,000",
+    overdueCount: "4",
+    overdueAmount: "7,500",
+    deliveredCount: "31",
+    attentionCount: "2",
+    closureDate: "25 Aug 2026",
+    resumeDate: "26 Aug 2026",
+    effectiveDate: "25 Aug 2026",
+    openingTime: "9:00 am",
+    closingTime: "6:00 pm",
+    startTime: "2:00 pm",
+    endTime: "4:00 pm",
+    reason: "local holiday",
   },
   hi: {
     studentName: "उदाहरण विद्यार्थी",
@@ -139,6 +226,30 @@ const VARIABLE_EXAMPLES: Readonly<
     paymentDate: "23 अगस्त 2026",
     paymentMethod: "UPI",
     newStatus: "माफ किया गया",
+    organizationName: "उदाहरण संगठन",
+    reportDate: "23 अगस्त 2026",
+    asOfTime: "रात 9:00",
+    branchCount: "3",
+    paidCount: "12",
+    paidAmount: "18,500",
+    newStudents: "2",
+    activeStudents: "84",
+    usedSlots: "76",
+    totalSlots: "100",
+    dueCount: "14",
+    dueAmount: "22,000",
+    overdueCount: "4",
+    overdueAmount: "7,500",
+    deliveredCount: "31",
+    attentionCount: "2",
+    closureDate: "25 अगस्त 2026",
+    resumeDate: "26 अगस्त 2026",
+    effectiveDate: "25 अगस्त 2026",
+    openingTime: "सुबह 9:00",
+    closingTime: "शाम 6:00",
+    startTime: "दोपहर 2:00",
+    endTime: "शाम 4:00",
+    reason: "स्थानीय अवकाश",
   },
 };
 
@@ -197,6 +308,45 @@ const TEMPLATE_COPY: Readonly<Record<WhatsAppManagedTemplateKey, TemplateCopy>> 
     en_IN: "Correction: the ₹{{1}} payment record for {{2}} at {{3}}, dated {{4}}, is now marked {{5}}. Please contact the branch if clarification is needed.",
     hi: "सुधार: {{3}} में {{2}} का {{4}} दिनांक वाला ₹{{1}} भुगतान रिकॉर्ड अब {{5}} है। स्पष्टीकरण के लिए शाखा से संपर्क करें।",
   },
+  DAILY_BRANCH_REPORT: {
+    providerTemplateName: "lablords_daily_branch_report_v1",
+    variables: [
+      "branchName", "reportDate", "asOfTime", "paidCount", "paidAmount",
+      "newStudents", "activeStudents", "usedSlots", "totalSlots", "dueCount",
+      "dueAmount", "overdueCount", "overdueAmount", "deliveredCount", "attentionCount",
+    ],
+    en_IN: "{{1}} daily report for {{2}}, as of {{3}}.\nPayments recorded: {{4}} · ₹{{5}}\nNew students: {{6}}\nActive students: {{7}}\nShift-slot use: {{8}} / {{9}}\nOpen dues: {{10}} · ₹{{11}}\nOverdue: {{12}} · ₹{{13}}\nWhatsApp: {{14}} delivered · {{15}} need attention",
+    hi: "{{1}} की {{2}} की दैनिक रिपोर्ट, {{3}} तक।\nदर्ज भुगतान: {{4}} · ₹{{5}}\nनए विद्यार्थी: {{6}}\nसक्रिय विद्यार्थी: {{7}}\nशिफ्ट-स्लॉट उपयोग: {{8}} / {{9}}\nखुली बकाया: {{10}} · ₹{{11}}\nअतिदेय: {{12}} · ₹{{13}}\nWhatsApp: {{14}} डिलीवर · {{15}} पर ध्यान दें",
+  },
+  DAILY_ORGANIZATION_REPORT: {
+    providerTemplateName: "lablords_daily_organization_report_v1",
+    variables: [
+      "organizationName", "reportDate", "asOfTime", "branchCount", "paidCount",
+      "paidAmount", "newStudents", "activeStudents", "usedSlots", "totalSlots",
+      "dueCount", "dueAmount", "overdueCount", "overdueAmount", "deliveredCount",
+      "attentionCount",
+    ],
+    en_IN: "{{1}} daily report for {{2}}, as of {{3}}.\nBranches: {{4}}\nPayments recorded: {{5}} · ₹{{6}}\nNew students: {{7}}\nActive students: {{8}}\nShift-slot use: {{9}} / {{10}}\nOpen dues: {{11}} · ₹{{12}}\nOverdue: {{13}} · ₹{{14}}\nWhatsApp: {{15}} delivered · {{16}} need attention",
+    hi: "{{1}} की {{2}} की दैनिक रिपोर्ट, {{3}} तक।\nशाखाएं: {{4}}\nदर्ज भुगतान: {{5}} · ₹{{6}}\nनए विद्यार्थी: {{7}}\nसक्रिय विद्यार्थी: {{8}}\nशिफ्ट-स्लॉट उपयोग: {{9}} / {{10}}\nखुली बकाया: {{11}} · ₹{{12}}\nअतिदेय: {{13}} · ₹{{14}}\nWhatsApp: {{15}} डिलीवर · {{16}} पर ध्यान दें",
+  },
+  BRANCH_CLOSED_NOTICE: {
+    providerTemplateName: "lablords_branch_closed_notice_v1",
+    variables: ["branchName", "closureDate", "reason", "resumeDate"],
+    en_IN: "{{1}} will be closed on {{2}} due to {{3}}. Regular operations resume on {{4}}.",
+    hi: "{{1}} {{3}} के कारण {{2}} को बंद रहेगा। नियमित संचालन {{4}} को फिर शुरू होगा।",
+  },
+  BRANCH_HOURS_CHANGED_NOTICE: {
+    providerTemplateName: "lablords_branch_hours_changed_notice_v1",
+    variables: ["branchName", "effectiveDate", "openingTime", "closingTime", "reason"],
+    en_IN: "{{1}} operating hours on {{2}} will be {{3}} to {{4}} due to {{5}}.",
+    hi: "{{1}} का {{2}} को समय {{3}} से {{4}} रहेगा, कारण: {{5}}।",
+  },
+  BRANCH_MAINTENANCE_NOTICE: {
+    providerTemplateName: "lablords_branch_maintenance_notice_v1",
+    variables: ["branchName", "effectiveDate", "startTime", "endTime"],
+    en_IN: "{{1}} will have a maintenance interruption on {{2}} from {{3}} to {{4}}.",
+    hi: "{{1}} में {{2}} को {{3}} से {{4}} तक रखरखाव अवरोध रहेगा।",
+  },
 };
 
 const FOOTERS: Readonly<Record<WhatsAppManagedTemplateLanguage, string>> = {
@@ -208,6 +358,21 @@ const BUTTON_LABELS: Readonly<Record<WhatsAppManagedTemplateLanguage, string>> =
   en_IN: WHATSAPP_MANAGED_STOP_LABEL,
   hi: "अपडेट रोकें",
 };
+
+const REPORT_FOOTERS: Readonly<Record<WhatsAppManagedTemplateLanguage, string>> = {
+  en_IN: "Reply STOP REPORTS to stop daily reports.",
+  hi: "दैनिक रिपोर्ट रोकने के लिए STOP REPORTS लिखकर भेजें।",
+};
+
+const REPORT_BUTTON_LABELS: Readonly<Record<WhatsAppManagedTemplateLanguage, string>> = {
+  en_IN: WHATSAPP_MANAGED_REPORT_STOP_LABEL,
+  hi: "रिपोर्ट रोकें",
+};
+
+const REPORT_TEMPLATE_KEYS = new Set<WhatsAppManagedTemplateKey>([
+  "DAILY_BRANCH_REPORT",
+  "DAILY_ORGANIZATION_REPORT",
+]);
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -254,6 +419,7 @@ function buildDefinition(
     example: VARIABLE_EXAMPLES[language][key],
   }));
   const body = copy[language];
+  const isReport = REPORT_TEMPLATE_KEYS.has(managedKey);
   const placeholderMatches = [...body.matchAll(/\{\{([1-9][0-9]*)\}\}/g)]
     .map(match => Number(match[1]));
   const expectedPlaceholders = variables.map((_variable, index) => index + 1);
@@ -270,10 +436,13 @@ function buildDefinition(
       text: body,
       example: { body_text: [variables.map(variable => variable.example)] },
     },
-    { type: "FOOTER", text: FOOTERS[language] },
+    { type: "FOOTER", text: isReport ? REPORT_FOOTERS[language] : FOOTERS[language] },
     {
       type: "BUTTONS",
-      buttons: [{ type: "QUICK_REPLY", text: BUTTON_LABELS[language] }],
+      buttons: [{
+        type: "QUICK_REPLY",
+        text: isReport ? REPORT_BUTTON_LABELS[language] : BUTTON_LABELS[language],
+      }],
     },
   ];
   const hashInput = {
@@ -285,7 +454,9 @@ function buildDefinition(
     parameterFormat: "POSITIONAL",
     variables,
     components,
-    stopPayload: WHATSAPP_MANAGED_STOP_PAYLOAD,
+    stopPayload: isReport
+      ? WHATSAPP_MANAGED_REPORT_STOP_PAYLOAD
+      : WHATSAPP_MANAGED_STOP_PAYLOAD,
   } as const;
 
   return deepFreeze({
@@ -313,6 +484,32 @@ function isManagedKey(value: unknown): value is WhatsAppManagedTemplateKey {
 function isManagedLanguage(value: unknown): value is WhatsAppManagedTemplateLanguage {
   return typeof value === "string"
     && (WHATSAPP_MANAGED_TEMPLATE_LANGUAGES as readonly string[]).includes(value);
+}
+
+export function hasCompleteManagedWhatsAppTemplateCatalog(
+  items: readonly WhatsAppManagedTemplateCatalogIdentity[]
+) {
+  const expected = new Set(
+    WHATSAPP_MANAGED_TEMPLATE_KEYS.flatMap(managedKey =>
+      WHATSAPP_MANAGED_TEMPLATE_LANGUAGES.map(language =>
+        `${WHATSAPP_MANAGED_TEMPLATE_CATALOG_VERSION}:${managedKey}:${language}`
+      )
+    )
+  );
+  if (items.length !== expected.size) return false;
+  const actual = new Set<string>();
+  for (const item of items) {
+    if (
+      item.catalogVersion !== WHATSAPP_MANAGED_TEMPLATE_CATALOG_VERSION
+      || !isManagedKey(item.managedKey)
+      || !isManagedLanguage(item.language)
+    ) {
+      return false;
+    }
+    actual.add(`${item.catalogVersion}:${item.managedKey}:${item.language}`);
+  }
+  return actual.size === expected.size
+    && [...expected].every(identity => actual.has(identity));
 }
 
 export function getManagedWhatsAppTemplate(
@@ -398,10 +595,20 @@ function sanitizeVariableValue(variable: WhatsAppManagedTemplateVariable, value:
   ) {
     throw new WhatsAppManagedTemplateError();
   }
-  if (variable.key === "studentCount" && !/^[1-9][0-9]{0,6}$/.test(normalized)) {
+  if (
+    [
+      "studentCount", "branchCount", "paidCount", "newStudents", "activeStudents",
+      "usedSlots", "totalSlots", "dueCount", "overdueCount", "deliveredCount",
+      "attentionCount",
+    ].includes(variable.key)
+    && !/^(?:0|[1-9][0-9]{0,6})$/.test(normalized)
+  ) {
     throw new WhatsAppManagedTemplateError();
   }
-  if (variable.key === "amount" && !/^[0-9][0-9,]*(?:\.[0-9]{1,2})?$/.test(normalized)) {
+  if (
+    ["amount", "paidAmount", "dueAmount", "overdueAmount"].includes(variable.key)
+    && !/^[0-9][0-9,]*(?:\.[0-9]{1,2})?$/.test(normalized)
+  ) {
     throw new WhatsAppManagedTemplateError();
   }
   return normalized;
