@@ -20,6 +20,7 @@ or imply owner approval.
 | --- | --- | --- |
 | [0001](./0001-managed-workflow-for-import-execution.md) | Proposed | Managed Workflow for import execution |
 | [0002](./0002-whatsapp-communication-foundation.md) | Proposed | WhatsApp communication foundation and customer-owned Meta assets |
+| [0004](./0004-whatsapp-daily-reports-and-operational-hardening.md) | Proposed | WhatsApp daily reports, typed service notices, and operational hardening |
 
 ## Naming and status
 

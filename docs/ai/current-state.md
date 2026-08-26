@@ -1,8 +1,8 @@
 # Lab Lords: Current Architecture and Implementation State
 
-> Last verified: 2026-08-23
+> Last verified: 2026-08-24
 >
-> Repository anchor: PR3 WhatsApp template-delivery and collections working tree
+> Repository anchor: PR4 WhatsApp reports, service notices, and hardening working tree
 >
 > Scope: repository implementation only
 
@@ -234,8 +234,9 @@ Authoritative code: `services/payment.service.ts`, `analytics/payment.analytics.
 - Staff invitations use unpredictable email-bound tokens containing an email hash and random secret; the email hash is checked at acceptance.
 - Invite creation, listing, acceptance, expiry, and revocation are implemented.
 - Server-side authorization remains authoritative; client capabilities only control presentation and recovery links.
-- `view_whatsapp`, `send_whatsapp`, and `manage_whatsapp` are overridable branch
-  actions. WhatsApp actions also require the internal
+- `view_whatsapp`, `send_whatsapp`, `manage_whatsapp`, and
+  `receive_whatsapp_reports` are overridable branch actions. WhatsApp actions
+  also require the internal
   `WHATSAPP_AUTOMATION` entitlement, which is present on Standard/`PRO` and
   hidden higher plans but deliberately absent from Basic and public pricing
   capability output. PR2 defines `send_whatsapp` for forward-compatible RBAC;
@@ -243,7 +244,7 @@ Authoritative code: `services/payment.service.ts`, `analytics/payment.analytics.
 
 Authoritative code: `services/staff.service.ts`, `services/staffInvite.service.ts`, `services/staffInviteSecurity.ts`, `lib/branchCapabilities.ts`, and `app/api/branches/[branchId]/access/route.ts`.
 
-### WhatsApp managed Utility delivery and collections
+### WhatsApp managed Utility delivery, reports, and operations
 
 The working tree extends the PR2 sender foundation with a deliberately narrow
 official Meta Cloud API delivery capability. It is repository implementation,
@@ -313,6 +314,38 @@ not evidence that any environment or provider account is ready.
   it when no complete valid candidate remains. Submitted history and unrelated
   later dues are untouched. These paths do not call Meta and do not alter payment
   identity, immutable resolution evidence, or allowed transitions.
+- Daily branch and owner-only organization reports are deterministic aggregate
+  snapshots, not generated prose. A subscription is self-service and becomes
+  active only after exact signed `START REPORTS <code>` confirmation proves the
+  current assigned sender/phone; plaintext challenges are returned once and are
+  never persisted. Exact scoped `STOP REPORTS` and the managed reply pause only
+  report consent, while existing full `STOP` retains its broader behavior.
+- Report snapshots are immutable and hash-validated at dispatch. They contain
+  bounded aggregate student, shift-slot, payment, dues, overdue, and WhatsApp
+  outcome metrics through an organization-timezone cutoff; no student, staff,
+  phone, payment, seat, attendance claim, or variable branch list is rendered.
+  Branch reports use branch budget plus the automatic daily limit. Consolidated
+  reports use a distinct organization report budget and are the only messages
+  permitted without a branch.
+- Typed service notices support only branch closure, changed hours, and
+  maintenance windows. Copy, reason labels, languages, and variable contracts
+  come from the managed Utility catalogue. Audience selection uses current
+  active branch mappings and operational consent, deduplicates shared phones,
+  contains no names, rejects more than 500 recipients atomically, and requires
+  explicit estimate confirmation and full branch-budget reservation.
+- The dispatcher retains one outbox and now selects a purpose-specific source
+  verifier. Report/notice validation does not weaken collection validation.
+  Live automatic work additionally requires the separate automation canary.
+  The estimate rate card has a required UTC expiry and reservations/submissions
+  fail closed when it is not yet effective or expired.
+- Sender safety, operational incidents, provider-health reconciliation, webhook
+  health, and cron-run evidence provide local containment and inspectability.
+  Threshold breaches pause the sender locally; `UNKNOWN` remains terminal and
+  never automatically retries. A durable pause-request/admission handshake
+  blocks new calls and drains earlier admissions without putting Meta inside a
+  domain transaction. Health work performs bounded provider reads only,
+  and later valid signed status evidence may resolve uncertainty without a
+  resend. Incident/job details are bounded and exclude recipient/content data.
 
 The mutation paths are intentionally closed:
 
@@ -323,36 +356,48 @@ The mutation paths are intentionally closed:
 | Recipient, settings, delivery, automation, and manual-reminder branch routes | Consent/mapping/settings/rules/manual request/outbox/budget only | No provider call; branch permission, payment permission where applicable, entitlement, writability, and tenant checks |
 | Payment/student domain mutations | Refresh, cancel/suppress, or stale only eligible local unsubmitted recipient/message state | No provider call; existing payment/student transaction remains authoritative |
 | Authenticated WhatsApp planner cron | Deterministic leases and automatic outbox/budget reservations | No provider call; planner flag plus tenant/entitlement/configuration eligibility |
+| Authenticated WhatsApp report cron | Snapshot-first branch/organization report outbox and budget reservations | No provider call; independent report/planner flags, confirmed recipient, source authority, mode, and automatic canary |
 | Authenticated WhatsApp send cron | Lease and final message/budget/event state | The only new message mutation; message-write flag, mode, delivery canary, and full send-time revalidation |
+| User report/notice routes | Confirmation/subscription, immutable snapshot, typed notice, outbox, and budget state | No provider call; current tenant/permission/owner checks and explicit estimate confirmation |
+| Authenticated WhatsApp health cron | Sender/template/safety/incident projections and bounded job evidence | Read-only Meta reconciliation only; independent health flag, mode, and health canary |
+| Authenticated WhatsApp maintenance cron | Expiry, safe lease recovery, completion, stuck-work detection, and bounded retention | Local database work only; no provider call and no submitted-history deletion |
 | Signed public webhook | Receipt/event/status/template/opt-out projection | No outbound provider or payment action; raw-byte HMAC, replay lease, bounded parsing |
 
 Local Development and Vercel Preview accept `TEST`; Vercel Production accepts
-`LIVE`; tests inject a fake provider. `WHATSAPP_INTEGRATION_ENABLED`, onboarding,
-managed-template, message-write, planner, and webhook flags all fail closed.
-`WHATSAPP_LIVE_CANARY_ORG_IDS` gates Live onboarding, while the separate
-`WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS` gates Live template and message writes.
-The utility rate, rate-card version, and UTC effective time are required for
-estimation and are never inferred from Meta status metadata.
+`LIVE`; tests inject a fake provider. Integration, onboarding, managed-template,
+message-write, collection-planner, report, report-planner, service-notice,
+provider-health, operations-UI, and webhook flags all fail closed.
+`WHATSAPP_LIVE_CANARY_ORG_IDS` gates Live onboarding, the delivery canary gates
+Live template/manual message writes, and automatic Live collection/report work
+requires membership in both delivery and automation canaries. Provider-health
+reads have a distinct health canary. Empty or malformed lists enable nothing.
+The utility rate, rate-card version, strict UTC effective time, and strict UTC
+expiry are required for reservations and submission; they are never inferred
+from Meta status metadata.
 
-The organization WhatsApp panel adds managed-template installation state; branch
-settings expose delivery/budget/rules/prospective-automation controls and message
-history; student management exposes explicit recipient/consent controls; and the
-overdue workspace adds deterministic official-reminder preview/queueing alongside
-the separate AI review/copy workflow. Server-side services remain authoritative;
-UI visibility or a successful preview is never send authorization. Existing AI
-overdue drafts never enter the official outbox.
+The organization WhatsApp panel adds managed-template installation, consolidated
+report, organization report-budget, sender-safety, rate-card, incident, and
+health state. Branch settings expose delivery/budget/rules/prospective automation,
+self-service daily reports, typed service notices, and permitted operations.
+Student management retains explicit recipient/consent controls, and the overdue
+workspace keeps deterministic official-reminder preview/queueing separate from
+AI review/copy. Operations projection is server-side and hidden by default.
+Server services remain authoritative; UI visibility or preview is never send
+authorization. Existing AI drafts never enter reports, notices, or the outbox.
 
 No real Meta App Review/Advanced Access, app, Embedded Signup, WABA, template
 creation/approval, phone registration, message send, webhook delivery, customer
 asset, legal/privacy approval, effective rate-card signoff, Preview/Production
-configuration, deployment, migration, or Live canary has been verified from
-repository evidence. ADRs 0002 and 0003 remain Proposed and require explicit
-human-owner approval.
+configuration, deployment, migration, schedule, health reconciliation, or Live
+canary has been verified from repository evidence. ADR 0002 and PR4 ADR 0004
+remain Proposed. ADR 0003 is Accepted, but that acceptance does not authorize
+provider setup, security/legal approval, deployment, migration, or rollout.
 
 Authoritative code: `lib/metaWhatsApp.ts`, `lib/whatsappFeature.ts`,
 `lib/whatsappManagedTemplates.ts`, `lib/whatsappCost.ts`,
 `lib/whatsappMessageState.ts`, `services/whatsapp*.ts`, WhatsApp API/cron routes,
-the two WhatsApp migrations, focused tests, and the Proposed ADRs.
+the three WhatsApp migrations, focused tests, Accepted ADR 0003, and Proposed
+ADRs 0002/0004.
 
 ### Deterministic analytics
 
@@ -568,13 +613,13 @@ The following modules exist but are not referenced by current application routes
 
 | Integration | Repository truth | Deployment state |
 | --- | --- | --- |
-| PostgreSQL / Prisma | Required; schema and 35 timestamped migrations exist, including additive PR2 and PR3 WhatsApp expansions | Database target, applied migration set, backups, and health are unknown |
+| PostgreSQL / Prisma | Required; schema and 36 timestamped migrations exist, including additive PR2, PR3, and PR4 WhatsApp expansions | Database target, applied migration set, backups, and health are unknown |
 | Clerk | Real auth and local-user linking are implemented | Active instance, keys, redirect/origin configuration, and account health are unknown |
 | Gemini | Reports, message drafts, and import mapping are wired with fallbacks | API key, selected model availability, quota, and data-processing configuration are unknown |
 | Razorpay | Server API client, Checkout, signatures, webhook receipts, reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
-| Meta WhatsApp Cloud API | Direct bounded `v25.0` provider client, owner-bound Embedded Signup, sender/branch state, phone registration, template reads/managed Utility creation, individual approved Utility-template delivery, durable outbox, signed status/STOP processing, and estimated-cost controls exist; arbitrary delivery and credit sharing do not | App Review/Advanced Access, app/config/system-user credentials, Test/Live assets, callback reachability, flags/canaries, template approval/category, effective rate-card signoff, customer billing/legal ownership, `UNKNOWN` review operations, and provider health are unknown |
+| Meta WhatsApp Cloud API | Direct bounded `v25.0` provider client, owner-bound Embedded Signup, sender/branch state, phone registration, template/health reads, managed Utility creation, individual approved Utility-template delivery, deterministic aggregate reports, typed notices, durable outbox, signed status/scoped/full STOP processing, safety/incidents, and expiring estimated-cost controls exist; arbitrary delivery and credit sharing do not | App Review/Advanced Access, app/config/system-user credentials, Test/Live assets, callback reachability, flags/canaries, template approval/category, current rate-card signoff, customer billing/legal ownership, `UNKNOWN` operations, alerts, and provider health are unknown |
 | Vercel Workflow | Workflow 4.6 integration, opaque-ID orchestration, and a PostgreSQL import ledger/runner are implemented | Production approval, Fluid Compute/runtime setup, provider retention/residency review, feature flag, mutation cap, benchmarks, SLOs, and active-run health are unknown |
-| Vercel Cron | Daily payment, hourly billing, daily import retention, WhatsApp planning every 15 minutes, and WhatsApp dispatch every 5 minutes are declared in `vercel.json`; both WhatsApp services return held before new-table/provider work when their controlling flags are false | Whether the deployment plan accepts these frequencies, the deployment is Production, schedules are active, and recent runs succeeded is unknown |
+| Vercel Cron | Eight Production GET schedules are declared: daily payment, hourly billing, daily import retention, collection planning every 15 minutes, report planning every 15 minutes, dispatch every 5 minutes, provider-health reconciliation every 30 minutes, and WhatsApp maintenance daily. WhatsApp jobs return held before gated work when their controls are false | Whether the deployment plan accepts these frequencies, the deployment is Production, schedules/callback protection are correct, and recent run evidence is healthy is unknown |
 | Google Analytics | Consent-aware GA bootstrap and event helpers are implemented | Measurement ID and live collection state are unknown |
 | Support email | Public pages and `mailto:` bug reports are implemented | Mailbox monitoring and response operations are unknown |
 
@@ -584,7 +629,7 @@ Never infer a deployed state from local `.env` files, ignored Vercel metadata, s
 
 At this anchor the repository contains focused WhatsApp unit, component,
 provider-contract, service, route, webhook, and migration-contract coverage in
-addition to the existing Vitest/Playwright suites, plus 35 timestamped migration directories. These
+addition to the existing Vitest/Playwright suites, plus 36 timestamped migration directories. These
 counts are orientation data, not invariants.
 
 ### Automated coverage by area
@@ -601,7 +646,9 @@ counts are orientation data, not invariants.
   provider contract, managed catalogue/provisioning, recipient/consent mapping,
   manual reminder queueing, settings/schedule/state reducers, dispatcher,
   webhook status/STOP behavior, student/payment reconciliation, migration SQL,
-  route security boundaries, and staff permission/entitlement behavior.
+  route security boundaries, staff permission/entitlement behavior, report
+  confirmation/metrics/snapshots/planning, service notices, safety/incidents,
+  health/maintenance/job evidence, and accessible report/operations UI.
   Automated tests inject or mock provider/browser behavior and must not contact
   Meta.
 - Analytics: payment analytics integration coverage, analytics component tests, and audit scripts.
@@ -639,7 +686,8 @@ Production migrations have a separate manually dispatched workflow requiring the
   template creation/approval/category, phone registration, a real message
   submission or status/STOP delivery, callback reachability, customer billing
   ownership, rate-card accuracy, legal/privacy approval, operator handling of
-  `UNKNOWN`, or Test/Live deployment configuration.
+  `UNKNOWN`, report/notice Utility eligibility, circuit-breaker calibration,
+  provider-health accuracy, or Test/Live deployment configuration.
 
 ## Known limitations and cautions
 
@@ -673,16 +721,23 @@ Production migrations have a separate manually dispatched workflow requiring the
 - A failed AI report generation can still advance `aiLastCalledAt` and impose cooldown.
 - AI message generation is review/copy only and is structurally excluded from
   the official provider-delivery path.
-- WhatsApp managed Utility-template delivery exists in the repository but every
-  provider/planner flag defaults held. New tables, provider credentials,
-  schedules, callback, App Review/Advanced Access, approved Utility templates,
-  customer-owned billing, rate card, legal/privacy gate, Test/Live assets, and
+- WhatsApp managed Utility delivery, reports, notices, and operational controls
+  exist in the repository but every new provider/planner/operations flag defaults
+  held. New tables, provider credentials, schedules, callback, App Review/
+  Advanced Access, approved Utility templates, customer-owned billing, current
+  rate card, legal/privacy gate, Test/Live assets, threshold calibration, and
   external behavior have not been verified in Preview or Production.
-- WhatsApp ADRs 0002 and 0003 remain Proposed. Implementation does not approve
-  onboarding or delivery activation. The repository has no centralized Meta
-  webhook/provider alerting, stable callback hostname, automatic rate-card
-  refresh, exact provider-cost reconciliation, or operator queue/process for
-  `UNKNOWN` message outcomes.
+- WhatsApp ADR 0002 and PR4 ADR 0004 remain Proposed; ADR 0003 is Accepted.
+  Implementation and ADR acceptance do not approve onboarding or rollout. The
+  repository now has a scoped incident/`UNKNOWN` queue and cron evidence, but no
+  centralized Meta alert delivery, stable callback hostname, automatic rate-card
+  refresh, exact provider-cost reconciliation, status page, or proven operator
+  response process.
+- PR4's required per-subscription report time and required one-snapshot-per-
+  scope/date/version unique key conflict when two same-scope subscribers choose
+  different cutoffs. The implementation safely reuses only an exact-cutoff
+  snapshot and rejects the conflicting second queue; product/schema ownership
+  must decide between a scope-level time and cutoff-aware snapshot identity.
 - Import staging retention depends on deployed `purgeAfter` transitions and a
   healthy authenticated daily cron; repository code cannot prove either is
   operating in Production.
@@ -702,9 +757,11 @@ This file supersedes architecture/status claims in older phase-oriented or gener
 - `docs/decisions/0002-whatsapp-communication-foundation.md` also remains
   **Proposed**. Customer/provider setup and Production activation are not
   approved by the presence of foundation code.
-- `docs/decisions/0003-whatsapp-template-delivery-and-collections.md` remains
-  **Proposed**. Managed Utility delivery, estimated provider usage, automation,
-  and Live rollout require human-owner/security/legal/operations approval; the
-  implementation does not permit credit sharing or arbitrary/AI delivery.
+- `docs/decisions/0003-whatsapp-template-delivery-and-collections.md` is
+  **Accepted** by the recorded human repository owner. It accepts the narrow PR3
+  architecture, not provider setup, security/legal approval, or deployment.
+- `docs/decisions/0004-whatsapp-daily-reports-and-operational-hardening.md`
+  remains **Proposed**. Reports, notices, health reads, schedule activation, and
+  Live rollout require explicit human-owner/security/legal/operations review.
 
 When this document and the implementation disagree, inspect the current schema, migrations, services, API routes, and tests, then update this document in the same change.
