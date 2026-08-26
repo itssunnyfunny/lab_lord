@@ -463,6 +463,10 @@ Every statement uses one of these labels:
   transaction before activating `OWNER_REPORT` consent. No owner or manager may
   confirm another user's phone. (`lib/whatsappReportConfirmation.ts`,
   `services/whatsappReport.service.ts`, `services/whatsappWebhook.service.ts`)
+- **Must preserve—enforced:** Normalized report confirmation commands retain the
+  inbound provider message ID. Repeated copies of one provider identity are
+  deduplicated, while distinct message IDs from the same sender/phone remain in
+  provider envelope order.
 - **Must preserve—enforced:** Branch reports require the current user to hold
   `view_whatsapp`, `receive_whatsapp_reports`, `view_payments`, and `analytics`
   for that branch, plus `WHATSAPP_AUTOMATION` entitlement and writable scope.
@@ -478,27 +482,25 @@ Every statement uses one of these labels:
   or changes payment truth.
 - **Must preserve—enforced:** Every daily report message references an immutable,
   versioned, hash-validated snapshot created before its outbox row. Snapshots
-  contain aggregates only: current active/inactive student counts, shift-slot
-  capacity/use, payments whose authoritative `paidAt` is within the local day
-  through the scheduled cutoff, canonical current open dues/overdue facts, and
-  aggregate WhatsApp outcomes. They contain no student, staff, phone, payment,
+  contain aggregates only and bind one canonical UTC `metricsAsOfAt`. Payments,
+  active-student state, shift-slot capacity/use, canonical open dues/overdue,
+  and aggregate WhatsApp outcomes are calculated and labelled at that one
+  transaction-snapshot instant. They contain no student, staff, phone, payment,
   seat, or variable branch list and never describe shift-slot allocation as
   attendance. Delayed sends reuse the original snapshot.
 - **Service-layer contract—not DB-enforced:** Report day/cutoff calculations use
   the organization's IANA timezone. Reports are prospective, schedule only in
-  the reviewed 18:00–23:30 local window (default 21:00), and allow at most six
-  hours of catch-up. A planner does not synthesize a full historical backlog.
-  Branch report metrics and organization totals must share the same canonical
-  definitions so the consolidated snapshot equals its bounded branch inputs.
-- **Known discrepancy—do not rely on:** The PR4 specification gives each
-  subscription its own send time but also requires one snapshot unique by
-  `(scope, scopeKey, localReportDate, metricsVersion)`, omitting the cutoff.
-  Two recipients in one scope choosing different times therefore cannot both
-  receive truthful same-day snapshots under the required key. The service
-  currently reuses only an exact matching cutoff and otherwise fails closed
-  without a second message or reservation. A human decision must either make
-  time scope-level or revise snapshot identity before different same-scope
-  cutoffs are supported.
+  the reviewed 18:00–23:30 local window (default 21:00). Catch-up ends
+  exclusively at the earlier of one hour after cutoff or next local midnight;
+  a planner does not synthesize a full historical backlog. A missed window or
+  unprovable canonical metrics set creates bounded safe `REPORT_FAILURE`
+  evidence and skips/suppresses before provider submission. Branch report
+  metrics and organization totals share the same canonical definitions.
+- **Must preserve—enforced:** Snapshot identity is `(scope, scopeKey,
+  localReportDate, scheduledCutoffAt, metricsVersion)`. Same-scope subscriptions
+  with the same cutoff share one immutable snapshot. Different per-subscription
+  cutoffs create distinct snapshots, source fingerprints, and message dedupe
+  identities and may both be delivered during their own trust windows.
 - **Must preserve—enforced:** Branch daily reports use the existing branch
   estimated monthly budget and automatic daily frequency reservation.
   Organization reports use the distinct owner-configured organization report
@@ -549,9 +551,12 @@ Every statement uses one of these labels:
   when no admitted `SUBMITTING` message remains. Manual pause makes no Meta
   mutation. Owner-only resume requires
   explicit confirmation, a current rate card, active unrestricted sender,
-  recent successful read-only reconciliation, healthy required templates, and
-  no blocking critical incident. It never retries an `UNKNOWN` row or removes
-  incident history.
+  recent successful unrestricted read-only reconciliation, healthy exact
+  bindings for current queued work, and healthy templates for currently enabled
+  or configured functionality, with no blocking critical incident. Unused
+  languages and optional templates do not block resume, but each send still
+  fails closed without its exact binding. Resume never retries an `UNKNOWN` row
+  or removes incident history.
 - **Must preserve—enforced:** Operational incidents are tenant-scoped,
   deduplicated, and contain only bounded safe codes/details. Every ambiguous
   submission and stale `SUBMITTING` lease has inspectable evidence and is never

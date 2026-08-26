@@ -31,20 +31,31 @@ proposal builds on both and changes neither status.
 
 - Add daily branch reports and owner-only consolidated organization reports.
   Every queued report references an immutable, versioned, strictly validated
-  aggregate metrics snapshot with an IANA-timezone cutoff, canonical hash, and
-  source fingerprint. Delayed sends reuse that snapshot.
+  aggregate metrics snapshot with an IANA-timezone scheduled cutoff, one
+  canonical UTC `metricsAsOfAt`, canonical hash, and source fingerprint. The
+  snapshot identity is `(scope, scopeKey, localReportDate, scheduledCutoffAt,
+  metricsVersion)`: subscriptions with the same cutoff share one snapshot,
+  while different per-subscription cutoffs create distinct snapshots. Delayed
+  sends reuse their original snapshot.
 - Branch reports require current branch membership plus `view_whatsapp`,
   `receive_whatsapp_reports`, `view_payments`, `analytics`, the
   `WHATSAPP_AUTOMATION` entitlement, and writable scope. Organization reports
   are visible and configurable only by the current organization owner.
-- Report only payments recorded by `paidAt` inside the local day through the
-  scheduled cutoff, current canonical open-due/overdue facts, student counts,
-  shift-slot usage/capacity, and aggregate WhatsApp outcomes. Do not include a
-  student, staff member, phone, payment, seat label, or variable branch list.
-  Do not call shift-slot use attendance.
+- Capture `metricsAsOfAt` at the first database statement of the report
+  transaction. Calculate and label payments, canonical open-due/overdue facts,
+  student counts, shift-slot usage/capacity, and aggregate WhatsApp outcomes at
+  that one transaction-snapshot instant. Payment corrections between the
+  scheduled cutoff and `metricsAsOfAt` are therefore reflected consistently.
+  Use the existing immutable payment-resolution evidence plus the transaction
+  snapshot; do not introduce broad historical event sourcing for other domains.
+  Do not include a student, staff member, phone, payment, seat label, or variable
+  branch list. Do not call shift-slot use attendance.
 - Reports are prospective from activation, default to 21:00 within the reviewed
-  18:00–23:30 local window, and have a six-hour bounded catch-up. Do not perform
-  full historical catch-up.
+  18:00–23:30 local window, and have an exclusive catch-up end at the earlier of
+  one hour after the scheduled cutoff or the next local midnight. Do not perform
+  full historical catch-up. If the window has ended or canonical metrics cannot
+  be proven, record a bounded `REPORT_FAILURE` incident and skip/suppress the
+  report before any provider call.
 
 ### Recipient confirmation and consent
 
@@ -57,6 +68,10 @@ proposal builds on both and changes neither status.
   assignment, entitlement, and writability inside the confirmation transaction.
   Only then opt in `OWNER_REPORT`, append real consent-transition evidence,
   activate the subscription, clear the challenge, and audit without the code.
+- Preserve the inbound provider message ID on normalized report commands.
+  Deduplicate repeated copies of the same provider message identity, while
+  preserving distinct confirmation messages from the same phone in envelope
+  order so an expired attempt cannot erase a later valid attempt.
 - Exact `STOP REPORTS`, the exact managed `Stop reports` reply label, and the
   managed compatibility payload opt out only `OWNER_REPORT`, pause matching
   subscriptions, cancel unsubmitted reports, and release reservations. Existing
@@ -110,9 +125,12 @@ proposal builds on both and changes neither status.
   admissions; any earlier admission drains before `pausedAt` is recorded. The
   bounded Meta call remains outside every domain transaction.
 - Resume is owner-only and requires explicit confirmation, current rate card,
-  active/unrestricted sender, recent healthy read-only reconciliation, healthy
-  templates, and no blocking active critical condition. Resume preserves
-  incidents and never retries `UNKNOWN`.
+  active/unrestricted sender, recent successful unrestricted read-only
+  reconciliation, healthy exact bindings for current queued work, and healthy
+  templates for currently enabled/configured branch automation and report
+  functionality. An unused language or optional rejected template does not
+  block resume, but an individual send still fails closed when its exact binding
+  is unavailable. Resume preserves incidents and never retries `UNKNOWN`.
 - Persist tenant-scoped, deduplicated operational incidents with bounded safe
   codes/details. `UNKNOWN` remains terminal and nonretryable; later signed status
   evidence may project it to proven state and resolve its incident without
@@ -167,10 +185,14 @@ proposal builds on both and changes neither status.
   marketing consent or promotional purpose.
 - **Full historical report catch-up:** rejected because old reports are stale,
   costly, and outside the recipient's prospective expectation.
+- **One scope-level report time:** rejected because it would discard the
+  reviewed per-subscription schedule. Cutoff-aware snapshot identity preserves
+  those schedules without sharing metrics across different as-of contracts.
 
 ## Consequences
 
-The system gains deterministic aggregate reports, typed operational notices,
+The system gains cutoff-aware deterministic aggregate reports with a single
+truthful as-of instant, typed operational notices,
 phone-control evidence, distinct budget ownership, conservative sender
 containment, an inspectable `UNKNOWN` queue, durable operational incidents,
 read-only provider reconciliation, and cron evidence. It also gains additional

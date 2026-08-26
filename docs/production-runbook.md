@@ -4,7 +4,7 @@ This runbook covers the repository-owned procedures for operating Lab Lords. It
 does not grant access to Production and does not replace provider dashboards,
 database recovery documentation, or an approved incident-response policy.
 
-Last reconciled with the repository: 2026-08-24.
+Last reconciled with the repository: 2026-08-26.
 
 ## Stop conditions and operator-owned preconditions
 
@@ -741,13 +741,29 @@ SELECT COUNT(*) AS submitting_without_admission
 FROM "WhatsAppMessage"
 WHERE "status" = 'SUBMITTING'::"WhatsAppMessageStatus"
   AND "providerCallAdmittedAt" IS NULL;
+
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name = 'WhatsAppDailyReportSnapshot'
+  AND column_name IN ('scheduledCutoffAt', 'metricsAsOfAt', 'metricsVersion')
+ORDER BY column_name;
+
+SELECT indexdef
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND tablename = 'WhatsAppDailyReportSnapshot'
+  AND indexname = 'WhatsAppReportSnapshot_scope_date_cutoff_version_key';
 ```
 
 Every new-table count, `unexpectedly_paused`, and
 `submitting_without_admission` must be zero. Confirm
 `RECEIVE_WHATSAPP_REPORTS` and every reviewed enum/audit/catalogue value exists,
-no subscription/report/notice/message/consent was created, all flags remain
-false, all canaries remain empty, and `pnpm prisma migrate status` is clean.
+`metricsAsOfAt` is non-nullable, and the report snapshot unique index covers
+exactly scope, scope key, local report date, scheduled cutoff, and metrics
+version. Confirm no subscription/report/notice/message/consent was created, all
+flags remain false, all canaries remain empty, and `pnpm prisma migrate status`
+is clean.
 
 PR4 code is safe with all PR4 flags off, but it requires the additive schema;
 therefore use database-first promotion under the approved traffic/mutation hold.
@@ -1204,8 +1220,11 @@ This is a future procedure, not evidence that setup has occurred:
    `LABLORDS_STOP_UPDATES` payload, near misses, duplicate commands, bare `START`,
    and `PAID`. Full STOP keeps broad operational opt-out behavior; report STOP
    affects only report consent/subscriptions; only a live unexpired challenge
-   for that sender and phone may confirm. No raw body/text/code/error is stored,
-   no reply is sent, and no payment changes.
+   for that sender and phone may confirm. In one envelope, deliver an expired
+   confirmation followed by a valid confirmation from the same phone with
+   distinct provider message IDs; require both to be processed in order. Replay
+   one provider message ID and require only that identity to deduplicate. No raw
+   body/text/code/error is stored, no reply is sent, and no payment changes.
 8. Alert on verification/signature failures, receipt persistence/lease failures,
    backlog, provider outage/rate limiting, template reclassification, failed and
    `UNKNOWN` messages, loss of callback reachability, budget threshold, and
@@ -1224,15 +1243,22 @@ repository implementation. Both require the separate approvals above.
   five-attempt lockout, reissue invalidation, scoped opt-out, full opt-out, staff
   removal/permission-loss, owner/phone change, sender reassignment, and sender
   disconnect reconciliation.
-- Review report preview/snapshot JSON for aggregate-only content and the exact
-  local scheduled cutoff. Payment totals use `paidAt`; overdue/open dues use
-  canonical current payment truth; capacity is shift-slot usage, not attendance.
-  Inspect one branch and one consolidated owner report, then prove the latter
-  uses only its separate organization report budget.
-- Until ADR 0004 resolves the snapshot-key discrepancy, require all recipients
-  in one report scope to choose the same local cutoff. A different same-day
-  cutoff fails closed; do not work around it by editing a snapshot, changing a
-  subscriber's time, or queueing a stale first-cutoff report.
+- Review report preview/snapshot JSON for aggregate-only content, the exact
+  local scheduled cutoff, and canonical UTC `metricsAsOfAt`. Prove payments,
+  active students, dues/overdue, capacity/allocation, and WhatsApp outcomes use
+  that one transaction-snapshot instant and the rendered local as-of label
+  matches it. Capacity is shift-slot usage, not attendance. Inspect one branch
+  and one consolidated owner report, then prove the latter uses only its
+  separate organization report budget.
+- Create two synthetic subscriptions in one scope at the same cutoff and one at
+  a different cutoff. Require the first pair to share one immutable snapshot and
+  the third to create a distinct snapshot. Verify the unique identity, source
+  fingerprint, and message dedupe all include `scheduledCutoffAt`; never edit or
+  repurpose an earlier snapshot to satisfy a later schedule.
+- Exercise the exclusive trust-window boundaries. The end is the earlier of one
+  hour after cutoff or next local midnight. At/after that instant, or whenever
+  canonical metrics cannot be proven, require a safe `REPORT_FAILURE` incident,
+  no new reservation/provider call, and planner skip or dispatcher suppression.
 - Service notices may be only closure, hours-changed, or maintenance contracts.
   Verify the fixed reason, typed time/date, managed template hash/category,
   unique consented audience, 500-recipient rejection, explicit estimate
@@ -1248,9 +1274,12 @@ repository implementation. Both require the separate approvals above.
   A pending pause means new calls are blocked while an earlier durable admission
   drains; full pause is recorded after the drain. Pause makes no provider
   mutation. Resume is owner-only, explicitly confirmed, and requires a
-  current rate card, active unrestricted sender, recent successful health read,
-  healthy required templates, and no critical blocker. Resume never retries
-  `UNKNOWN`.
+  current rate card, active unrestricted sender, recent successful unrestricted
+  health read, exact healthy bindings for current queued work, healthy templates
+  for enabled automation/report configuration, and no critical blocker. Prove
+  an unused rejected optional template and an unused language do not block
+  resume, while a queued message with that exact rejected binding remains
+  blocked. Resume never retries `UNKNOWN`.
 - Acknowledge only to record awareness. Resolve only through verified local/
   signed/provider evidence. Do not edit an incident or message to make a queue
   look healthy. Later signed delivery/failure for `UNKNOWN` may project and

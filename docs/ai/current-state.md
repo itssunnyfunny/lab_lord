@@ -1,6 +1,6 @@
 # Lab Lords: Current Architecture and Implementation State
 
-> Last verified: 2026-08-24
+> Last verified: 2026-08-26
 >
 > Repository anchor: PR4 WhatsApp reports, service notices, and hardening working tree
 >
@@ -303,9 +303,11 @@ not evidence that any environment or provider account is ready.
   sent/delivered/read/failed without timestamp regression. Only bounded
   authoritative billable/category and recipient values are stored; provider
   pricing metadata is not an exact charge, so `actualCostMicros` remains null.
-  Only normalized text exactly `STOP` or exact
-  payload `LABLORDS_STOP_UPDATES` opts out; no raw body/text/error is stored, no
-  payment is mutated, and no automatic reply is sent.
+  Exact `STOP`/`LABLORDS_STOP_UPDATES` handles the full opt-out; exact scoped
+  report commands affect report consent only. No raw body/text/error is stored,
+  no payment is mutated, and no automatic reply is sent. Report confirmations
+  retain and deduplicate by inbound provider message identity, so distinct
+  messages from one phone remain ordered and independently processed.
 - Student phone/inactivation and payment-resolution services reconcile only
   local unsubmitted delivery state inside their existing transaction when the
   delivery schema can exist. Payment transitions lock linked outbox rows,
@@ -322,11 +324,15 @@ not evidence that any environment or provider account is ready.
   report consent, while existing full `STOP` retains its broader behavior.
 - Report snapshots are immutable and hash-validated at dispatch. They contain
   bounded aggregate student, shift-slot, payment, dues, overdue, and WhatsApp
-  outcome metrics through an organization-timezone cutoff; no student, staff,
-  phone, payment, seat, attendance claim, or variable branch list is rendered.
-  Branch reports use branch budget plus the automatic daily limit. Consolidated
-  reports use a distinct organization report budget and are the only messages
-  permitted without a branch.
+  outcome metrics calculated and labelled at one UTC transaction-snapshot
+  `metricsAsOfAt`; no student, staff, phone, payment, seat, attendance claim, or
+  variable branch list is rendered. Snapshot identity includes the scheduled
+  cutoff, so same-cutoff subscriptions share one row and different cutoffs each
+  receive an independent row/source/dedupe identity. Catch-up ends before the
+  earlier of cutoff plus one hour or next local midnight; untrustworthy work is
+  incident-backed and skipped before Meta. Branch reports use branch budget plus
+  the automatic daily limit. Consolidated reports use a distinct organization
+  report budget and are the only messages permitted without a branch.
 - Typed service notices support only branch closure, changed hours, and
   maintenance windows. Copy, reason labels, languages, and variable contracts
   come from the managed Utility catalogue. Audience selection uses current
@@ -343,7 +349,9 @@ not evidence that any environment or provider account is ready.
   Threshold breaches pause the sender locally; `UNKNOWN` remains terminal and
   never automatically retries. A durable pause-request/admission handshake
   blocks new calls and drains earlier admissions without putting Meta inside a
-  domain transaction. Health work performs bounded provider reads only,
+  domain transaction. Resume checks exact current queued bindings and templates
+  required by enabled/configured functionality, not every optional language and
+  catalogue key. Health work performs bounded provider reads only,
   and later valid signed status evidence may resolve uncertainty without a
   resend. Incident/job details are bounded and exclude recipient/content data.
 
@@ -733,11 +741,6 @@ Production migrations have a separate manually dispatched workflow requiring the
   centralized Meta alert delivery, stable callback hostname, automatic rate-card
   refresh, exact provider-cost reconciliation, status page, or proven operator
   response process.
-- PR4's required per-subscription report time and required one-snapshot-per-
-  scope/date/version unique key conflict when two same-scope subscribers choose
-  different cutoffs. The implementation safely reuses only an exact-cutoff
-  snapshot and rejects the conflicting second queue; product/schema ownership
-  must decide between a scope-level time and cutoff-aware snapshot identity.
 - Import staging retention depends on deployed `purgeAfter` transitions and a
   healthy authenticated daily cron; repository code cannot prove either is
   operating in Production.

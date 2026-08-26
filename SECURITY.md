@@ -2,8 +2,9 @@
 
 > Repository policy for Codex Security and other security reviewers.
 >
-> Last reconciled with the PR3 WhatsApp template-delivery working tree on
-> 2026-08-23. This is repository policy, not evidence of deployment readiness.
+> Last reconciled with the PR4 WhatsApp report-hardening working tree on
+> 2026-08-26. The PR4 changes and ADR 0004 remain pending explicit human-owner/
+> security approval. This is repository policy, not deployment readiness.
 
 This file defines what to review, the mandatory security invariants, and how to
 calibrate findings. It is not a public vulnerability-disclosure channel,
@@ -310,14 +311,23 @@ authentication boundaries, not open application routes.
   URL, log, audit detail, provider payload, error, screenshot, or plaintext
   database field. Confirmation rechecks user, tenant, permissions, entitlement,
   writability, sender assignment, and phone before opting in `OWNER_REPORT`.
+  Normalized report commands retain the inbound provider message ID: repeated
+  copies of one provider identity are deduplicated, but distinct message IDs
+  from the same phone are processed in envelope order.
 - Daily reports are deterministic aggregate database metrics only. They contain
   no student/staff name, phone, individual due or payment, payment method, seat
   label, or variable branch list; make no attendance/check-in claim; and never
-  use AI. Every queued row references an immutable metrics-version/cutoff/hash/
-  fingerprint snapshot. Corrections after its cutoff do not rewrite history.
-- Automatic reports are prospective from activation, have a six-hour bounded
-  catch-up, and in Live require both the delivery and separate automation
-  canaries. Branch reports reserve the branch budget and automatic daily limit.
+  use AI. Every queued row references an immutable snapshot keyed by scope,
+  scope key, local report date, scheduled cutoff, and metrics version, with a
+  canonical hash/fingerprint and one UTC `metricsAsOfAt`. Same-cutoff
+  subscriptions share that snapshot; different cutoffs do not collide. Every
+  temporal metric and the rendered local as-of label use the same transaction-
+  snapshot instant.
+- Automatic reports are prospective from activation. Catch-up ends exclusively
+  at the earlier of one hour after the scheduled cutoff or next local midnight,
+  and in Live requires both delivery and separate automation canaries. A missed
+  or unprovable report records a bounded safe incident and is skipped/suppressed
+  before Meta. Branch reports reserve the branch budget and automatic daily limit.
   Organization reports reserve only their positive owner-controlled
   organization report budget and may not consume an arbitrary branch budget.
 - Service notices are limited to server-defined branch closure, changed-hours,
@@ -347,9 +357,12 @@ authentication boundaries, not open application routes.
   after that transaction commits. A pause request atomically blocks new
   admissions, remains visibly pending while any earlier admission drains, and
   records `pausedAt` only after no admitted `SUBMITTING` row remains. Owner
-  resume requires explicit confirmation, active and
-  unrestricted sender, current rate, recent healthy read-only reconciliation,
-  healthy templates, and no blocking critical incident; it preserves all
+  resume requires explicit confirmation, active and unrestricted sender,
+  current rate, a recent successful unrestricted read-only reconciliation,
+  healthy exact bindings for current queued work, and healthy templates only
+  for currently enabled/configured functionality, with no blocking critical
+  incident. Unused languages and optional templates do not block resume; every
+  individual send still requires its exact binding. Resume preserves all
   incidents and does not retry `UNKNOWN`.
 - `UNKNOWN` is terminal, budget-committed, incident-backed, and never retried
   automatically. A later signed status may project it to proven provider truth
