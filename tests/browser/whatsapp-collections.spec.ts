@@ -164,6 +164,10 @@ async function mockOrganizationSettings(page: Page) {
     safeReason: null,
     senders: [senderFixture()],
   }));
+  await page.route(`**/api/organizations/${ORG_ID}/whatsapp/report-subscription`, route => fulfillJson(route, {
+    operationsUiEnabled: false,
+    subscription: null,
+  }));
   await page.route(
     `**/api/organizations/${ORG_ID}/whatsapp/senders/${SENDER_ID}/managed-templates/install`,
     async route => {
@@ -198,6 +202,7 @@ const permissionKeys = [
   "view_whatsapp",
   "send_whatsapp",
   "manage_whatsapp",
+  "receive_whatsapp_reports",
   "staff_management",
 ] as const;
 
@@ -407,6 +412,10 @@ async function mockBranchWhatsApp(page: Page) {
     if (route.request().method() === "PATCH") return fulfillJson(route, { updated: true });
     return fulfillJson(route, branchSettingsFixture(state));
   });
+  await page.route(`**/api/branches/${BRANCH_ID}/whatsapp/report-subscription`, route => fulfillJson(route, {
+    operationsUiEnabled: false,
+    subscription: null,
+  }));
   await page.route(`**/api/branches/${BRANCH_ID}/whatsapp/messages?**`, route =>
     fulfillJson(route, unknownHistoryFixture())
   );

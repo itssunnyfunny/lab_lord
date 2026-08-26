@@ -115,6 +115,10 @@ async function installWhatsAppMocks(page: Page) {
       assignedBranches: [],
     }],
   }));
+  await page.route(`**/api/organizations/${ORG_ID}/whatsapp/report-subscription`, route => json(route, {
+    operationsUiEnabled: false,
+    subscription: null,
+  }));
   await page.route(
     `**/api/organizations/${ORG_ID}/whatsapp/connection-intents`,
     route => json(route, {

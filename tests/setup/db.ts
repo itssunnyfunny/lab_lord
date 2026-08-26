@@ -1,5 +1,6 @@
 import { PrismaClient } from "../../app/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { assertDisposableTestDatabaseTarget } from "./testDatabaseSafety";
 
 /**
  * DB ISOLATION STRATEGY: Transaction Rollback Per Test
@@ -33,33 +34,10 @@ export const testPrisma = new PrismaClient({
 });
 
 async function confirmExactDisposableDatabaseIdentity() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error("Refusing database reset without DATABASE_URL.");
-  }
-
-  const parsedDatabaseUrl = new URL(connectionString);
-  const expectedDatabaseName = decodeURIComponent(
-    parsedDatabaseUrl.pathname.replace(/^\//, "")
+  const target = assertDisposableTestDatabaseTarget(
+    process.env.DATABASE_URL,
+    process.env
   );
-  const isPostgres = ["postgres:", "postgresql:"].includes(
-    parsedDatabaseUrl.protocol
-  );
-
-  if (!isPostgres || !expectedDatabaseName.toLowerCase().includes("test")) {
-    throw new Error(
-      "Refusing database reset: DATABASE_URL must name a PostgreSQL test database."
-    );
-  }
-
-  if (
-    process.env.TEST_DATABASE_URL &&
-    process.env.TEST_DATABASE_RESET_CONFIRM !== expectedDatabaseName
-  ) {
-    throw new Error(
-      "Refusing database reset: TEST_DATABASE_RESET_CONFIRM must exactly match the explicit test database name."
-    );
-  }
 
   const rows = await testPrisma.$queryRaw<Array<{ databaseName: string }>>`
     SELECT current_database() AS "databaseName"
@@ -68,7 +46,7 @@ async function confirmExactDisposableDatabaseIdentity() {
 
   if (
     rows.length !== 1 ||
-    connectedDatabaseName !== expectedDatabaseName ||
+    connectedDatabaseName !== target.databaseName ||
     !connectedDatabaseName.toLowerCase().includes("test")
   ) {
     throw new Error(
@@ -93,7 +71,14 @@ export async function resetDatabase() {
     TRUNCATE TABLE
       "WhatsAppMessageEvent",
       "WhatsAppMessagePayment",
+      "WhatsAppOperationalIncident",
       "WhatsAppMessage",
+      "WhatsAppServiceNotice",
+      "WhatsAppDailyReportSnapshot",
+      "WhatsAppReportSubscription",
+      "OrganizationWhatsAppReportSettings",
+      "WhatsAppJobRun",
+      "WhatsAppSenderSafetyState",
       "WhatsAppManualSendRequest",
       "WhatsAppStudentRecipient",
       "WhatsAppConsentEvent",
