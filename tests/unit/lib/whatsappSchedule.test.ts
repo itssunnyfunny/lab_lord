@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   addWhatsAppLocalDays,
   getWhatsAppLocalDateParts,
+  getWhatsAppReportPlanningWindow,
   nextWhatsAppSendAt,
   manualWhatsAppAvailableAt,
   parseWhatsAppSendTime,
+  parseWhatsAppReportSendTime,
+  scheduleWhatsAppReportForLocalDate,
   scheduleWhatsAppForLocalDate,
   whatsappBudgetMonth,
   whatsappLocalDateTimeToUtc,
@@ -18,6 +21,27 @@ describe("WhatsApp scheduling", () => {
     expect(parseWhatsAppSendTime("20:00").minuteOfDay).toBe(1_200);
     expect(() => parseWhatsAppSendTime("07:59")).toThrow("between 08:00 and 20:00");
     expect(() => parseWhatsAppSendTime("20:01")).toThrow("between 08:00 and 20:00");
+  });
+
+  it("keeps the daily-report window separate and catches up across local midnight", () => {
+    expect(parseWhatsAppReportSendTime("18:00").minuteOfDay).toBe(1_080);
+    expect(parseWhatsAppReportSendTime("23:30").minuteOfDay).toBe(1_410);
+    expect(() => parseWhatsAppReportSendTime("17:59")).toThrow("between 18:00 and 23:30");
+    expect(() => parseWhatsAppReportSendTime("23:31")).toThrow("between 18:00 and 23:30");
+    expect(scheduleWhatsAppReportForLocalDate({
+      localDate: { year: 2026, month: 8, day: 23 },
+      sendTimeLocal: "21:00",
+      timeZone: "Asia/Kolkata",
+    }).toISOString()).toBe("2026-08-23T15:30:00.000Z");
+
+    const afterMidnight = getWhatsAppReportPlanningWindow({
+      now: new Date("2026-08-23T20:30:00.000Z"),
+      sendTimeLocal: "21:00",
+      timeZone: "Asia/Kolkata",
+    });
+    expect(afterMidnight.localDateKey).toBe("2026-08-23");
+    expect(afterMidnight.eligible).toBe(true);
+    expect(afterMidnight.catchUpEndsAt.toISOString()).toBe("2026-08-23T21:30:00.000Z");
   });
 
   it("converts an IANA-zoned India slot without fixed-offset arithmetic", () => {

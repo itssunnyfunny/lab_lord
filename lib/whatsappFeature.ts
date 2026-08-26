@@ -11,6 +11,16 @@ export const WHATSAPP_AUTOMATION_PLANNER_FLAG =
   "WHATSAPP_AUTOMATION_PLANNER_ENABLED" as const;
 export const WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS_ENV =
   "WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS" as const;
+export const WHATSAPP_REPORTS_FLAG = "WHATSAPP_REPORTS_ENABLED" as const;
+export const WHATSAPP_REPORT_PLANNER_FLAG = "WHATSAPP_REPORT_PLANNER_ENABLED" as const;
+export const WHATSAPP_SERVICE_NOTICES_FLAG = "WHATSAPP_SERVICE_NOTICES_ENABLED" as const;
+export const WHATSAPP_HEALTH_RECONCILIATION_FLAG =
+  "WHATSAPP_HEALTH_RECONCILIATION_ENABLED" as const;
+export const WHATSAPP_OPERATIONS_UI_FLAG = "WHATSAPP_OPERATIONS_UI_ENABLED" as const;
+export const WHATSAPP_LIVE_AUTOMATION_CANARY_ORG_IDS_ENV =
+  "WHATSAPP_LIVE_AUTOMATION_CANARY_ORG_IDS" as const;
+export const WHATSAPP_HEALTH_CANARY_ORG_IDS_ENV =
+  "WHATSAPP_HEALTH_CANARY_ORG_IDS" as const;
 
 export type WhatsAppProviderModeValue = "TEST" | "LIVE";
 
@@ -65,6 +75,42 @@ export class WhatsAppAutomationPlannerDisabledError extends WhatsAppFeatureDisab
   constructor() {
     super("WhatsApp automation planning is unavailable");
     this.name = "WhatsAppAutomationPlannerDisabledError";
+  }
+}
+
+export class WhatsAppReportsDisabledError extends WhatsAppFeatureDisabledError {
+  readonly code = "WHATSAPP_REPORTS_DISABLED";
+
+  constructor() {
+    super("WhatsApp daily reports are unavailable");
+    this.name = "WhatsAppReportsDisabledError";
+  }
+}
+
+export class WhatsAppReportPlannerDisabledError extends WhatsAppFeatureDisabledError {
+  readonly code = "WHATSAPP_REPORT_PLANNER_DISABLED";
+
+  constructor() {
+    super("WhatsApp daily-report planning is unavailable");
+    this.name = "WhatsAppReportPlannerDisabledError";
+  }
+}
+
+export class WhatsAppServiceNoticesDisabledError extends WhatsAppFeatureDisabledError {
+  readonly code = "WHATSAPP_SERVICE_NOTICES_DISABLED";
+
+  constructor() {
+    super("WhatsApp service notices are unavailable");
+    this.name = "WhatsAppServiceNoticesDisabledError";
+  }
+}
+
+export class WhatsAppHealthReconciliationDisabledError extends WhatsAppFeatureDisabledError {
+  readonly code = "WHATSAPP_HEALTH_RECONCILIATION_DISABLED";
+
+  constructor() {
+    super("WhatsApp provider-health reconciliation is unavailable");
+    this.name = "WhatsAppHealthReconciliationDisabledError";
   }
 }
 
@@ -147,6 +193,38 @@ export function configuredWhatsAppLiveDeliveryCanaryOrganizationIds(
   return new Set(values);
 }
 
+function configuredFailClosedOrganizationIds(
+  name: typeof WHATSAPP_LIVE_AUTOMATION_CANARY_ORG_IDS_ENV
+    | typeof WHATSAPP_HEALTH_CANARY_ORG_IDS_ENV,
+  env: Readonly<Record<string, string | undefined>>
+) {
+  const raw = env[name];
+  if (!raw?.trim()) return new Set<string>();
+  const values = raw.split(",").map(value => value.trim());
+  if (
+    values.some(value => !/^[A-Za-z0-9_-]{1,128}$/.test(value))
+    || new Set(values).size !== values.length
+  ) {
+    return new Set<string>();
+  }
+  return new Set(values);
+}
+
+export function configuredWhatsAppLiveAutomationCanaryOrganizationIds(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): ReadonlySet<string> {
+  return configuredFailClosedOrganizationIds(
+    WHATSAPP_LIVE_AUTOMATION_CANARY_ORG_IDS_ENV,
+    env
+  );
+}
+
+export function configuredWhatsAppHealthCanaryOrganizationIds(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): ReadonlySet<string> {
+  return configuredFailClosedOrganizationIds(WHATSAPP_HEALTH_CANARY_ORG_IDS_ENV, env);
+}
+
 function areWhatsAppProviderWritesEnabled(
   flag: typeof WHATSAPP_META_TEMPLATE_WRITES_FLAG | typeof WHATSAPP_META_MESSAGE_WRITES_FLAG,
   organizationId: string,
@@ -207,6 +285,61 @@ export function isWhatsAppAutomationPlannerEnabled(
   return mode === "TEST" || env.VERCEL_ENV?.trim().toLowerCase() === "production";
 }
 
+export function isWhatsAppReportsEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  return isWhatsAppIntegrationEnabled(env) && enabled(env[WHATSAPP_REPORTS_FLAG]);
+}
+
+export function isWhatsAppReportPlannerEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  return isWhatsAppReportsEnabled(env) && enabled(env[WHATSAPP_REPORT_PLANNER_FLAG]);
+}
+
+export function isWhatsAppServiceNoticesEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  return isWhatsAppIntegrationEnabled(env) && enabled(env[WHATSAPP_SERVICE_NOTICES_FLAG]);
+}
+
+export function isWhatsAppHealthReconciliationEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  return isWhatsAppIntegrationEnabled(env)
+    && enabled(env[WHATSAPP_HEALTH_RECONCILIATION_FLAG]);
+}
+
+export function isWhatsAppOperationsUiEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  return isWhatsAppIntegrationEnabled(env) && enabled(env[WHATSAPP_OPERATIONS_UI_FLAG]);
+}
+
+export function isWhatsAppLiveAutomationOrganizationEnabled(
+  organizationId: string,
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(organizationId)) return false;
+  const mode = resolveWhatsAppProviderMode(env);
+  if (mode === "TEST") return true;
+  return env.VERCEL_ENV?.trim().toLowerCase() === "production"
+    && configuredWhatsAppLiveDeliveryCanaryOrganizationIds(env).has(organizationId)
+    && configuredWhatsAppLiveAutomationCanaryOrganizationIds(env).has(organizationId);
+}
+
+export function isWhatsAppHealthOrganizationEnabled(
+  organizationId: string,
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  if (!isWhatsAppHealthReconciliationEnabled(env)) return false;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(organizationId)) return false;
+  const mode = resolveWhatsAppProviderMode(env);
+  if (mode === "TEST") return true;
+  return env.VERCEL_ENV?.trim().toLowerCase() === "production"
+    && configuredWhatsAppHealthCanaryOrganizationIds(env).has(organizationId);
+}
+
 /**
  * Indicates that the PR3 delivery schema may be accessed by this application
  * release. This is deliberately separate from the per-operation provider-write
@@ -224,6 +357,11 @@ export function isWhatsAppDeliverySchemaAccessEnabled(
     enabled(env[WHATSAPP_META_TEMPLATE_WRITES_FLAG])
     || enabled(env[WHATSAPP_META_MESSAGE_WRITES_FLAG])
     || enabled(env[WHATSAPP_AUTOMATION_PLANNER_FLAG])
+    || enabled(env[WHATSAPP_REPORTS_FLAG])
+    || enabled(env[WHATSAPP_REPORT_PLANNER_FLAG])
+    || enabled(env[WHATSAPP_SERVICE_NOTICES_FLAG])
+    || enabled(env[WHATSAPP_HEALTH_RECONCILIATION_FLAG])
+    || enabled(env[WHATSAPP_OPERATIONS_UI_FLAG])
   );
 }
 
@@ -265,6 +403,34 @@ export function assertWhatsAppAutomationPlannerEnabled(
 ) {
   if (!isWhatsAppAutomationPlannerEnabled(env)) {
     throw new WhatsAppAutomationPlannerDisabledError();
+  }
+}
+
+export function assertWhatsAppReportsEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  if (!isWhatsAppReportsEnabled(env)) throw new WhatsAppReportsDisabledError();
+}
+
+export function assertWhatsAppReportPlannerEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  if (!isWhatsAppReportPlannerEnabled(env)) throw new WhatsAppReportPlannerDisabledError();
+}
+
+export function assertWhatsAppServiceNoticesEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  if (!isWhatsAppServiceNoticesEnabled(env)) {
+    throw new WhatsAppServiceNoticesDisabledError();
+  }
+}
+
+export function assertWhatsAppHealthReconciliationEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+) {
+  if (!isWhatsAppHealthReconciliationEnabled(env)) {
+    throw new WhatsAppHealthReconciliationDisabledError();
   }
 }
 
