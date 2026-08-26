@@ -130,11 +130,13 @@ type NormalizedStopEvent = Readonly<{
 
 type NormalizedReportStopEvent = Readonly<{
   kind: "STOP_REPORTS";
+  providerMessageId: string;
   phoneE164: string;
 }>;
 
 type NormalizedReportConfirmationEvent = Readonly<{
   kind: "REPORT_CONFIRMATION";
+  providerMessageId: string;
   phoneE164: string;
   code: string;
 }>;
@@ -363,12 +365,17 @@ function extractMetaWebhookEventGroups(envelope: WebhookEnvelope) {
               : undefined,
           });
           if (!reportCommand) continue;
-          const key = `${reportCommand.kind}:${phoneE164}`;
+          const key = `REPORT_COMMAND:${message.id}`;
           if (group.inboundKeys.has(key)) continue;
           group.inboundKeys.add(key);
           group.events.push(reportCommand.kind === "STOP_REPORTS"
-            ? { kind: "STOP_REPORTS", phoneE164 }
-            : { kind: "REPORT_CONFIRMATION", phoneE164, code: reportCommand.code });
+            ? { kind: "STOP_REPORTS", providerMessageId: message.id, phoneE164 }
+            : {
+                kind: "REPORT_CONFIRMATION",
+                providerMessageId: message.id,
+                phoneE164,
+                code: reportCommand.code,
+              });
         }
         continue;
       }
@@ -1415,7 +1422,9 @@ export class WhatsAppWebhookService {
       sender: group.sender,
       events: group.events.filter(event => {
         if (event.kind === "STATUS" || event.kind === "TEMPLATE") return true;
-        const key = `${event.kind}:${group.sender.id}:${event.phoneE164}`;
+        const key = event.kind === "STOP"
+          ? `STOP:${group.sender.id}:${event.phoneE164}`
+          : `REPORT_COMMAND:${group.sender.id}:${event.providerMessageId}`;
         if (inboundKeys.has(key)) return false;
         inboundKeys.add(key);
         return true;
