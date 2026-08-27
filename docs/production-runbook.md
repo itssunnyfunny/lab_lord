@@ -856,13 +856,12 @@ The foundation architecture proposal is
 [`0002-whatsapp-communication-foundation.md`](./decisions/0002-whatsapp-communication-foundation.md),
 the Accepted delivery decision is
 [`0003-whatsapp-template-delivery-and-collections.md`](./decisions/0003-whatsapp-template-delivery-and-collections.md).
-The foundation remains **Proposed** and ADR 0003 is **Accepted** by the recorded
-human owner. The PR4 reports/operations proposal is
+The foundation remains **Proposed** and ADRs 0003 and 0004 are **Accepted** by
+the recorded human owner. The PR4 reports/operations decision is
 [`0004-whatsapp-daily-reports-and-operational-hardening.md`](./decisions/0004-whatsapp-daily-reports-and-operational-hardening.md)
-and remains **Proposed**. `SECURITY.md` changes and ADR 0004 require explicit
-human-owner approval before merge/enablement. ADR acceptance, repository code,
-tests, or a successful migration approve neither a Meta connection nor billable
-delivery.
+and was accepted on 2026-08-27 together with the `SECURITY.md` policy changes.
+That approval, repository code, tests, or a successful migration approve neither
+a Meta connection nor billable delivery, deployment, or rollout.
 
 No real Meta App Review, Embedded Signup, WABA, template creation/approval,
 phone registration, message send, signed webhook delivery, report confirmation,
@@ -1060,10 +1059,9 @@ Use this order for the reviewed expansion. Do not collapse separately observed
 steps or turn the later operations into an automatic pipeline.
 
 1. Complete draft review and require green CI for the exact commit.
-2. Obtain explicit human-owner approval of the `SECURITY.md` policy diff.
-3. Confirm ADR 0003's recorded Accepted decision, review Proposed ADR 0004, and
-   do not change ADR 0002/0004 status without a recorded human decision and
-   approval date.
+2. Confirm the recorded human-owner approval of the `SECURITY.md` policy diff.
+3. Confirm ADRs 0003 and 0004 are recorded as Accepted and ADR 0002 remains
+   Proposed; none of those statuses authorizes deployment or rollout.
 4. Confirm no real provider credentials, WABA, template, message, report,
    notice, or health operation was used by development or automated tests.
 5. While the previously compatible application is still serving, ensure
@@ -1753,7 +1751,7 @@ Remaining risks and owners:
 - [Import Workflow execution proposal](./decisions/0001-managed-workflow-for-import-execution.md) — Proposed, not Accepted
 - [WhatsApp communication foundation proposal](./decisions/0002-whatsapp-communication-foundation.md) — Proposed, not Accepted
 - [WhatsApp managed Utility delivery decision](./decisions/0003-whatsapp-template-delivery-and-collections.md) — Accepted architecture; not rollout approval
-- [WhatsApp reports and operational hardening proposal](./decisions/0004-whatsapp-daily-reports-and-operational-hardening.md) — Proposed, not Accepted
+- [WhatsApp reports and operational hardening decision](./decisions/0004-whatsapp-daily-reports-and-operational-hardening.md) — Accepted architecture; not rollout approval
 - [CI workflow](../.github/workflows/ci.yml)
 - [Production migration workflow](../.github/workflows/production-migrate.yml)
 - [Vercel cron configuration](../vercel.json)

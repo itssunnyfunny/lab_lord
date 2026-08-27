@@ -10,6 +10,7 @@ Add Accepted or Superseded records here in numeric order:
 | ADR | Status | Decision | Superseded by |
 | --- | --- | --- | --- |
 | [0003](./0003-whatsapp-template-delivery-and-collections.md) | Accepted | Managed WhatsApp Utility delivery and collections automation | — |
+| [0004](./0004-whatsapp-daily-reports-and-operational-hardening.md) | Accepted | WhatsApp daily reports, typed service notices, and operational hardening | — |
 
 ## Proposed decision index
 
@@ -20,7 +21,6 @@ or imply owner approval.
 | --- | --- | --- |
 | [0001](./0001-managed-workflow-for-import-execution.md) | Proposed | Managed Workflow for import execution |
 | [0002](./0002-whatsapp-communication-foundation.md) | Proposed | WhatsApp communication foundation and customer-owned Meta assets |
-| [0004](./0004-whatsapp-daily-reports-and-operational-hardening.md) | Proposed | WhatsApp daily reports, typed service notices, and operational hardening |
 
 ## Naming and status
 

@@ -397,15 +397,15 @@ No real Meta App Review/Advanced Access, app, Embedded Signup, WABA, template
 creation/approval, phone registration, message send, webhook delivery, customer
 asset, legal/privacy approval, effective rate-card signoff, Preview/Production
 configuration, deployment, migration, schedule, health reconciliation, or Live
-canary has been verified from repository evidence. ADR 0002 and PR4 ADR 0004
-remain Proposed. ADR 0003 is Accepted, but that acceptance does not authorize
-provider setup, security/legal approval, deployment, migration, or rollout.
+canary has been verified from repository evidence. ADR 0002 remains Proposed;
+ADRs 0003 and 0004 are Accepted, but those acceptances do not authorize provider
+setup, legal/privacy approval, deployment, migration, or rollout.
 
 Authoritative code: `lib/metaWhatsApp.ts`, `lib/whatsappFeature.ts`,
 `lib/whatsappManagedTemplates.ts`, `lib/whatsappCost.ts`,
 `lib/whatsappMessageState.ts`, `services/whatsapp*.ts`, WhatsApp API/cron routes,
-the three WhatsApp migrations, focused tests, Accepted ADR 0003, and Proposed
-ADRs 0002/0004.
+the three WhatsApp migrations, focused tests, Accepted ADRs 0003/0004, and
+Proposed ADR 0002.
 
 ### Deterministic analytics
 
@@ -735,7 +735,7 @@ Production migrations have a separate manually dispatched workflow requiring the
   Advanced Access, approved Utility templates, customer-owned billing, current
   rate card, legal/privacy gate, Test/Live assets, threshold calibration, and
   external behavior have not been verified in Preview or Production.
-- WhatsApp ADR 0002 and PR4 ADR 0004 remain Proposed; ADR 0003 is Accepted.
+- WhatsApp ADR 0002 remains Proposed; ADRs 0003 and 0004 are Accepted.
   Implementation and ADR acceptance do not approve onboarding or rollout. The
   repository now has a scoped incident/`UNKNOWN` queue and cron evidence, but no
   centralized Meta alert delivery, stable callback hostname, automatic rate-card
@@ -764,7 +764,8 @@ This file supersedes architecture/status claims in older phase-oriented or gener
   **Accepted** by the recorded human repository owner. It accepts the narrow PR3
   architecture, not provider setup, security/legal approval, or deployment.
 - `docs/decisions/0004-whatsapp-daily-reports-and-operational-hardening.md`
-  remains **Proposed**. Reports, notices, health reads, schedule activation, and
-  Live rollout require explicit human-owner/security/legal/operations review.
+  is **Accepted** by the recorded human repository owner. Reports, notices,
+  health reads, schedule activation, and Live rollout still require separate
+  provider, security, legal/privacy, and operations approval.
 
 When this document and the implementation disagree, inspect the current schema, migrations, services, API routes, and tests, then update this document in the same change.

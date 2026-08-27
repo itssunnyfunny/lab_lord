@@ -3,8 +3,9 @@
 > Repository policy for Codex Security and other security reviewers.
 >
 > Last reconciled with the PR4 WhatsApp report-hardening working tree on
-> 2026-08-26. The PR4 changes and ADR 0004 remain pending explicit human-owner/
-> security approval. This is repository policy, not deployment readiness.
+> 2026-08-27. The PR4 `SECURITY.md` changes and ADR 0004 were explicitly approved
+> by itssunnyfunny, the human repository owner, for PR #266. This remains
+> repository policy, not deployment or rollout authorization.
 
 This file defines what to review, the mandatory security invariants, and how to
 calibrate findings. It is not a public vulnerability-disclosure channel,
@@ -557,9 +558,8 @@ Treat these as review context and remediation candidates, not accepted risks:
   approved until a human owner/security review covers provider processing and
   residency, Fluid Compute/runtime configuration, retention and operator
   access, benchmark evidence, SLOs, the mutation cap, and rollback authority;
-- the WhatsApp communication-foundation ADR 0002 remains Proposed, ADR 0003 is
-  Accepted, and the daily-report/operational-hardening ADR 0004 remains Proposed.
-  No repository evidence proves Meta App Review/Advanced
+- the WhatsApp communication-foundation ADR 0002 remains Proposed; ADRs 0003
+  and 0004 are Accepted. No repository evidence proves Meta App Review/Advanced
   Access, real Embedded Signup, WABA or phone registration, template approval,
   signed provider delivery, webhook reachability, customer billing ownership,
   legal/privacy approval, or Preview/Production configuration;

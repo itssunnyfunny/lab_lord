@@ -1,8 +1,9 @@
 # 0004: WhatsApp daily reports and operational hardening
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-24
-- Deciders: Pending
+- Deciders: itssunnyfunny (human repository owner)
+- Approval date: 2026-08-27
 - Supersedes: None
 - Superseded by: None
 
@@ -23,7 +24,7 @@ request can have an ambiguous local outcome, and provider template category,
 sender restrictions, rate cards, webhooks, and cron execution may change outside
 the application. There is no attendance domain, so report wording cannot imply
 check-in or presence. ADR 0003 is Accepted; ADR 0002 remains Proposed. This
-proposal builds on both and changes neither status.
+decision builds on both and changes neither status.
 
 ## Decision
 
@@ -222,9 +223,8 @@ estimate because duplicate avoidance takes priority over automatic release.
 
 ## Rollout and rollback
 
-1. Review the draft PR, obtain explicit human approval for `SECURITY.md`, review
-   this Proposed ADR, and keep every PR4 flag false and both new canary lists
-   empty.
+1. Merge only after documented human-owner approval of `SECURITY.md` and this
+   ADR, with every PR4 flag false and both new canary lists empty.
 2. Verify CI and authenticated desktop/mobile browser flows. Confirm the Vercel
    plan supports subdaily cron, function duration, region/Fluid settings,
    Production-only schedules, callback protection, and durable monitoring.
@@ -280,6 +280,9 @@ deployment, schedule health, environment setting, or Live canary.
 
 ## Approval
 
-Pending explicit human-owner review. This ADR remains Proposed. Drafting it does
-not authorize provider operations, environment changes, Preview/Production
-migration, deployment, canary enablement, or rollout.
+Accepted on 2026-08-27 by itssunnyfunny, the human repository owner, with
+explicit approval of this decision and the accompanying `SECURITY.md` changes
+for PR #266. This approval makes the architecture decision binding but does not
+authorize real provider operations, environment changes, Preview or Production
+migration, deployment, flag or canary enablement, or rollout. Operations and
+legal/privacy gates remain separate requirements.
