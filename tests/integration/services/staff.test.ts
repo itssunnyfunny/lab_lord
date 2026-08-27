@@ -72,6 +72,8 @@ describe("StaffService Integration", () => {
       await expect(StaffService.authorize(staffUser.id, branch.id, "view_whatsapp")).resolves.toBe(true);
       await expect(StaffService.authorize(staffUser.id, branch.id, "send_whatsapp")).resolves.toBe(true);
       await expect(StaffService.authorize(staffUser.id, branch.id, "manage_whatsapp")).rejects.toThrow(/Unauthorized/i);
+      await expect(StaffService.authorize(staffUser.id, branch.id, "receive_whatsapp_reports"))
+        .rejects.toThrow(/Unauthorized/i);
 
       await StaffService.updateStaffPermissions(user.id, branch.id, staffRecord.id, {
         manage_whatsapp: true,

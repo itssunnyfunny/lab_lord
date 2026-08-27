@@ -41,6 +41,7 @@ const permissions: BranchAccess["permissions"] = {
   view_whatsapp: true,
   send_whatsapp: true,
   manage_whatsapp: true,
+  receive_whatsapp_reports: true,
   staff_management: false,
 };
 
@@ -135,5 +136,59 @@ describe("BranchSidebar", () => {
     const labels = mocks.sidebarItems.map(item => item.label);
     expect(labels).toContain("AI Reports");
     expect(labels).not.toContain("AI Messages");
+  });
+
+  it("offers WhatsApp Reports without granting branch settings management", () => {
+    mocks.access = {
+      branchId: "branch_1",
+      branchName: "Main Branch",
+      organizationId: "org_1",
+      isOwner: false,
+      role: "STAFF",
+      staffId: "staff_1",
+      effectivePlan: "PRO",
+      entitlements: ["WHATSAPP_AUTOMATION", "ADVANCED_ANALYTICS"],
+      permissions: {
+        ...permissions,
+        manage_branch: false,
+        view_whatsapp: true,
+        receive_whatsapp_reports: true,
+        view_payments: true,
+        analytics: true,
+      },
+    };
+
+    renderToStaticMarkup(<BranchSidebar />);
+
+    const labels = mocks.sidebarItems.map(item => item.label);
+    expect(labels).toContain("WhatsApp Reports");
+    expect(labels).not.toContain("Branch Settings");
+  });
+
+  it("hides report settings when a required permission or entitlement is missing", () => {
+    mocks.access = {
+      branchId: "branch_1",
+      branchName: "Main Branch",
+      organizationId: "org_1",
+      isOwner: false,
+      role: "STAFF",
+      staffId: "staff_1",
+      effectivePlan: "PRO",
+      entitlements: ["ADVANCED_ANALYTICS"],
+      permissions: {
+        ...permissions,
+        manage_branch: false,
+        view_whatsapp: true,
+        receive_whatsapp_reports: true,
+        view_payments: true,
+        analytics: true,
+      },
+    };
+
+    renderToStaticMarkup(<BranchSidebar />);
+
+    const labels = mocks.sidebarItems.map(item => item.label);
+    expect(labels).not.toContain("WhatsApp Reports");
+    expect(labels).not.toContain("Branch Settings");
   });
 });

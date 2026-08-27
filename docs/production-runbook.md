@@ -4,7 +4,7 @@ This runbook covers the repository-owned procedures for operating Lab Lords. It
 does not grant access to Production and does not replace provider dashboards,
 database recovery documentation, or an approved incident-response policy.
 
-Last reconciled with the repository: 2026-08-23.
+Last reconciled with the repository: 2026-08-26.
 
 ## Stop conditions and operator-owned preconditions
 
@@ -14,10 +14,12 @@ items that are not encoded in this repository:
 
 - the Vercel team, project, Production branch, Production domains, deployment
   path, deployment approvers, and rollback authority;
-- the Vercel plan and function limits. The billing and five-minute/fifteen-minute
-  WhatsApp schedules require a plan that accepts those cron expressions; Import
-  Assistance V2 additionally requires the approved Workflow 4.6/Fluid Compute
-  configuration and limits;
+- the Vercel plan and function limits. The billing and five-/fifteen-/thirty-
+  minute WhatsApp schedules require a plan that accepts those cron expressions;
+  verify the eight-project-cron total, Production-only GET behavior, duplicate/
+  overlap handling, callback protection, function duration/region/Fluid Compute,
+  and monitoring. Import Assistance V2 additionally requires the approved
+  Workflow 4.6/Fluid Compute configuration and limits;
 - the exact Production database identity and a direct migration endpoint that
   has been checked independently of its URL text;
 - the database backup owner, backup command, retention, most recent successful
@@ -38,10 +40,12 @@ items that are not encoded in this repository:
 - the Meta developer-app owner, Business verification and App Review/Advanced
   Access state for both WhatsApp permissions, token/app-secret rotation owners,
   dedicated Test WABA/phone, customer asset/billing ownership evidence, approved
-  Utility templates, effective estimated rate card, stable HTTPS callbacks,
-  alerting and human `UNKNOWN` review, legal/privacy/consent approval, incident
-  owner, and approval authorities for onboarding, template writes, manual
-  delivery, automation, and canary expansion; and
+  Utility templates, effective and unexpired estimated rate card, stable HTTPS
+  callbacks, alerting and human `UNKNOWN`/sender-safety review, health-read
+  permissions and calibration, legal/privacy/consent approval, incident owner,
+  and approval authorities for onboarding, template writes, manual delivery,
+  reports, service notices, health reconciliation, automation, and canary
+  expansion; and
 - the canonical Node.js and pnpm versions. CI currently uses Node.js 20 and
   pnpm 9, while the Production migration workflow uses Node.js 24 and pnpm 9;
   `package.json` does not pin either runtime.
@@ -66,8 +70,8 @@ previous deployment.
   sender truth. Do not persist or print an Embedded Signup code/token, system
   token, app secret, registration PIN, verification token, raw signup session,
   or raw Meta webhook body.
-- WhatsApp delivery is restricted to one approved, code-managed Utility template
-  for one explicitly mapped/consented recipient through the durable dispatcher.
+- WhatsApp delivery is restricted to approved, code-managed Utility templates
+  for exact confirmed/mapped/consented recipients through the durable dispatcher.
   Never invoke a provider write, test send, schedule, customer connection, or
   canary as an operational shortcut; never use arbitrary/free-form/media/
   marketing/OTP/AI content, credit sharing, or Lab Lords-funded/rebilled usage.
@@ -113,8 +117,8 @@ capabilities held and contains no usable credential or approved rate.
 | Razorpay credentials and mode | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_MODE`, `RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_WEBHOOK_OLD_SECRETS`, `RAZORPAY_DEFAULT_SUBSCRIPTION_CYCLES` |
 | Billing release controls | `RAZORPAY_BILLING_WRITES_ENABLED`, `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED`, `RAZORPAY_LIVE_CANARY_ORG_IDS`, `WORKSPACE_BRANCH_BILLING_V2_ENABLED` |
 | Meta WhatsApp credentials and mode | `META_WHATSAPP_MODE`, `META_APP_ID`, `META_APP_SECRET`, `META_EMBEDDED_SIGNUP_CONFIG_ID`, `META_BUSINESS_ID`, `META_SYSTEM_USER_ID`, `META_SYSTEM_USER_ACCESS_TOKEN`, `META_GRAPH_API_VERSION` (exactly `v25.0`), `META_WHATSAPP_WEBHOOK_VERIFY_TOKEN` |
-| WhatsApp release controls | `WHATSAPP_INTEGRATION_ENABLED`, `WHATSAPP_META_ONBOARDING_WRITES_ENABLED`, `WHATSAPP_META_TEMPLATE_WRITES_ENABLED`, `WHATSAPP_META_MESSAGE_WRITES_ENABLED`, `WHATSAPP_AUTOMATION_PLANNER_ENABLED`, `WHATSAPP_WEBHOOK_INGEST_ENABLED`, `WHATSAPP_LIVE_CANARY_ORG_IDS`, `WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS` |
-| WhatsApp estimated rate card | `WHATSAPP_UTILITY_RATE_MICROS_INR`, `WHATSAPP_RATE_CARD_VERSION`, `WHATSAPP_RATE_CARD_EFFECTIVE_AT`; this is an operator-approved estimate, not a Meta invoice |
+| WhatsApp release controls | `WHATSAPP_INTEGRATION_ENABLED`, `WHATSAPP_META_ONBOARDING_WRITES_ENABLED`, `WHATSAPP_META_TEMPLATE_WRITES_ENABLED`, `WHATSAPP_META_MESSAGE_WRITES_ENABLED`, `WHATSAPP_AUTOMATION_PLANNER_ENABLED`, `WHATSAPP_REPORTS_ENABLED`, `WHATSAPP_REPORT_PLANNER_ENABLED`, `WHATSAPP_SERVICE_NOTICES_ENABLED`, `WHATSAPP_HEALTH_RECONCILIATION_ENABLED`, `WHATSAPP_OPERATIONS_UI_ENABLED`, `WHATSAPP_WEBHOOK_INGEST_ENABLED`, `WHATSAPP_LIVE_CANARY_ORG_IDS`, `WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS`, `WHATSAPP_LIVE_AUTOMATION_CANARY_ORG_IDS`, `WHATSAPP_HEALTH_CANARY_ORG_IDS` |
+| WhatsApp estimated rate card | `WHATSAPP_UTILITY_RATE_MICROS_INR`, `WHATSAPP_RATE_CARD_VERSION`, `WHATSAPP_RATE_CARD_EFFECTIVE_AT`, `WHATSAPP_RATE_CARD_EXPIRES_AT`; this is an operator-approved estimate, not a Meta invoice |
 | Import V2 release controls | `IMPORT_V2_ENABLED`, `IMPORT_MAX_PLANNED_MUTATIONS` |
 | Scheduled jobs | `CRON_SECRET` |
 | Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_FLASH_MODEL`, `GEMINI_PRO_MODEL`, `GEMINI_IMPORT_MODEL`, `GEMINI_FALLBACK_MODELS` |
@@ -615,7 +619,7 @@ manual creation, and imports, independent of the WhatsApp flags. Use the
 database-first sequence below under the approved deployment/traffic hold: run
 the preflight while the old application is serving, hold deployments and
 student/import mutations, apply and verify the additive migration, and only
-then promote the new application. The new WhatsApp flags and both canary lists
+then promote the new application. The new WhatsApp flags and every canary list
 must still remain false/empty throughout. A separately reviewed compatibility
 release would be required to use any app-first sequence.
 
@@ -624,10 +628,155 @@ schema-only rollback is still a separately reviewed PostgreSQL operation. After
 any recipient, provisioning, binding, rule, request, message/payment join,
 provider ID, status event, or consent evidence exists, disable integration,
 template writes, message writes, planning, onboarding writes, and webhook
-ingestion; clear both canary lists; stop the two WhatsApp schedules; preserve
+ingestion; clear every Live/health canary; stop all WhatsApp schedules; preserve
 `UNKNOWN`, budget, provider IDs, receipts, and all history; and prefer a
 compatible forward repair. Never edit prior migration history or drop evidence
 to make rollback appear clean.
+
+### WhatsApp reports, notices, and hardening migration
+
+`20260824120000_whatsapp_reports_notices_and_hardening` is additive. It adds the
+report, notice, sender-safety, incident, and job models; message/source links;
+sender webhook/health evidence; the report permission; managed catalogue keys;
+and audit actions. It contains no row-creating DML and enables no capability.
+Its only row mutation is a conservative evidence backfill: every pre-existing
+`SUBMITTING` message receives `providerCallAdmittedAt` from
+`submissionStartedAt`, then `claimedAt`, then `updatedAt`. This ensures new code
+can classify a stale legacy submission as `UNKNOWN` but can never retry it as an
+unadmitted request. The migration must preserve all PR1 payment truth plus all
+PR2/PR3 WhatsApp rows, provider IDs, template hashes/bindings, consent, events,
+and reservations.
+
+Before migration, hold all WhatsApp message/planner flags false, keep all PR4
+flags false and every canary list empty, and pause the dispatcher schedule
+through the approved Vercel control. Verify the schedule is paused and let the
+last active dispatcher worker and lease drain. Then run this read-only gate on
+the independently verified target:
+
+```sql
+SELECT COUNT(*) AS in_flight_messages
+FROM "WhatsAppMessage"
+WHERE "status" = 'SUBMITTING'::"WhatsAppMessageStatus"
+   OR (
+     "status" = 'CLAIMED'::"WhatsAppMessageStatus"
+     AND "leaseUntil" >= CURRENT_TIMESTAMP
+   );
+```
+
+`in_flight_messages` must be exactly zero immediately before migration. A
+nonzero result blocks migration: continue the approved drain or investigate the
+stuck worker without resetting, retrying, or deleting its message. This gate and
+the migration perform no Meta operation. The backfill is defense in depth for a
+legacy `SUBMITTING` row that survives despite the gate; it is not permission to
+skip the zero-in-flight requirement.
+
+Run the following read-only inventory on the independently verified target and
+keep the exact results in the approved private release record:
+
+```sql
+SELECT 'Organization' AS relation, COUNT(*) FROM "Organization"
+UNION ALL SELECT 'Branch', COUNT(*) FROM "Branch"
+UNION ALL SELECT 'User', COUNT(*) FROM "User"
+UNION ALL SELECT 'Staff', COUNT(*) FROM "Staff"
+UNION ALL SELECT 'Student', COUNT(*) FROM "Student"
+UNION ALL SELECT 'Payment', COUNT(*) FROM "Payment"
+UNION ALL SELECT 'PaymentResolutionEvent', COUNT(*) FROM "PaymentResolutionEvent"
+UNION ALL SELECT 'WhatsAppSender', COUNT(*) FROM "WhatsAppSender"
+UNION ALL SELECT 'BranchWhatsAppSettings', COUNT(*) FROM "BranchWhatsAppSettings"
+UNION ALL SELECT 'WhatsAppTemplate', COUNT(*) FROM "WhatsAppTemplate"
+UNION ALL SELECT 'WhatsAppTemplateBinding', COUNT(*) FROM "WhatsAppTemplateBinding"
+UNION ALL SELECT 'WhatsAppConsent', COUNT(*) FROM "WhatsAppConsent"
+UNION ALL SELECT 'WhatsAppConsentEvent', COUNT(*) FROM "WhatsAppConsentEvent"
+UNION ALL SELECT 'WhatsAppStudentRecipient', COUNT(*) FROM "WhatsAppStudentRecipient"
+UNION ALL SELECT 'WhatsAppAutomationRule', COUNT(*) FROM "WhatsAppAutomationRule"
+UNION ALL SELECT 'WhatsAppManualSendRequest', COUNT(*) FROM "WhatsAppManualSendRequest"
+UNION ALL SELECT 'WhatsAppMessage', COUNT(*) FROM "WhatsAppMessage"
+UNION ALL SELECT 'WhatsAppMessageEvent', COUNT(*) FROM "WhatsAppMessageEvent"
+UNION ALL SELECT 'WhatsAppWebhookReceipt', COUNT(*) FROM "WhatsAppWebhookReceipt"
+UNION ALL SELECT 'WhatsAppAuditEvent', COUNT(*) FROM "WhatsAppAuditEvent"
+ORDER BY relation;
+
+SELECT typname, enumlabel, enumsortorder
+FROM pg_type
+JOIN pg_enum ON pg_enum.enumtypid = pg_type.oid
+WHERE typname LIKE 'WhatsApp%' OR typname = 'StaffPermissionAction'
+ORDER BY typname, enumsortorder;
+
+SELECT tablename, indexname, indexdef
+FROM pg_indexes
+WHERE tablename LIKE 'WhatsApp%' OR tablename = 'BranchWhatsAppSettings'
+ORDER BY tablename, indexname;
+
+SELECT conrelid::regclass::text AS relation, conname,
+       pg_get_constraintdef(oid) AS definition
+FROM pg_constraint
+WHERE conrelid::regclass::text LIKE '%WhatsApp%'
+ORDER BY relation, conname;
+```
+
+Privately fingerprint the existing non-secret template catalogue hashes,
+bindings, message/provider IDs, consent/event rows, and payment/event rows so
+post-migration equality can be established without publishing customer data.
+If an existing WhatsApp relation is nonempty, a clean empty-database migration
+test is insufficient: exact preservation is a release gate.
+
+After migration and before promoting PR4 code, repeat the complete inventory and
+fingerprints. Existing counts and fingerprints must match exactly. Then require:
+
+```sql
+SELECT 'WhatsAppReportSubscription' AS relation, COUNT(*) FROM "WhatsAppReportSubscription"
+UNION ALL SELECT 'OrganizationWhatsAppReportSettings', COUNT(*) FROM "OrganizationWhatsAppReportSettings"
+UNION ALL SELECT 'WhatsAppDailyReportSnapshot', COUNT(*) FROM "WhatsAppDailyReportSnapshot"
+UNION ALL SELECT 'WhatsAppServiceNotice', COUNT(*) FROM "WhatsAppServiceNotice"
+UNION ALL SELECT 'WhatsAppSenderSafetyState', COUNT(*) FROM "WhatsAppSenderSafetyState"
+UNION ALL SELECT 'WhatsAppOperationalIncident', COUNT(*) FROM "WhatsAppOperationalIncident"
+UNION ALL SELECT 'WhatsAppJobRun', COUNT(*) FROM "WhatsAppJobRun"
+ORDER BY relation;
+
+SELECT COUNT(*) AS unexpectedly_paused
+FROM "WhatsAppSenderSafetyState"
+WHERE "pausedAt" IS NOT NULL OR "pauseRequestedAt" IS NOT NULL;
+
+SELECT COUNT(*) AS submitting_without_admission
+FROM "WhatsAppMessage"
+WHERE "status" = 'SUBMITTING'::"WhatsAppMessageStatus"
+  AND "providerCallAdmittedAt" IS NULL;
+
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name = 'WhatsAppDailyReportSnapshot'
+  AND column_name IN ('scheduledCutoffAt', 'metricsAsOfAt', 'metricsVersion')
+ORDER BY column_name;
+
+SELECT indexdef
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND tablename = 'WhatsAppDailyReportSnapshot'
+  AND indexname = 'WhatsAppReportSnapshot_scope_date_cutoff_version_key';
+```
+
+Every new-table count, `unexpectedly_paused`, and
+`submitting_without_admission` must be zero. Confirm
+`RECEIVE_WHATSAPP_REPORTS` and every reviewed enum/audit/catalogue value exists,
+`metricsAsOfAt` is non-nullable, and the report snapshot unique index covers
+exactly scope, scope key, local report date, scheduled cutoff, and metrics
+version. Confirm no subscription/report/notice/message/consent was created, all
+flags remain false, all canaries remain empty, and `pnpm prisma migrate status`
+is clean.
+
+PR4 code is safe with all PR4 flags off, but it requires the additive schema;
+therefore use database-first promotion under the approved traffic/mutation hold.
+Ordinary non-WhatsApp pages and PR3 flag-off behavior must remain healthy before
+any Test exercise. There is no down migration. Once report, notice, incident,
+job, consent, or message history exists, hold the narrow flags, pause schedules,
+preserve evidence, and prefer a compatible forward repair. Dropping or rewriting
+history requires a separately approved exact affected-row review.
+
+Before any destructive database test, parse the exact connection target and
+require a loopback host, a database name containing `test`, and a non-Preview/
+non-Production context. Do not fall back to the developer database. Print only
+sanitized host/database identity and abort on any uncertainty.
 
 ### Production migration procedure
 
@@ -692,28 +841,34 @@ Vercel Git or CLI path before release. See Vercel's official
 
 Do not treat a successful build or domain assignment as a successful release.
 
-## WhatsApp managed Utility-delivery rollout
+## WhatsApp managed Utility-delivery, reports, and operations rollout
 
 > **Held capability, not live readiness:** the repository can create Lab
-> Lords-managed Utility templates and submit one approved Utility template to one
-> explicitly authorized recipient. All new provider and planner controls default
+> Lords-managed Utility templates and submit one approved Utility template to an
+> explicitly authorized recipient. It can also create deterministic aggregate
+> reports and typed operational notices through that same outbox. All provider,
+> planner, report, notice, health, and operations controls default
 > false, and no real provider, Preview, Production, migration, legal, rate-card,
 > or canary evidence was produced by implementation. Do not describe repository
 > capability or sender readiness as a launched customer service.
 
 The foundation architecture proposal is
 [`0002-whatsapp-communication-foundation.md`](./decisions/0002-whatsapp-communication-foundation.md),
-and the delivery proposal is
+the Accepted delivery decision is
 [`0003-whatsapp-template-delivery-and-collections.md`](./decisions/0003-whatsapp-template-delivery-and-collections.md).
-Both remain **Proposed**. `SECURITY.md` changes and the PR3 ADR require explicit
-human-owner approval before merge/enablement. Repository code, tests, or a
-successful migration approve neither a Meta connection nor billable delivery.
+The foundation remains **Proposed** and ADRs 0003 and 0004 are **Accepted** by
+the recorded human owner. The PR4 reports/operations decision is
+[`0004-whatsapp-daily-reports-and-operational-hardening.md`](./decisions/0004-whatsapp-daily-reports-and-operational-hardening.md)
+and was accepted on 2026-08-27 together with the `SECURITY.md` policy changes.
+That approval, repository code, tests, or a successful migration approve neither
+a Meta connection nor billable delivery, deployment, or rollout.
 
 No real Meta App Review, Embedded Signup, WABA, template creation/approval,
-phone registration, message send, signed webhook delivery, STOP, customer asset,
-rate-card approval, Preview/Production setup, deployment, or Production migration
-was performed. Obtain external evidence in the approved private operations
-record; never infer it from local environment files or provider IDs in fixtures.
+phone registration, message send, signed webhook delivery, report confirmation,
+STOP, customer asset, health read, rate-card approval, Preview/Production setup,
+deployment, or Production migration was performed. Obtain external evidence in
+the approved private operations record; never infer it from local environment
+files or provider IDs in fixtures.
 
 ### External prerequisites and ownership
 
@@ -735,7 +890,7 @@ following without copying secret values:
    release. Reverify that exact configuration and session-info version against
    current official Meta requirements before external setup.
 4. Reverify current official Meta documentation on the rollout date. The
-   2026-08-23 implementation review pins `META_GRAPH_API_VERSION=v25.0`; `latest`
+   2026-08-24 implementation review pins `META_GRAPH_API_VERSION=v25.0`; `latest`
    and every other version fail closed. Controlled template creation is exactly
    `POST /{WABA_ID}/message_templates` with
    `whatsapp_business_management`. Individual template delivery is exactly
@@ -775,7 +930,8 @@ following without copying secret values:
     [pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing),
     [status webhook](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/status), and
     [error codes](https://developers.facebook.com/documentation/business-messaging/whatsapp/support/error-codes).
-    Graph codes `4`, `80007`, `130429`, and `131056` are rate-limit signals; any
+    Graph codes `4`, `80007`, `80008`, `130429`, and `131056` are rate-limit
+    signals; any
     retry remains bounded and lease-fenced. Because Meta supplies no send
     idempotency key, timeout/network/`5xx`/invalid-success ambiguity becomes
     `UNKNOWN` and is never retried automatically.
@@ -788,9 +944,10 @@ following without copying secret values:
    webhook/provider health monitoring, log retention, outage handling, and
     customer support/escalation include a human queue for `UNKNOWN` messages and
     are documented outside the repository gaps noted in `SECURITY.md`.
-12. A named owner signs off the versioned effective rate card and its update
-    cadence. V1 estimates only `+91` India recipients; an unsupported destination
-    must fail closed rather than use a guessed rate.
+12. A named owner signs off the versioned effective and expiring rate card, its
+    update cadence, and alert threshold. V1 estimates only `+91` India
+    recipients; an unsupported destination must fail closed rather than use a
+    guessed rate. Queueing, planning, and dispatch fail closed at expiry.
 13. Separate human legal/privacy review approves the exact versioned operational
     consent wording, privacy-policy disclosure, Meta data processing/retention,
     opt-out behavior, customer-owned billing explanation, Utility template
@@ -822,7 +979,22 @@ WHATSAPP_META_MESSAGE_WRITES_ENABLED=false
   prevents every new provider message request while preserving queue/budget/history
 
 WHATSAPP_AUTOMATION_PLANNER_ENABLED=false
-  prevents automatic queue planning; does not authorize provider delivery
+  prevents automatic collection queue planning; does not authorize provider delivery
+
+WHATSAPP_REPORTS_ENABLED=false
+  blocks report subscription, preview, snapshot, queue, and report dispatch paths
+
+WHATSAPP_REPORT_PLANNER_ENABLED=false
+  prevents automatic report queue planning; does not authorize provider delivery
+
+WHATSAPP_SERVICE_NOTICES_ENABLED=false
+  blocks service-notice preview, queue, and dispatch paths
+
+WHATSAPP_HEALTH_RECONCILIATION_ENABLED=false
+  blocks read-only provider-health cron work; it does not authorize writes
+
+WHATSAPP_OPERATIONS_UI_ENABLED=false
+  hides the server-projected incident/safety/job operations surfaces only
 
 WHATSAPP_WEBHOOK_INGEST_ENABLED=false
   independently blocks verification/receipt ingestion and WABA subscription work
@@ -833,22 +1005,33 @@ WHATSAPP_LIVE_CANARY_ORG_IDS=<exact reviewed IDs only>
 
 WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS=<exact reviewed IDs only>
   separately restricts template and message writes in LIVE; empty/malformed permits nobody
+
+WHATSAPP_LIVE_AUTOMATION_CANARY_ORG_IDS=<exact reviewed IDs only>
+  combines with the delivery canary for automatic collection/report work in LIVE;
+  empty/malformed permits nobody
+
+WHATSAPP_HEALTH_CANARY_ORG_IDS=<exact reviewed IDs only>
+  separately restricts read-only provider health work in LIVE; empty/malformed permits nobody
 ```
 
 The integration flag is a prerequisite for every WhatsApp path. Onboarding,
-template creation, message delivery, automatic planning, and webhook ingestion
-are independent gates. LIVE onboarding uses only the onboarding canary;
-template/message writes use only the delivery canary. Template creation does not
-authorize a message; planning does not authorize dispatch; disabling planning
-does not disable already queued manual delivery; disabling message writes must
-make no new provider message call while leaving queue, status/history, reserved
-budget, students, and payments unchanged.
+template creation, message delivery, collection/report planning, reports,
+service notices, provider-health reconciliation, operations UI, and webhook
+ingestion are independent gates. LIVE onboarding uses only the onboarding
+canary; template/manual message writes use the delivery canary; automatic
+collection/report work requires the exact organization in both delivery and
+automation canaries; health reads use the health canary. Template creation does
+not authorize a message; planning does not authorize dispatch; disabling a
+planner does not disable already queued manual work; disabling message writes
+must make no new provider message call while leaving queue, status/history,
+reserved budget, students, payments, snapshots, notices, incidents, and jobs
+unchanged.
 
 Changing a flag requires a new deployment and does not cancel an in-flight
 provider request. Disabling any flag must not delete sender, mapping, consent,
 template/binding, message/event, receipt, audit, budget, or provider-ID evidence.
-To contain the whole integration, deploy the integration flag false, clear both
-canary lists, and separately pause the WhatsApp cron schedules; do not use a
+To contain the whole integration, deploy the integration flag false, clear every
+canary list, and separately pause the WhatsApp cron schedules; do not use a
 credential rotation as a routine kill switch.
 
 The branch-local controls have different scopes. Delivery disable atomically
@@ -859,8 +1042,12 @@ cancels safely unsubmitted automatic rows only and leaves manual rows governed b
 the delivery/message-write controls.
 
 Every provider mutation uses a short local claim/validation transaction, commits
-it, performs the bounded Meta request, and then finalizes under the same lease in
-a new short transaction. Never call Meta while a student, payment, consent,
+it, uses a final short admission transaction to check both full/requested pause
+state and stamp the exact leased message, performs the bounded Meta request only
+after that commit, and then finalizes under the same lease in a new short
+transaction. A local pause request blocks new admissions immediately, reports a
+draining state while an earlier admitted request settles, and records full pause
+only after no admitted `SUBMITTING` row remains. Never call Meta while a student, payment, consent,
 recipient, settings, outbox, frequency, or budget transaction is open. On an
 ambiguous message response, do not repeat the request: preserve `UNKNOWN`, the
 provider correlation evidence already stored, and committed estimated budget for
@@ -872,14 +1059,17 @@ Use this order for the reviewed expansion. Do not collapse separately observed
 steps or turn the later operations into an automatic pipeline.
 
 1. Complete draft review and require green CI for the exact commit.
-2. Obtain explicit human-owner approval of the `SECURITY.md` policy diff.
-3. Review Proposed ADR 0003; do not mark it Accepted without a recorded human
-   decision and approval date. Keep ADR 0002 Proposed unless separately decided.
-4. Confirm no real provider credentials, WABA, template, or message were used by
-   development or automated tests.
+2. Confirm the recorded human-owner approval of the `SECURITY.md` policy diff.
+3. Confirm ADRs 0003 and 0004 are recorded as Accepted and ADR 0002 remains
+   Proposed; none of those statuses authorizes deployment or rollout.
+4. Confirm no real provider credentials, WABA, template, message, report,
+   notice, or health operation was used by development or automated tests.
 5. While the previously compatible application is still serving, ensure
-   integration, onboarding, template writes, message writes, planner, and
-   webhook ingestion are false and both Live canaries are empty. If PR2
+   integration, onboarding, template writes, message writes, both planners,
+   reports, notices, health, operations UI, and webhook ingestion are false and
+   every Live/health canary is empty. Pause the dispatcher schedule through the
+   approved Vercel control, verify the schedule state, and allow the last worker
+   and lease to drain. If PR2
    integration is enabled, first deploy/configure the complete hold without the
    PR3 application artifact.
 6. Run the read-only Production migration preflight above and record exact
@@ -887,18 +1077,24 @@ steps or turn the later operations into an automatic pipeline.
 7. Enter the approved deployment/traffic hold. Stop new deployments and hold
    student creation/update, imports, and other schema-dependent mutations until
    migration verification completes; follow the repository incident procedure
-   if the hold cannot be established.
-8. Apply the protected additive PR3 Prisma migration through the approved
-   Production workflow before promoting the new application.
-9. Repeat baseline counts while traffic remains held; verify all existing students are `LEGACY`, new tables
-   are empty, automation timestamps/rules are absent, delivery stays disabled,
-   payment constraints/history remain intact, and migration status is clean.
+   if the hold cannot be established. Re-run the read-only WhatsApp in-flight
+   query immediately before migration and require exactly zero; do not continue
+   while any active `CLAIMED` lease or `SUBMITTING` row remains.
+8. Apply the protected pending additive PR3 and PR4 Prisma migrations through
+   the approved Production workflow before promoting the new application.
+9. Repeat both migration baselines while traffic remains held; verify all
+   existing students are `LEGACY`, every new PR3/PR4 table is empty, automation
+   timestamps/rules are absent, no report is enabled, no subscription is active,
+   no sender is unexpectedly paused, delivery stays disabled, existing template
+   hashes/bindings and provider IDs are unchanged, payment constraints/history
+   remain intact, and migration status is clean.
 10. Promote the exact reviewed application commit only after step 9 passes,
     release the traffic hold, then verify ordinary Production sign-in,
     owner/staff, branch, student, payment, billing, import, and AI review flows;
     also verify flag-off routes do not claim work, create a message, or call
     Meta.
-11. Keep template/message/planner writes false and both Live canaries empty.
+11. Keep every template/message/planner/report/notice/health/operations control
+    false and every Live/health canary empty.
 12. Configure an isolated Meta Test environment only after callback, monitoring,
     `UNKNOWN` review, rate-card, security, and legal/privacy prerequisites exist.
 13. Validate managed-template installation in TEST, wait for provider approval,
@@ -913,23 +1109,34 @@ steps or turn the later operations into an automatic pipeline.
 16. Validate provider-signed sent, delivered, read, and definite-failed events,
     out-of-order non-regression, exact STOP/button opt-out, and future
     unsubmitted-message cancellation without retaining raw body/text.
-17. Exercise a fake ambiguous outcome and require terminal `UNKNOWN`, committed
-    budget, no automatic retry, and the documented human-review workflow.
-18. Hold message/template writes again and review costs, rate limits, failures,
+17. In isolated Test data, confirm one self-subscription with the signed exact
+    challenge, one aggregate report, scoped `STOP REPORTS`, one typed notice,
+    notice cancellation, and full `STOP`; prove no names/phones/raw commands or
+    attendance claims enter snapshots, incidents, jobs, or logs.
+18. Exercise fake ambiguous outcomes and a stale submitting lease; require
+    terminal `UNKNOWN`, committed budget, sender threshold containment, a
+    deduplicated incident, no automatic retry, and later signed-status
+    reconciliation without resend.
+19. Exercise read-only health and maintenance with an injected provider. Prove
+    no provider mutation occurs, unhealthy reads preserve prior truth, job
+    evidence is integer-only, and retention never deletes submitted/consent/
+    audit history.
+20. Hold message/template writes again and review costs, rate limits, failures,
     opt-outs, receipts, queue depth, privacy, and operational evidence.
-19. Request separate Live authorization only after App Review/Advanced Access,
+21. Request separate Live authorization only after App Review/Advanced Access,
     customer-owned billing, stable callback, monitoring, support, legal/privacy,
     and rate-card signoff are proven.
-20. Add exactly one approved organization to the delivery Live canary; keep the
-    onboarding canary separate. Start with managed-template install/sync and
-    manual sending only.
-21. Observe the approved canary window for cost estimates, provider Dashboard
+22. Add exactly one approved organization to the delivery Live canary; keep
+    onboarding, automation, and health canaries separate and empty. Start with
+    managed-template install/sync and manual sending only.
+23. Observe the approved canary window for cost estimates, provider Dashboard
     state, `UNKNOWN`, failures, throttling, opt-outs, duplicate protection, and
     tenant-safe history.
-22. Enable the planner for one reviewed branch only after the manual Live canary
-    passes. Confirm automation is prospective and no historical welcome, due,
-    or confirmation blast occurs.
-23. Expand organizations/branches gradually through explicit approvals. Never
+24. Add that organization to the automation canary and enable one planner only
+    after the manual Live canary passes. Confirm automation is prospective and
+    no historical welcome, due, confirmation, or report blast occurs. Enable
+    reports/notices/health one at a time in separately observed deployments.
+25. Expand organizations/branches gradually through explicit approvals. Never
     enable by wildcard, public pricing launch, or broad historical catch-up.
 
 Do not allow Vercel to promote this commit before the protected migration has
@@ -1006,19 +1213,92 @@ This is a future procedure, not evidence that setup has occurred:
    Require one deduplicated append-only event per provider identity and a
    non-regressing projection. Optional `billable`/category/pricing metadata may
    be recorded when authoritative, but `actualCostMicros` stays null.
-7. Deliver normalized text exactly `STOP`, the exact managed payload
-   `LABLORDS_STOP_UPDATES`, near-miss natural language, duplicate STOP, `START`,
-   and `PAID`. Only the two exact stop forms opt out, disable mappings, and
-   cancel/suppress unsubmitted messages. No raw body/text/error is stored, no
-   reply is sent, and no payment changes.
+7. Deliver normalized text exactly `STOP`, exact `STOP REPORTS`, an exact valid
+   `START REPORTS <code>`, the managed `Stop reports` label/payload, the existing
+   `LABLORDS_STOP_UPDATES` payload, near misses, duplicate commands, bare `START`,
+   and `PAID`. Full STOP keeps broad operational opt-out behavior; report STOP
+   affects only report consent/subscriptions; only a live unexpired challenge
+   for that sender and phone may confirm. In one envelope, deliver an expired
+   confirmation followed by a valid confirmation from the same phone with
+   distinct provider message IDs; require both to be processed in order. Replay
+   one provider message ID and require only that identity to deduplicate. No raw
+   body/text/code/error is stored, no reply is sent, and no payment changes.
 8. Alert on verification/signature failures, receipt persistence/lease failures,
    backlog, provider outage/rate limiting, template reclassification, failed and
    `UNKNOWN` messages, loss of callback reachability, budget threshold, and
-   opt-out anomalies. The repository does not define a central sink or human
-   `UNKNOWN` queue; both are blockers before Live enablement.
+   opt-out anomalies. The repository defines tenant-scoped incidents and a
+   human `UNKNOWN` queue, but no central alert-delivery sink or proven response
+   process; those remain blockers before Live enablement.
 
 Do not enable a real customer Production webhook or delivery canary as part of
 repository implementation. Both require the separate approvals above.
+
+### PR4 report, notice, safety, and health operations
+
+- Confirm every report recipient through signed inbound proof before activation.
+  Use synthetic Test recipients first. Plaintext challenge codes are one-time
+  display data: do not screenshot, log, ticket, or persist them. Verify expiry,
+  five-attempt lockout, reissue invalidation, scoped opt-out, full opt-out, staff
+  removal/permission-loss, owner/phone change, sender reassignment, and sender
+  disconnect reconciliation.
+- Review report preview/snapshot JSON for aggregate-only content, the exact
+  local scheduled cutoff, and canonical UTC `metricsAsOfAt`. Prove payments,
+  active students, dues/overdue, capacity/allocation, and WhatsApp outcomes use
+  that one transaction-snapshot instant and the rendered local as-of label
+  matches it. Capacity is shift-slot usage, not attendance. Inspect one branch
+  and one consolidated owner report, then prove the latter uses only its
+  separate organization report budget.
+- Create two synthetic subscriptions in one scope at the same cutoff and one at
+  a different cutoff. Require the first pair to share one immutable snapshot and
+  the third to create a distinct snapshot. Verify the unique identity, source
+  fingerprint, and message dedupe all include `scheduledCutoffAt`; never edit or
+  repurpose an earlier snapshot to satisfy a later schedule.
+- Exercise the exclusive trust-window boundaries. The end is the earlier of one
+  hour after cutoff or next local midnight. At/after that instant, or whenever
+  canonical metrics cannot be proven, require a safe `REPORT_FAILURE` incident,
+  no new reservation/provider call, and planner skip or dispatcher suppression.
+- Service notices may be only closure, hours-changed, or maintenance contracts.
+  Verify the fixed reason, typed time/date, managed template hash/category,
+  unique consented audience, 500-recipient rejection, explicit estimate
+  confirmation, 30-day horizon, full reservation, idempotent replay, partial
+  cancellation, STOP reconciliation, and completion state before rollout.
+- Review the rate-card state before queueing and again before dispatch. `VALID`
+  and `EXPIRING` are estimates only; `NOT_YET_EFFECTIVE` and `EXPIRED` hold new
+  reservations/submissions. Rotate to a reviewed new version before expiry in a
+  new deployment; never edit historical message estimate snapshots.
+- Inspect sender safety and active incidents before each canary expansion. Three
+  ambiguous outcomes or ten reviewed sender/provider failures within ten minutes
+  closes the local admission gate. Invalid individual destinations are excluded.
+  A pending pause means new calls are blocked while an earlier durable admission
+  drains; full pause is recorded after the drain. Pause makes no provider
+  mutation. Resume is owner-only, explicitly confirmed, and requires a
+  current rate card, active unrestricted sender, recent successful unrestricted
+  health read, exact healthy bindings for current queued work, healthy templates
+  for enabled automation/report configuration, and no critical blocker. Prove
+  an unused rejected optional template and an unused language do not block
+  resume, while a queued message with that exact rejected binding remains
+  blocked. Resume never retries `UNKNOWN`.
+- Acknowledge only to record awareness. Resolve only through verified local/
+  signed/provider evidence. Do not edit an incident or message to make a queue
+  look healthy. Later signed delivery/failure for `UNKNOWN` may project and
+  resolve without resending the original request.
+- Health reconciliation is a read-only provider boundary. Review traces/tests
+  to prove it only reads WABA, phone/registration/quality/restriction,
+  subscribed-app, and template status/category. It must never register,
+  subscribe, create, send, remove, share credit, or erase prior truth after an
+  ambiguous read. Start with one Test health canary.
+- Webhook-stale alerting needs recent provider activity; sender silence by itself
+  is not degradation. Compare last accepted/provider activity, valid signed
+  known-sender receipt time, and the approved threshold before declaring an
+  incident.
+- Each report, health, and maintenance cron run persists bounded integer-only
+  evidence. Inspect status/counts/errors and absence of IDs, phones, names,
+  amounts, rendered content, and secrets. Maintenance may expire/recover/delete
+  only the reviewed safe classes and limits; accepted messages plus consent and
+  audit history are permanent operational evidence.
+- Keep operations UI disabled until its server projections and authorization are
+  approved. UI hiding is not a security control; inspect the corresponding API
+  denial for foreign, unentitled, read-only, and insufficient-permission users.
 
 ### Credential rotation, provider outage, and disconnect
 
@@ -1156,24 +1436,32 @@ whole-file transaction, and cleanup is not rollback.
 
 ## Vercel Cron Jobs
 
-[`vercel.json`](../vercel.json) defines five HTTP `GET` schedules:
+[`vercel.json`](../vercel.json) defines eight HTTP `GET` schedules:
 
 | Path | Schedule | UTC interpretation | Repository behavior |
 | --- | --- | --- | --- |
 | `/api/cron/payments/daily` | `0 0 * * *` | Daily at 00:00 UTC | Generates due payments for active students using duplicate-safe database writes |
 | `/api/cron/billing/hourly` | `0 * * * *` | At minute 0 of every UTC hour | Processes billing deadlines, retries, cancellations/replacements, expired leases, and reconciliation |
 | `/api/cron/imports/daily` | `30 0 * * *` | Daily at 00:30 UTC | Drains at most 20 batches of 100 expired staging sessions, terminalizing stale active ledger work before scrubbing retained run-item payloads/errors |
-| `/api/cron/whatsapp/plan` | `*/15 * * * *` | Every 15 minutes | When enabled, claims at most 25 eligible branch leases and creates bounded deterministic automatic outbox/budget reservations only; when planner/integration is held, returns before PR3 table or provider work |
+| `/api/cron/whatsapp/plan` | `*/15 * * * *` | Every 15 minutes | When enabled, claims at most 25 eligible branch leases and creates bounded deterministic automatic outbox/budget reservations only; when planner/integration is held, returns before collection-table or provider work |
 | `/api/cron/whatsapp/send` | `*/5 * * * *` | Every 5 minutes | When message writes are enabled, leases a bounded fair outbox batch, performs full send-time revalidation, and is the only automatic Meta message caller; when held, returns before table/provider work |
+| `/api/cron/whatsapp/reports` | `*/15 * * * *` | Every 15 minutes | When independently enabled, creates bounded snapshot-first branch/organization report reservations with tenant/source/canary checks; never calls Meta |
+| `/api/cron/whatsapp/health` | `*/30 * * * *` | Every 30 minutes | When independently enabled/canaried, reconciles a bounded sender batch using provider reads only and records safety/incident/job evidence |
+| `/api/cron/whatsapp/maintenance` | `0 2 * * *` | Daily at 02:00 UTC | Performs bounded local challenge/subscription/lease/notice/stuck-work/job/snapshot maintenance; never calls Meta or deletes submitted/consent/audit history |
 
 Vercel cron expressions always use UTC and scheduled invocations run only for
-Production deployments. Updating, deleting, or adding a schedule requires a
-redeployment. See the official [Cron Jobs](https://vercel.com/docs/cron-jobs),
+Production deployments. Vercel does not automatically retry a failed cron and
+may duplicate, miss, or overlap an invocation, so database idempotency/leases
+remain authoritative. Updating, deleting, or adding a schedule requires a
+redeployment. Confirm the selected plan supports the frequencies: current
+official limits allow only daily cron on Hobby and down to once per minute on
+Pro/Enterprise, with at most 100 jobs per project. See the official
+[Cron Jobs](https://vercel.com/docs/cron-jobs),
 [Cron quickstart](https://vercel.com/docs/cron-jobs/quickstart), and
 [Cron management](https://vercel.com/docs/cron-jobs/manage-cron-jobs)
 documentation.
 
-All five routes fail closed unless the request carries the exact `CRON_SECRET`
+All eight routes fail closed unless the request carries the exact `CRON_SECRET`
 as a Bearer authorization header. Never place the secret in a URL, screenshot,
 ticket, shell history, or report. Use an approved client that can set a private
 header when manually testing a protected route.
@@ -1183,12 +1471,13 @@ Operational expectations:
 - Vercel may deliver a scheduled event more than once or overlap executions.
   The application has duplicate-safe payment creation, durable billing
   idempotency/leases, locked import retention, one-branch planner leases with
-  stable business-event dedupe, and message dispatcher leases with stale-worker
-  fencing. Operators must still inspect errors, runtimes, queue depth, overdue
-  staging, rate limits, failed messages, and every `UNKNOWN` outcome.
+  stable business-event dedupe, report/health leases, job-run evidence, and
+  message dispatcher leases with stale-worker fencing. Operators must still
+  inspect errors, runtimes, queue depth, overdue staging, rate limits, failed
+  messages, incidents, safety state, webhook health, and every `UNKNOWN` outcome.
 - Preview schedules do not run automatically. First invoke each protected
   WhatsApp Preview endpoint manually with its controlling flag false and require
-  an authenticated `2xx` held/zero result with no PR3 table/provider work. Later
+  an authenticated `2xx` held/zero result with no PR4 table/provider work. Later
   Test-only invocations follow the approved rollout: planner remains false for
   the first manual send; when separately enabled, invoke plan once, inspect the
   isolated outbox/budget, then invoke send once. Never point Preview at
@@ -1200,8 +1489,10 @@ Operational expectations:
   replacement, and reconciliation counts plus errors. WhatsApp planner reports
   held/claimed/completed/failed branches, planned/skipped/cancelled messages, and
   its limit; dispatcher reports held/claimed/accepted/retried/failed/unknown/
-  suppressed messages and remaining backlog. Retain only non-sensitive aggregate
-  summaries for the release record.
+  suppressed messages and remaining backlog. Report/health/maintenance responses
+  and durable job evidence contain only bounded integer counts plus safe status/
+  error codes. Retain only non-sensitive aggregate summaries for the release
+  record.
 - A `401` indicates missing or mismatched `CRON_SECRET`. A `404` indicates a
   route/deployment mismatch. A `5xx` requires log and state inspection before a
   retry.
@@ -1215,8 +1506,10 @@ Operational expectations:
 - A planner rerun reclaims only an expired branch lease and uses stable business-
   event dedupe; a branch failure must not block later branches. Inspect
   `lastPlannerErrorCode`, queue/budget counts, and configuration revision before
-  a manual rerun. A dispatcher rerun may reclaim a stale pre-submission claim,
-  but stale `SUBMITTING` becomes `UNKNOWN`; never force or reset it to retry.
+  a manual rerun. A dispatcher rerun may reclaim a stale claim or a stale
+  unadmitted `SUBMITTING` row. Only a stale row with durable
+  `providerCallAdmittedAt` evidence becomes `UNKNOWN`; never force or reset an
+  admitted row to retry.
 - To pause schedules, use the operator-approved Vercel Cron Jobs control and
   verify the dashboard state. Changing `CRON_SECRET` alone is not a clean pause.
 - After an Instant Rollback, inspect the Cron Jobs dashboard explicitly. Do not
@@ -1293,7 +1586,7 @@ sequence in the [Workspace billing V2 rollout](./workspace-billing-rollout.md).
 | Database | This repository has no down-migration or automatic Production database rollback procedure. Prefer a compatible forward fix. Restore only through the operator-owned, tested backup procedure with explicit approval and a data-loss assessment. |
 | Import Workflow | Holding `IMPORT_V2_ENABLED` in a new deployment stops new starts only. Existing deployment-pinned runs must be drained or explicitly cancelled; completed items and the PostgreSQL ledger are not rolled back. |
 | Razorpay | An application rollback does not cancel, refund, or reverse provider subscriptions, mandates, invoices, payments, or webhook delivery. Reconcile provider and local state; ambiguous cases require manual review. |
-| Meta WhatsApp | Holding integration/onboarding/template/message/planner/webhook flags, clearing both canaries, and separately pausing WhatsApp schedules stops new work only after the new deployment/control is active. It does not undo an in-flight provider result, WABA/system-user subscription, phone registration, template creation, accepted/unknown message, budget state, sender evidence, or customer-owned asset. Preserve history and prefer forward reconciliation; local disconnect is deliberately non-destructive. |
+| Meta WhatsApp | Holding integration/onboarding/template/message/planners/report/notice/health/operations/webhook flags, clearing every canary, and separately pausing WhatsApp schedules stops new work only after the new deployment/control is active. It does not undo an in-flight provider result, WABA/system-user subscription, phone registration, template creation, accepted/unknown message, report snapshot, notice, incident, budget state, sender evidence, or customer-owned asset. Preserve history and prefer forward reconciliation; local disconnect is deliberately non-destructive. |
 | Scheduled jobs | Disable or update schedules through the approved Vercel control, then verify the active Cron Jobs dashboard. Do not assume deployment rollback paused them. |
 
 Vercel's official
@@ -1344,14 +1637,16 @@ and provider state.
   import-retention cron separately only when purging is implicated. Preserve
   immutable plans, idempotency keys, completion markers, and redacted results;
   do not delete rows or run ad hoc cleanup to claim rollback.
-- For a WhatsApp incident, deploy with onboarding, template, message, and
-  planner writes false, clear both Live canaries, and separately pause both
-  WhatsApp schedules. If the whole product surface is harmful, also set
+- For a WhatsApp incident, deploy with onboarding, template, message, both
+  planners, reports, notices, health, and operations controls false, clear every
+  Live/health canary, and separately pause all WhatsApp schedules. If the whole
+  product surface is harmful, also set
   `WHATSAPP_INTEGRATION_ENABLED=false`. Disable webhook ingestion separately only
   if signed processing itself is harmful; otherwise retain provider evidence for
   reconciliation. Inspect connection/provisioning/message/receipt leases,
-  provider-authoritative sender/template state, queue and budget state, and every
-  `UNKNOWN` outcome. Do not delete history, release an ambiguous reservation,
+  provider-authoritative sender/template state, report/notice sources, safety/
+  incidents/jobs, queue and budget state, and every `UNKNOWN` outcome. Do not
+  delete history, release an ambiguous reservation,
   blindly repeat a provider mutation, change a payment/student, share credit, or
   perform a destructive provider disconnect.
 - For a runaway or compromised cron, disable Vercel Cron Jobs through the
@@ -1380,19 +1675,20 @@ containment.
   counts, and redacted error codes—never source rows or mutation payloads;
 - Razorpay subscription, invoice, payment, webhook-delivery, and Dashboard audit
   evidence;
-- WhatsApp connection/provisioning/message/receipt IDs, lease/mode/status
-  timestamps, catalogue key/version/hash, bounded audit actions, template-sync
-  counts, receipt hashes/statuses, message status-event IDs, safe error codes,
-  estimated budget/rate-card version, and redacted Meta request identifiers where
+- WhatsApp connection/provisioning/subscription/snapshot/notice/message/receipt/
+  safety/incident/job IDs, lease/mode/status timestamps, catalogue key/version/
+  hash, bounded audit actions, template-sync and job counts, receipt hashes/
+  statuses, message status-event IDs, safe error codes, estimated budget/rate-
+  card version, and redacted Meta request identifiers where
   already safely retained—never recipient phone/name, typed message values,
   OAuth codes, access tokens, PINs, raw signup sessions, signatures, webhook
   bodies, inbound text, raw errors, or customer secrets; and
 - actor/time records from the relevant application audit trail.
 
-Repository evidence is incomplete on its own: there is no repository-defined
-health endpoint, centralized log sink, alert routing, status page, or log
-retention policy. The operator-owned monitoring and communications procedures
-must fill those gaps.
+Repository evidence is incomplete on its own: there is no public platform-health
+endpoint, centralized log sink, alert routing, status page, or operator-owned
+log-retention policy. Tenant incidents and bounded cron evidence do not fill
+those external monitoring and communications gaps.
 
 ### Recover and verify
 
@@ -1420,7 +1716,8 @@ must fill those gaps.
    schedule state; owner/tenant scope; connection, provisioning, planner,
    dispatcher, and receipt leases; sender assignment; provider-authoritative
    WABA/phone/template state; active recipient/consent; outbox/event projection;
-   budget/rate-card state; signed replay/STOP behavior; and every failed or
+   budget/rate-card state; subscriptions/snapshots/notices; safety/incidents/job
+   evidence; signed replay/scoped/full STOP behavior; and every failed or
    `UNKNOWN` row. Resume with one reviewed manual Test/Live delivery canary only
    after ambiguity is resolved; enable one branch's prospective automation last.
 9. Observe operator-owned logs and alerts for the approved recovery window.
@@ -1453,7 +1750,8 @@ Remaining risks and owners:
 - [Auth environments](./auth-environments.md)
 - [Import Workflow execution proposal](./decisions/0001-managed-workflow-for-import-execution.md) — Proposed, not Accepted
 - [WhatsApp communication foundation proposal](./decisions/0002-whatsapp-communication-foundation.md) — Proposed, not Accepted
-- [WhatsApp managed Utility delivery proposal](./decisions/0003-whatsapp-template-delivery-and-collections.md) — Proposed, not Accepted
+- [WhatsApp managed Utility delivery decision](./decisions/0003-whatsapp-template-delivery-and-collections.md) — Accepted architecture; not rollout approval
+- [WhatsApp reports and operational hardening decision](./decisions/0004-whatsapp-daily-reports-and-operational-hardening.md) — Accepted architecture; not rollout approval
 - [CI workflow](../.github/workflows/ci.yml)
 - [Production migration workflow](../.github/workflows/production-migrate.yml)
 - [Vercel cron configuration](../vercel.json)

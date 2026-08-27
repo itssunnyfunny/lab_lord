@@ -13,8 +13,24 @@ import {
 } from "@/components/settings/SettingsWorkspace";
 import { MetaEmbeddedSignup } from "@/components/whatsapp/MetaEmbeddedSignup";
 import { RegisterPhoneDialog } from "@/components/whatsapp/RegisterPhoneDialog";
+import { WhatsAppReportSubscription } from "@/components/whatsapp/WhatsAppReportSubscription";
+import {
+  OrganizationWhatsAppReports,
+  presentWhatsAppDailyReportPreview,
+  presentWhatsAppDailyReportQueueResult,
+} from "@/components/whatsapp/OrganizationWhatsAppReports";
+import {
+  WhatsAppIncidents,
+  presentWhatsAppIncidentResponse,
+} from "@/components/whatsapp/WhatsAppIncidents";
+import { WhatsAppSenderSafety } from "@/components/whatsapp/WhatsAppSenderSafety";
 import {
   whatsapp,
+  type WhatsAppIncidentListResponse,
+  type WhatsAppOrganizationReportSettingsResponse,
+  type WhatsAppReportSubscription as WhatsAppReportSubscriptionDto,
+  type WhatsAppReportSubscriptionResponse,
+  type WhatsAppSenderSafety as WhatsAppSenderSafetyDto,
   type WhatsAppSenderStatus,
   type WhatsAppSenderSummary,
   type WhatsAppSendersResponse,
@@ -37,6 +53,19 @@ function safeDateLabel(value: string | null) {
   if (!value) return "Not yet";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Unavailable" : date.toLocaleString();
+}
+
+function requireReportChallenge(response: {
+  confirmationCode: string;
+  subscription: WhatsAppReportSubscriptionDto;
+}) {
+  if (!response.confirmationCode || !response.subscription.confirmationExpiresAt) {
+    throw new Error("Report confirmation challenge unavailable");
+  }
+  return {
+    code: response.confirmationCode,
+    expiresAt: response.subscription.confirmationExpiresAt,
+  };
 }
 
 export async function loadManagedTemplateStatuses(
@@ -267,9 +296,11 @@ export function WhatsAppSenderSummaryCard({
 
 export function OrganizationWhatsAppPanel({
   organizationId,
+  organizationName,
   onAvailabilityChange,
 }: {
   organizationId: string;
+  organizationName: string;
   onAvailabilityChange: (available: boolean) => void;
 }) {
   const [config, setConfig] = useState<WhatsAppBrowserConfig | null>(null);
@@ -283,12 +314,51 @@ export function OrganizationWhatsAppPanel({
   const [installations, setInstallations] = useState<Record<string, WhatsAppManagedTemplateInstallation>>({});
   const [registrationSender, setRegistrationSender] = useState<WhatsAppSenderSummary | null>(null);
   const [disconnectSender, setDisconnectSender] = useState<WhatsAppSenderSummary | null>(null);
+  const [reportSubscriptionResponse, setReportSubscriptionResponse] = useState<WhatsAppReportSubscriptionResponse | null>(null);
+  const [reportSettingsResponse, setReportSettingsResponse] = useState<WhatsAppOrganizationReportSettingsResponse | null>(null);
+  const [incidentResponse, setIncidentResponse] = useState<WhatsAppIncidentListResponse | null>(null);
+  const [senderSafety, setSenderSafety] = useState<Record<string, WhatsAppSenderSafetyDto>>({});
   const availabilityHandlerRef = useRef(onAvailabilityChange);
   const operationRef = useRef(false);
+  const reportLoadRef = useRef(0);
 
   useEffect(() => {
     availabilityHandlerRef.current = onAvailabilityChange;
   }, [onAvailabilityChange]);
+
+  const loadReportOperations = useCallback(async () => {
+    const requestId = ++reportLoadRef.current;
+    try {
+      const subscriptionResponse = await whatsapp.getOrganizationReportSubscription(organizationId);
+      if (requestId !== reportLoadRef.current) return;
+      if (subscriptionResponse.operationsUiEnabled !== true) {
+        setReportSubscriptionResponse(null);
+        setReportSettingsResponse(null);
+        setIncidentResponse(null);
+        setSenderSafety({});
+        return;
+      }
+      const [settingsResult, incidentResult] = await Promise.allSettled([
+        whatsapp.getOrganizationReportSettings(organizationId),
+        whatsapp.listOrganizationIncidents(organizationId),
+      ]);
+      if (requestId !== reportLoadRef.current) return;
+      setReportSubscriptionResponse(subscriptionResponse);
+      setReportSettingsResponse(
+        settingsResult.status === "fulfilled"
+          && settingsResult.value.operationsUiEnabled === true
+          ? settingsResult.value
+          : null
+      );
+      setIncidentResponse(incidentResult.status === "fulfilled" ? incidentResult.value : null);
+    } catch {
+      if (requestId !== reportLoadRef.current) return;
+      setReportSubscriptionResponse(null);
+      setReportSettingsResponse(null);
+      setIncidentResponse(null);
+      setSenderSafety({});
+    }
+  }, [organizationId]);
 
   const loadSenders = useCallback(async () => {
     const response = await whatsapp.listSenders(organizationId);
@@ -310,11 +380,40 @@ export function OrganizationWhatsAppPanel({
 
   useEffect(() => {
     let cancelled = false;
+    if (
+      reportSubscriptionResponse?.operationsUiEnabled !== true
+      || !sendersResponse
+    ) {
+      return;
+    }
+    const load = async () => {
+      const results = await Promise.allSettled(
+        sendersResponse.senders.map(sender => whatsapp.getSenderSafety(organizationId, sender.id))
+      );
+      if (cancelled) return;
+      setSenderSafety(Object.fromEntries(results.flatMap((result, index) => (
+        result.status === "fulfilled"
+          ? [[sendersResponse.senders[index].id, result.value] as const]
+          : []
+      ))));
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [organizationId, reportSubscriptionResponse?.operationsUiEnabled, sendersResponse]);
+
+  useEffect(() => {
+    let cancelled = false;
     availabilityHandlerRef.current(false);
     setLoading(true);
     setConfig(null);
     setSendersResponse(null);
     setInstallations({});
+    setReportSubscriptionResponse(null);
+    setReportSettingsResponse(null);
+    setIncidentResponse(null);
+    setSenderSafety({});
     setNotice(null);
 
     const load = async () => {
@@ -329,7 +428,10 @@ export function OrganizationWhatsAppPanel({
 
         setConfig(browserConfig);
         availabilityHandlerRef.current(true);
-        const response = await whatsapp.listSenders(organizationId);
+        const [response] = await Promise.all([
+          whatsapp.listSenders(organizationId),
+          loadReportOperations(),
+        ]);
         if (cancelled) return;
         setSendersResponse(response);
         const loadedInstallations = await loadManagedTemplateStatuses(
@@ -350,8 +452,9 @@ export function OrganizationWhatsAppPanel({
     void load();
     return () => {
       cancelled = true;
+      reportLoadRef.current += 1;
     };
-  }, [organizationId]);
+  }, [loadReportOperations, organizationId]);
 
   if (!config?.enabled) return null;
 
@@ -367,6 +470,28 @@ export function OrganizationWhatsAppPanel({
     : null;
   const connectionDisabled = !canManage || config.connectionAvailability !== "AVAILABLE";
   const connectionReason = sendersResponse?.safeReason ?? config.safeReason;
+  const organizationReportSubscription = reportSubscriptionResponse?.subscription
+    ? {
+        ...reportSubscriptionResponse.subscription,
+        senderLabel: sendersResponse?.senders.find(
+          sender => sender.id === reportSubscriptionResponse.subscription?.senderId
+        )?.verifiedName ?? null,
+      }
+    : null;
+  const organizationIncidents = incidentResponse
+    ? presentWhatsAppIncidentResponse(incidentResponse, {
+        scopeLabel: organizationName,
+        senderLabels: Object.fromEntries((sendersResponse?.senders ?? []).map(sender => [
+          sender.id,
+          sender.verifiedName || sender.displayPhoneNumber,
+        ])),
+      })
+    : null;
+
+  const refreshSenderSafety = async (senderId: string) => {
+    const safety = await whatsapp.getSenderSafety(organizationId, senderId);
+    setSenderSafety(current => ({ ...current, [senderId]: safety }));
+  };
 
   const syncTemplates = async (sender: WhatsAppSenderSummary) => {
     if (operationRef.current || activeOperation) return;
@@ -513,6 +638,130 @@ export function OrganizationWhatsAppPanel({
           )}
         </div>
       </SettingsPanel>
+
+      {reportSubscriptionResponse?.operationsUiEnabled === true ? (
+        <>
+          <WhatsAppReportSubscription
+            scope="ORGANIZATION"
+            subscription={organizationReportSubscription}
+            canManage={canManage}
+            blockedReason="Only the organization owner can configure the organization daily-report recipient."
+            onCreate={async draft => {
+              const response = await whatsapp.createOrganizationReportSubscription(organizationId, {
+                phone: draft.phoneE164,
+                language: draft.language,
+                sendTimeLocal: draft.sendTimeLocal,
+              });
+              setReportSubscriptionResponse(current => current
+                ? { ...current, subscription: response.subscription }
+                : current);
+              return requireReportChallenge(response);
+            }}
+            onReissue={async () => {
+              const response = await whatsapp.reissueOrganizationReportSubscription(organizationId);
+              setReportSubscriptionResponse(current => current
+                ? { ...current, subscription: response.subscription }
+                : current);
+              return requireReportChallenge(response);
+            }}
+            onPause={async () => {
+              const response = await whatsapp.pauseOrganizationReportSubscription(organizationId);
+              setReportSubscriptionResponse(current => current
+                ? { ...current, subscription: response.subscription }
+                : current);
+            }}
+            onRevoke={async () => {
+              const response = await whatsapp.revokeOrganizationReportSubscription(
+                organizationId,
+                reportSubscriptionResponse.subscription?.id
+              );
+              setReportSubscriptionResponse(current => current
+                ? { ...current, subscription: response.subscription }
+                : current);
+            }}
+            onRefresh={async () => {
+              const response = await whatsapp.getOrganizationReportSubscription(organizationId);
+              if (response.operationsUiEnabled !== true) {
+                setReportSubscriptionResponse(null);
+                setReportSettingsResponse(null);
+                return null;
+              }
+              setReportSubscriptionResponse(response);
+              const subscription = response.subscription;
+              if (!subscription) return null;
+              return {
+                ...subscription,
+                senderLabel: sendersResponse?.senders.find(sender => sender.id === subscription.senderId)?.verifiedName ?? null,
+              };
+            }}
+          />
+          {reportSettingsResponse ? <OrganizationWhatsAppReports
+            organizationName={organizationName}
+            settings={{
+              enabled: reportSettingsResponse.settings.enabled,
+              senderId: reportSettingsResponse.settings.sender?.id ?? null,
+              senderLabel: reportSettingsResponse.settings.sender
+                ? `${reportSettingsResponse.settings.sender.verifiedName || "WhatsApp business number"} · ${reportSettingsResponse.settings.sender.maskedPhone}`
+                : null,
+              monthlyBudgetMinor: reportSettingsResponse.settings.monthlyBudgetMinor,
+              budgetSource: "ORGANIZATION_REPORT",
+            }}
+            canManage={canManage}
+            blockedReason="Only the organization owner can configure and queue organization daily reports."
+            availableSenders={(sendersResponse?.senders ?? [])
+              .filter(sender => sender.status === "ACTIVE")
+              .map(sender => ({
+                id: sender.id,
+                label: `${sender.verifiedName || "WhatsApp business number"} · ${sender.displayPhoneNumber}`,
+              }))}
+            recentReports={[]}
+            onSetEnabled={async enabled => {
+              await whatsapp.updateOrganizationReportSettings(organizationId, { enabled });
+              await loadReportOperations();
+            }}
+            onSaveSettings={async changes => {
+              await whatsapp.updateOrganizationReportSettings(organizationId, changes);
+              await loadReportOperations();
+            }}
+            onPreview={async () => presentWhatsAppDailyReportPreview(
+              await whatsapp.previewOrganizationDailyReport(organizationId)
+            )}
+            onQueue={async idempotencyKey => presentWhatsAppDailyReportQueueResult(
+              await whatsapp.queueOrganizationDailyReport(organizationId, idempotencyKey)
+            )}
+          /> : null}
+          {Object.entries(senderSafety).map(([senderId, safety]) => (
+            <WhatsAppSenderSafety
+              key={senderId}
+              safety={safety}
+              isOwner={canManage}
+              blockedReason="Only the organization owner can pause or resume sender delivery."
+              onPause={async () => {
+                await whatsapp.pauseSenderDelivery(organizationId, senderId);
+                await refreshSenderSafety(senderId);
+              }}
+              onResume={async () => {
+                await whatsapp.resumeSenderDelivery(organizationId, senderId);
+                await refreshSenderSafety(senderId);
+              }}
+              onRefresh={() => refreshSenderSafety(senderId)}
+            />
+          ))}
+          {organizationIncidents ? (
+            <WhatsAppIncidents
+              incidents={organizationIncidents.incidents}
+              unknownOutcomes={organizationIncidents.unknownOutcomes}
+              canAcknowledge={canManage}
+              blockedReason="Only the organization owner can acknowledge organization incidents."
+              nextCursor={null}
+              onAcknowledge={async incidentId => {
+                await whatsapp.acknowledgeOrganizationIncident(organizationId, incidentId);
+                await loadReportOperations();
+              }}
+            />
+          ) : null}
+        </>
+      ) : null}
 
       <RegisterPhoneDialog
         open={Boolean(registrationSender)}

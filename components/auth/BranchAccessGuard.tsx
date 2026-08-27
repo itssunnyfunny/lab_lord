@@ -6,7 +6,12 @@ import { ArrowLeft, ShieldAlert } from "lucide-react";
 import { AppButton, PageLoadingSkeleton } from "@/components/ui";
 import { useBranchAccess } from "@/hooks/useBranchAccess";
 import { getPermissionHelpText } from "@/lib/permissionMessages";
-import type { BranchAccess, StaffAction } from "@/types";
+import type { BranchAccess } from "@/types";
+import {
+    firstBranchPermissionRequirement,
+    hasBranchPermissionRequirement,
+    type BranchPagePermissionRequirement,
+} from "@/lib/branchPageAccess";
 import { cn } from "@/lib/utils";
 import {
     pageErrorStateClass,
@@ -18,7 +23,7 @@ import type { BillingFeatureKey } from "@/lib/billingPolicy";
 
 type BranchAccessGuardProps = {
     branchId: string | undefined;
-    permission: StaffAction | readonly [StaffAction, ...StaffAction[]];
+    permission: BranchPagePermissionRequirement;
     children: ReactNode | ((access: BranchAccess) => ReactNode);
     title?: string;
     description?: string;
@@ -70,9 +75,9 @@ export function BranchAccessGuard({
     description,
     feature,
 }: BranchAccessGuardProps) {
-    const { access, loading, error, can } = useBranchAccess(branchId);
-    const requiredPermissions = typeof permission === "string" ? [permission] : permission;
-    const missingPermission = requiredPermissions.find(requiredPermission => !can(requiredPermission));
+    const { access, loading, error } = useBranchAccess(branchId);
+    const hasRequiredPermission = hasBranchPermissionRequirement(access, permission);
+    const fallbackPermission = firstBranchPermissionRequirement(permission);
 
     if (!branchId) {
         return <BranchNoAccess title={title} description={description} />;
@@ -82,12 +87,12 @@ export function BranchAccessGuard({
         return <BranchAccessLoading />;
     }
 
-    if (error || !access || missingPermission) {
+    if (error || !access || !hasRequiredPermission) {
         return (
             <BranchNoAccess
                 branchId={branchId}
                 title={title}
-                description={description ?? getPermissionHelpText(missingPermission ?? requiredPermissions[0])}
+                description={description ?? getPermissionHelpText(fallbackPermission)}
             />
         );
     }

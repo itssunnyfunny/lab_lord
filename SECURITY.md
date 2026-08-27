@@ -2,8 +2,10 @@
 
 > Repository policy for Codex Security and other security reviewers.
 >
-> Last reconciled with the PR3 WhatsApp template-delivery working tree on
-> 2026-08-23. This is repository policy, not evidence of deployment readiness.
+> Last reconciled with the PR4 WhatsApp report-hardening working tree on
+> 2026-08-27. The PR4 `SECURITY.md` changes and ADR 0004 were explicitly approved
+> by itssunnyfunny, the human repository owner, for PR #266. This remains
+> repository policy, not deployment or rollout authorization.
 
 This file defines what to review, the mandatory security invariants, and how to
 calibrate findings. It is not a public vulnerability-disclosure channel,
@@ -202,7 +204,9 @@ authentication boundaries, not open application routes.
   environments remain isolated. Configuration and provider mutations fail
   closed on a mode mismatch. Integration, onboarding, managed-template writes,
   provider-message writes, automation planning, webhook ingestion, onboarding
-  Live canaries, and delivery Live canaries are distinct fail-closed controls.
+  Live canaries, delivery Live canaries, reports, report planning, service
+  notices, health reconciliation, operations UI, and the separate Live
+  automation/health canaries are distinct fail-closed controls.
   Disabling a control must preserve queued work, budget state, provider IDs,
   signed receipts, consent, and history.
 - The customer owns its WABA, phone, Meta business assets, payment method, and
@@ -219,7 +223,7 @@ authentication boundaries, not open application routes.
 - There is no provider capability for free-form text, media, marketing,
   authentication/OTP, arbitrary templates or recipients, AI-generated external
   content, payment links, credit sharing, billing aggregation, automatic replies,
-  or daily reports. Existing AI `MessageDraft` rows remain human-reviewed
+  or arbitrary broadcasts. Existing AI `MessageDraft` rows remain human-reviewed
   copy/open-WhatsApp suggestions and can never feed provider delivery.
 - Consent begins `UNKNOWN`; existing students are not opted in or backfilled.
   Send eligibility requires current `OPTED_IN` operational consent for the exact
@@ -238,8 +242,10 @@ authentication boundaries, not open application routes.
   derived from stable business evidence rather than a cron invocation, and the
   narrow `WhatsAppMessagePayment` join records every payment represented by a
   grouped message without replacing `Payment` as financial truth. Budget
-  estimates use a configured versioned rate card, are not a Meta invoice, and
-  must not be presented as an exact provider charge.
+  estimates use a configured versioned rate card with strict UTC effective and
+  expiry times, are not a Meta invoice, and must not be presented as an exact
+  provider charge. Queue, planner, and dispatcher fail closed before the card
+  is effective and at or after expiry.
 - Resolving a payment may mutate only scheduled or claimed-before-submission
   linked messages under a row lock in the same payment transaction. A grouped
   collection row is refreshed in place only from complete, current DUE facts and
@@ -289,6 +295,94 @@ authentication boundaries, not open application routes.
   message/event history, and append-only audit evidence. It must not deregister
   the phone,
   unsubscribe other apps, revoke customer ownership, or delete provider assets.
+
+### WhatsApp reports, service notices, and operational hardening
+
+- A report recipient is the current authenticated owner or current authorized
+  branch staff member, never an arbitrary contact. Organization reports are
+  owner-only. Branch reports require current `view_whatsapp`,
+  `receive_whatsapp_reports`, `view_payments`, and `analytics` permissions plus
+  branch access, `WHATSAPP_AUTOMATION`, and current writability. Owner authority
+  cannot silently subscribe another user's phone.
+- Control of a report phone is proven only by an exact confirmation command in
+  a valid signed known-sender webhook. The one-time confirmation code has at
+  least 50 bits of entropy, uses a bounded unambiguous alphabet, is stored only
+  as a SHA-256 hash bound to sender/subscription/phone, expires after 15 minutes,
+  stops after five failed attempts, is returned once, and must never enter a
+  URL, log, audit detail, provider payload, error, screenshot, or plaintext
+  database field. Confirmation rechecks user, tenant, permissions, entitlement,
+  writability, sender assignment, and phone before opting in `OWNER_REPORT`.
+  Normalized report commands retain the inbound provider message ID: repeated
+  copies of one provider identity are deduplicated, but distinct message IDs
+  from the same phone are processed in envelope order.
+- Daily reports are deterministic aggregate database metrics only. They contain
+  no student/staff name, phone, individual due or payment, payment method, seat
+  label, or variable branch list; make no attendance/check-in claim; and never
+  use AI. Every queued row references an immutable snapshot keyed by scope,
+  scope key, local report date, scheduled cutoff, and metrics version, with a
+  canonical hash/fingerprint and one UTC `metricsAsOfAt`. Same-cutoff
+  subscriptions share that snapshot; different cutoffs do not collide. Every
+  temporal metric and the rendered local as-of label use the same transaction-
+  snapshot instant.
+- Automatic reports are prospective from activation. Catch-up ends exclusively
+  at the earlier of one hour after the scheduled cutoff or next local midnight,
+  and in Live requires both delivery and separate automation canaries. A missed
+  or unprovable report records a bounded safe incident and is skipped/suppressed
+  before Meta. Branch reports reserve the branch budget and automatic daily limit.
+  Organization reports reserve only their positive owner-controlled
+  organization report budget and may not consume an arbitrary branch budget.
+- Service notices are limited to server-defined branch closure, changed-hours,
+  and maintenance events, fixed reasons, and typed date/time variables. The
+  browser cannot supply provider text. Notices are nonpromotional, never fall
+  back to Marketing, deduplicate shared phones, derive recipients only from
+  current active branch mappings with `OPTED_IN OPERATIONAL` consent, and reject
+  an audience above 500 before any message or reservation. Queueing locks and
+  atomically reserves the entire estimated branch budget.
+- `STOP REPORTS`, the exact managed `Stop reports` signed reply label/text, and
+  the exact compatibility payload opt out only `OWNER_REPORT`, pause matching
+  report subscriptions, cancel safely unsubmitted reports, and release their
+  reservations. Existing exact `STOP`/`LABLORDS_STOP_UPDATES` continues to opt
+  out all applicable consent types, pauses reports, disables mappings, and
+  cancels affected unsubmitted report/notice/collection messages. Neither path
+  retries through another channel or sends an automatic reply.
+- Only `DAILY_ORGANIZATION_REPORT` may be branchless. Report and notice source
+  validators must not weaken collection source checks: reports cannot carry a
+  student/payment source, notices cannot carry a payment source, and every
+  purpose rechecks its exact tenant, consent, sender, template, schedule,
+  fingerprint, budget, and current authorization immediately before submission.
+- A sender is paused locally after three ambiguous outcomes in ten minutes or
+  ten reviewed sender/provider failures in ten minutes. Invalid individual
+  recipients do not count. Immediately before a provider call, a short
+  transaction checks both full and requested pause state and durably stamps the
+  exact leased message as provider-call-admitted; the Meta call occurs only
+  after that transaction commits. A pause request atomically blocks new
+  admissions, remains visibly pending while any earlier admission drains, and
+  records `pausedAt` only after no admitted `SUBMITTING` row remains. Owner
+  resume requires explicit confirmation, active and unrestricted sender,
+  current rate, a recent successful unrestricted read-only reconciliation,
+  healthy exact bindings for current queued work, and healthy templates only
+  for currently enabled/configured functionality, with no blocking critical
+  incident. Unused languages and optional templates do not block resume; every
+  individual send still requires its exact binding. Resume preserves all
+  incidents and does not retry `UNKNOWN`.
+- `UNKNOWN` is terminal, budget-committed, incident-backed, and never retried
+  automatically. A later signed status may project it to proven provider truth
+  and resolve only the corresponding incident without sending again. Incident
+  acknowledgement records human awareness but is not provider resolution.
+  Incident details contain no PII, phone, rendered content, template variables,
+  arbitrary provider errors, or secrets.
+- Provider-health reconciliation is read-only: it may fetch WABA, phone/
+  registration/quality, subscribed-app, restriction, and template state, but
+  cannot register a phone, subscribe an app, create a template, send a message,
+  remove another provider, mutate customer assets, or share credit. Ambiguous
+  reads must preserve prior local provider truth. Valid signed known-sender
+  webhooks alone update sender webhook health; inactivity without expected
+  provider activity is not a stale-webhook incident.
+- WhatsApp job evidence contains only bounded operational integers and safe
+  codes—never IDs, names, phones, amounts, rendered messages, raw provider data,
+  or secrets. Maintenance is authenticated, bounded, idempotent, never calls
+  Meta or resolves payments, and never deletes accepted message, consent, or
+  audit history.
 
 ### Cron, imports, and AI
 
@@ -464,18 +558,19 @@ Treat these as review context and remediation candidates, not accepted risks:
   approved until a human owner/security review covers provider processing and
   residency, Fluid Compute/runtime configuration, retention and operator
   access, benchmark evidence, SLOs, the mutation cap, and rollback authority;
-- the WhatsApp communication-foundation ADR and managed Utility-delivery ADR
-  remain Proposed. No repository evidence proves Meta App Review/Advanced
+- the WhatsApp communication-foundation ADR 0002 remains Proposed; ADRs 0003
+  and 0004 are Accepted. No repository evidence proves Meta App Review/Advanced
   Access, real Embedded Signup, WABA or phone registration, template approval,
   signed provider delivery, webhook reachability, customer billing ownership,
   legal/privacy approval, or Preview/Production configuration;
 - the configured utility rate card is an operator-maintained estimate, not
   provider-authoritative billing truth, and the repository has no automated
   rate refresh or exact-cost reconciliation; and
-- WhatsApp rate limits use the same process-local limitation described above,
-  and the repository still does not establish centralized webhook/provider
-  alerting, an operator queue for `UNKNOWN` outcomes, or a stable externally
-  reachable callback host.
+- WhatsApp rate limits use the same process-local limitation described above;
+  the repository's database-backed `UNKNOWN`/incident view is not centralized
+  alert routing, and repository evidence still does not establish durable
+  external webhook/provider alerts or a stable externally reachable callback
+  host.
 
 ## Review conduct
 
