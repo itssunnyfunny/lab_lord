@@ -7,19 +7,21 @@ import {
 } from "@/lib/whatsappConsentPolicy";
 
 const EMPTY_STATE = { cookies: [], origins: [] };
-const authStatePath = process.env.PLAYWRIGHT_OWNER_AUTH_STATE
-  ?? process.env.PLAYWRIGHT_AUTH_STATE;
-const hasAuthenticatedSession = Boolean(authStatePath && fs.existsSync(authStatePath));
+const ownerAuthStatePath = process.env.PLAYWRIGHT_OWNER_AUTH_STATE;
+const managerAuthStatePath = process.env.PLAYWRIGHT_MANAGER_AUTH_STATE;
+const managerBranchId = process.env.PLAYWRIGHT_MANAGER_BRANCH_ID;
+const hasOwnerSession = Boolean(ownerAuthStatePath && fs.existsSync(ownerAuthStatePath));
+const hasManagerSession = Boolean(
+  managerAuthStatePath
+  && managerBranchId
+  && fs.existsSync(managerAuthStatePath)
+);
 
-test.use({ storageState: hasAuthenticatedSession ? authStatePath! : EMPTY_STATE });
-test.beforeEach(async ({ page }, testInfo) => {
+test.use({ storageState: hasOwnerSession ? ownerAuthStatePath! : EMPTY_STATE });
+test.beforeEach(async ({ page }) => {
   test.skip(
-    !hasAuthenticatedSession,
-    "Set PLAYWRIGHT_OWNER_AUTH_STATE or PLAYWRIGHT_AUTH_STATE to run authenticated WhatsApp collections coverage."
-  );
-  test.skip(
-    testInfo.project.name !== "chromium",
-    "The deterministic PR3 collections workflow runs once in desktop Chromium."
+    !hasOwnerSession,
+    "Set PLAYWRIGHT_OWNER_AUTH_STATE to run authenticated WhatsApp collections coverage."
   );
   await page.route("https://graph.facebook.com/**", route =>
     route.abort("blockedbyclient")
@@ -29,6 +31,10 @@ test.beforeEach(async ({ page }, testInfo) => {
 const ORG_ID = process.env.PLAYWRIGHT_OWNER_ORG_ID ?? "playwright-pr3-org";
 const BRANCH_ID = process.env.PLAYWRIGHT_OWNER_BRANCH_ID ?? "playwright-pr3-branch";
 const SENDER_ID = "sender_pr3_1";
+
+if (managerBranchId && managerBranchId !== BRANCH_ID) {
+  throw new Error("Owner and manager browser states must target the same branch.");
+}
 const STUDENT_ONE_ID = "student_pr3_1";
 const STUDENT_TWO_ID = "student_pr3_2";
 const PAYMENT_ID = "payment_pr3_1";
@@ -660,7 +666,7 @@ test("activates delivery prospectively with the exact charge confirmation and sh
   const whatsApp = page.locator("#whatsapp");
   await expect(whatsApp.getByRole("heading", { name: "Activation checklist" })).toBeVisible();
   for (const label of [
-    "Assigned sender",
+    "Active sender assigned",
     "Managed templates installed",
     "Operational consent coverage",
     "Send time configured",
@@ -668,7 +674,7 @@ test("activates delivery prospectively with the exact charge confirmation and sh
     "Branch delivery enabled",
     "Automation explicitly enabled",
   ]) {
-    await expect(whatsApp.getByText(label, { exact: true })).toBeVisible();
+    await expect(whatsApp.locator("li", { hasText: label })).toBeVisible();
   }
 
   await whatsApp.getByRole("button", { name: "Enable branch delivery" }).click();
@@ -692,9 +698,13 @@ test("activates delivery prospectively with the exact charge confirmation and sh
   ).toContainText("Complete:");
 
   await expect(whatsApp.getByText("Unknown", { exact: true })).toBeVisible();
-  await expect(whatsApp.getByText(
-    "Provider acceptance could not be confirmed. Lab Lords will not retry automatically because that could send a duplicate message."
-  )).toBeVisible();
+  const unknownWarning = whatsApp.getByRole("alert").filter({
+    hasText: "Provider acceptance could not be confirmed.",
+  });
+  await expect(unknownWarning).toContainText(
+    "Lab Lords will not retry automatically because that could send a duplicate message"
+  );
+  await expect(unknownWarning).toContainText("operator review is required");
   await expect(whatsApp.getByText("META_MUTATION_OUTCOME_UNKNOWN")).toBeVisible();
   expect(graphRequests).toEqual([]);
   await assertNoSeriousAxeViolations(page, "#whatsapp");
@@ -732,7 +742,7 @@ test("records individual and bounded bulk operational consent once per rapid act
     attestation: true,
   }]);
   await expect(individualDialog.getByText("Operational consent active")).toBeVisible();
-  await expect(individualDialog.getByText(/In person ·/)).toBeVisible();
+  await expect(individualDialog.getByText(/In-person attestation ·/)).toBeVisible();
   await expect(individualDialog.getByText(`Policy: ${WHATSAPP_OPERATIONAL_CONSENT_POLICY_VERSION}`)).toBeVisible();
 
   await page.keyboard.press("Escape");
@@ -798,6 +808,15 @@ test("previews and confirms the fixed manual reminder once, with an idempotency 
   await assertNoSeriousAxeViolations(page, "main");
 });
 
+test.describe("Manager authenticated WhatsApp authorization", () => {
+  test.use({ storageState: hasManagerSession ? managerAuthStatePath! : EMPTY_STATE });
+  test.beforeEach(() => {
+    test.skip(
+      !hasManagerSession,
+      "Set PLAYWRIGHT_MANAGER_AUTH_STATE and PLAYWRIGHT_MANAGER_BRANCH_ID to run manager authorization coverage."
+    );
+  });
+
 test("keeps assignment owner-only and all consent or send mutations permission-gated", async ({ page }) => {
   let access = accessFixture({ isOwner: false, manageWhatsApp: true, sendWhatsApp: false });
   await mockAccess(page, () => access);
@@ -832,4 +851,5 @@ test("keeps assignment owner-only and all consent or send mutations permission-g
   await expect(page.getByText("Your role does not include this action.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Preview approved reminder (1)" })).toBeDisabled();
   expect(attemptedMutations).toEqual([]);
+});
 });

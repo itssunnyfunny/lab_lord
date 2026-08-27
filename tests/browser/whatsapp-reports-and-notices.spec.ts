@@ -2,20 +2,32 @@ import fs from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page, type Route } from "@playwright/test";
 
-const authState = process.env.PLAYWRIGHT_AUTH_STATE;
-const storageState = authState && fs.existsSync(authState)
-  ? authState
-  : { cookies: [], origins: [] };
-const hasAuthState = typeof storageState === "string";
+const EMPTY_STATE = { cookies: [], origins: [] };
+const ownerAuthState = process.env.PLAYWRIGHT_OWNER_AUTH_STATE;
+const managerAuthState = process.env.PLAYWRIGHT_MANAGER_AUTH_STATE;
+const hasOwnerAuthState = Boolean(ownerAuthState && fs.existsSync(ownerAuthState));
+const managerBranchId = process.env.PLAYWRIGHT_MANAGER_BRANCH_ID;
+const hasManagerAuthState = Boolean(
+  managerAuthState
+  && managerBranchId
+  && fs.existsSync(managerAuthState)
+);
 
-test.use({ storageState });
+test.use({ storageState: hasOwnerAuthState ? ownerAuthState! : EMPTY_STATE });
 test.beforeEach(() => {
-  test.skip(!hasAuthState, "Set PLAYWRIGHT_AUTH_STATE to run authenticated WhatsApp operations UI coverage.");
+  test.skip(
+    !hasOwnerAuthState,
+    "Set PLAYWRIGHT_OWNER_AUTH_STATE for owner operations coverage."
+  );
 });
 
 const ORG_ID = process.env.PLAYWRIGHT_OWNER_ORG_ID ?? "playwright-report-org";
 const BRANCH_ID = process.env.PLAYWRIGHT_OWNER_BRANCH_ID ?? "playwright-report-branch";
 const SENDER_ID = "playwright-report-sender";
+
+if (managerBranchId && managerBranchId !== BRANCH_ID) {
+  throw new Error("Owner and manager browser states must target the same branch.");
+}
 
 function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({
@@ -242,7 +254,7 @@ async function mockOrganizationReportSettings(page: Page) {
 async function mockExactReportRecipientBranch(page: Page, canSendOperations = false) {
   const permissions = {
     manage_org: false,
-    manage_branch: false,
+    manage_branch: canSendOperations,
     students: false,
     seat_allocation: false,
     view_payments: true,
@@ -261,7 +273,7 @@ async function mockExactReportRecipientBranch(page: Page, canSendOperations = fa
     branchName: "Playwright Central Branch",
     organizationId: ORG_ID,
     isOwner: false,
-    role: "STAFF",
+    role: canSendOperations ? "MANAGER" : "STAFF",
     staffId: "staff_report_recipient",
     permissions,
     effectivePlan: "PRO",
@@ -380,7 +392,7 @@ test("shows an organization confirmation code once and never sends it to Graph",
   expect(graphRequests).toEqual([]);
 
   const accessibility = await new AxeBuilder({ page })
-    .include("[data-report-confirmation-challenge]")
+    .include("main")
     .analyze();
   expect(accessibility.violations).toEqual([]);
 
@@ -392,13 +404,22 @@ test("shows an organization confirmation code once and never sends it to Graph",
   await page.reload();
   await page.getByRole("button", { name: "Preview today's report" }).click();
   await expect(page.getByText("Organization deterministic daily report preview.")).toBeVisible();
-  await expect(page.getByText("Branches", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Branches", exact: true })).toBeVisible();
   await page.getByRole("checkbox", { name: /reviewed the aggregate snapshot/i }).check();
   await page.getByRole("button", { name: "Confirm and queue today's report" }).click();
   await expect(page.getByText("Queue status: queued.", { exact: false })).toBeVisible();
   expect(reportQueueKey).toMatch(/\S+/);
   expect(graphRequests).toEqual([]);
 });
+
+test.describe("Manager authenticated WhatsApp operations", () => {
+  test.use({ storageState: hasManagerAuthState ? managerAuthState! : EMPTY_STATE });
+  test.beforeEach(() => {
+    test.skip(
+      !hasManagerAuthState,
+      "Set PLAYWRIGHT_MANAGER_AUTH_STATE and PLAYWRIGHT_MANAGER_BRANCH_ID for manager operations coverage."
+    );
+  });
 
 test("lets an exact branch report recipient preview and queue without manage_branch", async ({ page }) => {
   const graphRequests = await blockAndRecordGraph(page);
@@ -432,7 +453,7 @@ test("lets an exact branch report recipient preview and queue without manage_bra
   await page.goto(`/branch/${BRANCH_ID}/settings`);
   await expect(page.getByRole("heading", { name: "WhatsApp Daily Reports" })).toBeVisible();
   await expect(page.getByText("This access does not grant branch settings management.")).toBeVisible();
-  await expect(page.getByText("WhatsApp Reports", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("WhatsApp Reports", { exact: true }).last()).toBeVisible();
   await expect(page.getByText("Branch Settings", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Branch name", { exact: true })).toHaveCount(0);
 
@@ -625,7 +646,7 @@ test("queues only a typed service notice and shows UNKNOWN evidence without a re
   });
 
   await page.getByRole("button", { name: "Cancel unsubmitted" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Cancel unsubmitted" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Cancel unsubmitted", exact: true }).click();
   await expect(page.getByText("Cancellation reconciled:", { exact: false })).toBeVisible();
   expect(cancelBody).toEqual({ confirmation: true });
 
@@ -633,6 +654,7 @@ test("queues only a typed service notice and shows UNKNOWN evidence without a re
   await expect(page.getByText("Incident acknowledged.", { exact: false })).toBeVisible();
   expect(acknowledgeBody).toEqual({ confirmation: true });
   expect(graphRequests).toEqual([]);
+});
 });
 
 test("pauses and safely resumes a sender without retrying UNKNOWN messages", async ({ page }) => {
@@ -682,12 +704,12 @@ test("pauses and safely resumes a sender without retrying UNKNOWN messages", asy
   await expect(page.getByText("Unknown delivery warning:", { exact: false })).toBeVisible();
 
   await page.getByRole("button", { name: "Pause sender delivery" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Pause delivery" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Pause delivery", exact: true }).click();
   await expect(page.getByText("Delivery paused", { exact: true })).toBeVisible();
   expect(pauseBody).toEqual({ confirmation: true });
 
   await page.getByRole("button", { name: "Resume sender delivery" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Confirm safe resume" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Confirm safe resume", exact: true }).click();
   await expect(page.getByText("Sender delivery resumed.", { exact: false })).toBeVisible();
   await expect(page.getByText("Delivery active", { exact: true })).toBeVisible();
   expect(resumeBody).toEqual({ confirmation: true });
