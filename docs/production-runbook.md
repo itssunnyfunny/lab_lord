@@ -1272,12 +1272,48 @@ Use the repository scripts as follows:
 
 - `scripts/razorpay-preflight.ts` is read-only and rejects mutation flags. Run
   it for the selected target with explicit expectations from the detailed
-  billing runbook.
+  billing runbook. It can assert an exact target with
+  `--expect-database-fingerprint=<SHA256>`.
 - `scripts/prepare-workspace-billing-rollout.ts` is a dry run unless `--apply`
   is present. Selecting promotion targets uses
   `--promote=<comma-separated-org-ids>`; selection alone does not apply changes.
 - `scripts/audit-legacy-unsupported-method-cancellations.ts` is a dry run unless
   `--apply` is present. Resolve every manual-review row before any apply run.
+
+All three scripts parse `BILLING_ENV_FILE` into a fresh allowlisted environment
+before dynamically importing Prisma or Razorpay code. A missing file or a
+conflicting ambient `DATABASE_URL`, `ACCELERATE_URL`, `RAZORPAY_MODE`,
+`RAZORPAY_KEY_ID`, or `VERCEL_ENV` stops the command. Unknown file variables are
+not installed into the script process.
+
+Prisma runtime precedence is reported only as `ACCELERATE_URL`,
+`DATABASE_URL_AS_ACCELERATE`, `DATABASE_URL`, or `UNCONFIGURED`; hosts,
+credentials, query strings, and complete connection URLs are never printed.
+The database fingerprint is derived from the singleton database-resident
+`BillingDatabaseIdentity`, so it describes the database actually selected by
+that precedence.
+
+An apply run requires all of the following in addition to the selected
+`BILLING_ENV_FILE` and `VERCEL_ENV`:
+
+```text
+--apply
+--target=preview|production
+--expect-razorpay-mode=TEST|LIVE
+--expect-database-fingerprint=<SHA256_FROM_THE_SAME_TARGET_PREFLIGHT>
+--scope=organizations
+--organization-ids=<COMMA_SEPARATED_REVIEWED_ORGANIZATION_IDS>
+```
+
+The organization IDs are normalized, sorted, and represented in output by only
+a count and SHA-256 set fingerprint. Every candidate query, write, and provider
+fetch is filtered to that allowlist. Promotion IDs must be a subset of the same
+allowlist. Run a dry audit with the identical scope and IDs immediately before
+apply; an unscoped dry run may be used only for read-only discovery. The script
+reads the database identity through Prisma's selected connection and compares
+it to the expected fingerprint before any scoped work. A copied apply command
+therefore cannot silently run against a different database, provider mode,
+deployment environment, or implicit/broader tenant set.
 
 Retain preflight fingerprints and redacted aggregate reports privately. Never
 publish organization, subscription, payment, or credential values. Follow the

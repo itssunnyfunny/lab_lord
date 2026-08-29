@@ -147,6 +147,13 @@ authentication boundaries, not open application routes.
   complete before reconciliation succeeds.
 - Test and Live credentials, rows, provider objects, webhook secrets, and
   environments must remain isolated. Wrong-mode state must fail closed.
+- Billing maintenance scripts must load only the selected allowlisted
+  environment, reject conflicting ambient database or Razorpay identities, and
+  bind every apply run to the expected deployment, provider mode,
+  database-resident identity fingerprint, and explicit organization allowlist
+  before any scoped query, write, or provider fetch. Connection reports and
+  errors must not expose credentials, key identities, or complete database
+  URLs.
 - `paidThrough` may advance only from mutually matching provider-confirmed paid
   invoice and captured-payment evidence for the current subscription period.
 - Billing mutation idempotency keys, payload matching, per-organization FIFO
