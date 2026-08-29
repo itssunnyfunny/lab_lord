@@ -129,6 +129,8 @@ export type RazorpayInvoice = {
   amount_paid: number;
   amount_due: number;
   currency: string;
+  billing_start?: number | null;
+  billing_end?: number | null;
   issued_at?: number | null;
   paid_at?: number | null;
 };
@@ -172,6 +174,7 @@ export interface RazorpayApiClient {
     item: { name: string; amount: number; currency: string; description?: string };
     notes: Record<string, string>;
   }): Promise<RazorpayPlan>;
+  fetchPlan?(planId: string): Promise<RazorpayPlan>;
   createSubscription(input: {
     plan_id: string;
     total_count: number;

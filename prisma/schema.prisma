@@ -1497,6 +1497,7 @@ enum BillingChangeType {
   BRANCH_REMOVAL
   BRANCH_REACTIVATION
   CANCELLATION
+  COMMERCIAL_RECONCILIATION
   LEGACY_TRANSITION
 }
 
@@ -1684,6 +1685,7 @@ model OrganizationSubscription {
   lastPaymentConfirmedAt            DateTime?
   authorizationLapsedAt             DateTime?
   billingOfferId                    String?
+  confirmedCommercialIntentChangeId String?                           @unique
   lastReconciledAt                  DateTime?
   currentStart                      DateTime?
   currentEnd                        DateTime?
@@ -1702,6 +1704,7 @@ model OrganizationSubscription {
   replacesSubscription              OrganizationSubscription?         @relation("OrganizationSubscriptionReplacementLineage", fields: [replacesSubscriptionId], references: [id], onDelete: SetNull)
   replacementSubscriptions          OrganizationSubscription[]        @relation("OrganizationSubscriptionReplacementLineage")
   billingOffer                      BillingOffer?                     @relation(fields: [billingOfferId], references: [id])
+  confirmedCommercialIntentChange   OrganizationBillingChange?        @relation("ConfirmedCommercialIntent", fields: [confirmedCommercialIntentChangeId], references: [id], onDelete: SetNull)
   webhookEvents                     RazorpayWebhookEvent[]
   history                           OrganizationSubscriptionHistory[]
   billingChanges                    OrganizationBillingChange[]       @relation("BillingChangeSourceSubscription")
@@ -1716,80 +1719,116 @@ model OrganizationSubscription {
 }
 
 model OrganizationBillingChange {
-  id                         String                    @id @default(cuid())
-  organizationId             String
-  organizationSubscriptionId String?
-  replacementSubscriptionId  String?                   @unique
-  branchId                   String?
-  sequence                   Int
-  idempotencyKey             String                    @unique
-  type                       BillingChangeType
-  status                     BillingChangeStatus       @default(QUEUED)
-  operationStatus            BillingOperationStatus    @default(AWAITING_PROVIDER_CONFIRMATION)
-  fromPlan                   SaasPlan?
-  toPlan                     SaasPlan?
-  fromQuantity               Int?
-  toQuantity                 Int?
-  effectiveAt                DateTime?
-  undoCutoffAt               DateTime?
-  providerInvoiceId          String?
-  providerPaymentId          String?
-  attemptCount               Int                       @default(0)
-  processingStartedAt        DateTime?
-  appliedAt                  DateTime?
-  undoneAt                   DateTime?
-  failedAt                   DateTime?
-  lastError                  String?
-  returnPath                 String?
-  confirmationDeadlineAt     DateTime?
-  failureCategory            String?
-  failureCode                String?
-  checkoutOpenedAt           DateTime?
-  verificationStartedAt      DateTime?
-  providerConfirmedAt        DateTime?
-  accessGrantedAt            DateTime?
-  accessRevokedAt            DateTime?
-  accessGraceEndsAt          DateTime?
-  abandonedAt                DateTime?
-  declinedAt                 DateTime?
-  resolvedAt                 DateTime?
-  createdByUserId            String?
-  createdAt                  DateTime                  @default(now())
-  updatedAt                  DateTime                  @updatedAt
-  organization               Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  organizationSubscription   OrganizationSubscription? @relation("BillingChangeSourceSubscription", fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
-  replacementSubscription    OrganizationSubscription? @relation("BillingChangeReplacementSubscription", fields: [replacementSubscriptionId], references: [id], onDelete: SetNull)
-  branch                     Branch?                   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  id                                   String                            @id @default(cuid())
+  organizationId                       String
+  organizationSubscriptionId           String?
+  replacementSubscriptionId            String?                           @unique
+  branchId                             String?
+  sequence                             Int
+  idempotencyKey                       String                            @unique
+  type                                 BillingChangeType
+  status                               BillingChangeStatus               @default(QUEUED)
+  operationStatus                      BillingOperationStatus            @default(AWAITING_PROVIDER_CONFIRMATION)
+  fromPlan                             SaasPlan?
+  toPlan                               SaasPlan?
+  fromQuantity                         Int?
+  toQuantity                           Int?
+  commercialIntentVersion              Int?
+  commercialIntentCapturedAt           DateTime?
+  authorizedProviderMode               RazorpayMode?
+  authorizedRazorpaySubscriptionId     String?
+  authorizedSourceRazorpayPlanId       String?
+  authorizedRazorpayPlanId             String?
+  authorizedPlan                       SaasPlan?
+  authorizedQuantity                   Int?
+  authorizedRazorpayOfferId            String?
+  authorizedUnitAmountSubunits         Int?
+  authorizedGrossAmountSubunits        Int?
+  authorizedExpectedAmountSubunits     Int?
+  authorizedOfferValidThroughPaidCount Int?
+  authorizedCurrency                   String?
+  authorizedPeriod                     String?
+  authorizedInterval                   Int?
+  effectiveAt                          DateTime?
+  undoCutoffAt                         DateTime?
+  providerInvoiceId                    String?
+  providerPaymentId                    String?
+  attemptCount                         Int                               @default(0)
+  processingStartedAt                  DateTime?
+  appliedAt                            DateTime?
+  undoneAt                             DateTime?
+  failedAt                             DateTime?
+  lastError                            String?
+  returnPath                           String?
+  confirmationDeadlineAt               DateTime?
+  failureCategory                      String?
+  failureCode                          String?
+  checkoutOpenedAt                     DateTime?
+  verificationStartedAt                DateTime?
+  providerConfirmedAt                  DateTime?
+  accessGrantedAt                      DateTime?
+  accessRevokedAt                      DateTime?
+  accessGraceEndsAt                    DateTime?
+  abandonedAt                          DateTime?
+  declinedAt                           DateTime?
+  resolvedAt                           DateTime?
+  createdByUserId                      String?
+  createdAt                            DateTime                          @default(now())
+  updatedAt                            DateTime                          @updatedAt
+  organization                         Organization                      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationSubscription             OrganizationSubscription?         @relation("BillingChangeSourceSubscription", fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
+  replacementSubscription              OrganizationSubscription?         @relation("BillingChangeReplacementSubscription", fields: [replacementSubscriptionId], references: [id], onDelete: SetNull)
+  confirmedCommercialSubscription      OrganizationSubscription?         @relation("ConfirmedCommercialIntent")
+  commercialEvidenceInvoices           OrganizationSubscriptionInvoice[] @relation("InvoiceCommercialIntent")
+  branch                               Branch?                           @relation(fields: [branchId], references: [id], onDelete: SetNull)
 
   @@unique([organizationId, sequence])
   @@index([organizationId, status, sequence])
   @@index([organizationId, operationStatus, sequence])
+  @@index([organizationId, commercialIntentVersion, sequence], map: "BillingChange_commercial_intent_idx")
+  @@index([authorizedProviderMode, authorizedRazorpaySubscriptionId, sequence], map: "BillingChange_authorized_subscription_idx")
   @@index([undoCutoffAt, status])
 }
 
 model OrganizationSubscriptionInvoice {
-  id                         String                    @id @default(cuid())
+  id                         String                     @id @default(cuid())
   organizationId             String
   organizationSubscriptionId String?
-  razorpayInvoiceId          String                    @unique
-  razorpayPaymentId          String?                   @unique
+  razorpayInvoiceId          String                     @unique
+  razorpayPaymentId          String?                    @unique
   status                     String
   amountSubunits             Int
-  amountPaidSubunits         Int                       @default(0)
-  amountDueSubunits          Int                       @default(0)
-  currency                   String                    @default("INR")
-  paymentMethod              ProviderPaymentMethod     @default(UNKNOWN)
+  amountPaidSubunits         Int                        @default(0)
+  amountDueSubunits          Int                        @default(0)
+  currency                   String                     @default("INR")
+  paymentMethod              ProviderPaymentMethod      @default(UNKNOWN)
+  commercialEvidenceVersion  Int?
+  commercialIntentChangeId   String?
+  providerMode               RazorpayMode?
+  razorpaySubscriptionId     String?
+  razorpayPlanId             String?
+  providerQuantity           Int?
+  razorpayOfferId            String?
+  paymentAmountSubunits      Int?
+  paymentCurrency            String?
+  paymentStatus              String?
+  paymentCaptured            Boolean?
+  evidenceConfirmedAt        DateTime?
+  evidenceFailureCode        String?
   periodStart                DateTime?
   periodEnd                  DateTime?
   issuedAt                   DateTime?
   paidAt                     DateTime?
-  createdAt                  DateTime                  @default(now())
-  updatedAt                  DateTime                  @updatedAt
-  organization               Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  organizationSubscription   OrganizationSubscription? @relation(fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
+  createdAt                  DateTime                   @default(now())
+  updatedAt                  DateTime                   @updatedAt
+  organization               Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationSubscription   OrganizationSubscription?  @relation(fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
+  commercialIntentChange     OrganizationBillingChange? @relation("InvoiceCommercialIntent", fields: [commercialIntentChangeId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt])
   @@index([organizationSubscriptionId, createdAt])
+  @@index([providerMode, razorpaySubscriptionId, periodEnd], map: "SubscriptionInvoice_provider_period_idx")
+  @@index([commercialIntentChangeId, paidAt], map: "SubscriptionInvoice_commercial_intent_idx")
 }
 
 model OrganizationSubscriptionHistory {
