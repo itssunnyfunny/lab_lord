@@ -158,7 +158,17 @@ authentication boundaries, not open application routes.
   Disabling billing writes is not assumed to stop signed webhook reconciliation
   or already-running work.
 - Ambiguous provider state requires reconciliation and human review. Never
-  automatically refund, cancel, recreate, or overwrite ambiguous billing state.
+  automatically refund, cancel, recreate, resubmit, or overwrite ambiguous
+  billing state. Provider-mutation success and failure finalization must match
+  the exact organization lease and attempt identity. Expired in-flight work is
+  quarantined, not requeued. Reconciliation is read-first: it may adopt an exact
+  provider target without another write, but a second mutation is allowed only
+  after a definite rejection or pre-provider failure and a fresh source-state
+  match. Manual-review state and its typed adopted/retained resolution are
+  owner-readable and append immutable SYSTEM subscription-history evidence.
+- General billing undo must reject an in-flight or unresolved provider outcome.
+  Branch-removal undo may restore the branch only atomically with durable,
+  provider-confirmed cancellation of the scheduled quantity change.
 
 ### WhatsApp and Meta Cloud API
 

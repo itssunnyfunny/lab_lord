@@ -287,6 +287,23 @@ Every statement uses one of these labels:
   stale worker, and do not allow a later intent to pass an unresolved earlier
   intent. The source subscription is immutable for the mutation.
   (`services/billingMutation.service.ts`, billing-mutation integration tests)
+- **Must preserve—enforced:** Every provider subscription mutation, including
+  cancellation of a scheduled update, is finalized only by the exact lease and
+  attempt that submitted it. A timeout, network failure, provider 5xx, HTTP 408,
+  malformed success, expired in-flight lease, or post-provider finalization
+  failure is quarantined as `MANUAL_REVIEW_REQUIRED` and is never automatically
+  resubmitted. Retry reads provider state first; only a definitely rejected or
+  pre-provider failure may issue a second mutation, while exact target evidence
+  may be adopted without another write. Manual-review and reconciliation
+  outcomes append deduplicated SYSTEM subscription-history evidence.
+  (`services/billingMutation.service.ts`, `services/billingDeadline.service.ts`,
+  billing-mutation and billing-deadline integration tests)
+- **Must preserve—enforced:** Local billing undo cannot pass an in-flight,
+  awaiting-payment, manual-review, or unclassified failed provider mutation.
+  A branch scheduled for removal is restored only in the same transaction that
+  durably records provider-confirmed scheduled-change undo; unresolved provider
+  quantity never restores branch access. (`services/billing.service.ts`,
+  `services/branch.service.ts`, billing and branch lifecycle integration tests)
 - **Must preserve—enforced:** Replacement access remains fail-closed until the
   replacement is authenticated or active and its lineage, plan, and quantity
   exactly match the approved intent. A mismatch removes provisional trust and
