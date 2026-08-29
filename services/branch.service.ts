@@ -36,6 +36,7 @@ import { BillingReplacementService } from "@/services/billingReplacement.service
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
 import { assertRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
+import { BillingChangeInProgressError } from "@/lib/billingErrors";
 import { resolveRazorpayMode } from "@/lib/razorpay";
 import type {
     BillingChangeType,
@@ -986,6 +987,20 @@ export class BranchService {
             orderBy: { sequence: "desc" },
         });
         if (!change) throw new Error("Scheduled branch removal not found");
+        if (change.status === "PROCESSING") {
+            throw new BillingChangeInProgressError(
+                change.id,
+                "The provider quantity mutation is still processing and cannot be undone"
+            );
+        }
+        if (!change.replacementSubscriptionId
+            && (change.status === "AWAITING_PAYMENT"
+                || change.failureCategory === "MANUAL_REVIEW_REQUIRED")) {
+            throw new BillingChangeInProgressError(
+                change.id,
+                "The provider quantity must be reconciled before the branch removal can be undone"
+            );
+        }
         if (change.replacementSubscriptionId) {
             await BillingReplacementService.undoReplacement(change.id);
             await prisma.branch.update({
@@ -1005,21 +1020,71 @@ export class BranchService {
             });
             return { undone: true };
         }
-        await prisma.$transaction([
-            prisma.organizationBillingChange.update({
-                where: { id: change.id },
+        await prisma.$transaction(async tx => {
+            await lockOrganization(tx, branch.organizationId);
+            const currentOrganization = await tx.organization.findUniqueOrThrow({
+                where: { id: branch.organizationId },
+                select: { ownerId: true, billingMutationLeaseToken: true },
+            });
+            if (currentOrganization.ownerId !== userId) throw new Error("Unauthorized");
+            if (currentOrganization.billingMutationLeaseToken) {
+                throw new BillingChangeInProgressError(
+                    change.id,
+                    "A provider quantity mutation is still processing and cannot be undone"
+                );
+            }
+            const current = await tx.organizationBillingChange.findFirst({
+                where: { id: change.id, organizationId: branch.organizationId, branchId },
+            });
+            if (!current || current.status !== change.status
+                || current.updatedAt.getTime() !== change.updatedAt.getTime()) {
+                throw new BillingChangeInProgressError(
+                    change.id,
+                    "The branch removal moved while the undo was being claimed"
+                );
+            }
+            if (current.status === "PROCESSING"
+                || current.status === "AWAITING_PAYMENT"
+                || current.failureCategory === "MANUAL_REVIEW_REQUIRED") {
+                throw new BillingChangeInProgressError(
+                    change.id,
+                    "The provider quantity must be reconciled before the branch removal can be undone"
+                );
+            }
+            if (current.effectiveAt && current.effectiveAt <= new Date()) {
+                throw new Error("The branch removal can no longer be undone");
+            }
+            const undoneAt = new Date();
+            const undone = await tx.organizationBillingChange.updateMany({
+                where: { id: current.id, status: current.status, updatedAt: current.updatedAt },
                 data: {
                     status: "UNDONE",
                     operationStatus: "ABANDONED",
-                    undoneAt: new Date(),
-                    resolvedAt: new Date(),
+                    undoneAt,
+                    resolvedAt: undoneAt,
                 },
-            }),
-            prisma.branch.update({
-                where: { id: branchId },
+            });
+            if (undone.count !== 1) {
+                throw new BillingChangeInProgressError(
+                    change.id,
+                    "The branch removal moved while the undo was being finalized"
+                );
+            }
+            const restored = await tx.branch.updateMany({
+                where: {
+                    id: branchId,
+                    organizationId: branch.organizationId,
+                    billingStatus: "REMOVAL_SCHEDULED",
+                },
                 data: { billingStatus: "ACTIVE" },
-            }),
-        ]);
+            });
+            if (restored.count !== 1) {
+                throw new BillingChangeInProgressError(
+                    change.id,
+                    "The branch state moved while the undo was being finalized"
+                );
+            }
+        });
         return { undone: true };
     }
 

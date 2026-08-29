@@ -4,6 +4,7 @@ import { BillingReconciliationService } from "@/services/billingReconciliation.s
 import { BillingExperienceService } from "@/services/billingExperience.service";
 import { BranchService } from "@/services/branch.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
+import { BillingService } from "@/services/billing.service";
 import {
   getReplacementUndoCutoffAt,
   getSafeReplacementCycleBoundary,
@@ -872,6 +873,46 @@ describe("serialized workspace billing mutations", () => {
       .resolves.toMatchObject({ billingStatus: "PENDING_ACTIVATION", billingArchivedAt: null });
     await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
       .resolves.toMatchObject({ status: "AWAITING_PAYMENT", operationStatus: "AWAITING_PROVIDER_CONFIRMATION" });
+  });
+
+  it("rejects general undo while the provider mutation is in flight", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay({ providerQuantity: 1, includePaidInvoice: false });
+    let providerStarted!: () => void;
+    let releaseProvider!: () => void;
+    const started = new Promise<void>(resolve => { providerStarted = resolve; });
+    const providerRelease = new Promise<void>(resolve => { releaseProvider = resolve; });
+    vi.mocked(razorpay.updateSubscription).mockImplementationOnce(async (subscriptionId, input) => {
+      providerStarted();
+      await providerRelease;
+      return {
+        id: subscriptionId,
+        entity: "subscription",
+        plan_id: input.plan_id ?? "plan_standard",
+        status: "active",
+        total_count: 120,
+        quantity: input.quantity ?? 1,
+      };
+    });
+    setRazorpayClientForTests(razorpay);
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "undo-during-provider-mutation",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    const processing = BillingMutationService.processNext(organization.id);
+    await started;
+    await expect(BillingService.undoWorkspaceChange(owner.id, organization.id, change.id))
+      .rejects.toMatchObject({ code: "BILLING_CHANGE_IN_PROGRESS" });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({ status: "PROCESSING" });
+    releaseProvider();
+    await expect(processing).resolves.toMatchObject({ status: "AWAITING_PAYMENT" });
   });
 
   it("does not let an expired worker fail or release a successor lease", async () => {

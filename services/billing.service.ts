@@ -21,6 +21,7 @@ import { BillingExperienceService } from "@/services/billingExperience.service";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
 import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
+import { BillingChangeInProgressError } from "@/lib/billingErrors";
 import {
   isSupportedProviderPaymentMethod,
   normalizeProviderPaymentMethod,
@@ -2535,6 +2536,20 @@ export class BillingService {
       },
     });
     if (!change) throw new Error("Undoable billing change not found");
+    if (change.status === "PROCESSING") {
+      throw new BillingChangeInProgressError(
+        change.id,
+        "The provider mutation is still processing and cannot be undone"
+      );
+    }
+    if (!change.replacementSubscriptionId
+      && (change.status === "AWAITING_PAYMENT"
+        || change.failureCategory === "MANUAL_REVIEW_REQUIRED")) {
+      throw new BillingChangeInProgressError(
+        change.id,
+        "The provider mutation outcome must be reconciled before it can be undone"
+      );
+    }
     if (change.type === "CANCELLATION") return this.undoWorkspaceCancellation(userId, organizationId);
     if (change.replacementSubscriptionId) {
       await BillingReplacementService.undoReplacement(change.id);
@@ -2550,14 +2565,57 @@ export class BillingService {
       }
       return { undone: true, replayed: result.replayed, replayError: result.replayError };
     }
-    await prisma.organizationBillingChange.update({
-      where: { id: change.id },
-      data: {
-        status: "UNDONE",
-        operationStatus: "ABANDONED",
-        undoneAt: new Date(),
-        resolvedAt: new Date(),
-      },
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Organization" WHERE "id" = ${organizationId} FOR UPDATE
+      `;
+      const currentOrganization = await tx.organization.findUnique({
+        where: { id: organizationId },
+        select: { ownerId: true, billingMutationLeaseToken: true },
+      });
+      if (!currentOrganization || currentOrganization.ownerId !== userId) {
+        throw new Error("Unauthorized");
+      }
+      if (currentOrganization?.billingMutationLeaseToken) {
+        throw new BillingChangeInProgressError(
+          change.id,
+          "A provider mutation is still processing and cannot be undone"
+        );
+      }
+      const current = await tx.organizationBillingChange.findFirst({
+        where: { id: change.id, organizationId },
+      });
+      if (!current || current.status !== change.status
+        || current.updatedAt.getTime() !== change.updatedAt.getTime()) {
+        throw new BillingChangeInProgressError(
+          change.id,
+          "The billing change moved while the undo was being claimed"
+        );
+      }
+      if (current.status === "PROCESSING"
+        || current.status === "AWAITING_PAYMENT"
+        || current.failureCategory === "MANUAL_REVIEW_REQUIRED") {
+        throw new BillingChangeInProgressError(
+          change.id,
+          "The provider mutation outcome must be reconciled before it can be undone"
+        );
+      }
+      const undoneAt = new Date();
+      const undone = await tx.organizationBillingChange.updateMany({
+        where: { id: current.id, status: current.status, updatedAt: current.updatedAt },
+        data: {
+          status: "UNDONE",
+          operationStatus: "ABANDONED",
+          undoneAt,
+          resolvedAt: undoneAt,
+        },
+      });
+      if (undone.count !== 1) {
+        throw new BillingChangeInProgressError(
+          change.id,
+          "The billing change moved while the undo was being finalized"
+        );
+      }
     });
     return { undone: true };
   }
