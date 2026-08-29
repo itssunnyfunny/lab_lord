@@ -20,3 +20,18 @@ export class BillingReplacementNotReadyError extends Error {
     this.name = "BillingReplacementNotReadyError";
   }
 }
+
+export class BillingManualReviewRequiredError extends Error {
+  readonly code = "BILLING_MANUAL_REVIEW_REQUIRED";
+  readonly resolutionOutcome = "MANUAL_REVIEW_RETAINED" as const;
+  readonly changeId: string;
+
+  constructor(
+    changeId: string,
+    message = "Provider evidence remains ambiguous; manual billing review is still required"
+  ) {
+    super(message);
+    this.name = "BillingManualReviewRequiredError";
+    this.changeId = changeId;
+  }
+}

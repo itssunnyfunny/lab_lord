@@ -31,7 +31,10 @@ import {
 } from "@/services/defaultShifts";
 import { generateSeatLabelsForSeatCount, type SeatNumberingConfig } from "@/lib/seatNumbering";
 import { EntitlementService } from "@/services/entitlement.service";
-import { BillingMutationService } from "@/services/billingMutation.service";
+import {
+    BillingMutationService,
+    isSafeFailedBillingMutationForLocalUndo,
+} from "@/services/billingMutation.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
@@ -995,7 +998,9 @@ export class BranchService {
         }
         if (!change.replacementSubscriptionId
             && (change.status === "AWAITING_PAYMENT"
-                || change.failureCategory === "MANUAL_REVIEW_REQUIRED")) {
+                || change.failureCategory === "MANUAL_REVIEW_REQUIRED"
+                || (change.status === "FAILED"
+                    && !isSafeFailedBillingMutationForLocalUndo(change.failureCategory)))) {
             throw new BillingChangeInProgressError(
                 change.id,
                 "The provider quantity must be reconciled before the branch removal can be undone"
@@ -1014,10 +1019,6 @@ export class BranchService {
         }
         if (change.status === "SCHEDULED" && branch.organization.subscription?.providerPaymentMethod === "CARD") {
             await BillingMutationService.undoScheduledProviderChange(change.id);
-            await prisma.branch.update({
-                where: { id: branchId },
-                data: { billingStatus: "ACTIVE" },
-            });
             return { undone: true };
         }
         await prisma.$transaction(async tx => {
@@ -1045,7 +1046,9 @@ export class BranchService {
             }
             if (current.status === "PROCESSING"
                 || current.status === "AWAITING_PAYMENT"
-                || current.failureCategory === "MANUAL_REVIEW_REQUIRED") {
+                || current.failureCategory === "MANUAL_REVIEW_REQUIRED"
+                || (current.status === "FAILED"
+                    && !isSafeFailedBillingMutationForLocalUndo(current.failureCategory))) {
                 throw new BillingChangeInProgressError(
                     change.id,
                     "The provider quantity must be reconciled before the branch removal can be undone"

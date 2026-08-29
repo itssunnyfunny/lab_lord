@@ -1,5 +1,8 @@
 import { BillingWritesDisabledError } from "@/lib/billingFeature";
-import { BillingChangeInProgressError } from "@/lib/billingErrors";
+import {
+  BillingChangeInProgressError,
+  BillingManualReviewRequiredError,
+} from "@/lib/billingErrors";
 import { RazorpayApiError, RazorpayConfigurationError } from "@/lib/razorpay";
 import {
   RazorpayPlanCatalogBusyError,
@@ -8,6 +11,7 @@ import {
 
 export function billingHttpStatus(error: unknown, fallbackStatus = 400) {
   if (error instanceof BillingChangeInProgressError) return 409;
+  if (error instanceof BillingManualReviewRequiredError) return 409;
   if (
     error instanceof BillingWritesDisabledError
     || error instanceof RazorpayConfigurationError

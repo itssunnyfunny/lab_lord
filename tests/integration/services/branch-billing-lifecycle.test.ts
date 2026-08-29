@@ -205,7 +205,7 @@ describe("workspace branch billing lifecycle", () => {
     await expect(testPrisma.branch.findUnique({ where: { id: first.id } })).resolves.not.toBeNull();
   });
 
-  it.each(["PROCESSING", "AWAITING_PAYMENT", "MANUAL_REVIEW"] as const)(
+  it.each(["PROCESSING", "AWAITING_PAYMENT", "MANUAL_REVIEW", "UNKNOWN_FAILED"] as const)(
     "does not restore a branch while provider quantity is unresolved (%s)",
     async unresolvedState => {
       const { owner, organization } = await trialOrganization();
@@ -221,7 +221,9 @@ describe("workspace branch billing lifecycle", () => {
           sequence: 1,
           idempotencyKey: `unresolved-removal-${unresolvedState}`,
           type: "BRANCH_REMOVAL",
-          status: unresolvedState === "MANUAL_REVIEW" ? "FAILED" : unresolvedState,
+          status: unresolvedState === "MANUAL_REVIEW" || unresolvedState === "UNKNOWN_FAILED"
+            ? "FAILED"
+            : unresolvedState,
           operationStatus: unresolvedState === "PROCESSING"
             ? "AWAITING_PROVIDER_CONFIRMATION"
             : "FAILED",

@@ -153,6 +153,49 @@ describe("workspace billing deadlines", () => {
       });
   });
 
+  it("quarantines an expired scheduled-change undo attempt with its exact attempt identity", async () => {
+    const now = new Date("2026-09-03T00:00:00.000Z");
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
+    const processingStartedAt = new Date("2026-09-02T23:55:00.000Z");
+    const change = await testPrisma.organizationBillingChange.create({
+      data: {
+        organizationId: organization.id,
+        sequence: 1,
+        idempotencyKey: "expired-scheduled-undo",
+        type: "PLAN_DOWNGRADE",
+        status: "PROCESSING",
+        operationStatus: "SCHEDULED",
+        attemptCount: 2,
+        processingStartedAt,
+        failureCode: "SCHEDULED_UNDO_PROCESSING",
+      },
+    });
+    await testPrisma.organization.update({
+      where: { id: organization.id },
+      data: {
+        billingMutationLeaseToken: "expired-scheduled-undo-lease",
+        billingMutationLeaseUntil: new Date("2026-09-02T23:59:00.000Z"),
+      },
+    });
+
+    await expect(recoverExpiredBillingMutationLease({
+      id: organization.id,
+      billingMutationLeaseToken: "expired-scheduled-undo-lease",
+    }, now)).resolves.toBe(true);
+
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        operationStatus: "FAILED",
+        attemptCount: 2,
+        processingStartedAt,
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "SCHEDULED_UNDO_LEASE_EXPIRED",
+        resolvedAt: null,
+      });
+  });
+
   it("does not consume automatic retry attempts while billing writes are held", async () => {
     const now = new Date("2026-09-03T00:00:00.000Z");
     const owner = await createUser();

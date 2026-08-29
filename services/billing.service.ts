@@ -16,7 +16,10 @@ import {
 import { OrganizationService } from "@/services/organization.service";
 import { EntitlementService } from "@/services/entitlement.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
-import { BillingMutationService } from "@/services/billingMutation.service";
+import {
+  BillingMutationService,
+  isSafeFailedBillingMutationForLocalUndo,
+} from "@/services/billingMutation.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
@@ -2378,12 +2381,16 @@ export class BillingService {
       });
     }
 
+    const safeProviderRetry = isSafeFailedBillingMutationForLocalUndo(change.failureCategory);
     const retried = await BillingMutationService.retry(change.id);
     const current = retried ?? await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
     if (!current) throw new Error("Billing operation not found after retry");
     return {
       operation: serializeBillingOperation(current),
       processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+      resolutionOutcome: safeProviderRetry
+        ? "SAFE_RETRY_SUBMITTED" as const
+        : "PROVIDER_STATE_ADOPTED" as const,
     };
   }
 
@@ -2544,7 +2551,9 @@ export class BillingService {
     }
     if (!change.replacementSubscriptionId
       && (change.status === "AWAITING_PAYMENT"
-        || change.failureCategory === "MANUAL_REVIEW_REQUIRED")) {
+        || change.failureCategory === "MANUAL_REVIEW_REQUIRED"
+        || (change.status === "FAILED"
+          && !isSafeFailedBillingMutationForLocalUndo(change.failureCategory)))) {
       throw new BillingChangeInProgressError(
         change.id,
         "The provider mutation outcome must be reconciled before it can be undone"
@@ -2557,12 +2566,6 @@ export class BillingService {
     }
     if (change.status === "SCHEDULED" && organization.subscription?.providerPaymentMethod === "CARD") {
       const result = await BillingMutationService.undoScheduledProviderChange(change.id);
-      if (change.branchId) {
-        await prisma.branch.update({
-          where: { id: change.branchId },
-          data: { billingStatus: "ACTIVE" },
-        });
-      }
       return { undone: true, replayed: result.replayed, replayError: result.replayError };
     }
     await prisma.$transaction(async tx => {
@@ -2594,7 +2597,9 @@ export class BillingService {
       }
       if (current.status === "PROCESSING"
         || current.status === "AWAITING_PAYMENT"
-        || current.failureCategory === "MANUAL_REVIEW_REQUIRED") {
+        || current.failureCategory === "MANUAL_REVIEW_REQUIRED"
+        || (current.status === "FAILED"
+          && !isSafeFailedBillingMutationForLocalUndo(current.failureCategory))) {
         throw new BillingChangeInProgressError(
           change.id,
           "The provider mutation outcome must be reconciled before it can be undone"
