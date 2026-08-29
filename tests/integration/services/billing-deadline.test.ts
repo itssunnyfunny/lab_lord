@@ -143,7 +143,14 @@ describe("workspace billing deadlines", () => {
     await expect(testPrisma.organization.findUniqueOrThrow({ where: { id: organization.id } }))
       .resolves.toMatchObject({ billingMutationLeaseToken: null, billingMutationLeaseUntil: null });
     await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
-      .resolves.toMatchObject({ status: "QUEUED", attemptCount: 1 });
+      .resolves.toMatchObject({
+        status: "FAILED",
+        operationStatus: "FAILED",
+        attemptCount: 1,
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "PROVIDER_MUTATION_LEASE_EXPIRED",
+        resolvedAt: null,
+      });
   });
 
   it("does not consume automatic retry attempts while billing writes are held", async () => {

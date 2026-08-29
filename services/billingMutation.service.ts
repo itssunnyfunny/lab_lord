@@ -1,12 +1,18 @@
 import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
-import { getRazorpayClient, resolveRazorpayMode } from "@/lib/razorpay";
+import {
+  getRazorpayClient,
+  RazorpayApiError,
+  resolveRazorpayMode,
+  type RazorpaySubscription,
+} from "@/lib/razorpay";
 import {
   areRazorpayMultiMethodSubscriptionsEnabled,
   areRazorpayBillingWritesEnabled,
   assertRazorpayBillingWritesEnabled,
 } from "@/lib/billingFeature";
 import { getBillingPlan } from "@/lib/billingPlans";
+import { BillingChangeInProgressError } from "@/lib/billingErrors";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
 import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
@@ -33,12 +39,100 @@ const QUANTITY_TYPES = new Set<BillingChangeType>([
   "LEGACY_TRANSITION",
 ]);
 const SOURCE_CHANGED_MESSAGE = "Billing mutation source subscription is no longer current";
+const MANUAL_REVIEW_CATEGORY = "MANUAL_REVIEW_REQUIRED";
+const AMBIGUOUS_PROVIDER_FAILURE_CODE = "PROVIDER_MUTATION_OUTCOME_UNKNOWN";
+const DEFINITE_PROVIDER_FAILURE_CATEGORY = "PROVIDER_REJECTED";
+const PRE_PROVIDER_FAILURE_CATEGORY = "PRE_PROVIDER_FAILURE";
+const SAFE_RETRY_FAILURE_CATEGORIES = new Set([
+  DEFINITE_PROVIDER_FAILURE_CATEGORY,
+  PRE_PROVIDER_FAILURE_CATEGORY,
+]);
 
 class BillingMutationSourceChangedError extends Error {
   constructor() {
     super(SOURCE_CHANGED_MESSAGE);
     this.name = "BillingMutationSourceChangedError";
   }
+}
+
+function isDefinitelyRejectedProviderError(error: unknown) {
+  return error instanceof RazorpayApiError
+    && error.status !== 408
+    && ["AUTHENTICATION", "NOT_FOUND", "RATE_LIMIT", "REQUEST"].includes(error.kind);
+}
+
+function assertProviderMutationResponse(value: unknown): asserts value is RazorpaySubscription {
+  if (!value || typeof value !== "object") {
+    throw new Error("Razorpay returned a malformed subscription mutation response");
+  }
+  const candidate = value as Partial<RazorpaySubscription>;
+  if (candidate.entity !== "subscription"
+    || typeof candidate.id !== "string"
+    || candidate.id.length === 0
+    || typeof candidate.plan_id !== "string"
+    || candidate.plan_id.length === 0
+    || typeof candidate.status !== "string"
+    || !["created", "authenticated", "active", "pending", "paused", "halted", "cancelled", "completed", "expired"]
+      .includes(candidate.status.toLowerCase())
+    || !Number.isInteger(candidate.total_count)
+    || (candidate.total_count ?? 0) < 1
+    || !Number.isInteger(candidate.quantity)
+    || (candidate.quantity ?? 0) < 1) {
+    throw new Error("Razorpay returned a malformed subscription mutation response");
+  }
+}
+
+type ProviderMutationExecution = {
+  provider: RazorpaySubscription;
+  subscriptionId: string;
+  sourcePlanId: string;
+  sourceQuantity: number;
+  targetPlanId: string;
+  targetQuantity: number;
+  scheduleChangeAt: "now" | "cycle_end";
+  cancellation: boolean;
+};
+
+function assertProviderMutationMatchesExpectation(execution: ProviderMutationExecution) {
+  const { provider } = execution;
+  if (provider.id !== execution.subscriptionId) {
+    throw new Error("Razorpay subscription mismatch while applying billing mutation");
+  }
+  const terminal = ["cancelled", "completed", "expired"].includes(provider.status.toLowerCase());
+  if (execution.cancellation) {
+    if (!terminal
+      && (execution.scheduleChangeAt !== "cycle_end" || provider.has_scheduled_changes !== true)) {
+      throw new Error("Razorpay cancellation response does not confirm the requested state");
+    }
+    return;
+  }
+  const targetEchoed = provider.plan_id === execution.targetPlanId
+    && provider.quantity === execution.targetQuantity;
+  const scheduledSourceEchoed = execution.scheduleChangeAt === "cycle_end"
+    && provider.has_scheduled_changes === true
+    && provider.plan_id === execution.sourcePlanId
+    && provider.quantity === execution.sourceQuantity;
+  if (!targetEchoed && !scheduledSourceEchoed) {
+    throw new Error("Razorpay subscription response does not match the requested billing mutation");
+  }
+}
+
+function providerStillMatchesMutationSource(
+  change: OrganizationBillingChange,
+  subscription: {
+    razorpaySubscriptionId: string;
+    razorpayPlanId: string;
+    quantity: number;
+  },
+  provider: RazorpaySubscription
+) {
+  const terminal = ["cancelled", "completed", "expired"].includes(provider.status.toLowerCase());
+  return provider.id === subscription.razorpaySubscriptionId
+    && provider.plan_id === subscription.razorpayPlanId
+    && provider.quantity === subscription.quantity
+    && provider.has_scheduled_changes !== true
+    && !terminal
+    && (change.type !== "CANCELLATION" || provider.change_scheduled_at == null);
 }
 
 type EnqueueInput = {
@@ -273,6 +367,8 @@ export class BillingMutationService {
     });
     if (!claimed) return null;
 
+    let providerCallStarted = false;
+    let providerResponseReceived = false;
     try {
       const source = await prisma.organizationSubscription.findUnique({
         where: { id: claimed.organizationSubscriptionId! },
@@ -299,7 +395,13 @@ export class BillingMutationService {
         );
         return replacement.change;
       }
-      const result = await this.executeProviderMutation(claimed, leaseToken);
+      const execution = await this.executeProviderMutation(claimed, leaseToken, () => {
+        providerCallStarted = true;
+      });
+      providerResponseReceived = true;
+      assertProviderMutationResponse(execution.provider);
+      assertProviderMutationMatchesExpectation(execution);
+      const result = execution.provider;
       return await prisma.$transaction(async tx => {
         await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "Organization" WHERE "id" = ${organizationId} FOR UPDATE
@@ -337,8 +439,14 @@ export class BillingMutationService {
         const awaitingPayment = ["PLAN_UPGRADE", "QUANTITY_INCREASE", "BRANCH_REACTIVATION"]
           .includes(claimed.type);
         const status = scheduled ? "SCHEDULED" : awaitingPayment ? "AWAITING_PAYMENT" : "APPLIED";
-        const updated = await tx.organizationBillingChange.update({
-          where: { id: claimed.id },
+        const finalizedAt = new Date();
+        const finalized = await tx.organizationBillingChange.updateMany({
+          where: {
+            id: claimed.id,
+            status: "PROCESSING",
+            attemptCount: claimed.attemptCount,
+            processingStartedAt: claimed.processingStartedAt,
+          },
           data: {
             status,
             operationStatus: status === "SCHEDULED"
@@ -346,11 +454,17 @@ export class BillingMutationService {
               : status === "APPLIED"
                 ? "APPLIED"
                 : "AWAITING_PROVIDER_CONFIRMATION",
-            appliedAt: status === "APPLIED" ? new Date() : null,
-            providerConfirmedAt: status === "APPLIED" ? new Date() : null,
-            resolvedAt: status === "APPLIED" ? new Date() : null,
+            appliedAt: status === "APPLIED" ? finalizedAt : null,
+            providerConfirmedAt: status === "APPLIED" ? finalizedAt : null,
+            resolvedAt: status === "APPLIED" ? finalizedAt : null,
+            failureCategory: null,
+            failureCode: null,
+            lastError: null,
           },
         });
+        if (finalized.count !== 1) {
+          throw new Error("Billing mutation attempt was superseded before finalization");
+        }
         const providerPlan = claimed.type === "TRIAL_SUBSCRIPTION_UPDATE"
           ? await tx.saasRazorpayPlan.findFirst({
               where: {
@@ -388,7 +502,7 @@ export class BillingMutationService {
           },
         });
         await releaseLease(tx, organizationId, leaseToken);
-        return updated;
+        return tx.organizationBillingChange.findUniqueOrThrow({ where: { id: claimed.id } });
       });
     } catch (error) {
       await prisma.$transaction(async tx => {
@@ -401,14 +515,33 @@ export class BillingMutationService {
         });
         // An expired worker must never fail or release a successor's attempt.
         if (current?.billingMutationLeaseToken !== leaseToken) return;
-        const sourceChanged = error instanceof BillingMutationSourceChangedError;
+        const sourceChanged = !providerCallStarted
+          && error instanceof BillingMutationSourceChangedError;
+        const ambiguousProviderOutcome = providerResponseReceived
+          || (providerCallStarted && !isDefinitelyRejectedProviderError(error));
+        const failedAt = new Date();
         await tx.organizationBillingChange.updateMany({
-          where: { id: claimed.id, status: "PROCESSING" },
+          where: {
+            id: claimed.id,
+            status: "PROCESSING",
+            attemptCount: claimed.attemptCount,
+            processingStartedAt: claimed.processingStartedAt,
+          },
           data: {
             status: sourceChanged ? "SUPERSEDED" : "FAILED",
             operationStatus: sourceChanged ? "ABANDONED" : "FAILED",
-            failedAt: sourceChanged ? null : new Date(),
-            resolvedAt: new Date(),
+            failedAt: sourceChanged ? null : failedAt,
+            resolvedAt: sourceChanged || !ambiguousProviderOutcome ? failedAt : null,
+            failureCategory: sourceChanged
+              ? null
+              : ambiguousProviderOutcome
+                ? MANUAL_REVIEW_CATEGORY
+                : providerCallStarted
+                  ? DEFINITE_PROVIDER_FAILURE_CATEGORY
+                  : PRE_PROVIDER_FAILURE_CATEGORY,
+            failureCode: ambiguousProviderOutcome
+              ? AMBIGUOUS_PROVIDER_FAILURE_CODE
+              : null,
             lastError: error instanceof Error ? error.message : "Provider mutation failed",
           },
         });
@@ -419,20 +552,143 @@ export class BillingMutationService {
   }
 
   static async retry(changeId: string) {
-    const change = await prisma.organizationBillingChange.findUnique({ where: { id: changeId } });
+    const change = await prisma.organizationBillingChange.findUnique({
+      where: { id: changeId },
+      include: { organizationSubscription: true },
+    });
     if (!change || change.status !== "FAILED") throw new Error("Failed billing change not found");
     if (change.type !== "UNSUPPORTED_METHOD_CANCELLATION") {
       assertRazorpayBillingWritesEnabled(change.organizationId);
     }
-    await prisma.organizationBillingChange.update({
-      where: { id: changeId },
-      data: {
-        status: "QUEUED",
-        operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
-        failedAt: null,
-        resolvedAt: null,
-        lastError: null,
-      },
+    const subscription = change.organizationSubscription;
+    if (!subscription
+      || subscription.organizationId !== change.organizationId
+      || subscription.currentOrganizationId !== change.organizationId) {
+      throw new BillingMutationSourceChangedError();
+    }
+    const providerMode = resolveRazorpayMode();
+    if (subscription.providerMode !== providerMode) {
+      throw new Error(
+        `Subscription provider mode ${subscription.providerMode} cannot be reconciled in ${providerMode} mode`
+      );
+    }
+
+    const retryLeaseToken = crypto.randomUUID();
+    const retryStartedAt = new Date();
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Organization" WHERE "id" = ${change.organizationId} FOR UPDATE
+      `;
+      const organization = await tx.organization.findUnique({
+        where: { id: change.organizationId },
+        select: { billingMutationLeaseToken: true, billingMutationLeaseUntil: true },
+      });
+      if (!organization) throw new Error("Organization not found");
+      if (organization.billingMutationLeaseToken
+        || (organization.billingMutationLeaseUntil
+          && organization.billingMutationLeaseUntil > retryStartedAt)) {
+        throw new BillingChangeInProgressError(change.id);
+      }
+      const current = await tx.organizationBillingChange.findUnique({ where: { id: change.id } });
+      if (!current || current.status !== "FAILED" || current.updatedAt.getTime() !== change.updatedAt.getTime()) {
+        throw new Error("Failed billing change changed before retry reconciliation");
+      }
+      await tx.organization.update({
+        where: { id: change.organizationId },
+        data: {
+          billingMutationLeaseToken: retryLeaseToken,
+          billingMutationLeaseUntil: new Date(retryStartedAt.getTime() + LEASE_MS),
+        },
+      });
+    });
+
+    let provider: RazorpaySubscription;
+    try {
+      provider = await getRazorpayClient().fetchSubscription(subscription.razorpaySubscriptionId);
+      assertProviderMutationResponse(provider);
+    } catch (error) {
+      await prisma.$transaction(async tx => {
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "Organization" WHERE "id" = ${change.organizationId} FOR UPDATE
+        `;
+        const current = await tx.organization.findUnique({
+          where: { id: change.organizationId },
+          select: { billingMutationLeaseToken: true },
+        });
+        if (current?.billingMutationLeaseToken !== retryLeaseToken) return;
+        await tx.organizationBillingChange.updateMany({
+          where: { id: change.id, status: "FAILED", updatedAt: change.updatedAt },
+          data: {
+            failureCategory: MANUAL_REVIEW_CATEGORY,
+            failureCode: "PROVIDER_RECONCILIATION_FAILED",
+            resolvedAt: null,
+            lastError: error instanceof Error
+              ? `Provider reconciliation failed: ${error.message}`
+              : "Provider reconciliation failed",
+          },
+        });
+        await releaseLease(tx, change.organizationId, retryLeaseToken);
+      });
+      throw error;
+    }
+
+    const definitelyRejected = SAFE_RETRY_FAILURE_CATEGORIES.has(change.failureCategory ?? "");
+    const sourceUnchanged = providerStillMatchesMutationSource(change, subscription, provider);
+    if (!definitelyRejected || !sourceUnchanged) {
+      await prisma.$transaction(async tx => {
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "Organization" WHERE "id" = ${change.organizationId} FOR UPDATE
+        `;
+        const current = await tx.organization.findUnique({
+          where: { id: change.organizationId },
+          select: { billingMutationLeaseToken: true },
+        });
+        if (current?.billingMutationLeaseToken !== retryLeaseToken) return;
+        await tx.organizationBillingChange.updateMany({
+          where: { id: change.id, status: "FAILED", updatedAt: change.updatedAt },
+          data: {
+            failureCategory: MANUAL_REVIEW_CATEGORY,
+            failureCode: sourceUnchanged
+              ? AMBIGUOUS_PROVIDER_FAILURE_CODE
+              : "PROVIDER_STATE_DIFFERS_FROM_MUTATION_SOURCE",
+            resolvedAt: null,
+            lastError: sourceUnchanged
+              ? "The earlier provider mutation outcome remains ambiguous and cannot be resubmitted automatically"
+              : "Provider state changed before retry; manual billing reconciliation is required",
+          },
+        });
+        await releaseLease(tx, change.organizationId, retryLeaseToken);
+      });
+      throw new Error("Billing mutation requires manual review before another provider mutation");
+    }
+
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Organization" WHERE "id" = ${change.organizationId} FOR UPDATE
+      `;
+      const organization = await tx.organization.findUnique({
+        where: { id: change.organizationId },
+        select: { billingMutationLeaseToken: true },
+      });
+      if (organization?.billingMutationLeaseToken !== retryLeaseToken) {
+        throw new Error("Billing mutation reconciliation lease was lost");
+      }
+      const requeued = await tx.organizationBillingChange.updateMany({
+        where: { id: change.id, status: "FAILED", updatedAt: change.updatedAt },
+        data: {
+          status: "QUEUED",
+          operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+          failedAt: null,
+          resolvedAt: null,
+          failureCategory: null,
+          failureCode: null,
+          lastError: null,
+        },
+      });
+      if (requeued.count !== 1) {
+        throw new Error("Failed billing change changed during retry reconciliation");
+      }
+      await releaseLease(tx, change.organizationId, retryLeaseToken);
     });
     return this.processNext(change.organizationId);
   }
@@ -592,7 +848,8 @@ export class BillingMutationService {
 
   private static async executeProviderMutation(
     change: OrganizationBillingChange,
-    leaseToken: string
+    leaseToken: string,
+    onProviderCallStarted: () => void
   ) {
     if (!change.organizationSubscriptionId) {
       throw new BillingMutationSourceChangedError();
@@ -617,16 +874,38 @@ export class BillingMutationService {
     const razorpay = getRazorpayClient();
     if (change.type === "UNSUPPORTED_METHOD_CANCELLATION") {
       await this.renewLeaseForProviderMutation(change.organizationId, leaseToken);
-      return razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
+      onProviderCallStarted();
+      const provider = await razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
         cancel_at_cycle_end: false,
       });
+      return {
+        provider,
+        subscriptionId: subscription.razorpaySubscriptionId,
+        sourcePlanId: subscription.razorpayPlanId,
+        sourceQuantity: subscription.quantity,
+        targetPlanId: subscription.razorpayPlanId,
+        targetQuantity: subscription.quantity,
+        scheduleChangeAt: "now" as const,
+        cancellation: true,
+      };
     }
     if (change.type === "CANCELLATION") {
       const immediate = subscription.status === "CREATED" || subscription.status === "AUTHENTICATED";
       await this.renewLeaseForProviderMutation(change.organizationId, leaseToken);
-      return razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
+      onProviderCallStarted();
+      const provider = await razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
         cancel_at_cycle_end: !immediate,
       });
+      return {
+        provider,
+        subscriptionId: subscription.razorpaySubscriptionId,
+        sourcePlanId: subscription.razorpayPlanId,
+        sourceQuantity: subscription.quantity,
+        targetPlanId: subscription.razorpayPlanId,
+        targetQuantity: subscription.quantity,
+        scheduleChangeAt: immediate ? "now" as const : "cycle_end" as const,
+        cancellation: true,
+      };
     }
     if (subscription.providerPaymentMethod !== "CARD") {
       throw new Error("UPI AutoPay and eMandate billing changes require a replacement mandate");
@@ -655,14 +934,26 @@ export class BillingMutationService {
     // before the subscription mutation so deadline recovery cannot overlap it.
     await this.renewLeaseForProviderMutation(change.organizationId, leaseToken);
 
-    return razorpay.updateSubscription(subscription.razorpaySubscriptionId, {
+    onProviderCallStarted();
+    const scheduleChangeAt = IMMEDIATE_TYPES.has(change.type) ? "now" as const : "cycle_end" as const;
+    const provider = await razorpay.updateSubscription(subscription.razorpaySubscriptionId, {
       plan_id: mapping?.razorpayPlanId,
       quantity: change.toQuantity ?? undefined,
       start_at: change.type === "TRIAL_SUBSCRIPTION_UPDATE"
         ? timestamp(subscription.providerStartAt)
         : undefined,
-      schedule_change_at: IMMEDIATE_TYPES.has(change.type) ? "now" : "cycle_end",
+      schedule_change_at: scheduleChangeAt,
       customer_notify: true,
     });
+    return {
+      provider,
+      subscriptionId: subscription.razorpaySubscriptionId,
+      sourcePlanId: subscription.razorpayPlanId,
+      sourceQuantity: subscription.quantity,
+      targetPlanId: mapping?.razorpayPlanId ?? subscription.razorpayPlanId,
+      targetQuantity: change.toQuantity ?? subscription.quantity,
+      scheduleChangeAt,
+      cancellation: false,
+    };
   }
 }

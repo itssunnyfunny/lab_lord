@@ -8,7 +8,11 @@ import {
   getReplacementUndoCutoffAt,
   getSafeReplacementCycleBoundary,
 } from "@/services/billingReplacementPolicy";
-import { setRazorpayClientForTests, type RazorpayPlanCatalogApiClient } from "@/lib/razorpay";
+import {
+  RazorpayApiError,
+  setRazorpayClientForTests,
+  type RazorpayPlanCatalogApiClient,
+} from "@/lib/razorpay";
 import { createBranch, createOrg, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
 
@@ -131,6 +135,7 @@ function fakeRazorpay(options: {
       status: input.cancel_at_cycle_end ? "active" : "cancelled",
       total_count: 120,
       quantity: 1,
+      has_scheduled_changes: input.cancel_at_cycle_end,
     })),
   };
   client.listSubscriptions = vi.fn(async () => ({
@@ -626,6 +631,170 @@ describe("serialized workspace billing mutations", () => {
       .resolves.toMatchObject({ billingMutationLeaseToken: null, billingMutationLeaseUntil: null });
   });
 
+  it.each([
+    ["network timeout", new RazorpayApiError("provider response was lost", { kind: "NETWORK" })],
+    ["provider 5xx", new RazorpayApiError("provider failed after accepting the request", {
+      kind: "PROVIDER",
+      status: 503,
+    })],
+    ["HTTP 408 timeout", new RazorpayApiError("provider request timed out", {
+      kind: "REQUEST",
+      status: 408,
+    })],
+  ])("quarantines an ambiguous %s without resubmitting it", async (_label, providerError) => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay();
+    vi.mocked(razorpay.updateSubscription).mockRejectedValueOnce(providerError);
+    setRazorpayClientForTests(razorpay);
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: `ambiguous-${providerError.kind}`,
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    await expect(BillingMutationService.processNext(organization.id)).rejects.toBe(providerError);
+    await expect(BillingMutationService.processNext(organization.id)).resolves.toBeNull();
+
+    expect(razorpay.updateSubscription).toHaveBeenCalledTimes(1);
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        operationStatus: "FAILED",
+        attemptCount: 1,
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "PROVIDER_MUTATION_OUTCOME_UNKNOWN",
+        resolvedAt: null,
+      });
+  });
+
+  it("quarantines a malformed success response after exactly one provider mutation", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay();
+    vi.mocked(razorpay.updateSubscription).mockResolvedValueOnce(null as never);
+    setRazorpayClientForTests(razorpay);
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "malformed-provider-success",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    await expect(BillingMutationService.processNext(organization.id))
+      .rejects.toThrow("malformed subscription mutation response");
+
+    expect(razorpay.updateSubscription).toHaveBeenCalledTimes(1);
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "PROVIDER_MUTATION_OUTCOME_UNKNOWN",
+      });
+  });
+
+  it("quarantines a well-formed success response that does not match the requested target", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay();
+    vi.mocked(razorpay.updateSubscription).mockResolvedValueOnce({
+      id: "sub_workspace",
+      entity: "subscription",
+      plan_id: "plan_standard",
+      status: "active",
+      total_count: 120,
+      quantity: 9,
+    });
+    setRazorpayClientForTests(razorpay);
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "mismatched-provider-success",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    await expect(BillingMutationService.processNext(organization.id))
+      .rejects.toThrow("does not match the requested billing mutation");
+
+    expect(razorpay.updateSubscription).toHaveBeenCalledTimes(1);
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "PROVIDER_MUTATION_OUTCOME_UNKNOWN",
+      });
+  });
+
+  it("keeps a definitely rejected provider mutation safely retryable", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay({ providerQuantity: 1 });
+    const rejected = new RazorpayApiError("invalid quantity", { kind: "REQUEST", status: 400 });
+    vi.mocked(razorpay.updateSubscription).mockRejectedValueOnce(rejected);
+    setRazorpayClientForTests(razorpay);
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "definitely-rejected-provider-mutation",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    await expect(BillingMutationService.processNext(organization.id)).rejects.toBe(rejected);
+
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        failureCategory: "PROVIDER_REJECTED",
+        failureCode: null,
+      });
+
+    await expect(BillingMutationService.retry(change.id))
+      .resolves.toMatchObject({ id: change.id, status: "AWAITING_PAYMENT" });
+    expect(razorpay.fetchSubscription).toHaveBeenCalledTimes(1);
+    expect(razorpay.updateSubscription).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(razorpay.fetchSubscription).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(razorpay.updateSubscription).mock.invocationCallOrder[1]!);
+  });
+
+  it("reconciles but never resubmits an ambiguous provider mutation", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay({ providerQuantity: 2 });
+    const timeout = new RazorpayApiError("response lost", { kind: "NETWORK" });
+    vi.mocked(razorpay.updateSubscription).mockRejectedValueOnce(timeout);
+    setRazorpayClientForTests(razorpay);
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "ambiguous-retry-reconciles-first",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+    await expect(BillingMutationService.processNext(organization.id)).rejects.toBe(timeout);
+
+    await expect(BillingMutationService.retry(change.id))
+      .rejects.toThrow("requires manual review");
+
+    expect(razorpay.fetchSubscription).toHaveBeenCalledTimes(1);
+    expect(razorpay.updateSubscription).toHaveBeenCalledTimes(1);
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "PROVIDER_STATE_DIFFERS_FROM_MUTATION_SOURCE",
+      });
+  });
+
   it("atomically discards a pending card branch before its quantity mutation is claimed", async () => {
     const { owner, organization, subscription } = await setup();
     const razorpay = fakeRazorpay({ providerQuantity: 1, includePaidInvoice: false });
@@ -753,7 +922,62 @@ describe("serialized workspace billing mutations", () => {
       .resolves.toMatchObject({ status: "PROCESSING", attemptCount: 1, failedAt: null });
   });
 
-  it("does not apply an old provider response after the current subscription is swapped", async () => {
+  it("does not let a stale success overwrite a manual-review owner-visible state", async () => {
+    const { owner, organization, subscription } = await setup();
+    const razorpay = fakeRazorpay();
+    let providerStarted!: () => void;
+    let releaseProvider!: () => void;
+    const started = new Promise<void>(resolve => { providerStarted = resolve; });
+    const providerRelease = new Promise<void>(resolve => { releaseProvider = resolve; });
+    vi.mocked(razorpay.updateSubscription).mockImplementationOnce(async (subscriptionId, input) => {
+      providerStarted();
+      await providerRelease;
+      return {
+        id: subscriptionId,
+        entity: "subscription",
+        plan_id: input.plan_id ?? "plan_standard",
+        status: "active",
+        total_count: 120,
+        quantity: input.quantity ?? 1,
+      };
+    });
+    setRazorpayClientForTests(razorpay);
+    const change = await BillingMutationService.enqueue({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE",
+      idempotencyKey: "manual-review-wins-over-stale-success",
+      fromQuantity: 1,
+      toQuantity: 2,
+      createdByUserId: owner.id,
+    });
+
+    const processing = BillingMutationService.processNext(organization.id);
+    await started;
+    await testPrisma.organizationBillingChange.update({
+      where: { id: change.id },
+      data: {
+        status: "FAILED",
+        operationStatus: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "OWNER_VISIBLE_REVIEW",
+        lastError: "Awaiting billing review",
+      },
+    });
+    releaseProvider();
+
+    await expect(processing).rejects.toThrow("superseded before finalization");
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        operationStatus: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "OWNER_VISIBLE_REVIEW",
+        lastError: "Awaiting billing review",
+      });
+  });
+
+  it("quarantines an old provider response after the current subscription is swapped", async () => {
     const { owner, organization, subscription } = await setup();
     const razorpay = fakeRazorpay();
     let providerStarted!: () => void;
@@ -833,7 +1057,12 @@ describe("serialized workspace billing mutations", () => {
         quantity: 7,
       });
     await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
-      .resolves.toMatchObject({ status: "SUPERSEDED", operationStatus: "ABANDONED" });
+      .resolves.toMatchObject({
+        status: "FAILED",
+        operationStatus: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "PROVIDER_MUTATION_OUTCOME_UNKNOWN",
+      });
   });
 
   it("serializes scheduled-change undo and replays the next queued intent", async () => {

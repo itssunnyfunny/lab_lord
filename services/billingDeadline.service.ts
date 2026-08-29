@@ -45,10 +45,30 @@ export async function recoverExpiredBillingMutationLease(
       return false;
     }
 
-    await tx.organizationBillingChange.updateMany({
+    const processing = await tx.organizationBillingChange.findFirst({
       where: { organizationId: organization.id, status: "PROCESSING" },
-      data: { status: "QUEUED", processingStartedAt: null, lastError: "Recovered expired mutation lease" },
+      orderBy: { sequence: "asc" },
+      select: { id: true, attemptCount: true, processingStartedAt: true },
     });
+    if (processing) {
+      await tx.organizationBillingChange.updateMany({
+        where: {
+          id: processing.id,
+          status: "PROCESSING",
+          attemptCount: processing.attemptCount,
+          processingStartedAt: processing.processingStartedAt,
+        },
+        data: {
+          status: "FAILED",
+          operationStatus: "FAILED",
+          failedAt: now,
+          resolvedAt: null,
+          failureCategory: "MANUAL_REVIEW_REQUIRED",
+          failureCode: "PROVIDER_MUTATION_LEASE_EXPIRED",
+          lastError: "Provider mutation lease expired with an unresolved outcome",
+        },
+      });
+    }
     const released = await tx.organization.updateMany({
       where: {
         id: organization.id,
@@ -84,10 +104,7 @@ export class BillingDeadlineService {
         status: "FAILED",
         type: { notIn: ["SUBSCRIPTION_AUTHORIZATION", "UNSUPPORTED_METHOD_CANCELLATION"] },
         replacementSubscriptionId: null,
-        OR: [
-          { failureCategory: null },
-          { failureCategory: { not: "MANUAL_REVIEW_REQUIRED" } },
-        ],
+        failureCategory: { in: ["PROVIDER_REJECTED", "PRE_PROVIDER_FAILURE"] },
         attemptCount: { lt: MAX_AUTOMATIC_ATTEMPTS },
         organization: { billingModelVersion: "WORKSPACE_V2" },
       },
