@@ -2041,11 +2041,13 @@ describe("BillingService SaaS subscriptions", () => {
   });
 
   it.each([
-    ["incomplete", "INCOMPLETE_PROVIDER_EVIDENCE", false],
-    ["ambiguous", "AMBIGUOUS_PROVIDER_EVIDENCE", true],
+    ["incomplete", "INCOMPLETE_PROVIDER_EVIDENCE", "count-mismatch", null],
+    ["ambiguous", "AMBIGUOUS_PROVIDER_EVIDENCE", "duplicate", null],
+    ["incomplete paid sibling", "INCOMPLETE_PROVIDER_EVIDENCE", "malformed-paid", null],
+    ["explicit-payment ambiguous", "AMBIGUOUS_PROVIDER_EVIDENCE", "duplicate", "pay_current_primary"],
   ] as const)(
     "quarantines %s current-period invoice evidence without advancing entitlement",
-    async (_label, failureCode, includeDuplicate) => {
+    async (_label, failureCode, collectionKind, explicitPaymentId) => {
       const fakeRazorpay = createFakeRazorpayClient();
       setRazorpayClientForTests(fakeRazorpay);
       const user = await createUser();
@@ -2091,7 +2093,7 @@ describe("BillingService SaaS subscriptions", () => {
       vi.mocked(fakeRazorpay.fetchSubscriptionInvoices).mockResolvedValue({
         entity: "collection",
         count: 2,
-        items: includeDuplicate
+        items: collectionKind === "duplicate"
           ? [
               firstInvoice,
               {
@@ -2100,12 +2102,30 @@ describe("BillingService SaaS subscriptions", () => {
                 payment_id: "pay_current_duplicate",
               },
             ]
-          : [firstInvoice],
+          : collectionKind === "malformed-paid"
+            ? [
+                firstInvoice,
+                {
+                  ...firstInvoice,
+                  id: "inv_current_incomplete",
+                  payment_id: null,
+                  billing_start: null,
+                  billing_end: null,
+                },
+              ]
+            : [firstInvoice],
       });
 
-      await expect(BillingReconciliationService.reconcileByOrganization(org.id))
+      await expect(BillingReconciliationService.reconcileByOrganization(
+        org.id,
+        explicitPaymentId ? { paymentId: explicitPaymentId } : {}
+      ))
         .rejects.toThrow();
-      expect(fakeRazorpay.fetchPayment).not.toHaveBeenCalled();
+      if (explicitPaymentId) {
+        expect(fakeRazorpay.fetchPayment).toHaveBeenCalledWith(explicitPaymentId);
+      } else {
+        expect(fakeRazorpay.fetchPayment).not.toHaveBeenCalled();
+      }
       await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
         where: { currentOrganizationId: org.id },
       })).resolves.toMatchObject({
@@ -2162,6 +2182,8 @@ describe("BillingService SaaS subscriptions", () => {
         amount_paid: 29900,
         amount_due: 0,
         currency: "INR",
+        billing_start: 1767225600,
+        billing_end: 1769904000,
         issued_at: 1767225600,
         paid_at: 1767225601,
       }],

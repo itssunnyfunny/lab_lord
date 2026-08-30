@@ -94,6 +94,18 @@ function currentPeriodInvoices(
     .sort((left, right) => (right.paid_at ?? 0) - (left.paid_at ?? 0));
 }
 
+function paidInvoiceHasIncompleteIdentity(invoice: RazorpayInvoice) {
+  if (normalizedProviderStatus(invoice.status) !== "paid") return false;
+  return typeof invoice.subscription_id !== "string"
+    || invoice.subscription_id.trim().length === 0
+    || typeof invoice.payment_id !== "string"
+    || invoice.payment_id.trim().length === 0
+    || !Number.isSafeInteger(invoice.billing_start)
+    || Number(invoice.billing_start) <= 0
+    || !Number.isSafeInteger(invoice.billing_end)
+    || Number(invoice.billing_end) <= Number(invoice.billing_start);
+}
+
 function hasProviderInvoiceCollectionShape(value: unknown): value is RazorpayInvoices {
   if (!value || typeof value !== "object") return false;
   const collection = value as Record<string, unknown>;
@@ -517,6 +529,15 @@ export class BillingReconciliationService {
         options,
       });
     }
+    if (invoices.items.some(paidInvoiceHasIncompleteIdentity)) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "INCOMPLETE_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
     const subscriptionEvidence = validateExactCommercialEvidence({
       intent,
       organizationId: localBeforeFetch.organizationId,
@@ -537,9 +558,19 @@ export class BillingReconciliationService {
         options,
       });
     }
-    const matchingCurrentInvoices = explicitPayment
-      ? []
-      : currentPeriodInvoices(providerSubscription, invoices.items);
+    if (invoices.items.some(invoice =>
+      normalizedProviderStatus(invoice.status) === "paid"
+      && invoice.subscription_id !== providerSubscription.id
+    )) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "MALFORMED_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
+    const matchingCurrentInvoices = currentPeriodInvoices(providerSubscription, invoices.items);
     if (matchingCurrentInvoices.length > 1) {
       return quarantineCommercialMismatch({
         local: localBeforeFetch,
