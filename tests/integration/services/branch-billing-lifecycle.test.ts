@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { BranchService } from "@/services/branch.service";
 import { EntitlementService } from "@/services/entitlement.service";
 import { BillingChangeInProgressError } from "@/lib/billingErrors";
-import { createBranch, createOrg, createUser } from "@/tests/factories";
+import { createBranch, createOrg, createSaasSubscription, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
 
 describe("workspace branch billing lifecycle", () => {
@@ -127,28 +127,24 @@ describe("workspace branch billing lifecycle", () => {
     const owner = await createUser();
     const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "WORKSPACE_V2" });
     const branch = await createBranch({ organizationId: organization.id });
-    const subscription = await testPrisma.organizationSubscription.create({
-      data: {
-        organizationId: organization.id,
-        providerMode: "TEST",
-        plan: "BASIC",
-        amount: 299,
-        amountSubunits: 29900,
-        totalCount: 120,
-        quantity: 1,
-        razorpayPlanId: "plan_basic",
-        currentOrganizationId: organization.id,
-        razorpaySubscriptionId: "sub_pending",
-        status: "PENDING",
-        providerPaymentMethod: "CARD",
-      },
+    const paidThrough = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const subscription = await createSaasSubscription({
+      organizationId: organization.id,
+      plan: "BASIC",
+      status: "PENDING",
+      confirmedPaidPeriod: true,
+      paidThrough,
+    });
+    await testPrisma.organizationSubscription.update({
+      where: { id: subscription.id },
+      data: { paidThrough: null },
     });
 
     await expect(EntitlementService.assertBranchWritable(branch.id))
       .rejects.toThrow("paid access period has ended");
     await testPrisma.organizationSubscription.update({
       where: { id: subscription.id },
-      data: { paidThrough: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+      data: { paidThrough },
     });
     await expect(EntitlementService.assertBranchWritable(branch.id)).resolves.toBeDefined();
     await testPrisma.organizationSubscription.update({
@@ -292,36 +288,14 @@ describe("workspace branch billing lifecycle", () => {
       where: { id: archived.id },
       data: { billingStatus: "ARCHIVED", billingArchivedAt: new Date() },
     });
-    await testPrisma.organizationSubscription.create({
-      data: {
-        organizationId: organization.id,
-        providerMode: "TEST",
-        plan: "BASIC",
-        amount: 299,
-        amountSubunits: 29900,
-        totalCount: 120,
-        quantity: 1,
-        razorpayPlanId: "plan_reactivate_rollback",
-        currentOrganizationId: organization.id,
-        razorpaySubscriptionId: "sub_reactivate_rollback",
-        status: "ACTIVE",
-        providerPaymentMethod: "CARD",
-        paidThrough: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      },
+    await createSaasSubscription({
+      organizationId: organization.id,
+      plan: "BASIC",
+      status: "ACTIVE",
     });
     await testPrisma.organization.update({
       where: { id: organization.id },
       data: { billingMutationSequence: 0 },
-    });
-    await testPrisma.organizationBillingChange.create({
-      data: {
-        organizationId: organization.id,
-        sequence: 1,
-        idempotencyKey: "existing-reactivation-sequence",
-        type: "LEGACY_TRANSITION",
-        status: "APPLIED",
-        operationStatus: "APPLIED",
-      },
     });
 
     await expect(BranchService.reactivateArchivedBranch(
