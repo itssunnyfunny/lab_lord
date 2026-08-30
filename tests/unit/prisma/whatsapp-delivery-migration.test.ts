@@ -63,11 +63,11 @@ describe("WhatsApp template delivery and collections migration", () => {
       expect(migration).toContain(`CREATE TYPE "${enumName}" AS ENUM`);
     }
 
-    expect(migration).toContain(
-      'ALTER TYPE "WhatsAppWebhookReceiptStatus"\n  ADD VALUE IF NOT EXISTS \'PROCESSING\''
+    expect(migration).toMatch(
+      /ALTER TYPE "WhatsAppWebhookReceiptStatus"\r?\n\s+ADD VALUE IF NOT EXISTS 'PROCESSING'/u
     );
-    expect(migration).toContain(
-      'ALTER TYPE "WhatsAppMessagePurpose"\n  ADD VALUE IF NOT EXISTS \'PAYMENT_CORRECTION\''
+    expect(migration).toMatch(
+      /ALTER TYPE "WhatsAppMessagePurpose"\r?\n\s+ADD VALUE IF NOT EXISTS 'PAYMENT_CORRECTION'/u
     );
 
     for (const action of [
