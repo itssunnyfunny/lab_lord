@@ -282,7 +282,10 @@ Every statement uses one of these labels:
   tuple. Reconciliation advances `paidThrough` only from that same tuple.
   Subscription, invoice, payment, provider mode, plan, quantity, offer, amount,
   currency, cadence, and period must agree; `amount_due` must be zero and the
-  invoice must be fully settled. (`services/billingPaidEvidence.service.ts`,
+  invoice must be fully settled. The fetched collection count must be complete,
+  every paid item must carry subscription/payment/period identity, and an
+  explicit payment ID never bypasses duplicate-current-period detection.
+  (`services/billingPaidEvidence.service.ts`,
   `services/billingReconciliation.service.ts`, paid-evidence and billing tests)
 - **Must preserve—enforced:** Every new subscription authorization or billing
   change freezes versioned commercial intent before its provider mutation. The

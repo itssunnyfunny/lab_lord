@@ -1388,7 +1388,9 @@ Use the repository scripts as follows:
   `--promote=<comma-separated-org-ids>`; selection alone does not apply changes.
   Promotion refuses any existing current subscription whose `paidThrough` or
   paid status lacks the same exact stored settlement evidence used by runtime
-  entitlement.
+  entitlement. Apply takes the organization mutation lock, reloads subscription
+  evidence, branch count, billing model, and mutation sequence, and reruns all
+  guards before promotion.
 - `scripts/reconcile-legacy-paid-entitlements.ts` is provider-read-only and a
   database dry run unless `--apply` is present. Both modes require an explicit
   organization allowlist and expected Razorpay mode. Apply additionally requires

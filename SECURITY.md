@@ -169,6 +169,10 @@ authentication boundaries, not open application routes.
   The invoice must belong to the exact subscription, be fully settled with zero
   amount due, match the captured payment and currency, and match the immutable
   authorized amount, plan, quantity, offer, cadence, and period.
+- Reconciliation must validate the complete returned invoice collection before
+  selecting evidence. Any paid sibling lacking subscription, payment, or period
+  identity is incomplete evidence; multiple plausible current paid invoices are
+  ambiguous even when a callback or webhook supplies an explicit payment ID.
 - Commercial authorization is immutable security evidence. Capture its
   versioned source/target identity, provider mode, operation, plan, quantity,
   offer-adjusted amount, currency, and cadence before the provider write; bind a
@@ -208,6 +212,9 @@ authentication boundaries, not open application routes.
   target and database fingerprint, re-read provider evidence before applying a
   fresh proposal hash, make no Razorpay mutation, and record unresolved or
   ambiguous evidence as manual review without advancing entitlement.
+- Workspace V2 promotion must take the organization mutation lock, reload the
+  current subscription/evidence, branch count, billing model, and mutation
+  sequence, and rerun every promotion guard before writing the V2 marker.
 - Replacement-candidate cancellation is a provider mutation with the same lease,
   attempt, stale-worker, and ambiguity rules. A timeout, malformed terminal
   response, or expired cancellation lease remains manual-review state. While it

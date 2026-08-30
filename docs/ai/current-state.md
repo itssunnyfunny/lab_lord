@@ -497,7 +497,10 @@ The repository contains both legacy billing and Workspace Billing V2.
   and captured payment with exact subscription/invoice/payment linkage, amount,
   currency, plan, quantity, offer, and period. Mismatches preserve confirmed
   local commercial state and enter auditable manual review; manual reconciliation
-  performs provider reads only and adopts state only from exact evidence.
+  performs provider reads only and adopts state only from exact evidence. The
+  full invoice collection is checked before selection: incomplete paid siblings
+  and duplicate current invoices remain manual review even when an explicit
+  payment ID is available.
 - Entitlement and billing-experience reads use the same stored-evidence resolver.
   `AUTHENTICATED` is mandate readiness, while `ACTIVE` and a raw future
   `paidThrough` remain insufficient. Legacy organizations without an exact
@@ -515,7 +518,9 @@ The repository contains both legacy billing and Workspace Billing V2.
   re-fetches provider evidence before its fenced transaction, never mutates
   Razorpay, and records ambiguous evidence for manual review.
 - `scripts/prepare-workspace-billing-rollout.ts` refuses promotion when an
-  existing subscription carries unbacked paid state.
+  existing subscription carries unbacked paid state and reruns the subscription,
+  evidence, branch-count, model, and mutation-sequence guards while holding the
+  organization lock.
 - `/api/cron/billing/hourly` processes billing deadlines and requires `Authorization: Bearer <CRON_SECRET>`.
 
 This subsystem is implemented but deliberately release-gated:
