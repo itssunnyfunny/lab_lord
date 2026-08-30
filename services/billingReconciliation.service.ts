@@ -1,32 +1,68 @@
+import { BillingManualReviewRequiredError } from "@/lib/billingErrors";
 import { prisma } from "@/lib/prisma";
 import {
+  fromRazorpaySubunits,
   getRazorpayClient,
   resolveRazorpayMode,
   type RazorpayInvoice,
   type RazorpayInvoices,
   type RazorpayPayment,
+  type RazorpayPlan,
   type RazorpaySubscription,
 } from "@/lib/razorpay";
+import {
+  commercialEvidenceMessage,
+  readCommercialIntentSnapshot,
+  validateExactCommercialEvidence,
+  type CommercialEvidenceMismatchCode,
+  type ExactCommercialEvidenceResult,
+} from "@/services/billingCommercialEvidence.service";
+import { recordBillingMutationAudit } from "@/services/billingMutationAudit.service";
 import {
   isSupportedProviderPaymentMethod,
   normalizeProviderPaymentMethod,
 } from "@/services/billingPaymentMethod.service";
 import type {
+  OrganizationBillingChange,
   OrganizationSubscription,
+  Prisma,
   SaasSubscriptionStatus,
 } from "@/app/generated/prisma/client";
+
+export type BillingCommercialEvidenceKind =
+  | "PENDING"
+  | "AUTHORIZATION_ONLY"
+  | "EXACT_SETTLEMENT"
+  | "DEFINITELY_REJECTED";
 
 type BillingReconciliationResult = {
   subscription: OrganizationSubscription;
   confirmedPaidPeriod: boolean;
+  evidenceKind: BillingCommercialEvidenceKind;
+  commercialIntentChangeId: string | null;
   payment: RazorpayPayment | null;
   invoices: RazorpayInvoices;
+};
+
+type ReconciliationOptions = {
+  paymentId?: string | null;
+  now?: Date;
+  commercialIntentChangeId?: string | null;
+  expectedAttemptCount?: number;
+  expectedVerificationStartedAt?: Date | null;
 };
 
 const SUBSCRIPTION_STATUSES = new Set([
   "CREATED", "AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "PAUSED",
   "CANCELLED", "COMPLETED", "EXPIRED",
 ]);
+const ACTIVE_AUTHORIZATION_STATUSES = [
+  "CHECKOUT_OPEN",
+  "VERIFYING",
+  "AWAITING_PROVIDER_CONFIRMATION",
+] as const;
+
+class StaleCommercialReconciliationError extends Error {}
 
 function status(value: string): SaasSubscriptionStatus {
   const normalized = value.toUpperCase();
@@ -37,41 +73,327 @@ function date(value: number | null | undefined) {
   return value && value > 0 ? new Date(value * 1000) : null;
 }
 
-function invoiceBelongsToCurrentPeriod(
+function currentPeriodInvoice(
   subscription: RazorpaySubscription,
-  invoice: RazorpayInvoice
+  invoices: RazorpayInvoice[]
 ) {
-  const periodStart = subscription.current_start;
-  if (!periodStart || invoice.subscription_id !== subscription.id) return false;
-  const invoiceTimestamp = invoice.issued_at ?? invoice.paid_at;
-  return Boolean(invoiceTimestamp && invoiceTimestamp >= periodStart);
+  return [...invoices]
+    .filter(invoice =>
+      invoice.status.toLowerCase() === "paid"
+      && invoice.payment_id
+      && invoice.subscription_id === subscription.id
+      && invoice.billing_start === subscription.current_start
+      && invoice.billing_end === subscription.current_end
+    )
+    .sort((left, right) => (right.paid_at ?? 0) - (left.paid_at ?? 0))[0] ?? null;
 }
 
-function hasConfirmedPaidPeriod(
-  subscription: RazorpaySubscription,
-  payment: RazorpayPayment | null,
-  invoice: RazorpayInvoice | null,
+async function resolveCommercialIntent(
+  local: OrganizationSubscription,
+  now: Date,
+  explicitChangeId?: string | null
+) {
+  if (explicitChangeId) {
+    return prisma.organizationBillingChange.findFirst({
+      where: {
+        id: explicitChangeId,
+        organizationId: local.organizationId,
+        OR: [
+          { organizationSubscriptionId: local.id },
+          { replacementSubscriptionId: local.id },
+        ],
+      },
+    });
+  }
+
+  const replacement = await prisma.organizationBillingChange.findUnique({
+    where: { replacementSubscriptionId: local.id },
+  });
+  if (replacement) return replacement;
+
+  const authorization = await prisma.organizationBillingChange.findFirst({
+    where: {
+      organizationId: local.organizationId,
+      organizationSubscriptionId: local.id,
+      type: "SUBSCRIPTION_AUTHORIZATION",
+      operationStatus: { in: [...ACTIVE_AUTHORIZATION_STATUSES] },
+    },
+    orderBy: { sequence: "desc" },
+  });
+  if (authorization) return authorization;
+
+  const activeChange = await prisma.organizationBillingChange.findFirst({
+    where: {
+      organizationId: local.organizationId,
+      organizationSubscriptionId: local.id,
+      replacementSubscriptionId: null,
+      type: { notIn: ["SUBSCRIPTION_AUTHORIZATION", "COMMERCIAL_RECONCILIATION"] },
+      commercialIntentVersion: 1,
+      OR: [
+        { status: "AWAITING_PAYMENT" },
+        { status: "SCHEDULED", effectiveAt: { lte: now } },
+      ],
+    },
+    orderBy: { sequence: "asc" },
+  });
+  if (activeChange) return activeChange;
+
+  if (!local.confirmedCommercialIntentChangeId) return null;
+  return prisma.organizationBillingChange.findFirst({
+    where: {
+      id: local.confirmedCommercialIntentChangeId,
+      organizationId: local.organizationId,
+    },
+  });
+}
+
+function commercialSnapshotOrNull(intent: OrganizationBillingChange | null) {
+  if (!intent) return null;
+  try {
+    return readCommercialIntentSnapshot(intent);
+  } catch {
+    return null;
+  }
+}
+
+async function revokeInvalidReplacementAccess(
+  tx: Prisma.TransactionClient,
+  intent: OrganizationBillingChange,
   now: Date
 ) {
-  const periodStart = date(subscription.current_start);
-  const periodEnd = date(subscription.current_end);
-  const captured = payment?.status === "captured" && payment.captured !== false;
-  return Boolean(
-    periodStart && periodEnd && periodStart <= now && periodEnd > now && periodEnd > periodStart
-    && invoice
-    && invoice.status === "paid"
-    && invoiceBelongsToCurrentPeriod(subscription, invoice)
-    && captured
-    && payment?.subscription_id === subscription.id
-    && payment.invoice_id === invoice.id
-    && invoice.payment_id === payment.id
-  );
+  if (!intent.replacementSubscriptionId
+    || !intent.accessGrantedAt
+    || intent.accessRevokedAt) return;
+  await tx.organizationBillingChange.updateMany({
+    where: { id: intent.id, accessRevokedAt: null },
+    data: { accessRevokedAt: now },
+  });
+  if (!intent.branchId) return;
+  if (["TRIAL_SUBSCRIPTION_UPDATE", "QUANTITY_INCREASE"].includes(intent.type)) {
+    await tx.branch.updateMany({
+      where: { id: intent.branchId, billingStatus: "ACTIVE" },
+      data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
+    });
+  }
+  if (intent.type === "BRANCH_REACTIVATION") {
+    await tx.branch.updateMany({
+      where: { id: intent.branchId, billingStatus: "ACTIVE" },
+      data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
+    });
+  }
+}
+
+async function quarantineCommercialMismatch(input: {
+  local: OrganizationSubscription;
+  intent: OrganizationBillingChange | null;
+  code: CommercialEvidenceMismatchCode;
+  now: Date;
+  options: ReconciliationOptions;
+}): Promise<never> {
+  const message = commercialEvidenceMessage(input.code);
+  const review = await prisma.$transaction(async tx => {
+    await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Organization" WHERE "id" = ${input.local.organizationId} FOR UPDATE
+    `;
+    const currentLocal = await tx.organizationSubscription.findUnique({
+      where: { id: input.local.id },
+    });
+    if (!currentLocal
+      || currentLocal.organizationId !== input.local.organizationId
+      || currentLocal.razorpaySubscriptionId !== input.local.razorpaySubscriptionId) {
+      throw new StaleCommercialReconciliationError();
+    }
+
+    const intent = input.intent
+      ? await tx.organizationBillingChange.findUnique({ where: { id: input.intent.id } })
+      : null;
+    const historicalIntent = Boolean(
+      intent
+      && currentLocal.confirmedCommercialIntentChangeId === intent.id
+      && intent.status === "APPLIED"
+      && intent.type !== "COMMERCIAL_RECONCILIATION"
+    );
+
+    if (intent && !historicalIntent) {
+      const exactCallbackAttempt = input.options.expectedAttemptCount != null
+        && input.options.expectedVerificationStartedAt != null;
+      const persisted = await tx.organizationBillingChange.updateMany({
+        where: exactCallbackAttempt
+          ? {
+              id: intent.id,
+              operationStatus: "VERIFYING",
+              attemptCount: input.options.expectedAttemptCount,
+              verificationStartedAt: input.options.expectedVerificationStartedAt,
+            }
+          : {
+              id: intent.id,
+              status: intent.status,
+              operationStatus: intent.operationStatus,
+              updatedAt: intent.updatedAt,
+              NOT: { status: { in: ["UNDONE", "SUPERSEDED"] } },
+            },
+        data: {
+          status: "FAILED",
+          operationStatus: "FAILED",
+          failureCategory: "MANUAL_REVIEW_REQUIRED",
+          failureCode: input.code,
+          lastError: message,
+          failedAt: input.now,
+          resolvedAt: null,
+        },
+      });
+      if (persisted.count !== 1) {
+        const latest = await tx.organizationBillingChange.findUnique({ where: { id: intent.id } });
+        if (latest?.failureCategory === "MANUAL_REVIEW_REQUIRED") return latest;
+        throw new StaleCommercialReconciliationError();
+      }
+      await revokeInvalidReplacementAccess(tx, intent, input.now);
+      await recordBillingMutationAudit(tx, {
+        changeId: intent.id,
+        organizationId: intent.organizationId,
+        organizationSubscriptionId: intent.organizationSubscriptionId ?? currentLocal.id,
+        attemptCount: intent.attemptCount,
+        outcome: intent.failureCategory === "MANUAL_REVIEW_REQUIRED"
+          ? "MANUAL_REVIEW_RETAINED"
+          : "MANUAL_REVIEW_REQUIRED",
+        failureCode: input.code,
+      });
+      return tx.organizationBillingChange.findUniqueOrThrow({ where: { id: intent.id } });
+    }
+
+    const sourceIntentId = intent?.id ?? "missing";
+    const idempotencyKey = [
+      "commercial-reconciliation",
+      currentLocal.organizationId,
+      currentLocal.id,
+      sourceIntentId,
+    ].join(":");
+    const existing = await tx.organizationBillingChange.findUnique({
+      where: { idempotencyKey },
+    });
+    if (existing) {
+      const retained = await tx.organizationBillingChange.update({
+        where: { id: existing.id },
+        data: {
+          status: "FAILED",
+          operationStatus: "FAILED",
+          failureCategory: "MANUAL_REVIEW_REQUIRED",
+          failureCode: input.code,
+          lastError: message,
+          failedAt: existing.failedAt ?? input.now,
+          resolvedAt: null,
+        },
+      });
+      await recordBillingMutationAudit(tx, {
+        changeId: retained.id,
+        organizationId: retained.organizationId,
+        organizationSubscriptionId: retained.organizationSubscriptionId,
+        attemptCount: retained.attemptCount,
+        outcome: "MANUAL_REVIEW_RETAINED",
+        failureCode: input.code,
+      });
+      return retained;
+    }
+
+    // Some historical/manual rows predate the organization sequence counter.
+    // The organization row is locked above, so advance from both durable
+    // sources instead of assuming the counter is already caught up.
+    const [organization, existingSequence] = await Promise.all([
+      tx.organization.findUniqueOrThrow({
+        where: { id: currentLocal.organizationId },
+        select: { billingMutationSequence: true },
+      }),
+      tx.organizationBillingChange.aggregate({
+        where: { organizationId: currentLocal.organizationId },
+        _max: { sequence: true },
+      }),
+    ]);
+    const nextSequence = Math.max(
+      organization.billingMutationSequence,
+      existingSequence._max.sequence ?? 0
+    ) + 1;
+    await tx.organization.update({
+      where: { id: currentLocal.organizationId },
+      data: { billingMutationSequence: nextSequence },
+    });
+    const snapshot = commercialSnapshotOrNull(intent);
+    const created = await tx.organizationBillingChange.create({
+      data: {
+        organizationId: currentLocal.organizationId,
+        organizationSubscriptionId: currentLocal.id,
+        sequence: nextSequence,
+        idempotencyKey,
+        type: "COMMERCIAL_RECONCILIATION",
+        status: "FAILED",
+        operationStatus: "FAILED",
+        fromPlan: currentLocal.plan,
+        toPlan: snapshot?.authorizedPlan ?? currentLocal.plan,
+        fromQuantity: currentLocal.quantity,
+        toQuantity: snapshot?.authorizedQuantity ?? currentLocal.quantity,
+        ...(snapshot ?? {}),
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: input.code,
+        lastError: message,
+        failedAt: input.now,
+      },
+    });
+    await recordBillingMutationAudit(tx, {
+      changeId: created.id,
+      organizationId: created.organizationId,
+      organizationSubscriptionId: created.organizationSubscriptionId,
+      attemptCount: created.attemptCount,
+      outcome: "MANUAL_REVIEW_REQUIRED",
+      failureCode: input.code,
+    });
+    return created;
+  });
+
+  throw new BillingManualReviewRequiredError(review.id, message);
+}
+
+function evidenceMatchesStoredInvoice(input: {
+  stored: {
+    commercialEvidenceVersion: number | null;
+    commercialIntentChangeId: string | null;
+    providerMode: string | null;
+    razorpaySubscriptionId: string | null;
+    razorpayPlanId: string | null;
+    providerQuantity: number | null;
+    razorpayOfferId: string | null;
+    paymentAmountSubunits: number | null;
+    paymentCurrency: string | null;
+    paymentStatus: string | null;
+    paymentCaptured: boolean | null;
+    periodStart: Date | null;
+    periodEnd: Date | null;
+  };
+  intentId: string;
+  providerMode: string;
+  providerSubscription: RazorpaySubscription;
+  payment: RazorpayPayment;
+  periodStart: Date;
+  periodEnd: Date;
+}) {
+  const stored = input.stored;
+  return stored.commercialEvidenceVersion === 1
+    && stored.commercialIntentChangeId === input.intentId
+    && stored.providerMode === input.providerMode
+    && stored.razorpaySubscriptionId === input.providerSubscription.id
+    && stored.razorpayPlanId === input.providerSubscription.plan_id
+    && stored.providerQuantity === input.providerSubscription.quantity
+    && stored.razorpayOfferId === (input.providerSubscription.offer_id ?? null)
+    && stored.paymentAmountSubunits === input.payment.amount
+    && stored.paymentCurrency === input.payment.currency.toUpperCase()
+    && stored.paymentStatus?.toLowerCase() === "captured"
+    && stored.paymentCaptured === true
+    && stored.periodStart?.getTime() === input.periodStart.getTime()
+    && stored.periodEnd?.getTime() === input.periodEnd.getTime();
 }
 
 export class BillingReconciliationService {
   static async reconcileByOrganization(
     organizationId: string,
-    options: { paymentId?: string | null; now?: Date } = {}
+    options: ReconciliationOptions = {}
   ) {
     const local = await prisma.organizationSubscription.findUnique({
       where: { currentOrganizationId: organizationId },
@@ -82,7 +404,7 @@ export class BillingReconciliationService {
 
   static async reconcileProviderSubscription(
     razorpaySubscriptionId: string,
-    options: { paymentId?: string | null; now?: Date } = {},
+    options: ReconciliationOptions = {},
     staleRetry = 0
   ): Promise<BillingReconciliationResult> {
     const now = options.now ?? new Date();
@@ -96,378 +418,602 @@ export class BillingReconciliationService {
         `Subscription provider mode ${localBeforeFetch.providerMode} cannot be reconciled in ${providerMode} mode`
       );
     }
+    const [intent, organizationSnapshot, sourceReplacement] = await Promise.all([
+      resolveCommercialIntent(localBeforeFetch, now, options.commercialIntentChangeId),
+      prisma.organization.findUnique({
+        where: { id: localBeforeFetch.organizationId },
+        select: { billingMutationSequence: true },
+      }),
+      prisma.organizationBillingChange.findFirst({
+        where: {
+          organizationId: localBeforeFetch.organizationId,
+          organizationSubscriptionId: localBeforeFetch.id,
+          replacementSubscriptionId: { not: null },
+          status: "SCHEDULED",
+          effectiveAt: { not: null },
+        },
+        orderBy: { sequence: "desc" },
+      }),
+    ]);
+    if (!organizationSnapshot) throw new Error("Organization not found");
+
     const razorpay = getRazorpayClient();
     const [providerSubscription, invoices, explicitPayment] = await Promise.all([
       razorpay.fetchSubscription(razorpaySubscriptionId),
       razorpay.fetchSubscriptionInvoices(razorpaySubscriptionId),
       options.paymentId ? razorpay.fetchPayment(options.paymentId) : Promise.resolve(null),
     ]);
-    if (providerSubscription.id !== razorpaySubscriptionId) {
-      throw new Error("Razorpay subscription response mismatch during reconciliation");
-    }
-    if (explicitPayment && explicitPayment.subscription_id !== razorpaySubscriptionId) {
-      throw new Error("Razorpay payment does not belong to this subscription");
-    }
-    const explicitPaidInvoice = explicitPayment?.invoice_id
-      ? invoices.items.find(invoice =>
-          invoice.id === explicitPayment.invoice_id
-          && invoice.status === "paid"
-          && invoiceBelongsToCurrentPeriod(providerSubscription, invoice)
-        ) ?? null
-      : null;
-    const paidInvoice = explicitPaidInvoice ?? [...invoices.items]
-      .filter(invoice =>
-        invoice.status === "paid"
-        && invoice.payment_id
-        && invoiceBelongsToCurrentPeriod(providerSubscription, invoice)
-      )
-      .sort((a, b) => (b.paid_at ?? 0) - (a.paid_at ?? 0))[0] ?? null;
-    const confirmedPayment = explicitPayment
-      ?? (paidInvoice?.payment_id ? await razorpay.fetchPayment(paidInvoice.payment_id) : null);
-    const confirmedMethod = normalizeProviderPaymentMethod(confirmedPayment?.method);
-    const providerSubscriptionMethod = normalizeProviderPaymentMethod(
-      providerSubscription.payment_method
-    );
-    const confirmedPaidPeriod = isSupportedProviderPaymentMethod(confirmedMethod)
-      && hasConfirmedPaidPeriod(
-      providerSubscription,
-      confirmedPayment,
-      paidInvoice,
-      now
-      );
-
-    const reconciliation = await prisma.$transaction(async tx => {
-      await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id" FROM "Organization" WHERE "id" = ${localBeforeFetch.organizationId} FOR UPDATE
-      `;
-      const local = await tx.organizationSubscription.findUnique({
-        where: { razorpaySubscriptionId },
-      });
-      if (!local) throw new Error("Subscription not found");
-      if (local.updatedAt.getTime() !== localBeforeFetch.updatedAt.getTime()) {
-        return { stale: true as const };
-      }
-
-      const linkedReplacementChange = local.pendingReplacementOrganizationId
-        ? await tx.organizationBillingChange.findUnique({
-            where: { replacementSubscriptionId: local.id },
-          })
-        : null;
-      const providerPlan = await tx.saasRazorpayPlan.findFirst({
-        where: {
-          razorpayPlanId: providerSubscription.plan_id,
-          providerMode,
-        },
-      });
-      const unrecognizedReplacementPlan = providerSubscription.plan_id !== local.razorpayPlanId
-        && !providerPlan
-        && linkedReplacementChange != null;
-      if (providerSubscription.plan_id !== local.razorpayPlanId
-        && !providerPlan
-        && !linkedReplacementChange) {
-        throw new Error("Razorpay subscription references an unrecognized plan in this provider mode");
-      }
-      const linkedSourceReplacementChange = linkedReplacementChange
+    const selectedInvoice = explicitPayment?.invoice_id
+      ? invoices.items.find(invoice => invoice.id === explicitPayment.invoice_id) ?? null
+      : explicitPayment
         ? null
-        : await tx.organizationBillingChange.findFirst({
-            where: {
-              organizationSubscriptionId: local.id,
-              replacementSubscriptionId: { not: null },
-              status: { in: ["AWAITING_PAYMENT", "SCHEDULED", "FAILED"] },
-            },
-            orderBy: { sequence: "desc" },
-          });
-      const providerQuantity = providerSubscription.quantity ?? local.quantity;
-      const replacementTargetMismatch = Boolean(
-        linkedReplacementChange
-        && (
-          unrecognizedReplacementPlan
-          ||
-          providerSubscription.plan_id !== local.razorpayPlanId
-          || providerQuantity !== (linkedReplacementChange.toQuantity ?? local.quantity)
-          || (linkedReplacementChange.toPlan != null
-            && providerPlan?.plan != null
-            && linkedReplacementChange.toPlan !== providerPlan.plan)
-        )
-      );
-      if (replacementTargetMismatch && linkedReplacementChange) {
-        await tx.organizationBillingChange.update({
-          where: { id: linkedReplacementChange.id },
-          data: {
-            status: "FAILED",
-            operationStatus: "FAILED",
-            failureCategory: "MANUAL_REVIEW_REQUIRED",
-            lastError: "Razorpay replacement no longer matches the authorized plan and quantity",
-            failedAt: now,
-            accessRevokedAt: linkedReplacementChange.accessGrantedAt
-              && !linkedReplacementChange.accessRevokedAt
-              ? now
-              : undefined,
-          },
-        });
-        if (linkedReplacementChange.accessGrantedAt
-          && !linkedReplacementChange.accessRevokedAt
-          && linkedReplacementChange.branchId) {
-          if (linkedReplacementChange.type === "QUANTITY_INCREASE") {
-            await tx.branch.updateMany({
-              where: { id: linkedReplacementChange.branchId, billingStatus: "ACTIVE" },
-              data: { billingStatus: "PENDING_ACTIVATION", billingActivatedAt: null },
-            });
-          }
-          if (linkedReplacementChange.type === "BRANCH_REACTIVATION") {
-            await tx.branch.updateMany({
-              where: { id: linkedReplacementChange.branchId, billingStatus: "ACTIVE" },
-              data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
-            });
-          }
-        }
-      }
-      const pendingAuthorization = await tx.organizationBillingChange.findFirst({
-        where: {
-          organizationId: local.organizationId,
-          organizationSubscriptionId: local.id,
-          type: "SUBSCRIPTION_AUTHORIZATION",
-          operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
-        },
-        orderBy: { sequence: "desc" },
+        : currentPeriodInvoice(providerSubscription, invoices.items);
+    const payment = explicitPayment
+      ?? (selectedInvoice?.payment_id
+        ? await razorpay.fetchPayment(selectedInvoice.payment_id)
+        : null);
+    const providerPlan: RazorpayPlan | null = selectedInvoice && razorpay.fetchPlan
+      ? await razorpay.fetchPlan(providerSubscription.plan_id)
+      : null;
+
+    const evidence = validateExactCommercialEvidence({
+      intent,
+      organizationId: localBeforeFetch.organizationId,
+      providerMode,
+      localSubscription: localBeforeFetch,
+      providerSubscription,
+      payment,
+      expectedPaymentId: options.paymentId ?? selectedInvoice?.payment_id ?? null,
+      invoice: selectedInvoice,
+      providerPlan,
+      now,
+    });
+
+    if (payment?.status.toLowerCase() === "failed"
+      && evidence.kind === "MISMATCH"
+      && evidence.code === "PAYMENT_NOT_AUTHORIZED") {
+      return {
+        subscription: localBeforeFetch,
+        confirmedPaidPeriod: false,
+        evidenceKind: "DEFINITELY_REJECTED",
+        commercialIntentChangeId: intent?.id ?? null,
+        payment,
+        invoices,
+      };
+    }
+    if (evidence.kind === "MISMATCH") {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: evidence.code,
+        now,
+        options,
       });
-      if (pendingAuthorization && (
-        providerSubscription.plan_id !== local.razorpayPlanId
-        || (pendingAuthorization.toPlan != null && pendingAuthorization.toPlan !== local.plan)
-        || (pendingAuthorization.toQuantity != null
-          && (providerSubscription.quantity ?? 1) !== pendingAuthorization.toQuantity)
-      )) {
-        throw new Error("Razorpay authorization does not match the expected plan and branch quantity");
-      }
-      const pendingChange = confirmedPaidPeriod
-        ? await tx.organizationBillingChange.findFirst({
+    }
+    if (evidence.kind === "PENDING") {
+      const scheduledReplacement = sourceReplacement;
+      const scheduledAt = scheduledReplacement?.effectiveAt
+        && providerSubscription.has_scheduled_changes === true
+        && providerSubscription.change_scheduled_at
+        && providerSubscription.change_scheduled_at > 0
+        ? new Date(providerSubscription.change_scheduled_at * 1000)
+        : null;
+      if (scheduledReplacement
+        && scheduledAt
+        && scheduledAt.getTime() === scheduledReplacement.effectiveAt!.getTime()) {
+        const recovered = await prisma.$transaction(async tx => {
+          await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM "Organization" WHERE "id" = ${localBeforeFetch.organizationId} FOR UPDATE
+          `;
+          const [organization, local, lockedIntent, lockedReplacement] = await Promise.all([
+            tx.organization.findUniqueOrThrow({
+              where: { id: localBeforeFetch.organizationId },
+              select: { billingMutationSequence: true },
+            }),
+            tx.organizationSubscription.findUniqueOrThrow({ where: { id: localBeforeFetch.id } }),
+            intent
+              ? tx.organizationBillingChange.findUnique({ where: { id: intent.id } })
+              : Promise.resolve(null),
+            tx.organizationBillingChange.findUnique({ where: { id: scheduledReplacement.id } }),
+          ]);
+          if (organization.billingMutationSequence !== organizationSnapshot.billingMutationSequence
+            || local.updatedAt.getTime() !== localBeforeFetch.updatedAt.getTime()
+            || lockedIntent?.updatedAt.getTime() !== intent?.updatedAt.getTime()
+            || lockedReplacement?.updatedAt.getTime() !== scheduledReplacement.updatedAt.getTime()
+            || lockedReplacement?.status !== "SCHEDULED"
+            || lockedReplacement.effectiveAt?.getTime() !== scheduledAt.getTime()) {
+            return { stale: true as const };
+          }
+          const stored = await tx.organizationSubscription.update({
+            where: { id: local.id },
+            data: {
+              cancelAtCycleEnd: true,
+              cancellationRequestedAt: local.cancellationRequestedAt ?? now,
+              cancellationScheduledAt: scheduledAt,
+              lastReconciledAt: now,
+            },
+          });
+          const confirmed = await tx.organizationBillingChange.updateMany({
             where: {
+              id: lockedReplacement.id,
+              status: "SCHEDULED",
+              operationStatus: lockedReplacement.operationStatus,
+              updatedAt: lockedReplacement.updatedAt,
+            },
+            data: {
+              operationStatus: "SCHEDULED",
+              providerConfirmedAt: lockedReplacement.providerConfirmedAt ?? now,
+              lastError: null,
+            },
+          });
+          if (confirmed.count !== 1) return { stale: true as const };
+          return { stale: false as const, stored };
+        });
+        if (recovered.stale) {
+          if (staleRetry >= 2) throw new StaleCommercialReconciliationError();
+          return this.reconcileProviderSubscription(razorpaySubscriptionId, options, staleRetry + 1);
+        }
+        return {
+          subscription: recovered.stored,
+          confirmedPaidPeriod: false,
+          evidenceKind: "PENDING",
+          commercialIntentChangeId: intent?.id ?? null,
+          payment,
+          invoices,
+        };
+      }
+      return {
+        subscription: localBeforeFetch,
+        confirmedPaidPeriod: false,
+        evidenceKind: "PENDING",
+        commercialIntentChangeId: intent?.id ?? null,
+        payment,
+        invoices,
+      };
+    }
+
+    const paymentMethod = normalizeProviderPaymentMethod(payment?.method);
+    if (!payment || !isSupportedProviderPaymentMethod(paymentMethod)) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "MALFORMED_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
+
+    if (evidence.kind === "AUTHORIZATION_ONLY") {
+      try {
+        const authorization = await prisma.$transaction(async tx => {
+          await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM "Organization" WHERE "id" = ${localBeforeFetch.organizationId} FOR UPDATE
+          `;
+          const organization = await tx.organization.findUniqueOrThrow({
+            where: { id: localBeforeFetch.organizationId },
+            select: { billingMutationSequence: true },
+          });
+          const local = await tx.organizationSubscription.findUniqueOrThrow({
+            where: { id: localBeforeFetch.id },
+          });
+          const lockedIntent = intent
+            ? await tx.organizationBillingChange.findUnique({ where: { id: intent.id } })
+            : null;
+          if (organization.billingMutationSequence !== organizationSnapshot.billingMutationSequence
+            || local.updatedAt.getTime() !== localBeforeFetch.updatedAt.getTime()
+            || lockedIntent?.updatedAt.getTime() !== intent?.updatedAt.getTime()) {
+            return { stale: true as const };
+          }
+          if (options.expectedAttemptCount != null
+            && options.expectedVerificationStartedAt != null
+            && (lockedIntent?.operationStatus !== "VERIFYING"
+              || lockedIntent.attemptCount !== options.expectedAttemptCount
+              || lockedIntent.verificationStartedAt?.getTime()
+                !== options.expectedVerificationStartedAt.getTime())) {
+            return { stale: true as const };
+          }
+          const lockedEvidence = validateExactCommercialEvidence({
+            intent: lockedIntent,
+            organizationId: local.organizationId,
+            providerMode,
+            localSubscription: local,
+            providerSubscription,
+            payment,
+            expectedPaymentId: options.paymentId ?? payment.id,
+            invoice: null,
+            providerPlan: null,
+            now,
+          });
+          if (lockedEvidence.kind !== "AUTHORIZATION_ONLY" || !lockedIntent) {
+            return { mismatch: lockedEvidence };
+          }
+          let providerStatus = status(providerSubscription.status);
+          if (providerStatus === "CREATED" && paymentMethod !== "EMANDATE") {
+            providerStatus = "AUTHENTICATED";
+          }
+          const stored = await tx.organizationSubscription.update({
+            where: { id: local.id },
+            data: {
+              status: providerStatus,
+              authPaymentId: payment.id,
+              providerPaymentMethod: paymentMethod,
+              confirmedCommercialIntentChangeId: lockedIntent.id,
+              providerStartAt: date(providerSubscription.start_at),
+              authorizationExpiresAt: date(providerSubscription.expire_by),
+              currentStart: date(providerSubscription.current_start),
+              currentEnd: date(providerSubscription.current_end),
+              chargeAt: date(providerSubscription.charge_at),
+              endedAt: date(providerSubscription.ended_at),
+              lastReconciledAt: now,
+            },
+          });
+          return { stale: false as const, stored };
+        });
+        if ("stale" in authorization && authorization.stale) {
+          if (staleRetry >= 2) throw new StaleCommercialReconciliationError();
+          return this.reconcileProviderSubscription(razorpaySubscriptionId, options, staleRetry + 1);
+        }
+        if ("mismatch" in authorization) {
+          const mismatch = authorization.mismatch as ExactCommercialEvidenceResult;
+          return quarantineCommercialMismatch({
+            local: localBeforeFetch,
+            intent,
+            code: mismatch.kind === "MISMATCH"
+              ? mismatch.code
+              : "MALFORMED_PROVIDER_EVIDENCE",
+            now,
+            options,
+          });
+        }
+        return {
+          subscription: authorization.stored,
+          confirmedPaidPeriod: false,
+          evidenceKind: "AUTHORIZATION_ONLY",
+          commercialIntentChangeId: intent?.id ?? null,
+          payment,
+          invoices,
+        };
+      } catch (error) {
+        if (error instanceof BillingManualReviewRequiredError) throw error;
+        return quarantineCommercialMismatch({
+          local: localBeforeFetch,
+          intent,
+          code: "COMMERCIAL_FINALIZATION_FAILED",
+          now,
+          options,
+        });
+      }
+    }
+
+    if (!selectedInvoice || !providerPlan || evidence.kind !== "EXACT_SETTLEMENT" || !intent) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "MALFORMED_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
+    const settlement = evidence;
+
+    try {
+      const reconciliation = await prisma.$transaction(async tx => {
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "Organization" WHERE "id" = ${localBeforeFetch.organizationId} FOR UPDATE
+        `;
+        const organization = await tx.organization.findUniqueOrThrow({
+          where: { id: localBeforeFetch.organizationId },
+          select: { billingMutationSequence: true },
+        });
+        const local = await tx.organizationSubscription.findUniqueOrThrow({
+          where: { id: localBeforeFetch.id },
+        });
+        const lockedIntent = await tx.organizationBillingChange.findUnique({
+          where: { id: intent.id },
+        });
+        if (organization.billingMutationSequence !== organizationSnapshot.billingMutationSequence
+          || local.updatedAt.getTime() !== localBeforeFetch.updatedAt.getTime()
+          || lockedIntent?.updatedAt.getTime() !== intent.updatedAt.getTime()) {
+          return { stale: true as const };
+        }
+        const lockedEvidence = validateExactCommercialEvidence({
+          intent: lockedIntent,
+          organizationId: local.organizationId,
+          providerMode,
+          localSubscription: local,
+          providerSubscription,
+          payment,
+          expectedPaymentId: options.paymentId ?? payment.id,
+          invoice: selectedInvoice,
+          providerPlan,
+          now,
+        });
+        if (lockedEvidence.kind !== "EXACT_SETTLEMENT" || !lockedIntent) {
+          return { mismatch: lockedEvidence };
+        }
+
+        const existingEvidence = await tx.organizationSubscriptionInvoice.findUnique({
+          where: { razorpayInvoiceId: selectedInvoice.id },
+        });
+        if (existingEvidence?.commercialEvidenceVersion != null
+          && !evidenceMatchesStoredInvoice({
+            stored: existingEvidence,
+            intentId: lockedIntent.id,
+            providerMode,
+            providerSubscription,
+            payment,
+            periodStart: lockedEvidence.periodStart,
+            periodEnd: lockedEvidence.periodEnd,
+          })) {
+          return {
+            mismatch: {
+              kind: "MISMATCH" as const,
+              code: "MALFORMED_PROVIDER_EVIDENCE" as const,
+            },
+          };
+        }
+
+        for (const invoice of invoices.items) {
+          const exactInvoice = invoice.id === selectedInvoice.id;
+          await tx.organizationSubscriptionInvoice.upsert({
+            where: { razorpayInvoiceId: invoice.id },
+            create: {
               organizationId: local.organizationId,
               organizationSubscriptionId: local.id,
-              replacementSubscriptionId: null,
-              status: { in: ["AWAITING_PAYMENT", "SCHEDULED"] },
+              razorpayInvoiceId: invoice.id,
+              razorpayPaymentId: invoice.payment_id ?? null,
+              status: invoice.status,
+              amountSubunits: invoice.amount,
+              amountPaidSubunits: invoice.amount_paid,
+              amountDueSubunits: invoice.amount_due,
+              currency: invoice.currency.toUpperCase(),
+              paymentMethod: exactInvoice ? paymentMethod : "UNKNOWN",
+              periodStart: date(invoice.billing_start),
+              periodEnd: date(invoice.billing_end),
+              issuedAt: date(invoice.issued_at),
+              paidAt: date(invoice.paid_at),
+              ...(exactInvoice
+                ? {
+                    commercialEvidenceVersion: 1,
+                    commercialIntentChangeId: lockedIntent.id,
+                    providerMode,
+                    razorpaySubscriptionId: providerSubscription.id,
+                    razorpayPlanId: providerSubscription.plan_id,
+                    providerQuantity: providerSubscription.quantity!,
+                    razorpayOfferId: providerSubscription.offer_id ?? null,
+                    paymentAmountSubunits: payment.amount,
+                    paymentCurrency: payment.currency.toUpperCase(),
+                    paymentStatus: payment.status.toLowerCase(),
+                    paymentCaptured: payment.captured !== false,
+                    evidenceConfirmedAt: now,
+                    evidenceFailureCode: null,
+                  }
+                : {}),
             },
-            orderBy: { sequence: "asc" },
-          })
-        : null;
-      const paidInvoiceAt = date(paidInvoice?.paid_at);
-      const changeSubmittedAt = pendingChange?.processingStartedAt ?? pendingChange?.createdAt ?? null;
-      const requiresFreshMutationPayment = Boolean(
-        pendingChange
-        && ["PLAN_UPGRADE", "PLAN_DOWNGRADE", "QUANTITY_INCREASE", "BRANCH_REMOVAL", "BRANCH_REACTIVATION"]
-          .includes(pendingChange.type)
-      );
-      const freshMutationPaymentConfirmed = !requiresFreshMutationPayment || Boolean(
-        paidInvoice
-        && paidInvoiceAt
-        && changeSubmittedAt
-        && confirmedPayment?.status === "captured"
-        && confirmedPayment.invoice_id === paidInvoice.id
-        && Math.floor(paidInvoiceAt.getTime() / 1000) >= Math.floor(changeSubmittedAt.getTime() / 1000)
-      );
-      const providerMatchesChange = Boolean(
-        pendingChange
-        && freshMutationPaymentConfirmed
-        && (!pendingChange.toPlan || pendingChange.toPlan === providerPlan?.plan)
-        && (!pendingChange.toQuantity || pendingChange.toQuantity === providerSubscription.quantity)
-        && (!pendingChange.effectiveAt || pendingChange.effectiveAt <= now)
-      );
-      const confirmedPlanChange = providerMatchesChange && pendingChange?.toPlan
-        ? providerPlan
-        : null;
+            update: {
+              razorpayPaymentId: invoice.payment_id ?? undefined,
+              status: invoice.status,
+              amountPaidSubunits: invoice.amount_paid,
+              amountDueSubunits: invoice.amount_due,
+              periodStart: date(invoice.billing_start),
+              periodEnd: date(invoice.billing_end),
+              paidAt: date(invoice.paid_at),
+              ...(exactInvoice
+                ? {
+                    paymentMethod,
+                    commercialEvidenceVersion: 1,
+                    commercialIntentChangeId: lockedIntent.id,
+                    providerMode,
+                    razorpaySubscriptionId: providerSubscription.id,
+                    razorpayPlanId: providerSubscription.plan_id,
+                    providerQuantity: providerSubscription.quantity!,
+                    razorpayOfferId: providerSubscription.offer_id ?? null,
+                    paymentAmountSubunits: payment.amount,
+                    paymentCurrency: payment.currency.toUpperCase(),
+                    paymentStatus: payment.status.toLowerCase(),
+                    paymentCaptured: payment.captured !== false,
+                    evidenceConfirmedAt: existingEvidence?.evidenceConfirmedAt ?? now,
+                    evidenceFailureCode: null,
+                  }
+                : {}),
+            },
+          });
+        }
 
-      for (const invoice of invoices.items) {
-        await tx.organizationSubscriptionInvoice.upsert({
-          where: { razorpayInvoiceId: invoice.id },
-          create: {
-            organizationId: local.organizationId,
-            organizationSubscriptionId: local.id,
-            razorpayInvoiceId: invoice.id,
-            razorpayPaymentId: invoice.payment_id ?? null,
-            status: invoice.status,
-            amountSubunits: invoice.amount,
-            amountPaidSubunits: invoice.amount_paid,
-            amountDueSubunits: invoice.amount_due,
-            currency: invoice.currency,
-            paymentMethod: invoice.payment_id === confirmedPayment?.id
-              ? confirmedMethod
-              : "UNKNOWN",
-            periodStart: date(providerSubscription.current_start),
-            periodEnd: date(providerSubscription.current_end),
-            issuedAt: date(invoice.issued_at),
-            paidAt: date(invoice.paid_at),
-          },
-          update: {
-            razorpayPaymentId: invoice.payment_id ?? undefined,
-            status: invoice.status,
-            amountPaidSubunits: invoice.amount_paid,
-            amountDueSubunits: invoice.amount_due,
-            paidAt: date(invoice.paid_at),
-            paymentMethod: invoice.payment_id === confirmedPayment?.id
-              ? confirmedMethod
-              : undefined,
+        const frozen = readCommercialIntentSnapshot(lockedIntent, {
+          requireBoundSubscription: true,
+        });
+        const paidThrough = !local.paidThrough || settlement.periodEnd > local.paidThrough
+          ? settlement.periodEnd
+          : local.paidThrough;
+        const stored = await tx.organizationSubscription.update({
+          where: { id: local.id },
+          data: {
+            plan: frozen.authorizedPlan,
+            amount: fromRazorpaySubunits(
+              frozen.authorizedUnitAmountSubunits,
+              frozen.authorizedCurrency
+            ),
+            amountSubunits: frozen.authorizedUnitAmountSubunits,
+            currency: frozen.authorizedCurrency,
+            period: frozen.authorizedPeriod,
+            interval: frozen.authorizedInterval,
+            razorpayPlanId: frozen.authorizedRazorpayPlanId,
+            quantity: frozen.authorizedQuantity,
+            status: status(providerSubscription.status),
+            authPaymentId: local.authPaymentId ?? payment.id,
+            providerPaymentMethod: paymentMethod,
+            confirmedCommercialIntentChangeId: lockedIntent.id,
+            providerStartAt: date(providerSubscription.start_at),
+            authorizationExpiresAt: date(providerSubscription.expire_by),
+            currentStart: settlement.periodStart,
+            currentEnd: settlement.periodEnd,
+            chargeAt: date(providerSubscription.charge_at),
+            endedAt: date(providerSubscription.ended_at),
+            paidThrough,
+            lastConfirmedInvoiceId: selectedInvoice.id,
+            lastConfirmedPaymentId: payment.id,
+            lastPaymentConfirmedAt: now,
+            lastReconciledAt: now,
           },
         });
-      }
 
-      const providerPaidThrough = confirmedPaidPeriod ? date(providerSubscription.current_end) : null;
-      const paidThrough = providerPaidThrough
-        && (!local.paidThrough || providerPaidThrough > local.paidThrough)
-        ? providerPaidThrough
-        : local.paidThrough;
-      const providerSubscriptionStatus = status(providerSubscription.status);
-      const providerScheduledAt = date(providerSubscription.change_scheduled_at);
-      const sourceCancellationConfirmed = Boolean(
-        linkedSourceReplacementChange?.effectiveAt
-        && providerSubscription.has_scheduled_changes === true
-        && providerScheduledAt
-        && providerScheduledAt.getTime() === linkedSourceReplacementChange.effectiveAt.getTime()
-      );
-      const futureAuthorizationQuantitySynchronized = local.paidThrough == null
-        && providerSubscriptionStatus === "AUTHENTICATED";
-      const confirmedQuantity = providerQuantity === local.quantity
-        || linkedReplacementChange != null
-        || futureAuthorizationQuantitySynchronized
-        || (confirmedPaidPeriod && (!pendingChange || providerMatchesChange))
-        ? providerQuantity
-        : local.quantity;
-      const stored = await tx.organizationSubscription.update({
-        where: { id: local.id },
-        data: {
-          plan: confirmedPlanChange?.plan,
-          amount: confirmedPlanChange?.amount,
-          amountSubunits: confirmedPlanChange?.amountSubunits,
-          currency: confirmedPlanChange?.currency,
-          period: confirmedPlanChange?.period,
-          interval: confirmedPlanChange?.interval,
-          razorpayPlanId: linkedReplacementChange
-            ? providerSubscription.plan_id
-            : confirmedPlanChange?.razorpayPlanId,
-          ...(linkedReplacementChange && providerPlan
-            ? {
-                plan: providerPlan.plan,
-                amount: providerPlan.amount,
-                amountSubunits: providerPlan.amountSubunits,
-                currency: providerPlan.currency,
-                period: providerPlan.period,
-                interval: providerPlan.interval,
-              }
-            : {}),
-          status: providerSubscriptionStatus,
-          quantity: confirmedQuantity,
-          providerStartAt: date(providerSubscription.start_at),
-          authorizationExpiresAt: date(providerSubscription.expire_by),
-          providerPaymentMethod: isSupportedProviderPaymentMethod(confirmedMethod)
-            ? confirmedMethod
-            : isSupportedProviderPaymentMethod(providerSubscriptionMethod)
-              ? providerSubscriptionMethod
-              : local.providerPaymentMethod,
-          currentStart: date(providerSubscription.current_start),
-          currentEnd: date(providerSubscription.current_end),
-          chargeAt: date(providerSubscription.charge_at),
-          endedAt: date(providerSubscription.ended_at),
-          cancelAtCycleEnd: sourceCancellationConfirmed ? true : undefined,
-          cancellationRequestedAt: sourceCancellationConfirmed
-            ? local.cancellationRequestedAt ?? now
-            : undefined,
-          cancellationScheduledAt: sourceCancellationConfirmed
-            ? providerScheduledAt
-            : undefined,
-          paidThrough,
-          lastConfirmedInvoiceId: confirmedPaidPeriod ? paidInvoice?.id ?? local.lastConfirmedInvoiceId : undefined,
-          lastConfirmedPaymentId: confirmedPaidPeriod ? confirmedPayment?.id ?? local.lastConfirmedPaymentId : undefined,
-          lastPaymentConfirmedAt: confirmedPaidPeriod ? now : undefined,
-          lastReconciledAt: now,
-        },
-      });
-
-      if (confirmedPaidPeriod && paidThrough) {
-        const paymentDedupeId = paidInvoice?.id ?? confirmedPayment?.id ?? paidThrough.toISOString();
         await tx.organizationSubscriptionHistory.upsert({
-          where: { dedupeKey: `paid:${local.razorpaySubscriptionId}:${paymentDedupeId}` },
+          where: { dedupeKey: `paid:${local.razorpaySubscriptionId}:${selectedInvoice.id}` },
           create: {
             organizationId: local.organizationId,
             organizationSubscriptionId: local.id,
             razorpaySubscriptionId: local.razorpaySubscriptionId,
-            razorpayPaymentId: confirmedPayment?.id ?? null,
-            plan: stored.plan,
+            razorpayPaymentId: payment.id,
+            plan: frozen.authorizedPlan,
             fromStatus: local.status,
             toStatus: stored.status,
             source: "WEBHOOK",
             event: "provider_paid_period_confirmed",
-            amountSubunits: stored.amountSubunits,
-            quantity: stored.quantity,
-            unitAmountSubunits: stored.amountSubunits,
-            totalAmountSubunits: stored.amountSubunits * stored.quantity,
+            amountSubunits: frozen.authorizedUnitAmountSubunits,
+            quantity: frozen.authorizedQuantity,
+            unitAmountSubunits: frozen.authorizedUnitAmountSubunits,
+            totalAmountSubunits: selectedInvoice.amount,
             paidThrough,
-            dedupeKey: `paid:${local.razorpaySubscriptionId}:${paymentDedupeId}`,
-            currency: stored.currency,
+            dedupeKey: `paid:${local.razorpaySubscriptionId}:${selectedInvoice.id}`,
+            currency: frozen.authorizedCurrency,
           },
-          update: {
-            paidThrough,
-            quantity: stored.quantity,
-            totalAmountSubunits: stored.amountSubunits * stored.quantity,
-          },
+          update: {},
         });
-        if (local.billingOfferId) {
+
+        if (frozen.authorizedRazorpayOfferId) {
           await tx.organizationOfferGrant.updateMany({
             where: {
               organizationId: local.organizationId,
-              billingOfferId: local.billingOfferId,
               status: "RESERVED",
-              billingOffer: { providerMode },
+              billingOffer: {
+                providerMode,
+                razorpayOfferId: frozen.authorizedRazorpayOfferId,
+              },
             },
             data: { status: "REDEEMED", redeemedAt: now },
           });
         }
-        if (pendingChange && providerMatchesChange) {
-          if (pendingChange.branchId && ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(pendingChange.type)) {
-            await tx.branch.update({
-              where: { id: pendingChange.branchId },
-              data: { billingStatus: "ACTIVE", billingActivatedAt: now, billingArchivedAt: null },
-            });
-          }
-          if (pendingChange.branchId && pendingChange.type === "BRANCH_REMOVAL") {
-            await tx.branch.update({
-              where: { id: pendingChange.branchId },
-              data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
-            });
-          }
-          await tx.organizationBillingChange.update({
-            where: { id: pendingChange.id },
+
+        const replacement = lockedIntent.replacementSubscriptionId === local.id;
+        if (replacement) {
+          const retainsManualReview = lockedIntent.failureCategory === "MANUAL_REVIEW_REQUIRED";
+          const recorded = await tx.organizationBillingChange.updateMany({
+            where: {
+              id: lockedIntent.id,
+              status: lockedIntent.status,
+              operationStatus: lockedIntent.operationStatus,
+              updatedAt: lockedIntent.updatedAt,
+            },
+            data: {
+              providerInvoiceId: selectedInvoice.id,
+              providerPaymentId: payment.id,
+              providerConfirmedAt: now,
+              ...(retainsManualReview
+                ? {}
+                : {
+                    failureCategory: null,
+                    failureCode: null,
+                    lastError: null,
+                  }),
+            },
+          });
+          if (recorded.count !== 1) throw new StaleCommercialReconciliationError();
+        } else if (lockedIntent.status !== "APPLIED"
+          || lockedIntent.type === "COMMERCIAL_RECONCILIATION") {
+          const applied = await tx.organizationBillingChange.updateMany({
+            where: options.expectedAttemptCount != null
+              && options.expectedVerificationStartedAt != null
+              ? {
+                  id: lockedIntent.id,
+                  operationStatus: "VERIFYING",
+                  attemptCount: options.expectedAttemptCount,
+                  verificationStartedAt: options.expectedVerificationStartedAt,
+                }
+              : {
+                  id: lockedIntent.id,
+                  status: lockedIntent.status,
+                  operationStatus: lockedIntent.operationStatus,
+                  updatedAt: lockedIntent.updatedAt,
+                },
             data: {
               status: "APPLIED",
               operationStatus: "APPLIED",
-              providerInvoiceId: paidInvoice?.id ?? null,
-              providerPaymentId: confirmedPayment?.id ?? null,
+              providerInvoiceId: selectedInvoice.id,
+              providerPaymentId: payment.id,
               providerConfirmedAt: now,
-              resolvedAt: now,
               appliedAt: now,
+              resolvedAt: now,
+              failureCategory: null,
+              failureCode: null,
+              lastError: null,
             },
           });
+          if (applied.count !== 1) throw new StaleCommercialReconciliationError();
+          if (lockedIntent.type === "COMMERCIAL_RECONCILIATION"
+            || lockedIntent.failureCategory === "MANUAL_REVIEW_REQUIRED") {
+            await recordBillingMutationAudit(tx, {
+              changeId: lockedIntent.id,
+              organizationId: lockedIntent.organizationId,
+              organizationSubscriptionId: lockedIntent.organizationSubscriptionId,
+              attemptCount: lockedIntent.attemptCount,
+              outcome: "PROVIDER_STATE_ADOPTED",
+            });
+          }
+          if (lockedIntent.branchId
+            && ["QUANTITY_INCREASE", "BRANCH_REACTIVATION"].includes(lockedIntent.type)) {
+            await tx.branch.update({
+              where: { id: lockedIntent.branchId },
+              data: { billingStatus: "ACTIVE", billingActivatedAt: now, billingArchivedAt: null },
+            });
+          }
+          if (lockedIntent.branchId && lockedIntent.type === "BRANCH_REMOVAL") {
+            await tx.branch.update({
+              where: { id: lockedIntent.branchId },
+              data: { billingStatus: "ARCHIVED", billingArchivedAt: now },
+            });
+          }
         }
-      }
 
+        return { stale: false as const, subscription: stored };
+      });
+
+      if ("stale" in reconciliation && reconciliation.stale) {
+        if (staleRetry >= 2) throw new StaleCommercialReconciliationError();
+        return this.reconcileProviderSubscription(razorpaySubscriptionId, options, staleRetry + 1);
+      }
+      if ("mismatch" in reconciliation) {
+        const mismatch = reconciliation.mismatch as ExactCommercialEvidenceResult;
+        return quarantineCommercialMismatch({
+          local: localBeforeFetch,
+          intent,
+          code: mismatch.kind === "MISMATCH"
+            ? mismatch.code
+            : "MALFORMED_PROVIDER_EVIDENCE",
+          now,
+          options,
+        });
+      }
       return {
-        stale: false as const,
-        subscription: stored,
-        confirmedPaidPeriod,
-        payment: confirmedPayment,
+        subscription: reconciliation.subscription,
+        confirmedPaidPeriod: true,
+        evidenceKind: "EXACT_SETTLEMENT",
+        commercialIntentChangeId: intent?.id ?? null,
+        payment,
         invoices,
       };
-    });
-
-    if (reconciliation.stale) {
-      if (staleRetry >= 2) {
-        throw new Error("Subscription changed repeatedly while provider reconciliation was in flight");
+    } catch (error) {
+      if (error instanceof BillingManualReviewRequiredError) throw error;
+      if (error instanceof StaleCommercialReconciliationError && staleRetry < 2) {
+        return this.reconcileProviderSubscription(razorpaySubscriptionId, options, staleRetry + 1);
       }
-      return this.reconcileProviderSubscription(razorpaySubscriptionId, options, staleRetry + 1);
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "COMMERCIAL_FINALIZATION_FAILED",
+        now,
+        options,
+      });
     }
-    return {
-      subscription: reconciliation.subscription,
-      confirmedPaidPeriod: reconciliation.confirmedPaidPeriod,
-      payment: reconciliation.payment,
-      invoices: reconciliation.invoices,
-    };
   }
 }

@@ -15,17 +15,29 @@ import {
 } from "@/lib/razorpay";
 import { OrganizationService } from "@/services/organization.service";
 import { EntitlementService } from "@/services/entitlement.service";
-import { BillingReconciliationService } from "@/services/billingReconciliation.service";
+import {
+  BillingReconciliationService,
+  type BillingCommercialEvidenceKind,
+} from "@/services/billingReconciliation.service";
 import {
   BillingMutationService,
   isSafeFailedBillingMutationForLocalUndo,
 } from "@/services/billingMutation.service";
+import { recordBillingMutationAudit } from "@/services/billingMutationAudit.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
 import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
-import { buildCommercialIntentSnapshot } from "@/services/billingCommercialEvidence.service";
-import { BillingChangeInProgressError } from "@/lib/billingErrors";
+import {
+  buildCommercialIntentSnapshot,
+  commercialEvidenceMessage,
+  validateExactCommercialEvidence,
+  type CommercialEvidenceMismatchCode,
+} from "@/services/billingCommercialEvidence.service";
+import {
+  BillingChangeInProgressError,
+  BillingManualReviewRequiredError,
+} from "@/lib/billingErrors";
 import {
   isSupportedProviderPaymentMethod,
   normalizeProviderPaymentMethod,
@@ -35,7 +47,12 @@ import {
   assertRazorpayBillingWritesEnabled,
   getRazorpayCheckoutMethodAvailability,
 } from "@/lib/billingFeature";
-import type { OrganizationSubscription, OrganizationSubscriptionHistory, Prisma } from "@/app/generated/prisma/client";
+import type {
+  OrganizationBillingChange,
+  OrganizationSubscription,
+  OrganizationSubscriptionHistory,
+  Prisma,
+} from "@/app/generated/prisma/client";
 import type { SaasPlan, SaasSubscriptionHistorySource, SaasSubscriptionStatus } from "@/types";
 
 type CheckoutInput = {
@@ -569,6 +586,46 @@ function subscriptionSnapshotData(subscription: RazorpaySubscription) {
   }
 
   return data;
+}
+
+async function quarantineCommercialEvidenceMismatch(input: {
+  change: OrganizationBillingChange;
+  verificationStartedAt: Date;
+  code: CommercialEvidenceMismatchCode;
+  paymentId: string;
+}) {
+  const failedAt = new Date();
+  return prisma.$transaction(async tx => {
+    const persisted = await tx.organizationBillingChange.updateMany({
+      where: {
+        id: input.change.id,
+        operationStatus: "VERIFYING",
+        attemptCount: input.change.attemptCount,
+        verificationStartedAt: input.verificationStartedAt,
+      },
+      data: {
+        status: "FAILED",
+        operationStatus: "FAILED",
+        failedAt,
+        resolvedAt: null,
+        providerPaymentId: input.paymentId,
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: input.code,
+        lastError: commercialEvidenceMessage(input.code),
+      },
+    });
+    if (persisted.count === 1) {
+      await recordBillingMutationAudit(tx, {
+        changeId: input.change.id,
+        organizationId: input.change.organizationId,
+        organizationSubscriptionId: input.change.organizationSubscriptionId,
+        attemptCount: input.change.attemptCount,
+        outcome: "MANUAL_REVIEW_REQUIRED",
+        failureCode: input.code,
+      });
+    }
+    return persisted.count === 1;
+  });
 }
 
 function assertMatchingProviderSubscription(
@@ -1364,7 +1421,7 @@ export class BillingService {
     if (typeof input.changeId !== "string" || !input.changeId.trim()) {
       throw new Error("Missing billing change id");
     }
-    const change = await prisma.organizationBillingChange.findFirst({
+    let change = await prisma.organizationBillingChange.findFirst({
       where: {
         id: input.changeId.trim(),
         organizationId,
@@ -1404,9 +1461,6 @@ export class BillingService {
     });
     if (!subscription) throw new Error("Subscription does not belong to this organization");
     assertSubscriptionProviderMode(subscription, providerMode);
-    const replacementCheckout = change.replacementSubscriptionId != null;
-    const recoveryConfirmation = !replacementCheckout
-      && ["PENDING", "HALTED"].includes(subscription.status);
     const expectedOperationSubscriptionId = change.replacementSubscriptionId
       ?? change.organizationSubscriptionId;
     if (expectedOperationSubscriptionId !== subscription.id) {
@@ -1419,12 +1473,18 @@ export class BillingService {
       throw new Error("Billing operation quantity mismatch");
     }
 
+    const verificationAttempt = change.attemptCount;
     const verificationClaim = await prisma.organizationBillingChange.updateMany({
       where: {
         id: change.id,
+        attemptCount: verificationAttempt,
         operationStatus: {
-          notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES, "VERIFYING"],
+          in: ["CHECKOUT_OPEN", "AWAITING_PROVIDER_CONFIRMATION", "DECLINED", "ABANDONED"],
         },
+        OR: [
+          { failureCategory: null },
+          { failureCategory: { not: "MANUAL_REVIEW_REQUIRED" } },
+        ],
       },
       data: {
         operationStatus: "VERIFYING",
@@ -1448,6 +1508,21 @@ export class BillingService {
         subscription: serializeSubscription(currentSubscription),
       };
     }
+    const claimedChange = await prisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: change.id },
+    });
+    change = {
+      ...claimedChange,
+      replacementSubscription: change.replacementSubscription,
+    };
+    if (change.operationStatus !== "VERIFYING"
+      || change.attemptCount !== verificationAttempt
+      || change.verificationStartedAt?.getTime() !== verifiedCallbackAt.getTime()) {
+      throw new Error("Billing verification claim changed before provider confirmation");
+    }
+    const replacementCheckout = change.replacementSubscriptionId != null;
+    const recoveryConfirmation = !replacementCheckout
+      && ["PENDING", "HALTED"].includes(subscription.status);
 
     let gatewaySubscription: RazorpaySubscription;
     let gatewayPayment: RazorpayPayment;
@@ -1458,7 +1533,12 @@ export class BillingService {
       ]);
     } catch {
       await prisma.organizationBillingChange.updateMany({
-        where: { id: change.id, operationStatus: "VERIFYING" },
+        where: {
+          id: change.id,
+          operationStatus: "VERIFYING",
+          attemptCount: change.attemptCount,
+          verificationStartedAt: verifiedCallbackAt,
+        },
         data: {
           status: "AWAITING_PAYMENT",
           operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
@@ -1483,33 +1563,113 @@ export class BillingService {
       };
     }
 
-    if (gatewaySubscription.id !== subscriptionId) {
-      throw new Error("Razorpay subscription response mismatch");
+    if (gatewayPayment.status.toLowerCase() === "captured" && gatewayPayment.invoice_id) {
+      const reconciliation = await BillingReconciliationService.reconcileProviderSubscription(
+        subscriptionId,
+        {
+          paymentId,
+          now: verifiedCallbackAt,
+          commercialIntentChangeId: change.id,
+          expectedAttemptCount: change.attemptCount,
+          expectedVerificationStartedAt: verifiedCallbackAt,
+        }
+      );
+      if (replacementCheckout) {
+        await BillingReplacementService.syncAuthorizedAccess(change.id, verifiedCallbackAt);
+      }
+      const [settledOperation, settledSubscription] = await Promise.all([
+        prisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
+        prisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      ]);
+      const providerConfirmed = isProviderConfirmedOperationStatus(settledOperation.operationStatus)
+        || reconciliation.evidenceKind === "EXACT_SETTLEMENT";
+      return {
+        verified: providerConfirmed,
+        ...(replacementCheckout ? { pending: true as const } : {}),
+        operation: serializeBillingOperation(settledOperation),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(settledSubscription),
+      };
     }
-    if (gatewayPayment.id !== paymentId) {
-      throw new Error("Razorpay payment response mismatch");
+
+    const commercialEvidence = validateExactCommercialEvidence({
+      intent: change,
+      organizationId,
+      providerMode,
+      localSubscription: subscription,
+      providerSubscription: gatewaySubscription,
+      payment: gatewayPayment,
+      expectedPaymentId: paymentId,
+      invoice: null,
+      providerPlan: null,
+      now: verifiedCallbackAt,
+    });
+    if (commercialEvidence.kind === "MISMATCH") {
+      const quarantined = await quarantineCommercialEvidenceMismatch({
+        change,
+        verificationStartedAt: verifiedCallbackAt,
+        code: commercialEvidence.code,
+        paymentId,
+      });
+      if (quarantined) {
+        throw new BillingManualReviewRequiredError(
+          change.id,
+          commercialEvidenceMessage(commercialEvidence.code)
+        );
+      }
+      const [currentOperation, currentSubscription] = await Promise.all([
+        prisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
+        prisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      ]);
+      const providerConfirmed = isProviderConfirmedOperationStatus(currentOperation.operationStatus);
+      return {
+        verified: providerConfirmed,
+        ...(providerConfirmed ? {} : { pending: true as const }),
+        operation: serializeBillingOperation(currentOperation),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(currentSubscription),
+      };
     }
-    if (gatewaySubscription.plan_id !== subscription.razorpayPlanId) {
-      throw new Error("Razorpay subscription plan mismatch");
-    }
-    if (gatewayPayment.subscription_id !== subscriptionId) {
-      throw new Error("Razorpay payment subscription mismatch");
-    }
-    if (!isSuccessfulPayment(gatewayPayment)) {
-      throw new Error("Razorpay payment has not been authorized");
+    if (commercialEvidence.kind === "PENDING") {
+      await prisma.organizationBillingChange.updateMany({
+        where: {
+          id: change.id,
+          operationStatus: "VERIFYING",
+          attemptCount: change.attemptCount,
+          verificationStartedAt: verifiedCallbackAt,
+        },
+        data: {
+          status: "AWAITING_PAYMENT",
+          operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+          providerPaymentId: paymentId,
+          failureCategory: "PROVIDER_CONFIRMATION_PENDING",
+          failureCode: null,
+          lastError: "Razorpay authorization remains pending; the confirmed billing state is unchanged",
+          resolvedAt: null,
+        },
+      });
+      const [pendingOperation, currentSubscription] = await Promise.all([
+        prisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
+        prisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      ]);
+      return {
+        verified: false as const,
+        pending: true as const,
+        operation: serializeBillingOperation(pendingOperation),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(currentSubscription),
+      };
     }
     const paymentMethod = normalizeProviderPaymentMethod(gatewayPayment.method);
     if (!isSupportedProviderPaymentMethod(paymentMethod)) {
-      await prisma.$transaction([
-        prisma.organizationSubscription.update({
-          where: { id: subscription.id },
-          data: {
-            providerPaymentMethod: "UNKNOWN",
-            lastReconciledAt: verifiedCallbackAt,
+      await prisma.$transaction(async tx => {
+        const persisted = await tx.organizationBillingChange.updateMany({
+          where: {
+            id: change.id,
+            operationStatus: "VERIFYING",
+            attemptCount: change.attemptCount,
+            verificationStartedAt: verifiedCallbackAt,
           },
-        }),
-        prisma.organizationBillingChange.updateMany({
-          where: { id: change.id, operationStatus: "VERIFYING" },
           data: {
             status: "AWAITING_PAYMENT",
             operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
@@ -1519,8 +1679,16 @@ export class BillingService {
             lastError: "Razorpay returned an unrecognized recurring payment method; access remains unchanged",
             resolvedAt: null,
           },
-        }),
-      ]);
+        });
+        if (persisted.count !== 1) return;
+        await tx.organizationSubscription.update({
+          where: { id: subscription.id },
+          data: {
+            providerPaymentMethod: "UNKNOWN",
+            lastReconciledAt: verifiedCallbackAt,
+          },
+        });
+      });
       const [pendingOperation, currentSubscription] = await Promise.all([
         prisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
         prisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
@@ -1542,12 +1710,23 @@ export class BillingService {
     }
 
     const updated = await prisma.$transaction(async tx => {
+      const fenced = await tx.organizationBillingChange.updateMany({
+        where: {
+          id: change.id,
+          operationStatus: "VERIFYING",
+          attemptCount: change.attemptCount,
+          verificationStartedAt: verifiedCallbackAt,
+        },
+        data: { providerPaymentId: paymentId },
+      });
+      if (fenced.count !== 1) return null;
       const stored = await tx.organizationSubscription.update({
         where: { id: subscription.id },
         data: {
           ...snapshot,
           authPaymentId: paymentId,
           providerPaymentMethod: paymentMethod,
+          confirmedCommercialIntentChangeId: change.id,
           lastReconciledAt: verifiedCallbackAt,
         },
       });
@@ -1558,6 +1737,20 @@ export class BillingService {
       });
       return stored;
     });
+    if (!updated) {
+      const [currentOperation, currentSubscription] = await Promise.all([
+        prisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }),
+        prisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      ]);
+      const providerConfirmed = isProviderConfirmedOperationStatus(currentOperation.operationStatus);
+      return {
+        verified: providerConfirmed,
+        ...(providerConfirmed ? {} : { pending: true as const }),
+        operation: serializeBillingOperation(currentOperation),
+        processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
+        subscription: serializeSubscription(currentSubscription),
+      };
+    }
 
     if (delayedEMandateAuthorization) {
       const existingDeadline = change.failureCode === "EMANDATE_AUTHORIZATION_PENDING"
@@ -1566,7 +1759,12 @@ export class BillingService {
       const confirmationDeadlineAt = existingDeadline
         ?? new Date(verifiedCallbackAt.getTime() + EMANDATE_AUTHORIZATION_WINDOW_MS);
       await prisma.organizationBillingChange.updateMany({
-        where: { id: change.id, operationStatus: "VERIFYING" },
+        where: {
+          id: change.id,
+          operationStatus: "VERIFYING",
+          attemptCount: change.attemptCount,
+          verificationStartedAt: verifiedCallbackAt,
+        },
         data: {
           status: "AWAITING_PAYMENT",
           operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
@@ -1591,10 +1789,6 @@ export class BillingService {
         processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
         subscription: serializeSubscription(updated),
       };
-    }
-
-    if (gatewayPayment.status === "captured" && gatewayPayment.invoice_id) {
-      await BillingReconciliationService.reconcileProviderSubscription(subscriptionId, { paymentId });
     }
 
     if (replacementCheckout) {
@@ -1622,7 +1816,12 @@ export class BillingService {
 
     if (!recoveryPaid) {
       await prisma.organizationBillingChange.updateMany({
-        where: { id: change.id, operationStatus: "VERIFYING" },
+        where: {
+          id: change.id,
+          operationStatus: "VERIFYING",
+          attemptCount: change.attemptCount,
+          verificationStartedAt: verifiedCallbackAt,
+        },
         data: {
           status: "AWAITING_PAYMENT",
           operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
@@ -1643,10 +1842,12 @@ export class BillingService {
       };
     }
 
-    await prisma.organizationBillingChange.updateMany({
+    const appliedResult = await prisma.organizationBillingChange.updateMany({
       where: {
         id: change.id,
-        operationStatus: { notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES] },
+        operationStatus: "VERIFYING",
+        attemptCount: change.attemptCount,
+        verificationStartedAt: verifiedCallbackAt,
       },
       data: {
         status: "APPLIED",
@@ -1661,9 +1862,11 @@ export class BillingService {
     const appliedOperation = await prisma.organizationBillingChange.findUniqueOrThrow({
       where: { id: change.id },
     });
+    const providerConfirmed = isProviderConfirmedOperationStatus(appliedOperation.operationStatus);
 
     return {
-      verified: true,
+      verified: appliedResult.count === 1 || providerConfirmed,
+      ...(providerConfirmed ? {} : { pending: true as const }),
       operation: serializeBillingOperation(appliedOperation),
       processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
       subscription: serializeSubscription(reconciledSubscription ?? updated),
@@ -2212,6 +2415,17 @@ export class BillingService {
       include: { organizationSubscription: true, replacementSubscription: true },
     });
     if (!change) throw new Error("Billing operation not found");
+    if (change.failureCategory === "MANUAL_REVIEW_REQUIRED"
+      || change.type === "COMMERCIAL_RECONCILIATION") {
+      // Manual resolution is reconciliation-only. It may adopt exact provider
+      // facts locally, but it must never reopen Checkout or issue a mutation.
+      return this.reconcileMutation(
+        userId,
+        organizationId,
+        change.id,
+        change.providerPaymentId ?? undefined
+      );
+    }
 
     if (change.replacementSubscription) {
       assertRazorpayBillingWritesEnabled(organizationId);
@@ -2221,9 +2435,6 @@ export class BillingService {
       }
       if (change.failureCode === "CANDIDATE_CANCELLATION_PENDING") {
         throw new Error("The failed replacement mandate is still being cancelled; retry after provider confirmation");
-      }
-      if (change.failureCategory === "MANUAL_REVIEW_REQUIRED") {
-        throw new Error("This replacement requires manual billing review and cannot be reopened automatically");
       }
       if (["UNDONE", "SUPERSEDED"].includes(change.status)) {
         throw new Error("The replacement mandate was discarded and cannot be retried");
@@ -2245,7 +2456,7 @@ export class BillingService {
       }
       await BillingReconciliationService.reconcileProviderSubscription(
         change.replacementSubscription.razorpaySubscriptionId,
-        { now: new Date() }
+        { now: new Date(), commercialIntentChangeId: change.id }
       );
       const synchronized = await BillingReplacementService.syncAuthorizedAccess(change.id);
       if (["SCHEDULED", "APPLIED"].includes(synchronized.change.status)) {
@@ -2277,16 +2488,18 @@ export class BillingService {
       if (isProviderConfirmedOperationStatus(change.operationStatus)) {
         return { operation: serializeBillingOperation(change), reconciled: true };
       }
+      const retryVerificationStartedAt = new Date();
       const retryClaim = await prisma.organizationBillingChange.updateMany({
         where: {
           id: change.id,
+          attemptCount: change.attemptCount,
           operationStatus: {
             notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES, "VERIFYING"],
           },
         },
         data: {
           operationStatus: "VERIFYING",
-          verificationStartedAt: new Date(),
+          verificationStartedAt: retryVerificationStartedAt,
         },
       });
       if (retryClaim.count === 0) {
@@ -2299,12 +2512,28 @@ export class BillingService {
           reconciled: isProviderConfirmedOperationStatus(current.operationStatus),
         };
       }
-      let gateway: RazorpaySubscription;
+      let reconciliation: Awaited<ReturnType<
+        typeof BillingReconciliationService.reconcileProviderSubscription
+      >>;
       try {
-        gateway = await getRazorpayClient().fetchSubscription(subscription.razorpaySubscriptionId);
-      } catch {
+        reconciliation = await BillingReconciliationService.reconcileProviderSubscription(
+          subscription.razorpaySubscriptionId,
+          {
+            paymentId: change.providerPaymentId,
+            commercialIntentChangeId: change.id,
+            expectedAttemptCount: change.attemptCount,
+            expectedVerificationStartedAt: retryVerificationStartedAt,
+          }
+        );
+      } catch (error) {
+        if (error instanceof BillingManualReviewRequiredError) throw error;
         await prisma.organizationBillingChange.updateMany({
-          where: { id: change.id, operationStatus: "VERIFYING" },
+          where: {
+            id: change.id,
+            operationStatus: "VERIFYING",
+            attemptCount: change.attemptCount,
+            verificationStartedAt: retryVerificationStartedAt,
+          },
           data: {
             status: "AWAITING_PAYMENT",
             operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
@@ -2324,55 +2553,55 @@ export class BillingService {
         };
       }
       const recoveryConfirmation = ["PENDING", "HALTED"].includes(subscription.status);
-      const gatewayPaymentMethod = normalizeProviderPaymentMethod(gateway.payment_method);
-      const gatewayAuthorizationConfirmed = ["authenticated", "active"].includes(
-        gateway.status.toLowerCase()
-      ) && isSupportedProviderPaymentMethod(gatewayPaymentMethod);
-      let confirmed = gatewayAuthorizationConfirmed;
-      if (recoveryConfirmation && gateway.status.toLowerCase() === "active") {
-        const reconciliation = await BillingReconciliationService.reconcileByOrganization(organizationId);
-        confirmed = reconciliation.confirmedPaidPeriod
-          && Boolean(reconciliation.subscription.paidThrough)
-          && (!subscription.paidThrough || reconciliation.subscription.paidThrough! > subscription.paidThrough);
-      }
-      if (confirmed) {
-        const now = new Date();
-        await prisma.$transaction([
-          prisma.organizationSubscription.update({
-            where: { id: subscription.id },
-            data: {
-              providerPaymentMethod: gatewayPaymentMethod,
-              ...subscriptionSnapshotData(gateway),
-              lastReconciledAt: now,
-            },
-          }),
-          prisma.organizationBillingChange.updateMany({
-            where: {
-              id: change.id,
-              operationStatus: { notIn: [...PROVIDER_CONFIRMED_OPERATION_STATUSES] },
-            },
-            data: {
-              status: "APPLIED",
-              operationStatus: "APPLIED",
-              providerConfirmedAt: now,
-              appliedAt: now,
-              resolvedAt: now,
-              failureCategory: null,
-              failureCode: null,
-              lastError: null,
-            },
-          }),
-        ]);
+      if (["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(reconciliation.evidenceKind)) {
+        await this.applyProviderConfirmedAuthorization(
+          reconciliation.commercialIntentChangeId,
+          reconciliation.subscription,
+          reconciliation.payment,
+          reconciliation.evidenceKind
+        );
         const applied = await prisma.organizationBillingChange.findUniqueOrThrow({
           where: { id: change.id },
         });
-        return { operation: serializeBillingOperation(applied), reconciled: true };
+        if (isProviderConfirmedOperationStatus(applied.operationStatus)) {
+          return { operation: serializeBillingOperation(applied), reconciled: true };
+        }
+      } else if (reconciliation.evidenceKind === "DEFINITELY_REJECTED"
+        && reconciliation.payment) {
+        await this.applyProviderFailedAuthorization(
+          reconciliation.commercialIntentChangeId,
+          reconciliation.subscription,
+          reconciliation.payment,
+          reconciliation.evidenceKind
+        );
       }
       const catalogPlan = getBillingPlan(subscription.plan);
       if (!catalogPlan) throw new Error("Subscription plan is no longer recognized");
       const selectedPlan = { ...catalogPlan, amount: subscription.amount };
       await prisma.organizationBillingChange.updateMany({
-        where: { id: change.id, operationStatus: "VERIFYING" },
+        where: {
+          id: change.id,
+          OR: [
+            {
+              operationStatus: "VERIFYING",
+              attemptCount: change.attemptCount,
+              verificationStartedAt: retryVerificationStartedAt,
+            },
+            ...(reconciliation.evidenceKind === "DEFINITELY_REJECTED"
+              ? [{
+                  operationStatus: {
+                    in: ["DECLINED", "FAILED"] as ("DECLINED" | "FAILED")[],
+                  },
+                }]
+              : []),
+          ],
+          AND: [{
+            OR: [
+              { failureCategory: null },
+              { failureCategory: { not: "MANUAL_REVIEW_REQUIRED" } },
+            ],
+          }],
+        },
         data: {
           status: "AWAITING_PAYMENT",
           operationStatus: "CHECKOUT_OPEN",
@@ -2423,7 +2652,9 @@ export class BillingService {
     if (!change) throw new Error("Billing change not found");
     assertSubscriptionProviderMode(change.organizationSubscription, resolveRazorpayMode());
     assertSubscriptionProviderMode(change.replacementSubscription, resolveRazorpayMode());
-    if (isTerminalCheckoutOperationStatus(change.operationStatus)) {
+    const manualReview = change.failureCategory === "MANUAL_REVIEW_REQUIRED"
+      || change.type === "COMMERCIAL_RECONCILIATION";
+    if (isTerminalCheckoutOperationStatus(change.operationStatus) && !manualReview) {
       return {
         reconciliation: null,
         pending: false,
@@ -2431,8 +2662,9 @@ export class BillingService {
       };
     }
 
-    {
-      const verificationStartedAt = new Date();
+    let verificationStartedAt: Date | null = null;
+    if (!manualReview) {
+      verificationStartedAt = new Date();
       const providerCooldownBefore = new Date(verificationStartedAt.getTime() - 8_000);
       const reconciliationClaim = await prisma.organizationBillingChange.updateMany({
         where: {
@@ -2470,15 +2702,54 @@ export class BillingService {
       reconciliation = change.replacementSubscription
         ? await BillingReconciliationService.reconcileProviderSubscription(
             change.replacementSubscription.razorpaySubscriptionId,
-            { paymentId: paymentId ?? change.providerPaymentId }
+            {
+              paymentId: paymentId ?? change.providerPaymentId,
+              commercialIntentChangeId: change.id,
+              ...(verificationStartedAt
+                ? {
+                    expectedAttemptCount: change.attemptCount,
+                    expectedVerificationStartedAt: verificationStartedAt,
+                  }
+                : {}),
+            }
           )
         : await BillingReconciliationService.reconcileByOrganization(organizationId, {
             paymentId: paymentId ?? change.providerPaymentId,
+            commercialIntentChangeId: change.id,
+            ...(verificationStartedAt
+              ? {
+                  expectedAttemptCount: change.attemptCount,
+                  expectedVerificationStartedAt: verificationStartedAt,
+                }
+              : {}),
           });
+      if (manualReview
+        && !["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(reconciliation.evidenceKind)) {
+        const retained = await this.retainManualReviewAfterReconciliationFailure(
+          change.id,
+          new Error(reconciliation.evidenceKind === "DEFINITELY_REJECTED"
+            ? "Provider authorization was rejected; replacement cleanup still requires manual review"
+            : "Provider evidence is still pending")
+        );
+        throw new BillingManualReviewRequiredError(retained.id);
+      }
       if (change.replacementSubscription) {
         const now = new Date();
-        await BillingReplacementService.syncAuthorizedAccess(change.id, now);
-        if (change.undoCutoffAt && now >= change.undoCutoffAt) {
+        if (["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(reconciliation.evidenceKind)) {
+          const synchronized = await BillingReplacementService.syncAuthorizedAccess(
+            change.id,
+            now,
+            { resolveManualReview: manualReview }
+          );
+          if (manualReview && !["SCHEDULED", "APPLIED"].includes(synchronized.change.status)) {
+            const retained = await this.retainManualReviewAfterReconciliationFailure(
+              change.id,
+              new Error("Provider evidence was exact, but the manual-review state changed before adoption")
+            );
+            throw new BillingManualReviewRequiredError(retained.id);
+          }
+        }
+        if (!manualReview && change.undoCutoffAt && now >= change.undoCutoffAt) {
           await BillingReplacementService.scheduleSourceCancellation(change.id, now);
         }
         if (reconciliation.confirmedPaidPeriod && change.organizationSubscription) {
@@ -2495,27 +2766,49 @@ export class BillingService {
           reconciliation,
           pending: !promotion.promoted,
           operation: replacementOperation ? serializeBillingOperation(replacementOperation) : null,
+          ...(manualReview ? { resolutionOutcome: "PROVIDER_STATE_ADOPTED" as const } : {}),
         };
       }
       if (change.type === "SUBSCRIPTION_AUTHORIZATION") {
-        if (reconciliation.payment?.status === "failed") {
+        if (reconciliation.evidenceKind === "DEFINITELY_REJECTED" && reconciliation.payment) {
           await this.applyProviderFailedAuthorization(
-            organizationId,
-            reconciliation.subscription,
-            reconciliation.payment
-          );
-        } else {
-          await this.applyProviderConfirmedAuthorization(
-            organizationId,
+            reconciliation.commercialIntentChangeId,
             reconciliation.subscription,
             reconciliation.payment,
-            reconciliation.confirmedPaidPeriod
+            reconciliation.evidenceKind
+          );
+        } else if (["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(reconciliation.evidenceKind)) {
+          await this.applyProviderConfirmedAuthorization(
+            reconciliation.commercialIntentChangeId,
+            reconciliation.subscription,
+            reconciliation.payment,
+            reconciliation.evidenceKind
           );
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof BillingManualReviewRequiredError) throw error;
+      if (manualReview) {
+        const retained = await this.retainManualReviewAfterReconciliationFailure(change.id, error);
+        if (retained.failureCategory !== "MANUAL_REVIEW_REQUIRED") {
+          return {
+            reconciliation: null,
+            pending: !isProviderConfirmedOperationStatus(retained.operationStatus),
+            operation: serializeBillingOperation(retained),
+          };
+        }
+        throw new BillingManualReviewRequiredError(
+          retained.id,
+          "Provider reconciliation is unavailable; manual billing review is still required"
+        );
+      }
       await prisma.organizationBillingChange.updateMany({
-        where: { id: change.id, operationStatus: "VERIFYING" },
+        where: {
+          id: change.id,
+          operationStatus: "VERIFYING",
+          attemptCount: change.attemptCount,
+          verificationStartedAt,
+        },
         data: {
           status: "AWAITING_PAYMENT",
           operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
@@ -2536,7 +2829,12 @@ export class BillingService {
     // happened yet. Never strand the operation in the transient VERIFYING
     // state; only a subsequent callback/webhook/provider result can advance it.
     await prisma.organizationBillingChange.updateMany({
-      where: { id: change.id, operationStatus: "VERIFYING" },
+      where: {
+        id: change.id,
+        operationStatus: "VERIFYING",
+        attemptCount: change.attemptCount,
+        verificationStartedAt,
+      },
       data: {
         status: "AWAITING_PAYMENT",
         operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
@@ -2549,6 +2847,7 @@ export class BillingService {
     return {
       reconciliation,
       operation: updated ? serializeBillingOperation(updated) : null,
+      ...(manualReview ? { resolutionOutcome: "PROVIDER_STATE_ADOPTED" as const } : {}),
     };
   }
 
@@ -2644,38 +2943,78 @@ export class BillingService {
     return { undone: true };
   }
 
+  private static async retainManualReviewAfterReconciliationFailure(
+    changeId: string,
+    error: unknown
+  ) {
+    return prisma.$transaction(async tx => {
+      const current = await tx.organizationBillingChange.findUnique({ where: { id: changeId } });
+      if (!current) throw new Error("Billing change not found during manual reconciliation");
+      if (current.failureCategory !== "MANUAL_REVIEW_REQUIRED") return current;
+      const retained = await tx.organizationBillingChange.updateMany({
+        where: {
+          id: current.id,
+          status: current.status,
+          operationStatus: current.operationStatus,
+          updatedAt: current.updatedAt,
+          failureCategory: "MANUAL_REVIEW_REQUIRED",
+        },
+        data: {
+          lastError: error instanceof Error
+            ? `Manual reconciliation could not confirm provider state: ${error.message}`
+            : "Manual reconciliation could not confirm provider state",
+          resolvedAt: null,
+        },
+      });
+      if (retained.count === 1) {
+        await recordBillingMutationAudit(tx, {
+          changeId: current.id,
+          organizationId: current.organizationId,
+          organizationSubscriptionId: current.organizationSubscriptionId,
+          attemptCount: current.attemptCount,
+          outcome: "MANUAL_REVIEW_RETAINED",
+          failureCode: current.failureCode,
+        });
+      }
+      return tx.organizationBillingChange.findUniqueOrThrow({ where: { id: current.id } });
+    });
+  }
+
   private static async applyProviderConfirmedAuthorization(
-    organizationId: string,
+    commercialIntentChangeId: string | null,
     subscription: OrganizationSubscription,
     payment: RazorpayPayment | null,
-    confirmedPaidPeriod: boolean
+    evidenceKind: BillingCommercialEvidenceKind
   ) {
+    if (!commercialIntentChangeId
+      || !payment
+      || !["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(evidenceKind)) return false;
     if (!isSupportedProviderPaymentMethod(subscription.providerPaymentMethod)) return;
     const providerAuthorizationConfirmed = ["AUTHENTICATED", "ACTIVE"].includes(subscription.status)
-      && (!payment || ["authorized", "captured"].includes(payment.status));
-    if (!providerAuthorizationConfirmed && !confirmedPaidPeriod) return;
+      && ["authorized", "captured"].includes(payment.status.toLowerCase());
+    if (!providerAuthorizationConfirmed) return false;
 
     const change = await prisma.organizationBillingChange.findFirst({
       where: {
-        organizationId,
+        id: commercialIntentChangeId,
+        organizationId: subscription.organizationId,
         organizationSubscriptionId: subscription.id,
         type: "SUBSCRIPTION_AUTHORIZATION",
-        operationStatus: { notIn: ["APPLIED", "SCHEDULED"] },
+        status: { notIn: ["UNDONE", "SUPERSEDED"] },
       },
-      orderBy: { sequence: "desc" },
     });
-    if (!change) return;
+    if (!change) return false;
+    if (isProviderConfirmedOperationStatus(change.operationStatus)) return true;
 
     const now = new Date();
-    await prisma.$transaction([
-      prisma.organizationSubscription.update({
-        where: { id: subscription.id },
-        data: payment?.id && !subscription.authPaymentId ? { authPaymentId: payment.id } : {},
-      }),
-      prisma.organizationBillingChange.updateMany({
+    return prisma.$transaction(async tx => {
+      const applied = await tx.organizationBillingChange.updateMany({
         where: {
           id: change.id,
-          operationStatus: { notIn: ["APPLIED", "SCHEDULED"] },
+          status: change.status,
+          operationStatus: change.operationStatus,
+          updatedAt: change.updatedAt,
+          NOT: { status: { in: ["UNDONE", "SUPERSEDED"] } },
         },
         data: {
           status: "APPLIED",
@@ -2688,26 +3027,46 @@ export class BillingService {
           failureCode: null,
           lastError: null,
         },
-      }),
-    ]);
+      });
+      if (applied.count !== 1) return false;
+      if (!subscription.authPaymentId) {
+        await tx.organizationSubscription.update({
+          where: { id: subscription.id },
+          data: { authPaymentId: payment.id },
+        });
+      }
+      if (change.failureCategory === "MANUAL_REVIEW_REQUIRED") {
+        await recordBillingMutationAudit(tx, {
+          changeId: change.id,
+          organizationId: change.organizationId,
+          organizationSubscriptionId: change.organizationSubscriptionId,
+          attemptCount: change.attemptCount,
+          outcome: "PROVIDER_STATE_ADOPTED",
+        });
+      }
+      return true;
+    });
   }
 
   private static async applyProviderFailedAuthorization(
-    organizationId: string,
+    commercialIntentChangeId: string | null,
     subscription: OrganizationSubscription,
-    payment: RazorpayPayment
+    payment: RazorpayPayment,
+    evidenceKind: BillingCommercialEvidenceKind
   ) {
-    if (payment.status !== "failed") return;
+    if (!commercialIntentChangeId
+      || evidenceKind !== "DEFINITELY_REJECTED"
+      || payment.status.toLowerCase() !== "failed") return false;
     const change = await prisma.organizationBillingChange.findFirst({
       where: {
-        organizationId,
+        id: commercialIntentChangeId,
+        organizationId: subscription.organizationId,
         organizationSubscriptionId: subscription.id,
         type: "SUBSCRIPTION_AUTHORIZATION",
-        operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
+        status: { notIn: ["UNDONE", "SUPERSEDED"] },
       },
-      orderBy: { sequence: "desc" },
     });
-    if (!change) return;
+    if (!change) return false;
 
     const event = providerFailedCheckoutEvent(payment);
     const now = new Date();
@@ -2720,28 +3079,43 @@ export class BillingService {
       step: payment.error_step ?? undefined,
       paymentId: payment.id,
     };
-    await prisma.organizationBillingChange.updateMany({
-      where: {
-        id: change.id,
-        operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
-      },
-      data: {
-        status: event === "ABANDONED" ? "UNDONE" : "FAILED",
-        operationStatus: event,
-        providerPaymentId: payment.id,
-        failureCategory: normalizedFailureCategory(failureInput, event),
-        failureCode: normalizedFailureCode(failureInput),
-        lastError: event === "ABANDONED"
-          ? "Checkout was cancelled before payment authorization"
-          : event === "DECLINED"
-            ? "Payment authorization was declined; the confirmed billing state is unchanged"
-            : "Razorpay reported that payment authorization failed; the confirmed billing state is unchanged",
-        declinedAt: event === "DECLINED" ? now : null,
-        abandonedAt: event === "ABANDONED" ? now : null,
-        failedAt: event === "DECLINED" || event === "FAILED" ? now : null,
-        undoneAt: event === "ABANDONED" ? now : null,
-        resolvedAt: now,
-      },
+    return prisma.$transaction(async tx => {
+      const resolved = await tx.organizationBillingChange.updateMany({
+        where: {
+          id: change.id,
+          status: change.status,
+          operationStatus: change.operationStatus,
+          updatedAt: change.updatedAt,
+          NOT: { status: { in: ["UNDONE", "SUPERSEDED"] } },
+        },
+        data: {
+          status: event === "ABANDONED" ? "UNDONE" : "FAILED",
+          operationStatus: event,
+          providerPaymentId: payment.id,
+          failureCategory: normalizedFailureCategory(failureInput, event),
+          failureCode: normalizedFailureCode(failureInput),
+          lastError: event === "ABANDONED"
+            ? "Checkout was cancelled before payment authorization"
+            : event === "DECLINED"
+              ? "Payment authorization was declined; the confirmed billing state is unchanged"
+              : "Razorpay reported that payment authorization failed; the confirmed billing state is unchanged",
+          declinedAt: event === "DECLINED" ? now : null,
+          abandonedAt: event === "ABANDONED" ? now : null,
+          failedAt: event === "DECLINED" || event === "FAILED" ? now : null,
+          undoneAt: event === "ABANDONED" ? now : null,
+          resolvedAt: now,
+        },
+      });
+      if (resolved.count === 1 && change.failureCategory === "MANUAL_REVIEW_REQUIRED") {
+        await recordBillingMutationAudit(tx, {
+          changeId: change.id,
+          organizationId: change.organizationId,
+          organizationSubscriptionId: change.organizationSubscriptionId,
+          attemptCount: change.attemptCount,
+          outcome: "PROVIDER_STATE_ADOPTED",
+        });
+      }
+      return resolved.count === 1;
     });
   }
 
@@ -2857,18 +3231,22 @@ export class BillingService {
               }
               await BillingReplacementService.promoteIfReady(replacementChange.id, now);
             }
-          } else if (reconciliation.payment?.status === "failed") {
+          } else if (reconciliation.evidenceKind === "DEFINITELY_REJECTED"
+            && reconciliation.payment) {
             await this.applyProviderFailedAuthorization(
-              processed.organizationId,
-              reconciliation.subscription,
-              reconciliation.payment
-            );
-          } else {
-            await this.applyProviderConfirmedAuthorization(
-              processed.organizationId,
+              reconciliation.commercialIntentChangeId,
               reconciliation.subscription,
               reconciliation.payment,
-              reconciliation.confirmedPaidPeriod
+              reconciliation.evidenceKind
+            );
+          } else if (["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(
+            reconciliation.evidenceKind
+          )) {
+            await this.applyProviderConfirmedAuthorization(
+              reconciliation.commercialIntentChangeId,
+              reconciliation.subscription,
+              reconciliation.payment,
+              reconciliation.evidenceKind
             );
           }
         }

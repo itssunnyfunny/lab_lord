@@ -5,6 +5,7 @@ ALTER TABLE "OrganizationBillingChange"
   ADD COLUMN "commercialIntentVersion" INTEGER,
   ADD COLUMN "commercialIntentCapturedAt" TIMESTAMP(3),
   ADD COLUMN "authorizedProviderMode" "RazorpayMode",
+  ADD COLUMN "authorizedSourceRazorpaySubscriptionId" TEXT,
   ADD COLUMN "authorizedRazorpaySubscriptionId" TEXT,
   ADD COLUMN "authorizedSourceRazorpayPlanId" TEXT,
   ADD COLUMN "authorizedRazorpayPlanId" TEXT,
@@ -50,6 +51,13 @@ CREATE INDEX "BillingChange_authorized_subscription_idx"
     "sequence"
   );
 
+CREATE INDEX "BillingChange_authorized_source_subscription_idx"
+  ON "OrganizationBillingChange"(
+    "authorizedProviderMode",
+    "authorizedSourceRazorpaySubscriptionId",
+    "sequence"
+  );
+
 CREATE INDEX "SubscriptionInvoice_provider_period_idx"
   ON "OrganizationSubscriptionInvoice"("providerMode", "razorpaySubscriptionId", "periodEnd");
 
@@ -73,6 +81,7 @@ ALTER TABLE "OrganizationBillingChange"
       "commercialIntentVersion" IS NULL
       AND "commercialIntentCapturedAt" IS NULL
       AND "authorizedProviderMode" IS NULL
+      AND "authorizedSourceRazorpaySubscriptionId" IS NULL
       AND "authorizedRazorpaySubscriptionId" IS NULL
       AND "authorizedSourceRazorpayPlanId" IS NULL
       AND "authorizedRazorpayPlanId" IS NULL
@@ -92,7 +101,11 @@ ALTER TABLE "OrganizationBillingChange"
       "commercialIntentVersion" = 1
       AND "commercialIntentCapturedAt" IS NOT NULL
       AND "authorizedProviderMode" IS NOT NULL
-      AND LENGTH(BTRIM("authorizedRazorpaySubscriptionId")) > 0
+      AND LENGTH(BTRIM("authorizedSourceRazorpaySubscriptionId")) > 0
+      AND (
+        "authorizedRazorpaySubscriptionId" IS NULL
+        OR LENGTH(BTRIM("authorizedRazorpaySubscriptionId")) > 0
+      )
       AND LENGTH(BTRIM("authorizedRazorpayPlanId")) > 0
       AND "authorizedPlan" IS NOT NULL
       AND "authorizedQuantity" > 0

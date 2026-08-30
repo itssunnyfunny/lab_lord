@@ -12,6 +12,7 @@ import { assertRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
 import { normalizeProviderPaymentMethod } from "@/services/billingPaymentMethod.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
+import { recordBillingMutationAudit } from "@/services/billingMutationAudit.service";
 import {
   buildCommercialIntentSnapshot,
   captureProcessingCommercialIntent,
@@ -48,6 +49,10 @@ const IMMEDIATE_ACCESS_CHANGE_TYPES = new Set([
 ]);
 
 export type ReplacementAccessAction = "GRANT" | "REVOKE" | "NONE";
+
+type SyncAuthorizedAccessOptions = {
+  resolveManualReview?: boolean;
+};
 
 export type ReplacementAccessDecisionInput = {
   changeType: string;
@@ -379,7 +384,7 @@ export class BillingReplacementService {
     if (change.commercialIntentVersion != null) {
       commercialIntent = readCommercialIntentSnapshot(change);
       if (commercialIntent.authorizedProviderMode !== providerMode
-        || commercialIntent.authorizedRazorpaySubscriptionId
+        || commercialIntent.authorizedSourceRazorpaySubscriptionId
           !== source.razorpaySubscriptionId
         || commercialIntent.authorizedSourceRazorpayPlanId !== source.razorpayPlanId
         || commercialIntent.authorizedPlan !== intendedPlan
@@ -406,7 +411,8 @@ export class BillingReplacementService {
       }
       commercialIntent = buildCommercialIntentSnapshot({
         providerMode,
-        razorpaySubscriptionId: source.razorpaySubscriptionId,
+        sourceRazorpaySubscriptionId: source.razorpaySubscriptionId,
+        razorpaySubscriptionId: null,
         sourceRazorpayPlanId: source.razorpayPlanId,
         razorpayPlanId: mapping.razorpayPlanId,
         plan: mapping.plan,
@@ -559,6 +565,29 @@ export class BillingReplacementService {
         if (!latestChange || latestChange.status !== "PROCESSING" || latestChange.replacementSubscriptionId) {
           throw new Error("Replacement billing change changed while provider subscription was being created");
         }
+        if (latestChange.attemptCount !== change.attemptCount
+          || latestChange.processingStartedAt?.getTime() !== change.processingStartedAt?.getTime()) {
+          throw new Error("Replacement billing attempt changed while provider subscription was being created");
+        }
+        if (latestChange.authorizedRazorpaySubscriptionId != null
+          && latestChange.authorizedRazorpaySubscriptionId !== providerCandidate!.id) {
+          throw new Error("Replacement provider identity conflicts with the commercial authorization");
+        }
+        if (latestChange.authorizedRazorpaySubscriptionId == null) {
+          const bound = await tx.organizationBillingChange.updateMany({
+            where: {
+              id: change.id,
+              status: "PROCESSING",
+              attemptCount: change.attemptCount,
+              processingStartedAt: change.processingStartedAt,
+              authorizedRazorpaySubscriptionId: null,
+            },
+            data: { authorizedRazorpaySubscriptionId: providerCandidate!.id },
+          });
+          if (bound.count !== 1) {
+            throw new Error("Replacement provider identity could not be bound to this attempt");
+          }
+        }
 
         const candidate = await tx.organizationSubscription.create({
           data: {
@@ -615,7 +644,11 @@ export class BillingReplacementService {
    * candidate; it never changes the current subscription slot or its billing
    * facts.
    */
-  static async syncAuthorizedAccess(changeId: string, now = new Date()) {
+  static async syncAuthorizedAccess(
+    changeId: string,
+    now = new Date(),
+    options: SyncAuthorizedAccessOptions = {}
+  ) {
     return prisma.$transaction(async tx => {
       const initial = await tx.organizationBillingChange.findUnique({
         where: { id: changeId },
@@ -639,26 +672,93 @@ export class BillingReplacementService {
         throw new Error("Replacement billing change not found");
       }
 
-      const targetPlan = change.toPlan ?? source.plan;
-      const targetQuantity = change.toQuantity ?? source.quantity;
-      const targetMapping = await tx.saasRazorpayPlan.findFirst({
-        where: {
-          providerMode: candidate.providerMode,
-          plan: targetPlan,
-          razorpayPlanId: candidate.razorpayPlanId,
-        },
-        select: { razorpayPlanId: true },
-      });
-      const authorizationReady = Boolean(targetMapping) && isReplacementAuthorizationReady({
+      let frozenIntent = null;
+      try {
+        frozenIntent = readCommercialIntentSnapshot(change, { requireBoundSubscription: true });
+      } catch {
+        // Missing or corrupt commercial evidence must never grant replacement access.
+      }
+      const exactIntentBound = Boolean(
+        frozenIntent
+        && candidate.confirmedCommercialIntentChangeId === change.id
+        && frozenIntent.authorizedProviderMode === candidate.providerMode
+        && frozenIntent.authorizedSourceRazorpaySubscriptionId
+          === source.razorpaySubscriptionId
+        && frozenIntent.authorizedRazorpaySubscriptionId
+          === candidate.razorpaySubscriptionId
+        && frozenIntent.authorizedPlan === candidate.plan
+        && frozenIntent.authorizedQuantity === candidate.quantity
+        && frozenIntent.authorizedRazorpayPlanId === candidate.razorpayPlanId
+      );
+      const targetPlan = frozenIntent?.authorizedPlan ?? source.plan;
+      const targetQuantity = frozenIntent?.authorizedQuantity ?? source.quantity;
+      const targetProviderPlanId = exactIntentBound
+        ? frozenIntent!.authorizedRazorpayPlanId
+        : null;
+      const authorizationReady = exactIntentBound && isReplacementAuthorizationReady({
         providerStatus: candidate.status,
         paymentMethod: candidate.providerPaymentMethod,
         providerPlanId: candidate.razorpayPlanId,
         providerQuantity: candidate.quantity,
-        targetPlanId: targetMapping?.razorpayPlanId ?? "",
+        targetPlanId: targetProviderPlanId ?? "",
         targetQuantity,
       });
       let decisionChange = change;
-      if (authorizationReady
+      const exactManualReviewResolution = authorizationReady
+        && options.resolveManualReview === true
+        && change.status === "FAILED"
+        && change.operationStatus === "FAILED"
+        && change.failureCategory === "MANUAL_REVIEW_REQUIRED";
+      if (exactManualReviewResolution) {
+        const resolved = await tx.organizationBillingChange.updateMany({
+          where: {
+            id: change.id,
+            replacementSubscriptionId: candidate.id,
+            status: "FAILED",
+            operationStatus: "FAILED",
+            failureCategory: "MANUAL_REVIEW_REQUIRED",
+            failureCode: change.failureCode,
+            attemptCount: change.attemptCount,
+            updatedAt: change.updatedAt,
+          },
+          data: {
+            status: "SCHEDULED",
+            operationStatus: "SCHEDULED",
+            providerConfirmedAt: change.providerConfirmedAt ?? now,
+            failureCategory: null,
+            failureCode: null,
+            lastError: null,
+            failedAt: null,
+            resolvedAt: null,
+          },
+        });
+        if (resolved.count !== 1) {
+          const latest = await tx.organizationBillingChange.findUniqueOrThrow({
+            where: { id: change.id },
+            include: {
+              organizationSubscription: true,
+              replacementSubscription: true,
+              branch: true,
+            },
+          });
+          return { action: "NONE" as const, change: latest, subscription: candidate };
+        }
+        await recordBillingMutationAudit(tx, {
+          changeId: change.id,
+          organizationId: change.organizationId,
+          organizationSubscriptionId: change.organizationSubscriptionId,
+          attemptCount: change.attemptCount,
+          outcome: "PROVIDER_STATE_ADOPTED",
+        });
+        decisionChange = await tx.organizationBillingChange.findUniqueOrThrow({
+          where: { id: change.id },
+          include: {
+            organizationSubscription: true,
+            replacementSubscription: true,
+            branch: true,
+          },
+        });
+      } else if (authorizationReady
         && !["FAILED", "UNDONE", "SUPERSEDED", "APPLIED"].includes(change.status)
         && change.operationStatus !== "SCHEDULED") {
         decisionChange = await tx.organizationBillingChange.update({
@@ -691,7 +791,7 @@ export class BillingReplacementService {
         candidateStatus: candidate.status,
         candidatePaymentMethod: candidate.providerPaymentMethod,
         candidateProviderPlanId: candidate.razorpayPlanId,
-        targetProviderPlanId: targetMapping?.razorpayPlanId,
+        targetProviderPlanId,
         accessGrantedAt: decisionChange.accessGrantedAt,
         accessRevokedAt: decisionChange.accessRevokedAt,
         effectiveAt: decisionChange.effectiveAt,
@@ -1130,27 +1230,7 @@ export class BillingReplacementService {
         };
       }
 
-      const hasPaidPeriod = Boolean(
-        candidate.paidThrough
-        && candidate.lastConfirmedInvoiceId
-        && candidate.lastConfirmedPaymentId
-        && candidate.currentStart
-        && candidate.currentEnd
-        && candidate.currentStart <= now
-        && candidate.currentEnd > now
-        && candidate.paidThrough.getTime() >= candidate.currentEnd.getTime()
-      );
-      const targetPlan = change.toPlan ?? source.plan;
-      const targetMapping = await tx.saasRazorpayPlan.findFirst({
-        where: {
-          providerMode: candidate.providerMode,
-          plan: targetPlan,
-          razorpayPlanId: candidate.razorpayPlanId,
-        },
-      });
-      if (!targetMapping) throw new Error("Replacement plan mapping not found");
-
-      if (hasPaidPeriod && !["CANCELLED", "COMPLETED", "EXPIRED"].includes(source.status)) {
+      const failPromotion = async (message: string) => {
         const revokeAccess = Boolean(change.accessGrantedAt && !change.accessRevokedAt);
         const failed = await tx.organizationBillingChange.update({
           where: { id: change.id },
@@ -1158,7 +1238,8 @@ export class BillingReplacementService {
             status: "FAILED",
             operationStatus: "FAILED",
             failureCategory: "MANUAL_REVIEW_REQUIRED",
-            lastError: "Both source and replacement may have charged during cutover",
+            failureCode: "REPLACEMENT_COMMERCIAL_EVIDENCE_INVALID",
+            lastError: message,
             failedAt: now,
             accessRevokedAt: revokeAccess ? now : undefined,
           },
@@ -1178,6 +1259,60 @@ export class BillingReplacementService {
           }
         }
         return { promoted: false, manualReview: true, change: failed, subscription: candidate };
+      };
+
+      let frozenIntent;
+      try {
+        frozenIntent = readCommercialIntentSnapshot(change, { requireBoundSubscription: true });
+      } catch {
+        return failPromotion("Replacement commercial authorization is missing or invalid");
+      }
+      const paidLooking = Boolean(
+        candidate.paidThrough
+        && candidate.lastConfirmedInvoiceId
+        && candidate.lastConfirmedPaymentId
+        && candidate.currentStart
+        && candidate.currentEnd
+        && candidate.currentStart <= now
+        && candidate.currentEnd > now
+        && candidate.paidThrough.getTime() >= candidate.currentEnd.getTime()
+      );
+      const invoiceEvidence = candidate.lastConfirmedInvoiceId
+        ? await tx.organizationSubscriptionInvoice.findUnique({
+            where: { razorpayInvoiceId: candidate.lastConfirmedInvoiceId },
+          })
+        : null;
+      const exactCommercialTuple = candidate.confirmedCommercialIntentChangeId === change.id
+        && frozenIntent.authorizedProviderMode === candidate.providerMode
+        && frozenIntent.authorizedSourceRazorpaySubscriptionId === source.razorpaySubscriptionId
+        && frozenIntent.authorizedRazorpaySubscriptionId === candidate.razorpaySubscriptionId
+        && frozenIntent.authorizedRazorpayPlanId === candidate.razorpayPlanId
+        && frozenIntent.authorizedPlan === candidate.plan
+        && frozenIntent.authorizedQuantity === candidate.quantity;
+      const exactInvoiceEvidence = Boolean(
+        invoiceEvidence
+        && invoiceEvidence.commercialEvidenceVersion === 1
+        && invoiceEvidence.commercialIntentChangeId === change.id
+        && invoiceEvidence.organizationSubscriptionId === candidate.id
+        && invoiceEvidence.providerMode === candidate.providerMode
+        && invoiceEvidence.razorpaySubscriptionId === candidate.razorpaySubscriptionId
+        && invoiceEvidence.razorpayPlanId === candidate.razorpayPlanId
+        && invoiceEvidence.providerQuantity === candidate.quantity
+        && invoiceEvidence.razorpayOfferId === frozenIntent.authorizedRazorpayOfferId
+        && invoiceEvidence.razorpayPaymentId === candidate.lastConfirmedPaymentId
+        && invoiceEvidence.paymentStatus?.toLowerCase() === "captured"
+        && invoiceEvidence.paymentCaptured === true
+        && invoiceEvidence.periodEnd?.getTime() === candidate.currentEnd?.getTime()
+        && invoiceEvidence.periodEnd?.getTime() === candidate.paidThrough?.getTime()
+      );
+      const hasPaidPeriod = paidLooking && exactCommercialTuple && exactInvoiceEvidence;
+
+      if (paidLooking && !hasPaidPeriod) {
+        return failPromotion("Replacement paid state lacks exact linked commercial evidence");
+      }
+
+      if (hasPaidPeriod && !["CANCELLED", "COMPLETED", "EXPIRED"].includes(source.status)) {
+        return failPromotion("Both source and replacement may have charged during cutover");
       }
 
       const ready = isReplacementPromotionReady({
@@ -1186,8 +1321,8 @@ export class BillingReplacementService {
         paymentMethod: candidate.providerPaymentMethod,
         providerPlanId: candidate.razorpayPlanId,
         providerQuantity: candidate.quantity,
-        targetPlanId: targetMapping.razorpayPlanId,
-        targetQuantity: change.toQuantity ?? source.quantity,
+        targetPlanId: frozenIntent.authorizedRazorpayPlanId,
+        targetQuantity: frozenIntent.authorizedQuantity,
         confirmedPaidPeriod: hasPaidPeriod,
       });
       if (!ready) return { promoted: false, manualReview: false, change, subscription: candidate };

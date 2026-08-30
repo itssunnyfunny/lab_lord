@@ -30,6 +30,7 @@ export type CommercialEvidenceMismatchCode =
   | "BILLING_CADENCE_MISMATCH"
   | "QUANTITY_MISMATCH"
   | "OFFER_MISMATCH"
+  | "PAYMENT_ID_MISMATCH"
   | "PAYMENT_SUBSCRIPTION_MISMATCH"
   | "PAYMENT_NOT_AUTHORIZED"
   | "INVOICE_SUBSCRIPTION_MISMATCH"
@@ -42,6 +43,8 @@ export type CommercialEvidenceMismatchCode =
   | "EXPECTED_AMOUNT_MISMATCH"
   | "CURRENCY_MISMATCH"
   | "OFFER_CYCLE_EVIDENCE_MISSING"
+  | "STALE_SETTLEMENT"
+  | "COMMERCIAL_FINALIZATION_FAILED"
   | "BILLING_PERIOD_MISMATCH"
   | "MALFORMED_PROVIDER_EVIDENCE";
 
@@ -53,6 +56,7 @@ export type CommercialIntentRecord = {
   commercialIntentVersion: number | null;
   commercialIntentCapturedAt: Date | null;
   authorizedProviderMode: RazorpayMode | null;
+  authorizedSourceRazorpaySubscriptionId: string | null;
   authorizedRazorpaySubscriptionId: string | null;
   authorizedSourceRazorpayPlanId: string | null;
   authorizedRazorpayPlanId: string | null;
@@ -78,7 +82,8 @@ type CommercialOfferSnapshotInput = {
 
 export type CommercialIntentSnapshotInput = {
   providerMode: RazorpayMode;
-  razorpaySubscriptionId: string;
+  sourceRazorpaySubscriptionId?: string | null;
+  razorpaySubscriptionId: string | null;
   sourceRazorpayPlanId?: string | null;
   razorpayPlanId: string;
   plan: SaasPlan;
@@ -95,7 +100,8 @@ export type CommercialIntentWriteData = {
   commercialIntentVersion: typeof COMMERCIAL_INTENT_VERSION;
   commercialIntentCapturedAt: Date;
   authorizedProviderMode: RazorpayMode;
-  authorizedRazorpaySubscriptionId: string;
+  authorizedSourceRazorpaySubscriptionId: string;
+  authorizedRazorpaySubscriptionId: string | null;
   authorizedSourceRazorpayPlanId: string | null;
   authorizedRazorpayPlanId: string;
   authorizedPlan: SaasPlan;
@@ -111,16 +117,18 @@ export type CommercialIntentWriteData = {
 };
 
 export function readCommercialIntentSnapshot(
-  intent: CommercialIntentRecord
+  intent: CommercialIntentRecord,
+  options: { requireBoundSubscription?: boolean } = {}
 ): CommercialIntentWriteData {
-  if (!isCompleteIntent(intent)) {
+  if (!isCompleteIntent(intent, options.requireBoundSubscription === true)) {
     throw new Error(commercialEvidenceMessage("COMMERCIAL_INTENT_INVALID"));
   }
   return {
     commercialIntentVersion: COMMERCIAL_INTENT_VERSION,
     commercialIntentCapturedAt: intent.commercialIntentCapturedAt!,
     authorizedProviderMode: intent.authorizedProviderMode!,
-    authorizedRazorpaySubscriptionId: intent.authorizedRazorpaySubscriptionId!,
+    authorizedSourceRazorpaySubscriptionId: intent.authorizedSourceRazorpaySubscriptionId!,
+    authorizedRazorpaySubscriptionId: intent.authorizedRazorpaySubscriptionId,
     authorizedSourceRazorpayPlanId: intent.authorizedSourceRazorpayPlanId,
     authorizedRazorpayPlanId: intent.authorizedRazorpayPlanId!,
     authorizedPlan: intent.authorizedPlan!,
@@ -216,6 +224,7 @@ export function commercialEvidenceMessage(code: CommercialEvidenceMismatchCode) 
     BILLING_CADENCE_MISMATCH: "The provider billing cadence does not match the commercial authorization",
     QUANTITY_MISMATCH: "The provider quantity does not match the commercial authorization",
     OFFER_MISMATCH: "The provider offer does not match the commercial authorization",
+    PAYMENT_ID_MISMATCH: "The provider payment does not match the requested payment",
     PAYMENT_SUBSCRIPTION_MISMATCH: "The payment does not belong to the authorized subscription",
     PAYMENT_NOT_AUTHORIZED: "The payment has not authorized the recurring mandate",
     INVOICE_SUBSCRIPTION_MISMATCH: "The invoice does not belong to the authorized subscription",
@@ -228,6 +237,8 @@ export function commercialEvidenceMessage(code: CommercialEvidenceMismatchCode) 
     EXPECTED_AMOUNT_MISMATCH: "The settled amount does not match the authorized amount",
     CURRENCY_MISMATCH: "The provider currencies do not match the commercial authorization",
     OFFER_CYCLE_EVIDENCE_MISSING: "The provider offer cycle cannot be proven",
+    STALE_SETTLEMENT: "The provider settlement predates the commercial authorization",
+    COMMERCIAL_FINALIZATION_FAILED: "Exact provider evidence could not be finalized locally",
     BILLING_PERIOD_MISMATCH: "The invoice billing period does not match the provider subscription",
     MALFORMED_PROVIDER_EVIDENCE: "Razorpay returned malformed commercial evidence",
   };
@@ -243,11 +254,13 @@ export function buildCommercialIntentSnapshot(
     throw new Error("Commercial intent requires positive quantity, amount, and interval values");
   }
   const providerSubscriptionId = normalizedNullableId(input.razorpaySubscriptionId);
+  const sourceProviderSubscriptionId = normalizedNullableId(input.sourceRazorpaySubscriptionId)
+    ?? providerSubscriptionId;
   const providerPlanId = normalizedNullableId(input.razorpayPlanId);
   const currency = normalizedCurrency(input.currency);
   const period = input.period.trim().toLowerCase();
-  if (!providerSubscriptionId || !providerPlanId || currency.length !== 3 || !period) {
-    throw new Error("Commercial intent requires provider IDs, currency, and billing period");
+  if (!sourceProviderSubscriptionId || !providerPlanId || currency.length !== 3 || !period) {
+    throw new Error("Commercial intent requires source and plan provider IDs, currency, and billing period");
   }
   const grossAmountSubunits = input.unitAmountSubunits * input.quantity;
   if (!Number.isSafeInteger(grossAmountSubunits) || grossAmountSubunits <= 0) {
@@ -279,6 +292,7 @@ export function buildCommercialIntentSnapshot(
     commercialIntentVersion: COMMERCIAL_INTENT_VERSION,
     commercialIntentCapturedAt: input.capturedAt ?? new Date(),
     authorizedProviderMode: input.providerMode,
+    authorizedSourceRazorpaySubscriptionId: sourceProviderSubscriptionId,
     authorizedRazorpaySubscriptionId: providerSubscriptionId,
     authorizedSourceRazorpayPlanId: normalizedNullableId(input.sourceRazorpayPlanId),
     authorizedRazorpayPlanId: providerPlanId,
@@ -295,11 +309,13 @@ export function buildCommercialIntentSnapshot(
   };
 }
 
-function isCompleteIntent(intent: CommercialIntentRecord) {
+function isCompleteIntent(intent: CommercialIntentRecord, requireBoundSubscription = false) {
   return intent.commercialIntentVersion === COMMERCIAL_INTENT_VERSION
     && intent.commercialIntentCapturedAt instanceof Date
     && intent.authorizedProviderMode != null
-    && normalizedNullableId(intent.authorizedRazorpaySubscriptionId) != null
+    && normalizedNullableId(intent.authorizedSourceRazorpaySubscriptionId) != null
+    && (!requireBoundSubscription
+      || normalizedNullableId(intent.authorizedRazorpaySubscriptionId) != null)
     && normalizedNullableId(intent.authorizedRazorpayPlanId) != null
     && intent.authorizedPlan != null
     && positiveInteger(intent.authorizedQuantity)
@@ -333,13 +349,14 @@ export function validateExactCommercialEvidence(input: {
   };
   providerSubscription: RazorpaySubscription;
   payment?: RazorpayPayment | null;
+  expectedPaymentId?: string | null;
   invoice?: RazorpayInvoice | null;
   providerPlan?: RazorpayPlan | null;
   now?: Date;
 }): ExactCommercialEvidenceResult {
   const intent = input.intent;
   if (!intent) return mismatch("COMMERCIAL_INTENT_MISSING");
-  if (!isCompleteIntent(intent)) return mismatch("COMMERCIAL_INTENT_INVALID");
+  if (!isCompleteIntent(intent, true)) return mismatch("COMMERCIAL_INTENT_INVALID");
   if (intent.organizationId !== input.organizationId
     || input.localSubscription.organizationId !== input.organizationId) {
     return mismatch("ORGANIZATION_MISMATCH");
@@ -375,6 +392,9 @@ export function validateExactCommercialEvidence(input: {
     if (payment.entity !== "payment" || !positiveInteger(payment.amount)) {
       return mismatch("MALFORMED_PROVIDER_EVIDENCE");
     }
+    if (input.expectedPaymentId && payment.id !== input.expectedPaymentId) {
+      return mismatch("PAYMENT_ID_MISMATCH");
+    }
     if (payment.subscription_id !== intent.authorizedRazorpaySubscriptionId) {
       return mismatch("PAYMENT_SUBSCRIPTION_MISMATCH");
     }
@@ -386,6 +406,9 @@ export function validateExactCommercialEvidence(input: {
   const invoice = input.invoice ?? null;
   if (!invoice) {
     if (!payment) return { kind: "PENDING" };
+    if (payment.invoice_id && payment.status.toLowerCase() === "captured") {
+      return mismatch("INVOICE_PAYMENT_MISMATCH");
+    }
     if (!["authorized", "captured"].includes(payment.status.toLowerCase())) {
       return mismatch("PAYMENT_NOT_AUTHORIZED");
     }
@@ -416,6 +439,11 @@ export function validateExactCommercialEvidence(input: {
   if (invoice.amount_due !== 0) return mismatch("INVOICE_AMOUNT_DUE");
   if (invoice.amount_paid !== invoice.amount) return mismatch("INVOICE_NOT_FULLY_PAID");
   if (payment.amount !== invoice.amount) return mismatch("INVOICE_PAYMENT_AMOUNT_MISMATCH");
+  if (!positiveInteger(invoice.paid_at)
+    || invoice.paid_at
+      < Math.floor(intent.commercialIntentCapturedAt!.getTime() / 1000)) {
+    return mismatch("STALE_SETTLEMENT");
+  }
 
   const invoiceCurrency = normalizedCurrency(invoice.currency);
   const paymentCurrency = normalizedCurrency(payment.currency);
