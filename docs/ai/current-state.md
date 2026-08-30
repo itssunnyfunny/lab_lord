@@ -498,8 +498,24 @@ The repository contains both legacy billing and Workspace Billing V2.
   currency, plan, quantity, offer, and period. Mismatches preserve confirmed
   local commercial state and enter auditable manual review; manual reconciliation
   performs provider reads only and adopts state only from exact evidence.
+- Entitlement and billing-experience reads use the same stored-evidence resolver.
+  `AUTHENTICATED` is mandate readiness, while `ACTIVE` and a raw future
+  `paidThrough` remain insufficient. Legacy organizations without an exact
+  current settlement retain writable Basic fallback rather than premium access;
+  V2 organizations fail closed to read-only Basic. Trials and exact bounded
+  replacement access remain independent grants.
 - Razorpay plan provisioning uses database leases and provider-mode-aware catalog records.
-- Webhook processing verifies the raw-body HMAC, persists unique event receipts, detects event-ID collisions, and reconciles provider state.
+- Webhook processing verifies the raw-body HMAC, persists unique event receipts,
+  detects event-ID collisions, and treats both legacy and V2 payloads only as
+  provider-reconciliation triggers; signed payload snapshots are not copied into
+  paid state.
+- `scripts/reconcile-legacy-paid-entitlements.ts` provides the repository-owned
+  read-only-first transition path. It is organization/mode/target/database bound,
+  emits pre/proposal/post counts, applies only a freshly confirmed exact proposal,
+  re-fetches provider evidence before its fenced transaction, never mutates
+  Razorpay, and records ambiguous evidence for manual review.
+- `scripts/prepare-workspace-billing-rollout.ts` refuses promotion when an
+  existing subscription carries unbacked paid state.
 - `/api/cron/billing/hourly` processes billing deadlines and requires `Authorization: Bearer <CRON_SECRET>`.
 
 This subsystem is implemented but deliberately release-gated:

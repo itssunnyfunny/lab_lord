@@ -80,9 +80,10 @@ The preflight has no `--apply`, cleanup, cancel, delete, or migration mode. Old 
 6. Deploy `20260810150000_add_subscription_replacement_foundation` while the multi-method flag remains off.
 7. Deploy `20260810153000_cut_over_subscription_current_slot` after the expansion/backfill checks pass.
 8. Deploy additive migration `20260829120000_add_exact_commercial_evidence` database-first and complete its pre/post count, constraint, index, and migration-status checks from the production runbook. Do not backfill historical intent from the current plan catalog.
-9. Run `pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/prepare-workspace-billing-rollout.ts` for the operator-verified Production target's database-only dry audit. Verify the target fingerprint first.
-10. Run the new Razorpay preflight for the target environment.
-11. The rollout script is dry-run by default. Database mutation requires `--apply`; selected organization promotion requires both `--apply` and `--promote=<comma-separated-org-ids>`. Keep the explicit `BILLING_ENV_FILE` and `VERCEL_ENV` binding on every dry-run or apply invocation, verify the target again, and review the itemized database changes first. The script never calls Razorpay.
+9. Before entitlement cutover or V2 promotion, run the organization-scoped, provider-read-only `scripts/reconcile-legacy-paid-entitlements.ts` dry audit from the approved release artifact. Review its pre/proposal counts and exact updates, then apply only an unchanged fresh proposal with the matching target, Razorpay mode, database fingerprint, organization allowlist, and batch proposal hash. Ambiguous records must enter manual review. Follow the exact commands and rollback rules in the production runbook; this step uses the existing exact-evidence schema and has no additional migration.
+10. Run `pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/prepare-workspace-billing-rollout.ts` for the operator-verified Production target's database-only dry audit. Verify the target fingerprint first. The audit must refuse any current subscription whose paid state is not backed by the shared exact settlement tuple.
+11. Run the new Razorpay preflight for the target environment.
+12. The rollout script is dry-run by default. Database mutation requires `--apply`; selected organization promotion requires both `--apply` and `--promote=<comma-separated-org-ids>`. Keep the explicit `BILLING_ENV_FILE` and `VERCEL_ENV` binding on every dry-run or apply invocation, verify the target again, and review the itemized database changes first. The script never calls Razorpay.
 
 The provider-catalog migration labels all pre-existing plan, offer, and current-subscription references as `TEST`; there is no permanent database default. Its original empty-Live-account assumption is not repository-verifiable. Before applying it, obtain dated owner-approved provider evidence and reconcile every existing Live/Test entity. A Production preflight must fail until all legacy Test references in the verified target have been explicitly reviewed and resolved.
 
@@ -123,7 +124,7 @@ Enable exactly:
 - `payment.captured`
 - `payment.failed`
 
-Do not configure `subscription.expired`. Authorization/start deadlines and missing webhook state are resolved through local deadlines and provider reconciliation. Browser success alone never grants access or advances `paidThrough`.
+Do not configure `subscription.expired`. Authorization/start deadlines and missing webhook state are resolved through local deadlines and provider reconciliation. Browser success, `AUTHENTICATED`, `ACTIVE`, and signed webhook snapshot fields alone never grant access or advance `paidThrough`; both legacy and V2 deliveries are reconciliation triggers.
 
 ## Scheduled jobs
 
@@ -154,7 +155,7 @@ If any capability disappears from the Methods API, a configured amount/method is
 5. Run authenticated desktop and mobile browser tests with a restricted Preview QA account, including eligible and ineligible amount/device combinations.
 6. Run the enabled multi-method preflight with all five explicit evidence flags and retain its aggregate Methods API report.
 7. Back up Production and run the protected Production migration workflow.
-8. Review and explicitly approve resolution of every old Test plan, offer, subscription, unsupported-method cancellation, and unresolved Checkout operation in Production.
+8. Review and explicitly approve resolution of every old Test plan, offer, subscription, unsupported-method cancellation, unresolved Checkout operation, and legacy paid-entitlement proposal in Production. Provider-confirmed legacy paid customers must have the exact stored invoice/payment/intent tuple; all ambiguous legacy records must remain Basic and enter manual review.
 9. Run the held Production preflight with `--expect-empty-provider-catalog`; it must contain no `TEST` row and no provider catalog entity.
 10. Configure the Live webhook and Dashboard settings. Verify a signed `2xx` delivery without enabling global writes.
 11. Add one reviewed organization to `RAZORPAY_LIVE_CANARY_ORG_IDS`; leave `RAZORPAY_BILLING_WRITES_ENABLED=false` for everyone else.

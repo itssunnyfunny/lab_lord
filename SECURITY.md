@@ -135,6 +135,17 @@ authentication boundaries, not open application routes.
 - Browser success, client callbacks, webhook event type, and provider
   subscription status alone must never grant paid access or advance
   `paidThrough`.
+- `AUTHENTICATED` records mandate readiness, not payment. Ordinary premium
+  entitlement requires a current `paidThrough` accepted by the shared stored-
+  evidence resolver: the subscription's confirmation pointers must resolve to
+  one applied immutable commercial intent and its exact paid invoice/captured
+  payment tuple. A raw future date, `ACTIVE`, or a signed webhook payload field
+  is not paid evidence.
+- Legacy and Workspace Billing V2 subscriptions use that same normal paid-
+  period boundary. A legacy record without exact current evidence receives the
+  writable Basic fallback; a V2 record without it fails closed to read-only
+  Basic. Owner trials and explicitly authorized bounded replacement access are
+  separate grants and must not be folded into the normal paid resolver.
 - Checkout callbacks must verify their server-side signature, retrieve
   provider-authoritative objects, and match the expected organization intent,
   subscription, payment, plan, quantity, offer, amount, currency, billing
@@ -147,6 +158,10 @@ authentication boundaries, not open application routes.
   must fail.
 - Failed webhook processing must remain retryable and must not be marked
   complete before reconciliation succeeds.
+- A valid legacy or V2 webhook is an identity-scoped reconciliation trigger.
+  Do not copy status, customer, plan, quantity, period, or payment state from
+  the signed payload into entitlement state; fetch and reconcile the matching
+  provider subscription, invoice, and payment evidence first.
 - Test and Live credentials, rows, provider objects, webhook secrets, and
   environments must remain isolated. Wrong-mode state must fail closed.
 - `paidThrough` may advance only from mutually matching provider-confirmed paid
@@ -187,6 +202,12 @@ authentication boundaries, not open application routes.
 - General billing undo must reject an in-flight or unresolved provider outcome.
   Branch-removal undo may restore the branch only atomically with durable,
   provider-confirmed cancellation of the scheduled quantity change.
+- Legacy paid-entitlement transition is a privileged reconciliation operation,
+  not a status backfill. It must default to dry-run, require an explicit
+  organization allowlist and provider mode, bind apply to the exact deployment
+  target and database fingerprint, re-read provider evidence before applying a
+  fresh proposal hash, make no Razorpay mutation, and record unresolved or
+  ambiguous evidence as manual review without advancing entitlement.
 - Replacement-candidate cancellation is a provider mutation with the same lease,
   attempt, stale-worker, and ambiguity rules. A timeout, malformed terminal
   response, or expired cancellation lease remains manual-review state. While it
