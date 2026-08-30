@@ -222,6 +222,29 @@ describe("legacy paid-entitlement transition inspection", () => {
     expect(provider.fetchPlan).not.toHaveBeenCalled();
   });
 
+  it("refuses an exact invoice beside a paid invoice with incomplete identity", async () => {
+    const provider = providerReader([
+      invoice(),
+      invoice({
+        id: "inv_incomplete",
+        payment_id: null,
+        billing_start: null,
+        billing_end: null,
+      }),
+    ]);
+
+    const result = await inspectLegacyPaidEntitlementCandidate({
+      candidate: candidate(),
+      providerMode: "TEST",
+      provider,
+      now,
+    });
+
+    expect(result.manualReviewCode).toBe("INCOMPLETE_INVOICE_COLLECTION");
+    expect(provider.fetchPayment).not.toHaveBeenCalled();
+    expect(provider.fetchPlan).not.toHaveBeenCalled();
+  });
+
   it("accepts only one exact subscription, invoice, payment, and plan tuple", async () => {
     const provider = providerReader();
 

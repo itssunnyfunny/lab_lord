@@ -227,6 +227,86 @@ describe("legacy paid-entitlement transition", () => {
     await expect(testPrisma.organizationSubscriptionInvoice.count()).resolves.toBe(1);
   });
 
+  it("persists a separate review when applied settlement evidence is no longer current", async () => {
+    const { organization } = await legacySubscription();
+    const provider = providerReader();
+    const exactDryRun = await LegacyPaidEntitlementTransitionService.run({
+      organizationIds: [organization.id],
+      providerMode: "TEST",
+      provider,
+      now,
+    });
+    const exactApply = await LegacyPaidEntitlementTransitionService.run({
+      organizationIds: [organization.id],
+      providerMode: "TEST",
+      provider,
+      now,
+      apply: true,
+      confirmedBatchProposalHash: exactDryRun.batchProposalHash,
+    });
+    const appliedChangeId = exactApply.rows[0]?.changeId;
+    const afterPaidPeriod = new Date(periodEndDate.getTime() + 60_000);
+
+    const reviewDryRun = await LegacyPaidEntitlementTransitionService.run({
+      organizationIds: [organization.id],
+      providerMode: "TEST",
+      provider,
+      now: afterPaidPeriod,
+    });
+    expect(reviewDryRun.rows[0]).toMatchObject({
+      disposition: "MANUAL_REVIEW_REQUIRED",
+      manualReviewCode: "EXISTING_EVIDENCE_INCOMPLETE",
+    });
+    const reviewApply = await LegacyPaidEntitlementTransitionService.run({
+      organizationIds: [organization.id],
+      providerMode: "TEST",
+      provider,
+      now: afterPaidPeriod,
+      apply: true,
+      confirmedBatchProposalHash: reviewDryRun.batchProposalHash,
+    });
+
+    expect(reviewApply.rows[0]).toMatchObject({
+      disposition: "MANUAL_REVIEW_REQUIRED",
+      manualReviewCode: "EXISTING_EVIDENCE_INCOMPLETE",
+      persistedManualReview: true,
+      applied: false,
+    });
+    expect(reviewApply.rows[0]?.changeId).not.toBe(appliedChangeId);
+    await expect(testPrisma.organizationBillingChange.findMany({
+      where: { organizationId: organization.id },
+      orderBy: { sequence: "asc" },
+    })).resolves.toMatchObject([
+      { id: appliedChangeId, type: "LEGACY_TRANSITION", status: "APPLIED" },
+      {
+        id: reviewApply.rows[0]?.changeId,
+        type: "LEGACY_TRANSITION",
+        status: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "EXISTING_EVIDENCE_INCOMPLETE",
+        resolvedAt: null,
+      },
+    ]);
+
+    const idempotentDryRun = await LegacyPaidEntitlementTransitionService.run({
+      organizationIds: [organization.id],
+      providerMode: "TEST",
+      provider,
+      now: afterPaidPeriod,
+    });
+    await LegacyPaidEntitlementTransitionService.run({
+      organizationIds: [organization.id],
+      providerMode: "TEST",
+      provider,
+      now: afterPaidPeriod,
+      apply: true,
+      confirmedBatchProposalHash: idempotentDryRun.batchProposalHash,
+    });
+    await expect(testPrisma.organizationBillingChange.count({
+      where: { organizationId: organization.id },
+    })).resolves.toBe(2);
+  });
+
   it("persists ambiguous evidence for manual review without changing entitlement", async () => {
     const { organization, subscription } = await legacySubscription();
     const provider = providerReader();

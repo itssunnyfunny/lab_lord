@@ -255,12 +255,14 @@ function reviewIdempotencyKey(input: {
   organizationId: string;
   organizationSubscriptionId: string;
   code: LegacyPaidEntitlementManualReviewCode;
+  stateHash: string;
 }) {
   return [
     REVIEW_KEY_PREFIX,
     input.organizationId,
     input.organizationSubscriptionId,
     input.code,
+    input.stateHash,
   ].join(":");
 }
 
@@ -456,7 +458,7 @@ export function hasCompleteRazorpayInvoiceCollection(
   return collection.items.every(item => {
     if (!item || typeof item !== "object") return false;
     const invoice = item as Record<string, unknown>;
-    return invoice.entity === "invoice"
+    const baseShape = invoice.entity === "invoice"
       && normalizedId(invoice.id) != null
       && normalizedId(invoice.status) != null
       && positiveInteger(invoice.amount)
@@ -466,6 +468,14 @@ export function hasCompleteRazorpayInvoiceCollection(
       && Number(invoice.amount_due) >= 0
       && typeof invoice.currency === "string"
       && invoice.currency.trim().length === 3;
+    if (!baseShape || String(invoice.status).trim().toLowerCase() !== "paid") {
+      return baseShape;
+    }
+    return normalizedId(invoice.subscription_id) != null
+      && normalizedId(invoice.payment_id) != null
+      && positiveInteger(invoice.billing_start)
+      && positiveInteger(invoice.billing_end)
+      && Number(invoice.billing_end) > Number(invoice.billing_start);
   });
 }
 
@@ -588,6 +598,17 @@ export async function inspectLegacyPaidEntitlementCandidate(input: {
         candidate,
         localSnapshotHash,
         code: "INCOMPLETE_INVOICE_COLLECTION",
+        commercialIntent,
+      });
+    }
+    if (invoices.items.some(invoice =>
+      invoice.status.trim().toLowerCase() === "paid"
+      && invoice.subscription_id !== providerSubscription.id
+    )) {
+      return manualInspection({
+        candidate,
+        localSnapshotHash,
+        code: "MALFORMED_PROVIDER_EVIDENCE",
         commercialIntent,
       });
     }
@@ -839,6 +860,57 @@ async function ensureTransitionRecord(input: {
       fromQuantity: subscription.quantity,
       toQuantity: subscription.quantity,
       ...input.intent,
+      effectiveAt: input.now,
+    },
+  });
+}
+
+async function ensureManualReviewRecord(input: {
+  tx: Prisma.TransactionClient;
+  candidate: LegacyPaidEntitlementCandidate;
+  intent: CommercialIntentWriteData | null;
+  code: LegacyPaidEntitlementManualReviewCode;
+  now: Date;
+}) {
+  const subscription = input.candidate.subscription!;
+  const idempotencyKey = reviewIdempotencyKey({
+    organizationId: input.candidate.id,
+    organizationSubscriptionId: subscription.id,
+    code: input.code,
+    // Creating or retaining a review changes the organization sequence but not
+    // this subscription/offer snapshot, so retries reuse the same review. A
+    // later exact resolution changes the snapshot and can be quarantined again.
+    stateHash: hash(candidateSnapshotValue(input.candidate).subscription),
+  });
+  const expectedType = input.intent ? "LEGACY_TRANSITION" : "COMMERCIAL_RECONCILIATION";
+  const existing = await input.tx.organizationBillingChange.findUnique({
+    where: { idempotencyKey },
+  });
+  if (existing) {
+    if (existing.organizationId !== input.candidate.id
+      || existing.organizationSubscriptionId !== subscription.id
+      || existing.type !== expectedType
+      || ["UNDONE", "SUPERSEDED", "APPLIED"].includes(existing.status)
+      || (input.intent && !sameCommercialIntent(existing, input.intent))) {
+      throw new Error("TRANSITION_STATE_CONFLICT");
+    }
+    return existing;
+  }
+  const sequence = await nextBillingSequence(input.tx, input.candidate);
+  return input.tx.organizationBillingChange.create({
+    data: {
+      organizationId: input.candidate.id,
+      organizationSubscriptionId: subscription.id,
+      sequence,
+      idempotencyKey,
+      type: expectedType,
+      status: "QUEUED",
+      operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+      fromPlan: subscription.plan,
+      toPlan: subscription.plan,
+      fromQuantity: subscription.quantity,
+      toQuantity: subscription.quantity,
+      ...(input.intent ?? {}),
       effectiveAt: input.now,
     },
   });
@@ -1150,47 +1222,31 @@ async function persistManualReview(input: {
     const subscription = candidate.subscription;
     let change: OrganizationBillingChange;
     if (input.assessment.commercialIntent) {
-      change = await ensureTransitionRecord({
+      const transition = await ensureTransitionRecord({
         tx,
         candidate,
         intent: input.assessment.commercialIntent,
         now: input.now,
       });
+      change = transition.status === "APPLIED"
+        ? await ensureManualReviewRecord({
+            tx,
+            candidate,
+            intent: input.assessment.commercialIntent,
+            code: input.code,
+            now: input.now,
+          })
+        : transition;
     } else {
-      const idempotencyKey = reviewIdempotencyKey({
-        organizationId: candidate.id,
-        organizationSubscriptionId: subscription.id,
+      change = await ensureManualReviewRecord({
+        tx,
+        candidate,
+        intent: null,
         code: input.code,
+        now: input.now,
       });
-      const existing = await tx.organizationBillingChange.findUnique({
-        where: { idempotencyKey },
-      });
-      if (existing) {
-        if (existing.organizationId !== candidate.id
-          || existing.organizationSubscriptionId !== subscription.id
-          || existing.type !== "COMMERCIAL_RECONCILIATION"
-          || ["UNDONE", "SUPERSEDED", "APPLIED"].includes(existing.status)) return null;
-        change = existing;
-      } else {
-        const sequence = await nextBillingSequence(tx, candidate);
-        change = await tx.organizationBillingChange.create({
-          data: {
-            organizationId: candidate.id,
-            organizationSubscriptionId: subscription.id,
-            sequence,
-            idempotencyKey,
-            type: "COMMERCIAL_RECONCILIATION",
-            status: "QUEUED",
-            operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
-            fromPlan: subscription.plan,
-            toPlan: subscription.plan,
-            fromQuantity: subscription.quantity,
-            toQuantity: subscription.quantity,
-          },
-        });
-      }
     }
-    if (change.status === "APPLIED") return change.id;
+    if (change.status === "APPLIED") return null;
     const updated = await tx.organizationBillingChange.updateMany({
       where: {
         id: change.id,
