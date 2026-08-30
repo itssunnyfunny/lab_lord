@@ -5,6 +5,7 @@ config({ path: process.env.BILLING_ENV_FILE ?? ".env", override: false });
 const [{ prisma }, {
   BILLING_PAID_EVIDENCE_INCLUDE,
 }, {
+  applyWorkspaceBillingPromotion,
   assertWorkspaceRolloutPaidEvidence,
 }] = await Promise.all([
   import("../lib/prisma"),
@@ -95,41 +96,7 @@ async function promoteOrganization(organizationId: string) {
   }
 
   return prisma.$transaction(async tx => {
-    await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT "id" FROM "Organization" WHERE "id" = ${organizationId} FOR UPDATE
-    `;
-    let transitionId: string | null = null;
-    if (subscription && subscription.quantity !== organization._count.branches) {
-      const sequence = organization.billingMutationSequence + 1;
-      await tx.organization.update({
-        where: { id: organizationId },
-        data: { billingMutationSequence: sequence },
-      });
-      const transition = await tx.organizationBillingChange.upsert({
-        where: {
-          idempotencyKey: `legacy-transition:${organizationId}:${organization._count.branches}`,
-        },
-        create: {
-          organizationId,
-          organizationSubscriptionId: subscription.id,
-          sequence,
-          idempotencyKey: `legacy-transition:${organizationId}:${organization._count.branches}`,
-          type: "LEGACY_TRANSITION",
-          fromPlan: subscription.plan,
-          toPlan: subscription.plan,
-          fromQuantity: subscription.quantity,
-          toQuantity: organization._count.branches,
-          effectiveAt: subscription.currentEnd ?? subscription.paidThrough,
-        },
-        update: {},
-      });
-      transitionId = transition.id;
-    }
-    await tx.organization.update({
-      where: { id: organizationId },
-      data: { billingModelVersion: "WORKSPACE_V2" },
-    });
-    return { organizationId, unchanged: false, transitionId };
+    return applyWorkspaceBillingPromotion(tx, organizationId, new Date());
   });
 }
 

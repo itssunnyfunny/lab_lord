@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   resolveTrustedPaidThrough,
   type BillingPaidEvidenceSubscription,
 } from "@/services/billingPaidEvidence.service";
-import { assertWorkspaceRolloutPaidEvidence } from "@/services/workspaceBillingRolloutPolicy.service";
+import {
+  applyWorkspaceBillingPromotion,
+  assertWorkspaceRolloutPaidEvidence,
+} from "@/services/workspaceBillingRolloutPolicy.service";
 
 const now = new Date("2026-08-15T12:00:00.000Z");
 const periodStart = new Date("2026-08-01T00:00:00.000Z");
@@ -347,5 +350,29 @@ describe("workspace billing rollout evidence", () => {
       confirmedCommercialIntentChangeId: null,
       invoices: [],
     }), now)).toThrow("active paid access requires exact provider settlement evidence");
+  });
+
+  it("revalidates exact evidence after taking the organization lock", async () => {
+    const update = vi.fn();
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "org_1" }]),
+      organization: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "org_1",
+          billingModelVersion: "LEGACY",
+          billingMutationSequence: 7,
+          subscription: exactSubscription({ invoices: [] }),
+          _count: { branches: 2 },
+        }),
+        update,
+      },
+      organizationBillingChange: { upsert: vi.fn() },
+    };
+
+    await expect(applyWorkspaceBillingPromotion(transaction as never, "org_1", now))
+      .rejects.toThrow("stored paidThrough is not backed by exact settlement evidence");
+    expect(transaction.organization.findUnique).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    expect(transaction.organizationBillingChange.upsert).not.toHaveBeenCalled();
   });
 });
