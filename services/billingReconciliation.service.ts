@@ -79,7 +79,7 @@ function date(value: number | null | undefined) {
   return value && value > 0 ? new Date(value * 1000) : null;
 }
 
-function currentPeriodInvoice(
+function currentPeriodInvoices(
   subscription: RazorpaySubscription,
   invoices: RazorpayInvoice[]
 ) {
@@ -91,7 +91,7 @@ function currentPeriodInvoice(
       && invoice.billing_start === subscription.current_start
       && invoice.billing_end === subscription.current_end
     )
-    .sort((left, right) => (right.paid_at ?? 0) - (left.paid_at ?? 0))[0] ?? null;
+    .sort((left, right) => (right.paid_at ?? 0) - (left.paid_at ?? 0));
 }
 
 function hasProviderInvoiceCollectionShape(value: unknown): value is RazorpayInvoices {
@@ -508,6 +508,15 @@ export class BillingReconciliationService {
         options,
       });
     }
+    if (invoices.count !== invoices.items.length) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "INCOMPLETE_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
     const subscriptionEvidence = validateExactCommercialEvidence({
       intent,
       organizationId: localBeforeFetch.organizationId,
@@ -528,11 +537,23 @@ export class BillingReconciliationService {
         options,
       });
     }
+    const matchingCurrentInvoices = explicitPayment
+      ? []
+      : currentPeriodInvoices(providerSubscription, invoices.items);
+    if (matchingCurrentInvoices.length > 1) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "AMBIGUOUS_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
     const selectedInvoice = explicitPayment?.invoice_id
       ? invoices.items.find(invoice => invoice.id === explicitPayment.invoice_id) ?? null
       : explicitPayment
         ? null
-        : currentPeriodInvoice(providerSubscription, invoices.items);
+        : matchingCurrentInvoices[0] ?? null;
     const payment = explicitPayment
       ?? (selectedInvoice?.payment_id
         ? await razorpay.fetchPayment(selectedInvoice.payment_id)
