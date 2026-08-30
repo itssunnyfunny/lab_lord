@@ -39,6 +39,22 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+vi.mock("@/services/entitlement.service", () => ({
+  EntitlementService: {
+    getOrganizationProfile: vi.fn().mockResolvedValue({
+      effectivePlan: "PRO",
+      entitlements: [
+        "STAFF_MANAGEMENT",
+        "ADVANCED_ANALYTICS",
+        "AI_ACCESS",
+        "WHATSAPP_AUTOMATION",
+      ],
+    }),
+    assertOrganizationEntitlement: vi.fn().mockResolvedValue(true),
+    assertBranchEntitlement: vi.fn().mockResolvedValue(true),
+  },
+}));
+
 import { StaffService, PERMISSION_MATRIX } from "@/services/staff.service";
 import { prisma } from "@/lib/prisma";
 import { STAFF_ACTIONS, StaffPermissionAction } from "@/types";
