@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   billingChangeFindUniqueOrThrow: vi.fn(),
   billingChangeUpdate: vi.fn(),
   billingChangeUpdateMany: vi.fn(),
+  transaction: vi.fn(),
+  recordBillingMutationAudit: vi.fn(),
   subscriptionFindFirst: vi.fn(),
   subscriptionFindUnique: vi.fn(),
   subscriptionFindUniqueOrThrow: vi.fn(),
@@ -36,6 +38,7 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mocks.subscriptionFindUnique,
       findUniqueOrThrow: mocks.subscriptionFindUniqueOrThrow,
     },
+    $transaction: mocks.transaction,
   },
 }));
 
@@ -64,6 +67,10 @@ vi.mock("@/services/billingMutation.service", () => ({
     processNext: mocks.processNextMutation,
     retry: mocks.retryMutation,
   },
+}));
+
+vi.mock("@/services/billingMutationAudit.service", () => ({
+  recordBillingMutationAudit: mocks.recordBillingMutationAudit,
 }));
 
 vi.mock("@/services/billingReconciliation.service", () => ({
@@ -169,6 +176,26 @@ function replacementChange(overrides: Record<string, unknown> = {}) {
     providerPaymentId: null,
     providerConfirmedAt: null,
     lastError: null,
+    attemptCount: 0,
+    processingStartedAt: null,
+    verificationStartedAt: null,
+    commercialIntentVersion: 1,
+    commercialIntentCapturedAt: createdAt,
+    authorizedProviderMode: "TEST",
+    authorizedSourceRazorpaySubscriptionId: "sub_source",
+    authorizedRazorpaySubscriptionId: "sub_candidate",
+    authorizedSourceRazorpayPlanId: "plan_basic",
+    authorizedRazorpayPlanId: "plan_pro",
+    authorizedPlan: "PRO",
+    authorizedQuantity: 1,
+    authorizedRazorpayOfferId: null,
+    authorizedUnitAmountSubunits: 49900,
+    authorizedGrossAmountSubunits: 49900,
+    authorizedExpectedAmountSubunits: 49900,
+    authorizedOfferValidThroughPaidCount: null,
+    authorizedCurrency: "INR",
+    authorizedPeriod: "monthly",
+    authorizedInterval: 1,
     createdAt,
     updatedAt: createdAt,
     organizationSubscription: sourceSubscription(),
@@ -194,6 +221,10 @@ describe("replacement billing trust and race contracts", () => {
     mocks.getOrganizationForOwnerAccess.mockResolvedValue(organization());
     mocks.organizationUpdate.mockResolvedValue({});
     mocks.billingChangeUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.transaction.mockImplementation(async callback => callback({
+      organizationBillingChange: { updateMany: mocks.billingChangeUpdateMany },
+    }));
+    mocks.recordBillingMutationAudit.mockResolvedValue(undefined);
     mocks.processNextMutation.mockResolvedValue(null);
     mocks.reconcileProviderSubscription.mockResolvedValue({});
     mocks.syncAuthorizedAccess.mockResolvedValue({ change: replacementChange() });
@@ -240,37 +271,101 @@ describe("replacement billing trust and race contracts", () => {
   it.each([
     {
       label: "subscription response id",
-      subscription: { id: "sub_other", plan_id: "plan_pro", status: "authenticated" },
-      payment: { id: "pay_auth", subscription_id: "sub_candidate", status: "authorized", method: "upi" },
-      error: "Razorpay subscription response mismatch",
+      subscription: { id: "sub_other" },
+      payment: {},
+      code: "SUBSCRIPTION_MISMATCH",
+      error: "The provider subscription does not match the commercial authorization",
     },
     {
       label: "payment response id",
-      subscription: { id: "sub_candidate", plan_id: "plan_pro", status: "authenticated" },
-      payment: { id: "pay_other", subscription_id: "sub_candidate", status: "authorized", method: "upi" },
-      error: "Razorpay payment response mismatch",
+      subscription: {},
+      payment: { id: "pay_other" },
+      code: "PAYMENT_ID_MISMATCH",
+      error: "The provider payment does not match the requested payment",
     },
     {
       label: "payment subscription association",
-      subscription: { id: "sub_candidate", plan_id: "plan_pro", status: "authenticated" },
-      payment: { id: "pay_auth", subscription_id: null, status: "authorized", method: "upi" },
-      error: "Razorpay payment subscription mismatch",
+      subscription: {},
+      payment: { subscription_id: null },
+      code: "PAYMENT_SUBSCRIPTION_MISMATCH",
+      error: "The payment does not belong to the authorized subscription",
     },
-  ])("rejects a mismatched provider $label", async ({ subscription, payment, error }) => {
+  ])("rejects a mismatched provider $label", async ({ subscription, payment, code, error }) => {
     const change = replacementChange();
     const candidate = candidateSubscription();
     mocks.billingChangeFindFirst.mockResolvedValue(change);
     mocks.subscriptionFindFirst.mockResolvedValue(candidate);
-    mocks.fetchSubscription.mockResolvedValue(subscription);
-    mocks.fetchPayment.mockResolvedValue(payment);
+    mocks.billingChangeFindUniqueOrThrow.mockImplementationOnce(async () => {
+      const claim = mocks.billingChangeUpdateMany.mock.calls[0]![0];
+      return {
+        ...change,
+        operationStatus: "VERIFYING",
+        verificationStartedAt: claim.data.verificationStartedAt,
+      };
+    });
+    mocks.fetchSubscription.mockResolvedValue({
+      id: "sub_candidate",
+      entity: "subscription",
+      plan_id: "plan_pro",
+      status: "authenticated",
+      quantity: 1,
+      offer_id: null,
+      ...subscription,
+    });
+    mocks.fetchPayment.mockResolvedValue({
+      id: "pay_auth",
+      entity: "payment",
+      amount: 49900,
+      currency: "INR",
+      status: "authorized",
+      subscription_id: "sub_candidate",
+      method: "upi",
+      captured: false,
+      invoice_id: null,
+      ...payment,
+    });
 
     await expect(BillingService.verifySubscriptionSuccess("owner_1", "org_1", {
       changeId: change.id,
       razorpay_subscription_id: "sub_candidate",
       razorpay_payment_id: "pay_auth",
       razorpay_signature: "verified-signature",
-    })).rejects.toThrow(error);
+    })).rejects.toMatchObject({
+      name: "BillingManualReviewRequiredError",
+      code: "BILLING_MANUAL_REVIEW_REQUIRED",
+      changeId: change.id,
+      message: error,
+    });
 
+    const verificationStartedAt = mocks.billingChangeUpdateMany.mock.calls[0]![0]
+      .data.verificationStartedAt;
+    expect(mocks.billingChangeUpdateMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      where: {
+        id: change.id,
+        operationStatus: "VERIFYING",
+        attemptCount: 0,
+        verificationStartedAt,
+      },
+      data: expect.objectContaining({
+        status: "FAILED",
+        operationStatus: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: code,
+        providerPaymentId: "pay_auth",
+        resolvedAt: null,
+      }),
+    }));
+    expect(mocks.billingChangeUpdateMany.mock.calls[1]![0].where.verificationStartedAt)
+      .toBe(verificationStartedAt);
+    expect(mocks.recordBillingMutationAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        changeId: change.id,
+        attemptCount: 0,
+        outcome: "MANUAL_REVIEW_REQUIRED",
+        failureCode: code,
+      })
+    );
     expect(mocks.syncAuthorizedAccess).not.toHaveBeenCalled();
   });
 

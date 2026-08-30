@@ -225,6 +225,7 @@ describe("exact billing commercial evidence", () => {
           durationType: "LIMITED_CYCLES",
           durationCycles: 2,
         },
+        capturedAt: new Date("2026-07-01T00:00:00.000Z"),
       }),
     });
     expect(validate({
