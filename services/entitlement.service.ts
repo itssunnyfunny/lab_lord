@@ -4,13 +4,14 @@ import {
   type BillingEntitlement,
   type BillingPlanId,
 } from "@/lib/billingPlans";
-import type { OrganizationSubscription, Prisma } from "@/app/generated/prisma/client";
+import type { Prisma } from "@/app/generated/prisma/client";
 import { deriveWorkspaceBillingState, type BillingAccessMode } from "@/lib/billingState";
 import { resolveRazorpayMode } from "@/lib/razorpay";
 import { deriveAuthorizedReplacementOverride } from "@/services/billingReplacement.service";
-
-const PREMIUM_ACCESS_STATUSES = new Set(["AUTHENTICATED", "ACTIVE"]);
-const GRACE_ACCESS_STATUSES = new Set(["PENDING", "HALTED"]);
+import {
+  BILLING_PAID_EVIDENCE_INCLUDE,
+  resolveTrustedPaidThrough,
+} from "@/services/billingPaidEvidence.service";
 
 export class SubscriptionEntitlementError extends Error {
   readonly code = "SUBSCRIPTION_UPGRADE_REQUIRED";
@@ -28,12 +29,6 @@ export class BillingReadOnlyError extends Error {
     super(`Unauthorized: ${message}`);
     this.name = "BillingReadOnlyError";
   }
-}
-
-function subscriptionHasPremiumAccess(subscription: OrganizationSubscription) {
-  if (PREMIUM_ACCESS_STATUSES.has(subscription.status)) return true;
-  return GRACE_ACCESS_STATUSES.has(subscription.status)
-    && Boolean(subscription.currentEnd && subscription.currentEnd > new Date());
 }
 
 export type OrganizationEntitlementProfile = {
@@ -61,7 +56,7 @@ export class EntitlementService {
       select: {
         id: true,
         billingModelVersion: true,
-        subscription: true,
+        subscription: { include: BILLING_PAID_EVIDENCE_INCLUDE },
         pendingSubscriptionReplacement: {
           select: {
             id: true,
@@ -132,6 +127,7 @@ export class EntitlementService {
       && getBillingPlan(replacementOverride.plan as BillingPlanId)
       ? { ...replacementOverride, plan: replacementOverride.plan as BillingPlanId }
       : null;
+    const trustedPaidThrough = resolveTrustedPaidThrough(subscription, now);
 
     if (organization.billingModelVersion === "WORKSPACE_V2") {
       const state = deriveWorkspaceBillingState({
@@ -146,20 +142,24 @@ export class EntitlementService {
           ? {
               status: subscription.status,
               plan: subscription.plan as BillingPlanId,
-              paidThrough: subscription.paidThrough,
+              paidThrough: trustedPaidThrough,
             }
           : null,
         authorizedReplacement,
       });
-      const selectedPlan = state.effectivePlan ? getBillingPlan(state.effectivePlan) : null;
+      const entitledPlanId = state.source === "NONE"
+        ? "BASIC"
+        : state.effectivePlan ?? "BASIC";
+      const selectedPlan = getBillingPlan(entitledPlanId);
+      if (!selectedPlan) throw new Error("Subscription plan configuration is missing");
 
       return {
         organizationId,
         plan: subscription?.plan as BillingPlanId | undefined ?? null,
-        effectivePlan: state.effectivePlan ?? "BASIC",
+        effectivePlan: selectedPlan.id,
         subscriptionStatus: subscription?.status ?? null,
         fallbackAccess: state.source === "NONE",
-        entitlements: selectedPlan ? [...selectedPlan.entitlements] : [],
+        entitlements: [...selectedPlan.entitlements],
         limits: { maxBranches: null },
         usage: { branches: organization._count.branches },
         accessMode: state.accessMode,
@@ -194,9 +194,7 @@ export class EntitlementService {
     }
 
     const selectedPlan = getBillingPlan(subscription.plan);
-    const entitledPlan = subscriptionHasPremiumAccess(subscription)
-      ? selectedPlan
-      : getBillingPlan("BASIC");
+    const entitledPlan = trustedPaidThrough ? selectedPlan : getBillingPlan("BASIC");
     if (!entitledPlan) throw new Error("Subscription plan configuration is missing");
 
     return {
@@ -210,7 +208,9 @@ export class EntitlementService {
       usage: { branches: organization._count.branches },
       accessMode: "FULL",
       canWrite: true,
-      accessReason: "Legacy subscription access",
+      accessReason: trustedPaidThrough
+        ? "Provider-confirmed legacy paid period is active"
+        : "Legacy Basic fallback; paid settlement evidence is unavailable",
       trial: null,
     };
   }

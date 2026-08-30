@@ -219,12 +219,25 @@ export async function createStaff(overrides: {
 export async function createSaasSubscription(overrides: {
   organizationId: string;
   plan?: "BASIC" | "PRO";
-  status?: "ACTIVE" | "EXPIRED";
+  status?: "AUTHENTICATED" | "ACTIVE" | "PENDING" | "PAUSED" | "HALTED" | "EXPIRED";
+  confirmedPaidPeriod?: boolean;
+  paidThrough?: Date | null;
 }) {
   const plan = overrides.plan ?? "PRO";
   const status = overrides.status ?? "ACTIVE";
   const amount = plan === "BASIC" ? 299 : 499;
-  return testPrisma.organizationSubscription.create({
+  const now = new Date();
+  const periodStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const defaultPeriodEnd = status === "EXPIRED"
+    ? new Date(now.getTime() - 60 * 60 * 1000)
+    : new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const paidThrough = overrides.paidThrough === undefined
+    ? defaultPeriodEnd
+    : overrides.paidThrough;
+  const confirmedPaidPeriod = overrides.confirmedPaidPeriod ?? status === "ACTIVE";
+  const razorpayPlanId = `plan_${plan.toLowerCase()}_${uid()}`;
+  const razorpaySubscriptionId = `sub_${plan.toLowerCase()}_${uid()}`;
+  const subscription = await testPrisma.organizationSubscription.create({
     data: {
       id: uid(),
       organizationId: overrides.organizationId,
@@ -237,12 +250,109 @@ export async function createSaasSubscription(overrides: {
       period: "monthly",
       interval: 1,
       totalCount: 120,
-      razorpayPlanId: `plan_${plan.toLowerCase()}_${uid()}`,
-      razorpaySubscriptionId: `sub_${plan.toLowerCase()}_${uid()}`,
+      razorpayPlanId,
+      razorpaySubscriptionId,
       status,
-      currentEnd: status === "ACTIVE"
-        ? new Date(Date.now() + 86_400_000)
-        : new Date(Date.now() - 86_400_000),
+      currentStart: periodStart,
+      currentEnd: defaultPeriodEnd,
+      paidThrough: confirmedPaidPeriod ? paidThrough : overrides.paidThrough ?? null,
+      providerPaymentMethod: confirmedPaidPeriod ? "CARD" : "UNKNOWN",
+    },
+  });
+
+  if (!confirmedPaidPeriod || !paidThrough) return subscription;
+
+  const organization = await testPrisma.organization.findUniqueOrThrow({
+    where: { id: overrides.organizationId },
+    select: { billingMutationSequence: true },
+  });
+  const sequence = organization.billingMutationSequence + 1;
+  await testPrisma.organization.update({
+    where: { id: overrides.organizationId },
+    data: { billingMutationSequence: sequence },
+  });
+  const paymentId = `pay_${uid()}`;
+  const invoiceId = `inv_${uid()}`;
+  const capturedAt = new Date(periodStart.getTime() - 60 * 60 * 1000);
+  const confirmedAt = new Date();
+  const change = await testPrisma.organizationBillingChange.create({
+    data: {
+      organizationId: overrides.organizationId,
+      organizationSubscriptionId: subscription.id,
+      sequence,
+      idempotencyKey: `test-confirmed-settlement:${subscription.id}`,
+      type: "LEGACY_TRANSITION",
+      status: "APPLIED",
+      operationStatus: "APPLIED",
+      fromPlan: plan,
+      toPlan: plan,
+      fromQuantity: 1,
+      toQuantity: 1,
+      commercialIntentVersion: 1,
+      commercialIntentCapturedAt: capturedAt,
+      authorizedProviderMode: "TEST",
+      authorizedSourceRazorpaySubscriptionId: razorpaySubscriptionId,
+      authorizedRazorpaySubscriptionId: razorpaySubscriptionId,
+      authorizedSourceRazorpayPlanId: razorpayPlanId,
+      authorizedRazorpayPlanId: razorpayPlanId,
+      authorizedPlan: plan,
+      authorizedQuantity: 1,
+      authorizedRazorpayOfferId: null,
+      authorizedUnitAmountSubunits: amount * 100,
+      authorizedGrossAmountSubunits: amount * 100,
+      authorizedExpectedAmountSubunits: amount * 100,
+      authorizedOfferValidThroughPaidCount: null,
+      authorizedCurrency: "INR",
+      authorizedPeriod: "monthly",
+      authorizedInterval: 1,
+      providerInvoiceId: invoiceId,
+      providerPaymentId: paymentId,
+      providerConfirmedAt: confirmedAt,
+      appliedAt: confirmedAt,
+      resolvedAt: confirmedAt,
+    },
+  });
+  await testPrisma.organizationSubscriptionInvoice.create({
+    data: {
+      organizationId: overrides.organizationId,
+      organizationSubscriptionId: subscription.id,
+      razorpayInvoiceId: invoiceId,
+      razorpayPaymentId: paymentId,
+      status: "paid",
+      amountSubunits: amount * 100,
+      amountPaidSubunits: amount * 100,
+      amountDueSubunits: 0,
+      currency: "INR",
+      paymentMethod: "CARD",
+      commercialEvidenceVersion: 1,
+      commercialIntentChangeId: change.id,
+      providerMode: "TEST",
+      razorpaySubscriptionId,
+      razorpayPlanId,
+      providerQuantity: 1,
+      razorpayOfferId: null,
+      paymentAmountSubunits: amount * 100,
+      paymentCurrency: "INR",
+      paymentStatus: "captured",
+      paymentCaptured: true,
+      evidenceConfirmedAt: confirmedAt,
+      evidenceFailureCode: null,
+      periodStart,
+      periodEnd: paidThrough,
+      issuedAt: periodStart,
+      paidAt: confirmedAt,
+    },
+  });
+  return testPrisma.organizationSubscription.update({
+    where: { id: subscription.id },
+    data: {
+      currentEnd: paidThrough,
+      paidThrough,
+      lastConfirmedInvoiceId: invoiceId,
+      lastConfirmedPaymentId: paymentId,
+      lastPaymentConfirmedAt: confirmedAt,
+      confirmedCommercialIntentChangeId: change.id,
+      lastReconciledAt: confirmedAt,
     },
   });
 }

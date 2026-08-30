@@ -6,6 +6,10 @@ import type { OrganizationBillingChange } from "@/app/generated/prisma/client";
 import { resolveRazorpayMode } from "@/lib/razorpay";
 import { deriveAuthorizedReplacementOverride } from "@/services/billingReplacement.service";
 import { isSupportedRecurringPaymentMethod } from "@/services/billingReplacementPolicy";
+import {
+  BILLING_PAID_EVIDENCE_INCLUDE,
+  resolveTrustedPaidThrough,
+} from "@/services/billingPaidEvidence.service";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_OPERATION_STATUSES = [
@@ -106,7 +110,7 @@ export class BillingExperienceService {
     const organization = await prisma.organization.findUnique({
       where: { id: organizationId },
       include: {
-        subscription: true,
+        subscription: { include: BILLING_PAID_EVIDENCE_INCLUDE },
         pendingSubscriptionReplacement: {
           include: { replacementBillingChange: true },
         },
@@ -152,6 +156,7 @@ export class BillingExperienceService {
       && getBillingPlan(replacementOverride.plan)
       ? { ...replacementOverride, plan: replacementOverride.plan as "BASIC" | "PRO" }
       : null;
+    const trustedPaidThrough = resolveTrustedPaidThrough(subscription, now);
     const isOwner = organization.ownerId === userId;
     if (!isOwner) {
       const membership = await prisma.staff.findFirst({
@@ -207,16 +212,18 @@ export class BillingExperienceService {
             ? { status: organization.ownerTrialGrant.status, endsAt: organization.ownerTrialGrant.trialEndsAt }
             : null,
           subscription: subscription
-            ? { status: subscription.status, plan: subscription.plan, paidThrough: subscription.paidThrough }
+            ? { status: subscription.status, plan: subscription.plan, paidThrough: trustedPaidThrough }
             : null,
           authorizedReplacement,
         })
       : {
           accessMode: "FULL" as const,
           canWrite: true,
-          effectivePlan: subscription?.plan ?? "BASIC",
-          source: "PAID" as const,
-          reason: "Legacy workspace access",
+          effectivePlan: trustedPaidThrough ? subscription?.plan ?? "BASIC" : "BASIC" as const,
+          source: trustedPaidThrough ? "PAID" as const : "NONE" as const,
+          reason: trustedPaidThrough
+            ? "Provider-confirmed legacy paid period is active"
+            : "Legacy Basic fallback; paid settlement evidence is unavailable",
         };
 
     const effectivePlan = trialActive
@@ -293,7 +300,7 @@ export class BillingExperienceService {
       trialDaysRemaining: trialActive && organization.ownerTrialGrant?.trialEndsAt
         ? Math.max(1, Math.ceil((organization.ownerTrialGrant.trialEndsAt.getTime() - now.getTime()) / DAY_MS))
         : null,
-      paidThrough: subscription?.paidThrough?.toISOString() ?? null,
+      paidThrough: trustedPaidThrough?.toISOString() ?? null,
       confirmedQuantity,
       projectedQuantity,
       currentUnitAmount,
@@ -301,7 +308,7 @@ export class BillingExperienceService {
       projectedUnitAmount,
       projectedMonthlyTotal: projectedUnitAmount * projectedQuantity,
       authorizationStatus,
-      planFeeDueToday: trialActive || (subscription?.paidThrough?.getTime() ?? 0) > now.getTime()
+      planFeeDueToday: trialActive || (trustedPaidThrough?.getTime() ?? 0) > now.getTime()
         ? 0
         : projectedUnitAmount * projectedQuantity,
       nextChargeAt: authorizationStatus === "AUTHORIZED"
