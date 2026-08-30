@@ -1317,7 +1317,9 @@ Operational expectations:
   approved manual rerun. A `5xx` means the invocation failed closed and must be
   investigated before retry. For hourly billing,
   retry only after checking durable operation state; ambiguous/manual-review
-  billing cases must not be forced through automatically.
+  billing cases must not be forced through automatically. A
+  `retriedReplacementCancellations` count represents provider reads that reconcile
+  candidate cleanup; it must never represent another cancellation submission.
 - A planner rerun reclaims only an expired branch lease and uses stable business-
   event dedupe; a branch failure must not block later branches. Inspect
   `lastPlannerErrorCode`, queue/budget counts, and configuration revision before

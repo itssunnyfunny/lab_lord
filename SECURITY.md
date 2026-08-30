@@ -187,6 +187,13 @@ authentication boundaries, not open application routes.
 - General billing undo must reject an in-flight or unresolved provider outcome.
   Branch-removal undo may restore the branch only atomically with durable,
   provider-confirmed cancellation of the scheduled quantity change.
+- Replacement-candidate cancellation is a provider mutation with the same lease,
+  attempt, stale-worker, and ambiguity rules. A timeout, malformed terminal
+  response, or expired cancellation lease remains manual-review state. While it
+  is unresolved, owner and deadline retries are provider-read-only. Exact
+  terminal identity clears the pending slot atomically; a definitely rejected
+  cancellation becomes eligible for a later, explicitly requested cancellation
+  only after a read confirms the same candidate is still nonterminal.
 
 ### WhatsApp and Meta Cloud API
 

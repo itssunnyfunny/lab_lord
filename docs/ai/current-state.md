@@ -481,6 +481,12 @@ The repository contains both legacy billing and Workspace Billing V2.
   adopts an exact target when safe, and records SYSTEM history for manual-review
   and resolution outcomes. Branch restoration is atomic with confirmed provider
   undo.
+- Replacement-candidate cleanup uses the same durable attempt boundary. Lost or
+  malformed cancellation responses are quarantined, unresolved deadline/owner
+  retry is provider-read-only, and an exact terminal candidate is adopted
+  atomically with pending-slot release and any branch restoration. A definite
+  provider rejection still requires a confirming read before a later explicit
+  cancellation may be submitted.
 - New authorizations and billing changes persist an immutable versioned
   commercial tuple covering provider mode, source/target subscription, plan,
   quantity, offer-adjusted amount, currency, and cadence. Replacement target
