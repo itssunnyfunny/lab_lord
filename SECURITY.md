@@ -137,7 +137,9 @@ authentication boundaries, not open application routes.
   `paidThrough`.
 - Checkout callbacks must verify their server-side signature, retrieve
   provider-authoritative objects, and match the expected organization intent,
-  subscription, payment, plan, quantity, mode, and state.
+  subscription, payment, plan, quantity, offer, amount, currency, billing
+  period, mode, and settlement state through the shared exact-commercial-
+  evidence validator.
 - Webhook signatures must be verified over the untouched raw body before JSON
   parsing or processing.
 - Webhook event IDs and payload hashes must provide durable replay safety.
@@ -149,6 +151,17 @@ authentication boundaries, not open application routes.
   environments must remain isolated. Wrong-mode state must fail closed.
 - `paidThrough` may advance only from mutually matching provider-confirmed paid
   invoice and captured-payment evidence for the current subscription period.
+  The invoice must belong to the exact subscription, be fully settled with zero
+  amount due, match the captured payment and currency, and match the immutable
+  authorized amount, plan, quantity, offer, cadence, and period.
+- Commercial authorization is immutable security evidence. Capture its
+  versioned source/target identity, provider mode, operation, plan, quantity,
+  offer-adjusted amount, currency, and cadence before the provider write; bind a
+  newly created replacement subscription exactly once. Never infer a historical
+  authorization from today's catalog. Evidence mismatch must preserve the last
+  confirmed entitlement and `paidThrough`, avoid copying provider plan or
+  quantity locally, revoke invalid provisional access, and require manual
+  review.
 - Billing mutation idempotency keys, payload matching, per-organization FIFO
   ordering, locks, leases, stale-worker protection, and replacement lineage must
   remain durable.
@@ -166,6 +179,11 @@ authentication boundaries, not open application routes.
   after a definite rejection or pre-provider failure and a fresh source-state
   match. Manual-review state and its typed adopted/retained resolution are
   owner-readable and append immutable SYSTEM subscription-history evidence.
+- Manual-review reconciliation is read-only at the provider boundary. Pending,
+  malformed, mismatched, or otherwise unresolved evidence cannot grant access,
+  promote a replacement, schedule source cancellation, recreate a provider
+  object, or issue another charge. Exact provider evidence may be adopted only
+  with an exact local state fence and a typed, audited resolution outcome.
 - General billing undo must reject an in-flight or unresolved provider outcome.
   Branch-removal undo may restore the branch only atomically with durable,
   provider-confirmed cancellation of the scheduled quantity change.

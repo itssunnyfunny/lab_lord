@@ -1,8 +1,8 @@
 # Lab Lords: Current Architecture and Implementation State
 
-> Last verified: 2026-08-23
+> Last verified: 2026-08-30
 >
-> Repository anchor: PR3 WhatsApp template-delivery and collections working tree
+> Repository anchor: exact-commercial-evidence billing remediation working tree
 >
 > Scope: repository implementation only
 
@@ -481,6 +481,17 @@ The repository contains both legacy billing and Workspace Billing V2.
   adopts an exact target when safe, and records SYSTEM history for manual-review
   and resolution outcomes. Branch restoration is atomic with confirmed provider
   undo.
+- New authorizations and billing changes persist an immutable versioned
+  commercial tuple covering provider mode, source/target subscription, plan,
+  quantity, offer-adjusted amount, currency, and cadence. Replacement target
+  IDs are bound exactly once after creation; historical intent is never rebuilt
+  from the current plan catalog.
+- Checkout callbacks, webhooks, owner retries, and reconciliation share exact
+  commercial-evidence validation. Paid periods require a fully settled invoice
+  and captured payment with exact subscription/invoice/payment linkage, amount,
+  currency, plan, quantity, offer, and period. Mismatches preserve confirmed
+  local commercial state and enter auditable manual review; manual reconciliation
+  performs provider reads only and adopts state only from exact evidence.
 - Razorpay plan provisioning uses database leases and provider-mode-aware catalog records.
 - Webhook processing verifies the raw-body HMAC, persists unique event receipts, detects event-ID collisions, and reconciles provider state.
 - `/api/cron/billing/hourly` processes billing deadlines and requires `Authorization: Bearer <CRON_SECRET>`.
@@ -574,7 +585,7 @@ The following modules exist but are not referenced by current application routes
 
 | Integration | Repository truth | Deployment state |
 | --- | --- | --- |
-| PostgreSQL / Prisma | Required; schema and 35 timestamped migrations exist, including additive PR2 and PR3 WhatsApp expansions | Database target, applied migration set, backups, and health are unknown |
+| PostgreSQL / Prisma | Required; schema and 36 timestamped migrations exist, including additive WhatsApp expansions and exact billing commercial evidence | Database target, applied migration set, backups, and health are unknown |
 | Clerk | Real auth and local-user linking are implemented | Active instance, keys, redirect/origin configuration, and account health are unknown |
 | Gemini | Reports, message drafts, and import mapping are wired with fallbacks | API key, selected model availability, quota, and data-processing configuration are unknown |
 | Razorpay | Server API client, Checkout, signatures, webhook receipts, reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
@@ -590,7 +601,7 @@ Never infer a deployed state from local `.env` files, ignored Vercel metadata, s
 
 At this anchor the repository contains focused WhatsApp unit, component,
 provider-contract, service, route, webhook, and migration-contract coverage in
-addition to the existing Vitest/Playwright suites, plus 35 timestamped migration directories. These
+addition to the existing Vitest/Playwright suites, plus 36 timestamped migration directories. These
 counts are orientation data, not invariants.
 
 ### Automated coverage by area

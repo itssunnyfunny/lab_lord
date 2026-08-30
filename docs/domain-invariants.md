@@ -268,9 +268,23 @@ Every statement uses one of these labels:
   row. (`prisma/schema.prisma`, billing integration tests)
 - **Must preserve—enforced:** Provider subscription status alone never grants
   paid access. `paidThrough` advances monotonically only after reconciliation
-  finds a current-period paid invoice and captured payment whose subscription,
-  invoice, and payment identifiers agree and whose method is supported.
+  validates the immutable authorized commercial intent against a current-period
+  paid invoice and captured payment. Subscription, invoice, payment, provider
+  mode, plan, quantity, offer, amount, currency, cadence, and period must agree;
+  `amount_due` must be zero and the invoice must be fully settled.
   (`services/billingReconciliation.service.ts`, billing tests)
+- **Must preserve—enforced:** Every new subscription authorization or billing
+  change freezes versioned commercial intent before its provider mutation. The
+  source subscription, provider mode, operation, plan, quantity, offer-adjusted
+  total, currency, period, and interval come from that snapshot; a replacement
+  provider subscription ID is bound exactly once after provider creation. Both
+  callbacks and reconciliation use the same validator and never reconstruct
+  historical intent from the current plan catalog. A mismatch preserves the
+  previously confirmed subscription, plan, quantity, and `paidThrough`, revokes
+  invalid provisional replacement access, and enters
+  `MANUAL_REVIEW_REQUIRED`. (`prisma/schema.prisma`,
+  `services/billingCommercialEvidence.service.ts`,
+  `services/billingReconciliation.service.ts`, exact-evidence and billing tests)
 - **Must preserve—enforced:** Checkout completion verifies the server signature,
   retrieves provider-side objects, and matches expected organization intent,
   subscription, payment, plan, quantity, and payment state before trusting the
@@ -298,6 +312,14 @@ Every statement uses one of these labels:
   outcomes append deduplicated SYSTEM subscription-history evidence.
   (`services/billingMutation.service.ts`, `services/billingDeadline.service.ts`,
   billing-mutation and billing-deadline integration tests)
+- **Must preserve—enforced:** Owner-visible manual-review operations are read
+  and reconciled without a provider mutation. Pending, rejected-but-unresolved,
+  malformed, or mismatched evidence remains quarantined with a typed error;
+  only an exact frozen authorization or settlement may adopt provider state.
+  Replacement adoption is explicitly fenced to the same failed row and cannot
+  promote, grant access, cancel a source subscription, or issue another charge
+  while evidence remains unresolved. (`services/billing.service.ts`,
+  `services/billingReplacement.service.ts`, billing reconciliation tests)
 - **Must preserve—enforced:** Local billing undo cannot pass an in-flight,
   awaiting-payment, manual-review, or unclassified failed provider mutation.
   A branch scheduled for removal is restored only in the same transaction that
