@@ -1008,10 +1008,6 @@ export class BranchService {
         }
         if (change.replacementSubscriptionId) {
             await BillingReplacementService.undoReplacement(change.id);
-            await prisma.branch.update({
-                where: { id: branchId },
-                data: { billingStatus: "ACTIVE" },
-            });
             return { undone: true };
         }
         if (change.effectiveAt && change.effectiveAt <= new Date()) {

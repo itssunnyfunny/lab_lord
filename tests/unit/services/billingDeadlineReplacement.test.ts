@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   processNext: vi.fn(),
   reconcileByOrganization: vi.fn(),
   reconcileProviderSubscription: vi.fn(),
+  reconcileCandidateCancellation: vi.fn(),
   failReplacementCheckout: vi.fn(),
   syncAuthorizedAccess: vi.fn(),
   scheduleSourceCancellation: vi.fn(),
@@ -64,11 +65,14 @@ vi.mock("@/services/billingPaymentMethod.service", () => ({
 
 vi.mock("@/services/billingReplacement.service", () => ({
   BillingReplacementService: {
+    reconcileCandidateCancellation: mocks.reconcileCandidateCancellation,
     failReplacementCheckout: mocks.failReplacementCheckout,
     syncAuthorizedAccess: mocks.syncAuthorizedAccess,
     scheduleSourceCancellation: mocks.scheduleSourceCancellation,
     promoteIfReady: mocks.promoteIfReady,
   },
+  isCandidateCancellationReconciliationCode: (code: string | null | undefined) =>
+    typeof code === "string" && code.includes("CANDIDATE_CANCELLATION"),
 }));
 
 import {
@@ -124,6 +128,7 @@ describe("replacement billing deadlines", () => {
     mocks.archiveBranches.mockResolvedValue({ archived: 0 });
     mocks.billingChangeFindMany.mockResolvedValue([]);
     mocks.failReplacementCheckout.mockResolvedValue({});
+    mocks.reconcileCandidateCancellation.mockResolvedValue({});
     mocks.scheduleSourceCancellation.mockResolvedValue({ scheduled: true, reason: null });
     mocks.promoteIfReady.mockResolvedValue({ promoted: false });
   });
@@ -169,7 +174,8 @@ describe("replacement billing deadlines", () => {
       skip: 1,
       orderBy: { id: "asc" },
     });
-    expect(mocks.failReplacementCheckout).toHaveBeenCalledTimes(candidates.length);
+    expect(mocks.reconcileCandidateCancellation).toHaveBeenCalledTimes(candidates.length);
+    expect(mocks.failReplacementCheckout).not.toHaveBeenCalled();
     expect(result.retriedReplacementCancellations).toBe(candidates.length);
   });
 
@@ -256,7 +262,7 @@ describe("replacement billing deadlines", () => {
     expect(mocks.promoteIfReady).toHaveBeenCalledWith(change.id, now);
   });
 
-  it("keeps retrying failed candidate cancellation but leaves manual review untouched", async () => {
+  it("reconciles failed candidate cancellation read-only and leaves unrelated manual review untouched", async () => {
     const retryable = replacementChange({
       id: "retryable",
       status: "FAILED",
@@ -274,21 +280,20 @@ describe("replacement billing deadlines", () => {
     mocks.billingChangeFindMany.mockImplementation(async args => (
       isReplacementQuery(args) ? [retryable, manualReview] : []
     ));
-    mocks.failReplacementCheckout
+    mocks.reconcileCandidateCancellation
       .mockRejectedValueOnce(new Error("Provider cancellation unavailable"))
       .mockResolvedValue({});
 
     const first = await BillingDeadlineService.run(now);
     const second = await BillingDeadlineService.run(now);
 
-    expect(mocks.failReplacementCheckout).toHaveBeenCalledTimes(2);
-    expect(mocks.failReplacementCheckout).toHaveBeenNthCalledWith(
+    expect(mocks.reconcileCandidateCancellation).toHaveBeenCalledTimes(2);
+    expect(mocks.reconcileCandidateCancellation).toHaveBeenNthCalledWith(
       1,
       retryable.id,
-      "FAILED",
-      now,
-      retryable.lastError
+      now
     );
+    expect(mocks.failReplacementCheckout).not.toHaveBeenCalled();
     expect(first.errors).toEqual([
       expect.objectContaining({ organizationId: retryable.organizationId }),
     ]);

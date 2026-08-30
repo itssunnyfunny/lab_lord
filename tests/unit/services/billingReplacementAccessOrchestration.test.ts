@@ -2,12 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   cancelSubscription: vi.fn(),
+  billingChangeFindUnique: vi.fn(),
   planMappingFindFirst: vi.fn(),
   transaction: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { $transaction: mocks.transaction },
+  prisma: {
+    $transaction: mocks.transaction,
+    organizationBillingChange: { findUnique: mocks.billingChangeFindUnique },
+  },
 }));
 
 vi.mock("@/lib/billingFeature", () => ({
@@ -15,6 +19,7 @@ vi.mock("@/lib/billingFeature", () => ({
 }));
 
 vi.mock("@/lib/razorpay", () => ({
+  RazorpayApiError: class RazorpayApiError extends Error {},
   resolveRazorpayMode: () => "TEST",
   getRazorpayClient: () => ({ cancelSubscription: mocks.cancelSubscription }),
 }));
@@ -112,9 +117,15 @@ describe("replacement access orchestration", () => {
       replacementSubscription: { ...candidate },
       branch: { ...branch },
     });
+    mocks.billingChangeFindUnique.mockImplementation(async args => args.select
+      ? { organizationId: change.organizationId }
+      : loadedChange());
     tx = {
       $queryRaw: vi.fn().mockResolvedValue([]),
       organization: {
+        findUnique: vi.fn(async () => ({
+          billingMutationLeaseToken: organizationLeaseToken,
+        })),
         findUniqueOrThrow: vi.fn(async () => ({
           billingMutationLeaseToken: organizationLeaseToken,
         })),
@@ -139,15 +150,28 @@ describe("replacement access orchestration", () => {
           : loadedChange()),
         findUniqueOrThrow: vi.fn(async () => ({ ...change })),
         update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          change = { ...change, ...data };
+          const persisted = Object.fromEntries(
+            Object.entries(data).filter(([, value]) => value !== undefined)
+          );
+          change = { ...change, ...persisted };
           return { ...change };
         }),
-        updateMany: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          if ("accessGrantedAt" in data && change.accessGrantedAt) return { count: 0 };
-          if ("accessRevokedAt" in data && (!change.accessGrantedAt || change.accessRevokedAt)) {
+        updateMany: vi.fn(async ({ where, data }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          if ("accessGrantedAt" in data && "accessGrantedAt" in where && change.accessGrantedAt) {
             return { count: 0 };
           }
-          change = { ...change, ...data };
+          if ("accessRevokedAt" in data
+            && "accessRevokedAt" in where
+            && (!change.accessGrantedAt || change.accessRevokedAt)) {
+            return { count: 0 };
+          }
+          const persisted = Object.fromEntries(
+            Object.entries(data).filter(([, value]) => value !== undefined)
+          );
+          change = { ...change, ...persisted };
           return { count: 1 };
         }),
       },
@@ -167,6 +191,18 @@ describe("replacement access orchestration", () => {
           expect(where.id).toBe("candidate_row");
           candidate = { ...candidate, ...data };
           return { ...candidate };
+        }),
+        updateMany: vi.fn(async ({ where, data }: {
+          where: { id: string; pendingReplacementOrganizationId?: string };
+          data: Record<string, unknown>;
+        }) => {
+          if (where.id !== candidate.id
+            || (where.pendingReplacementOrganizationId
+              && where.pendingReplacementOrganizationId !== candidate.pendingReplacementOrganizationId)) {
+            return { count: 0 };
+          }
+          candidate = { ...candidate, ...data };
+          return { count: 1 };
         }),
       },
       organizationSubscriptionHistory: {
@@ -209,7 +245,11 @@ describe("replacement access orchestration", () => {
     mocks.transaction.mockImplementation(async (callback: (client: typeof tx) => unknown) => callback(tx));
     mocks.cancelSubscription.mockResolvedValue({
       id: "sub_candidate",
+      entity: "subscription",
+      plan_id: "plan_basic",
       status: "cancelled",
+      total_count: 120,
+      quantity: 2,
       ended_at: Math.floor(now.getTime() / 1000),
     });
   });

@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   reconcileProviderSubscription: vi.fn(),
   syncAuthorizedAccess: vi.fn(),
   failReplacementCheckout: vi.fn(),
+  retryCandidateCancellation: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -83,7 +84,10 @@ vi.mock("@/services/billingReplacement.service", () => ({
   BillingReplacementService: {
     syncAuthorizedAccess: mocks.syncAuthorizedAccess,
     failReplacementCheckout: mocks.failReplacementCheckout,
+    retryCandidateCancellation: mocks.retryCandidateCancellation,
   },
+  isCandidateCancellationReconciliationCode: () => false,
+  isCandidateCancellationRetrySafeCode: () => false,
 }));
 
 vi.mock("@/services/billingReplacementPolicy", () => ({

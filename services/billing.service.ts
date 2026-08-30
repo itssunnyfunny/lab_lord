@@ -26,7 +26,11 @@ import {
 import { recordBillingMutationAudit } from "@/services/billingMutationAudit.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
-import { BillingReplacementService } from "@/services/billingReplacement.service";
+import {
+  BillingReplacementService,
+  isCandidateCancellationReconciliationCode,
+  isCandidateCancellationRetrySafeCode,
+} from "@/services/billingReplacement.service";
 import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
 import {
   buildCommercialIntentSnapshot,
@@ -2413,7 +2417,8 @@ export class BillingService {
     });
     if (!change) throw new Error("Billing operation not found");
     if (change.failureCategory === "MANUAL_REVIEW_REQUIRED"
-      || change.type === "COMMERCIAL_RECONCILIATION") {
+      || change.type === "COMMERCIAL_RECONCILIATION"
+      || isCandidateCancellationReconciliationCode(change.failureCode)) {
       // Manual resolution is reconciliation-only. It may adopt exact provider
       // facts locally, but it must never reopen Checkout or issue a mutation.
       return this.reconcileMutation(
@@ -2422,6 +2427,13 @@ export class BillingService {
         change.id,
         change.providerPaymentId ?? undefined
       );
+    }
+    if (isCandidateCancellationRetrySafeCode(change.failureCode)) {
+      const retried = await BillingReplacementService.retryCandidateCancellation(change.id);
+      return {
+        operation: serializeBillingOperation(retried),
+        resolutionOutcome: "SAFE_RETRY_SUBMITTED" as const,
+      };
     }
 
     if (change.replacementSubscription) {
@@ -2651,6 +2663,18 @@ export class BillingService {
     assertSubscriptionProviderMode(change.replacementSubscription, resolveRazorpayMode());
     const manualReview = change.failureCategory === "MANUAL_REVIEW_REQUIRED"
       || change.type === "COMMERCIAL_RECONCILIATION";
+    if (isCandidateCancellationReconciliationCode(change.failureCode)) {
+      const reconciled = await BillingReplacementService.reconcileCandidateCancellation(change.id);
+      if (reconciled.failureCategory === "MANUAL_REVIEW_REQUIRED") {
+        throw new BillingManualReviewRequiredError(reconciled.id);
+      }
+      return {
+        reconciliation: null,
+        pending: false,
+        operation: serializeBillingOperation(reconciled),
+        resolutionOutcome: "PROVIDER_STATE_ADOPTED" as const,
+      };
+    }
     if (isTerminalCheckoutOperationStatus(change.operationStatus) && !manualReview) {
       return {
         reconciliation: null,
