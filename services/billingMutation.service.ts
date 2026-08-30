@@ -19,6 +19,11 @@ import {
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
 import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
+import {
+  buildCommercialIntentSnapshot,
+  captureProcessingCommercialIntent,
+  readCommercialIntentSnapshot,
+} from "@/services/billingCommercialEvidence.service";
 import type {
   BillingChangeType,
   OrganizationBillingChange,
@@ -172,11 +177,19 @@ function providerExecutionForManualReconciliation(
   },
   provider: RazorpaySubscription
 ): ProviderMutationExecution | null {
-  // The billing-change row does not currently preserve the provider plan ID
-  // selected for a plan transition. Never reconstruct historical intent from
-  // today's catalog; those cases remain manual until stronger commercial
-  // evidence is added by the dedicated commercial-evidence work.
-  if (change.toPlan && change.toPlan !== subscription.plan) return null;
+  let commercialIntent;
+  try {
+    commercialIntent = readCommercialIntentSnapshot(change);
+  } catch {
+    return null;
+  }
+  if (commercialIntent.authorizedRazorpaySubscriptionId
+      !== subscription.razorpaySubscriptionId
+    || (change.toPlan != null && change.toPlan !== commercialIntent.authorizedPlan)
+    || (change.toQuantity != null
+      && change.toQuantity !== commercialIntent.authorizedQuantity)) {
+    return null;
+  }
   const cancellation = change.type === "CANCELLATION"
     || change.type === "UNSUPPORTED_METHOD_CANCELLATION";
   const scheduleChangeAt = change.type === "CANCELLATION"
@@ -187,10 +200,11 @@ function providerExecutionForManualReconciliation(
   return {
     provider,
     subscriptionId: subscription.razorpaySubscriptionId,
-    sourcePlanId: subscription.razorpayPlanId,
+    sourcePlanId: commercialIntent.authorizedSourceRazorpayPlanId
+      ?? subscription.razorpayPlanId,
     sourceQuantity: subscription.quantity,
-    targetPlanId: subscription.razorpayPlanId,
-    targetQuantity: change.toQuantity ?? subscription.quantity,
+    targetPlanId: commercialIntent.authorizedRazorpayPlanId,
+    targetQuantity: commercialIntent.authorizedQuantity,
     scheduleChangeAt,
     cancellation,
   };
@@ -1458,6 +1472,7 @@ export class BillingMutationService {
     }
     const subscription = await prisma.organizationSubscription.findUnique({
       where: { id: change.organizationSubscriptionId },
+      include: { billingOffer: true },
     });
     if (!subscription
       || subscription.organizationId !== change.organizationId
@@ -1474,6 +1489,81 @@ export class BillingMutationService {
       assertRazorpayBillingWritesEnabled(change.organizationId);
     }
     const razorpay = getRazorpayClient();
+    const intendedQuantity = change.toQuantity ?? subscription.quantity;
+    let target = {
+      providerPlanId: subscription.razorpayPlanId,
+      plan: subscription.plan,
+      amountSubunits: subscription.amountSubunits,
+      currency: subscription.currency,
+      period: subscription.period,
+      interval: subscription.interval,
+    };
+    let commercialIntent;
+    if (change.commercialIntentVersion != null) {
+      commercialIntent = readCommercialIntentSnapshot(change);
+      if (commercialIntent.authorizedProviderMode !== providerMode
+        || commercialIntent.authorizedRazorpaySubscriptionId
+          !== subscription.razorpaySubscriptionId
+        || (change.toPlan != null && change.toPlan !== commercialIntent.authorizedPlan)
+        || (change.toQuantity != null
+          && change.toQuantity !== commercialIntent.authorizedQuantity)) {
+        throw new Error("The immutable commercial authorization does not match this mutation");
+      }
+      target = {
+        providerPlanId: commercialIntent.authorizedRazorpayPlanId,
+        plan: commercialIntent.authorizedPlan,
+        amountSubunits: commercialIntent.authorizedUnitAmountSubunits,
+        currency: commercialIntent.authorizedCurrency,
+        period: commercialIntent.authorizedPeriod,
+        interval: commercialIntent.authorizedInterval,
+      };
+    } else if (change.toPlan) {
+      const plan = getBillingPlan(change.toPlan);
+      if (!plan?.amount) throw new Error("Target billing plan is not available for subscriptions");
+      const mapping = await ensureRazorpayPlanCatalogEntry({
+        plan: change.toPlan,
+        name: plan.name,
+        description: plan.description,
+        amount: plan.amount,
+        currency: plan.currency,
+        period: plan.period,
+        interval: plan.interval,
+      });
+      if (mapping.providerMode !== providerMode) {
+        throw new Error("Razorpay plan mapping belongs to the wrong provider mode");
+      }
+      target = {
+        providerPlanId: mapping.razorpayPlanId,
+        plan: mapping.plan,
+        amountSubunits: mapping.amountSubunits,
+        currency: mapping.currency,
+        period: mapping.period,
+        interval: mapping.interval,
+      };
+    }
+    if (!commercialIntent) {
+      commercialIntent = buildCommercialIntentSnapshot({
+        providerMode,
+        razorpaySubscriptionId: subscription.razorpaySubscriptionId,
+        sourceRazorpayPlanId: subscription.razorpayPlanId,
+        razorpayPlanId: target.providerPlanId,
+        plan: target.plan,
+        quantity: intendedQuantity,
+        unitAmountSubunits: target.amountSubunits,
+        currency: target.currency,
+        period: target.period,
+        interval: target.interval,
+        offer: subscription.billingOffer,
+        capturedAt: new Date(),
+      });
+      change = await captureProcessingCommercialIntent({
+        change,
+        leaseToken,
+        intent: commercialIntent,
+      });
+    }
+    const targetQuantity = commercialIntent.authorizedQuantity;
+
     if (change.type === "UNSUPPORTED_METHOD_CANCELLATION") {
       await this.renewLeaseForProviderMutation(change.organizationId, leaseToken);
       onProviderCallStarted();
@@ -1513,24 +1603,6 @@ export class BillingMutationService {
       throw new Error("UPI AutoPay and eMandate billing changes require a replacement mandate");
     }
 
-    let mapping = null;
-    if (change.toPlan) {
-      const plan = getBillingPlan(change.toPlan);
-      if (!plan?.amount) throw new Error("Target billing plan is not available for subscriptions");
-      mapping = await ensureRazorpayPlanCatalogEntry({
-        plan: change.toPlan,
-        name: plan.name,
-        description: plan.description,
-        amount: plan.amount,
-        currency: plan.currency,
-        period: plan.period,
-        interval: plan.interval,
-      });
-      if (mapping.providerMode !== providerMode) {
-        throw new Error("Razorpay plan mapping belongs to the wrong provider mode");
-      }
-    }
-
     // Catalog provisioning has its own durable lease and may take longer than
     // a normal provider request. Refresh the organization lease immediately
     // before the subscription mutation so deadline recovery cannot overlap it.
@@ -1539,8 +1611,8 @@ export class BillingMutationService {
     onProviderCallStarted();
     const scheduleChangeAt = IMMEDIATE_TYPES.has(change.type) ? "now" as const : "cycle_end" as const;
     const provider = await razorpay.updateSubscription(subscription.razorpaySubscriptionId, {
-      plan_id: mapping?.razorpayPlanId,
-      quantity: change.toQuantity ?? undefined,
+      plan_id: change.toPlan ? target.providerPlanId : undefined,
+      quantity: change.toQuantity != null ? targetQuantity : undefined,
       start_at: change.type === "TRIAL_SUBSCRIPTION_UPDATE"
         ? timestamp(subscription.providerStartAt)
         : undefined,
@@ -1552,8 +1624,8 @@ export class BillingMutationService {
       subscriptionId: subscription.razorpaySubscriptionId,
       sourcePlanId: subscription.razorpayPlanId,
       sourceQuantity: subscription.quantity,
-      targetPlanId: mapping?.razorpayPlanId ?? subscription.razorpayPlanId,
-      targetQuantity: change.toQuantity ?? subscription.quantity,
+      targetPlanId: target.providerPlanId,
+      targetQuantity,
       scheduleChangeAt,
       cancellation: false,
     };

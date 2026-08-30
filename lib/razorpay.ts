@@ -385,6 +385,19 @@ export function toRazorpaySubunits(amount: number, currency: string) {
   return subunits;
 }
 
+export function fromRazorpaySubunits(amountSubunits: number, currency: string) {
+  if (!Number.isSafeInteger(amountSubunits) || amountSubunits <= 0) {
+    throw new Error("Payment amount must be a positive integer");
+  }
+
+  const normalizedCurrency = normalizeCurrency(currency);
+  const multiplier = ZERO_DECIMAL_CURRENCIES.has(normalizedCurrency) ? 1 : 100;
+  if (amountSubunits % multiplier !== 0) {
+    throw new Error("Payment amount cannot be represented in whole currency units");
+  }
+  return amountSubunits / multiplier;
+}
+
 export function hmacSha256Hex(message: string, secret: string) {
   return crypto.createHmac("sha256", secret).update(message).digest("hex");
 }

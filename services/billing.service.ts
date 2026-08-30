@@ -24,6 +24,7 @@ import { BillingExperienceService } from "@/services/billingExperience.service";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
 import { isReplacementMutationEligible } from "@/services/billingReplacementPolicy";
+import { buildCommercialIntentSnapshot } from "@/services/billingCommercialEvidence.service";
 import { BillingChangeInProgressError } from "@/lib/billingErrors";
 import {
   isSupportedProviderPaymentMethod,
@@ -393,6 +394,7 @@ async function enqueueAuthorizationOperation(input: {
 
     const currentSubscription = await tx.organizationSubscription.findUnique({
       where: { id: input.subscriptionId },
+      include: { billingOffer: true },
     });
     if (
       !currentSubscription
@@ -413,7 +415,7 @@ async function enqueueAuthorizationOperation(input: {
       },
       orderBy: { sequence: "desc" },
     });
-    if (active) {
+    if (active?.commercialIntentVersion === 1) {
       // Clean up any historical duplicate active rows while preserving the
       // single operation that this request can safely reuse.
       await tx.organizationBillingChange.updateMany({
@@ -452,6 +454,20 @@ async function enqueueAuthorizationOperation(input: {
       data: { billingMutationSequence: { increment: 1 } },
       select: { billingMutationSequence: true },
     });
+    const commercialIntent = buildCommercialIntentSnapshot({
+      providerMode: currentSubscription.providerMode,
+      razorpaySubscriptionId: currentSubscription.razorpaySubscriptionId,
+      sourceRazorpayPlanId: currentSubscription.razorpayPlanId,
+      razorpayPlanId: currentSubscription.razorpayPlanId,
+      plan: input.toPlan,
+      quantity: input.toQuantity,
+      unitAmountSubunits: currentSubscription.amountSubunits,
+      currency: currentSubscription.currency,
+      period: currentSubscription.period,
+      interval: currentSubscription.interval,
+      offer: currentSubscription.billingOffer,
+      capturedAt: input.now,
+    });
     return tx.organizationBillingChange.create({
       data: {
         organizationId: input.organizationId,
@@ -465,6 +481,7 @@ async function enqueueAuthorizationOperation(input: {
         toPlan: input.toPlan,
         fromQuantity: input.fromQuantity,
         toQuantity: input.toQuantity,
+        ...commercialIntent,
         createdByUserId: input.createdByUserId,
         returnPath: input.returnPath,
         checkoutOpenedAt: input.now,
@@ -982,6 +999,7 @@ export class BillingService {
         type: "SUBSCRIPTION_AUTHORIZATION",
         operationStatus: { in: ["CHECKOUT_OPEN", "VERIFYING", "AWAITING_PROVIDER_CONFIRMATION"] },
         toQuantity: quantity,
+        commercialIntentVersion: 1,
         organizationSubscription: {
           providerMode,
           plan: selectedPlan.id as SaasPlan,
@@ -1017,6 +1035,7 @@ export class BillingService {
           type: "SUBSCRIPTION_AUTHORIZATION",
           operationStatus: { in: [...ACTIVE_AUTHORIZATION_OPERATION_STATUSES] },
           toQuantity: quantity,
+          commercialIntentVersion: 1,
           organizationSubscription: {
             providerMode,
             plan: selectedPlan.id as SaasPlan,

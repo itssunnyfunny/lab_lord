@@ -1,4 +1,5 @@
 import { toRazorpaySubunits } from "@/lib/razorpay";
+import { prisma } from "@/lib/prisma";
 import type {
   RazorpayInvoice,
   RazorpayPayment,
@@ -8,6 +9,7 @@ import type {
 import type {
   BillingOfferDiscountType,
   BillingOfferDurationType,
+  OrganizationBillingChange,
   RazorpayMode,
   SaasPlan,
 } from "@/app/generated/prisma/client";
@@ -107,6 +109,71 @@ export type CommercialIntentWriteData = {
   authorizedPeriod: string;
   authorizedInterval: number;
 };
+
+export function readCommercialIntentSnapshot(
+  intent: CommercialIntentRecord
+): CommercialIntentWriteData {
+  if (!isCompleteIntent(intent)) {
+    throw new Error(commercialEvidenceMessage("COMMERCIAL_INTENT_INVALID"));
+  }
+  return {
+    commercialIntentVersion: COMMERCIAL_INTENT_VERSION,
+    commercialIntentCapturedAt: intent.commercialIntentCapturedAt!,
+    authorizedProviderMode: intent.authorizedProviderMode!,
+    authorizedRazorpaySubscriptionId: intent.authorizedRazorpaySubscriptionId!,
+    authorizedSourceRazorpayPlanId: intent.authorizedSourceRazorpayPlanId,
+    authorizedRazorpayPlanId: intent.authorizedRazorpayPlanId!,
+    authorizedPlan: intent.authorizedPlan!,
+    authorizedQuantity: intent.authorizedQuantity!,
+    authorizedRazorpayOfferId: intent.authorizedRazorpayOfferId,
+    authorizedUnitAmountSubunits: intent.authorizedUnitAmountSubunits!,
+    authorizedGrossAmountSubunits: intent.authorizedGrossAmountSubunits!,
+    authorizedExpectedAmountSubunits: intent.authorizedExpectedAmountSubunits!,
+    authorizedOfferValidThroughPaidCount: intent.authorizedOfferValidThroughPaidCount,
+    authorizedCurrency: intent.authorizedCurrency!,
+    authorizedPeriod: intent.authorizedPeriod!,
+    authorizedInterval: intent.authorizedInterval!,
+  };
+}
+
+/** Captures a write-once commercial authorization under the exact mutation attempt lease. */
+export async function captureProcessingCommercialIntent(input: {
+  change: OrganizationBillingChange;
+  leaseToken: string;
+  intent: CommercialIntentWriteData;
+}) {
+  if (input.change.commercialIntentVersion != null) {
+    readCommercialIntentSnapshot(input.change);
+    return input.change;
+  }
+
+  return prisma.$transaction(async tx => {
+    await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Organization" WHERE "id" = ${input.change.organizationId} FOR UPDATE
+    `;
+    const organization = await tx.organization.findUnique({
+      where: { id: input.change.organizationId },
+      select: { billingMutationLeaseToken: true },
+    });
+    if (organization?.billingMutationLeaseToken !== input.leaseToken) {
+      throw new Error("Billing mutation lease was lost before commercial authorization");
+    }
+    const captured = await tx.organizationBillingChange.updateMany({
+      where: {
+        id: input.change.id,
+        status: "PROCESSING",
+        attemptCount: input.change.attemptCount,
+        processingStartedAt: input.change.processingStartedAt,
+        commercialIntentVersion: null,
+      },
+      data: input.intent,
+    });
+    if (captured.count !== 1) {
+      throw new Error("Billing mutation changed before commercial authorization was captured");
+    }
+    return tx.organizationBillingChange.findUniqueOrThrow({ where: { id: input.change.id } });
+  });
+}
 
 export type ExactCommercialEvidenceResult =
   | {

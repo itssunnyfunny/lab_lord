@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { BillingChangeInProgressError, BillingReplacementNotReadyError } from "@/lib/billingErrors";
 import {
   getRazorpayClient,
+  fromRazorpaySubunits,
   resolveRazorpayMode,
   type RazorpaySubscription,
 } from "@/lib/razorpay";
@@ -11,6 +12,11 @@ import { assertRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
 import { ensureRazorpayPlanCatalogEntry } from "@/services/razorpayPlanCatalog.service";
 import { normalizeProviderPaymentMethod } from "@/services/billingPaymentMethod.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
+import {
+  buildCommercialIntentSnapshot,
+  captureProcessingCommercialIntent,
+  readCommercialIntentSnapshot,
+} from "@/services/billingCommercialEvidence.service";
 import {
   addCalendarMonthsUtc,
   getReplacementChargeGraceEndsAt,
@@ -333,7 +339,7 @@ export class BillingReplacementService {
     leaseToken: string,
     now = new Date()
   ) {
-    const change = await prisma.organizationBillingChange.findUnique({
+    let change = await prisma.organizationBillingChange.findUnique({
       where: { id: changeId },
       include: {
         organizationSubscription: { include: { billingOffer: true } },
@@ -343,6 +349,7 @@ export class BillingReplacementService {
     if (!change || change.status !== "PROCESSING") {
       throw new Error("Claimed replacement billing change not found");
     }
+    const organizationId = change.organizationId;
     const source = change.organizationSubscription;
     if (!source || source.currentOrganizationId !== change.organizationId) {
       throw new Error("Replacement source is no longer the current subscription");
@@ -354,7 +361,7 @@ export class BillingReplacementService {
       throw new Error("This billing change does not require subscription replacement");
     }
     if (change.replacementSubscription) {
-      await prisma.$transaction(tx => releaseLease(tx, change.organizationId, leaseToken));
+      await prisma.$transaction(tx => releaseLease(tx, organizationId, leaseToken));
       return { change, subscription: change.replacementSubscription, adopted: true };
     }
 
@@ -363,23 +370,68 @@ export class BillingReplacementService {
     if (source.providerMode !== providerMode) {
       throw new Error(`Subscription provider mode ${source.providerMode} cannot be replaced in ${providerMode} mode`);
     }
-    const targetPlanId = change.toPlan ?? source.plan;
-    const targetPlan = getBillingPlan(targetPlanId);
-    if (!targetPlan?.amount) throw new Error("Target billing plan is not available for replacement");
-    const targetQuantity = change.toQuantity ?? source.quantity;
-    if (!Number.isInteger(targetQuantity) || targetQuantity < 1) {
+    const intendedPlan = change.toPlan ?? source.plan;
+    const intendedQuantity = change.toQuantity ?? source.quantity;
+    if (!Number.isInteger(intendedQuantity) || intendedQuantity < 1) {
       throw new Error("A replacement subscription must retain at least one billable branch");
     }
-    const mapping = await ensureRazorpayPlanCatalogEntry({
-      plan: targetPlan.id,
-      name: targetPlan.name,
-      description: targetPlan.description,
-      amount: targetPlan.amount,
-      currency: targetPlan.currency,
-      period: targetPlan.period,
-      interval: targetPlan.interval,
-    });
-    if (mapping.providerMode !== providerMode) throw new Error("Razorpay plan mapping belongs to the wrong provider mode");
+    let commercialIntent;
+    if (change.commercialIntentVersion != null) {
+      commercialIntent = readCommercialIntentSnapshot(change);
+      if (commercialIntent.authorizedProviderMode !== providerMode
+        || commercialIntent.authorizedRazorpaySubscriptionId
+          !== source.razorpaySubscriptionId
+        || commercialIntent.authorizedSourceRazorpayPlanId !== source.razorpayPlanId
+        || commercialIntent.authorizedPlan !== intendedPlan
+        || commercialIntent.authorizedQuantity !== intendedQuantity
+        || commercialIntent.authorizedRazorpayOfferId != null) {
+        throw new Error("The immutable commercial authorization does not match this replacement");
+      }
+    } else {
+      const targetPlan = getBillingPlan(intendedPlan);
+      if (!targetPlan?.amount) {
+        throw new Error("Target billing plan is not available for replacement");
+      }
+      const mapping = await ensureRazorpayPlanCatalogEntry({
+        plan: targetPlan.id,
+        name: targetPlan.name,
+        description: targetPlan.description,
+        amount: targetPlan.amount,
+        currency: targetPlan.currency,
+        period: targetPlan.period,
+        interval: targetPlan.interval,
+      });
+      if (mapping.providerMode !== providerMode) {
+        throw new Error("Razorpay plan mapping belongs to the wrong provider mode");
+      }
+      commercialIntent = buildCommercialIntentSnapshot({
+        providerMode,
+        razorpaySubscriptionId: source.razorpaySubscriptionId,
+        sourceRazorpayPlanId: source.razorpayPlanId,
+        razorpayPlanId: mapping.razorpayPlanId,
+        plan: mapping.plan,
+        quantity: intendedQuantity,
+        unitAmountSubunits: mapping.amountSubunits,
+        currency: mapping.currency,
+        period: mapping.period,
+        interval: mapping.interval,
+        offer: null,
+        capturedAt: now,
+      });
+      change = await captureProcessingCommercialIntent({
+        change,
+        leaseToken,
+        intent: commercialIntent,
+      }) as ReplacementWithSource;
+    }
+    const targetPlanId = commercialIntent.authorizedPlan;
+    const targetQuantity = commercialIntent.authorizedQuantity;
+    const targetProviderPlanId = commercialIntent.authorizedRazorpayPlanId;
+    const targetAmountSubunits = commercialIntent.authorizedUnitAmountSubunits;
+    const targetCurrency = commercialIntent.authorizedCurrency;
+    const targetPeriod = commercialIntent.authorizedPeriod;
+    const targetInterval = commercialIntent.authorizedInterval;
+    const targetAmount = fromRazorpaySubunits(targetAmountSubunits, targetCurrency);
 
     const razorpay = getRazorpayClient();
     const providerSource = await razorpay.fetchSubscription(source.razorpaySubscriptionId);
@@ -418,12 +470,12 @@ export class BillingReplacementService {
     });
     const undoCutoffAt = getReplacementUndoCutoffAt(effectiveAt);
     const accessGraceEndsAt = getReplacementChargeGraceEndsAt(effectiveAt);
-    const intent = {
+    const providerIntent = {
       organizationId: change.organizationId,
       changeId: change.id,
       sourceProviderSubscriptionId: source.razorpaySubscriptionId,
       providerMode,
-      providerPlanId: mapping.razorpayPlanId,
+      providerPlanId: targetProviderPlanId,
       quantity: targetQuantity,
       startAt: timestamp(effectiveAt),
       expireBy: timestamp(undoCutoffAt),
@@ -435,11 +487,11 @@ export class BillingReplacementService {
       const matches: RazorpaySubscription[] = [];
       for (let skip = 0; ; skip += 100) {
         const page = await razorpay.listSubscriptions({ count: 100, skip });
-        matches.push(...page.items.filter(candidate => isSameProvisioningIntent(candidate, intent)));
+        matches.push(...page.items.filter(candidate => isSameProvisioningIntent(candidate, providerIntent)));
         if (page.items.length < 100) break;
       }
       const liveMatches = matches
-        .filter(candidate => isSameProvisioningIntent(candidate, intent))
+        .filter(candidate => isSameProvisioningIntent(candidate, providerIntent))
         .filter(candidate => !TERMINAL_PROVIDER_STATUSES.has(candidate.status.toLowerCase()))
         .sort((left, right) => (left.created_at ?? 0) - (right.created_at ?? 0));
       const ambiguousMatches = liveMatches.filter(candidate =>
@@ -465,12 +517,12 @@ export class BillingReplacementService {
 
     if (!providerCandidate) {
       providerCandidate = await razorpay.createSubscription({
-        plan_id: mapping.razorpayPlanId,
+        plan_id: targetProviderPlanId,
         total_count: Math.max(providerSource.remaining_count ?? getDefaultSubscriptionCycles(), 1),
         quantity: targetQuantity,
         customer_notify: true,
-        start_at: intent.startAt,
-        expire_by: intent.expireBy,
+        start_at: providerIntent.startAt,
+        expire_by: providerIntent.expireBy,
         notes: {
           app: "lab_lords",
           billing_type: "saas_subscription_replacement",
@@ -478,11 +530,11 @@ export class BillingReplacementService {
           provider_mode: providerMode,
           billing_change_id: change.id,
           replacement_source_subscription_id: source.razorpaySubscriptionId,
-          plan: targetPlan.id,
+          plan: targetPlanId,
         },
       });
     }
-    if (!isSameProvisioningIntent(providerCandidate, intent)) {
+    if (!isSameProvisioningIntent(providerCandidate, providerIntent)) {
       throw new Error("Razorpay replacement does not match the expected plan and branch quantity");
     }
 
@@ -514,15 +566,15 @@ export class BillingReplacementService {
             pendingReplacementOrganizationId: change.organizationId,
             replacesSubscriptionId: source.id,
             providerMode,
-            plan: targetPlan.id,
-            amount: mapping.amount,
-            amountSubunits: mapping.amountSubunits,
-            currency: mapping.currency,
-            period: mapping.period,
-            interval: mapping.interval,
+            plan: targetPlanId,
+            amount: targetAmount,
+            amountSubunits: targetAmountSubunits,
+            currency: targetCurrency,
+            period: targetPeriod,
+            interval: targetInterval,
             totalCount: providerCandidate!.total_count,
             quantity: targetQuantity,
-            razorpayPlanId: mapping.razorpayPlanId,
+            razorpayPlanId: targetProviderPlanId,
             razorpaySubscriptionId: providerCandidate!.id,
             razorpayCustomerId: providerCandidate!.customer_id ?? null,
             status: mapProviderStatus(providerCandidate!.status),
