@@ -1229,6 +1229,69 @@ describe("serialized workspace billing mutations", () => {
     await expect(processing).resolves.toMatchObject({ status: "AWAITING_PAYMENT" });
   });
 
+  it("blocks every replacement undo entry point while provider state requires manual review", async () => {
+    const { owner, organization, change, candidate, razorpay } = await setupPendingUpiReplacement(
+      "manual-review-replacement-undo"
+    );
+    vi.mocked(razorpay.cancelSubscription).mockClear();
+    await testPrisma.organizationBillingChange.update({
+      where: { id: change.id },
+      data: {
+        status: "FAILED",
+        operationStatus: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "MALFORMED_PROVIDER_EVIDENCE",
+        resolvedAt: null,
+      },
+    });
+
+    await expect(BillingService.undoWorkspaceChange(owner.id, organization.id, change.id))
+      .rejects.toBeInstanceOf(BillingChangeInProgressError);
+    await expect(BillingReplacementService.undoReplacement(change.id))
+      .rejects.toBeInstanceOf(BillingChangeInProgressError);
+
+    expect(razorpay.cancelSubscription).not.toHaveBeenCalled();
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { id: candidate.id },
+    })).resolves.toMatchObject({ pendingReplacementOrganizationId: organization.id });
+    await expect(testPrisma.branch.findUniqueOrThrow({ where: { id: change.branchId! } }))
+      .resolves.toMatchObject({ billingStatus: "PENDING_ACTIVATION" });
+  });
+
+  it("does not restore a replacement-backed branch removal under manual review", async () => {
+    const { owner, organization, branch, change, candidate, razorpay } = await setupPendingUpiReplacement(
+      "manual-review-replacement-removal"
+    );
+    vi.mocked(razorpay.cancelSubscription).mockClear();
+    await Promise.all([
+      testPrisma.branch.update({
+        where: { id: branch.id },
+        data: { billingStatus: "REMOVAL_SCHEDULED" },
+      }),
+      testPrisma.organizationBillingChange.update({
+        where: { id: change.id },
+        data: {
+          type: "BRANCH_REMOVAL",
+          status: "FAILED",
+          operationStatus: "FAILED",
+          failureCategory: "MANUAL_REVIEW_REQUIRED",
+          failureCode: "MALFORMED_PROVIDER_EVIDENCE",
+          resolvedAt: null,
+        },
+      }),
+    ]);
+
+    await expect(BranchService.undoBillingRemoval(owner.id, branch.id))
+      .rejects.toBeInstanceOf(BillingChangeInProgressError);
+
+    expect(razorpay.cancelSubscription).not.toHaveBeenCalled();
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { id: candidate.id },
+    })).resolves.toMatchObject({ pendingReplacementOrganizationId: organization.id });
+    await expect(testPrisma.branch.findUniqueOrThrow({ where: { id: branch.id } }))
+      .resolves.toMatchObject({ billingStatus: "REMOVAL_SCHEDULED" });
+  });
+
   it("does not let an expired worker fail or release a successor lease", async () => {
     const { owner, organization, subscription } = await setup();
     const razorpay = fakeRazorpay();

@@ -2864,11 +2864,11 @@ export class BillingService {
         "The provider mutation is still processing and cannot be undone"
       );
     }
-    if (!change.replacementSubscriptionId
-      && (change.status === "AWAITING_PAYMENT"
-        || change.failureCategory === "MANUAL_REVIEW_REQUIRED"
+    if (change.failureCategory === "MANUAL_REVIEW_REQUIRED"
+      || (!change.replacementSubscriptionId
+        && (change.status === "AWAITING_PAYMENT"
         || (change.status === "FAILED"
-          && !isSafeFailedBillingMutationForLocalUndo(change.failureCategory)))) {
+          && !isSafeFailedBillingMutationForLocalUndo(change.failureCategory))))) {
       throw new BillingChangeInProgressError(
         change.id,
         "The provider mutation outcome must be reconciled before it can be undone"

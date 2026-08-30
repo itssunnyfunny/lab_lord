@@ -1421,6 +1421,13 @@ export class BillingReplacementService {
       });
       const candidate = change?.replacementSubscription;
       if (!change || !candidate) throw new Error("Replacement billing change not found");
+      if (change.status === "PROCESSING"
+        || change.failureCategory === "MANUAL_REVIEW_REQUIRED") {
+        throw new BillingChangeInProgressError(
+          change.id,
+          "The replacement provider outcome must be reconciled before it can be undone"
+        );
+      }
       if (change.status === "APPLIED") throw new Error("The replacement has already been applied");
       if (change.undoCutoffAt && now >= change.undoCutoffAt) {
         throw new Error("The replacement can no longer be undone");
