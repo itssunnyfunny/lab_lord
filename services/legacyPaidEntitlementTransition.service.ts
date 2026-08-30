@@ -1231,7 +1231,9 @@ function publicRow(
     "changeId" | "applied" | "persistedManualReview"
   >> = {}
 ): LegacyPaidEntitlementResultRow {
-  const { commercialIntent: _commercialIntent, verifiedSettlement: _settlement, ...safe } = assessment;
+  const { commercialIntent, verifiedSettlement, ...safe } = assessment;
+  void commercialIntent;
+  void verifiedSettlement;
   return {
     ...safe,
     changeId: application.changeId ?? null,

@@ -140,7 +140,7 @@ describe("legacy paid-entitlement transition", () => {
   });
 
   it("dry-runs without writes, applies the exact period, and reruns idempotently", async () => {
-    const { owner, organization, subscription } = await legacySubscription(
+    const { organization, subscription } = await legacySubscription(
       new Date("2026-10-01T00:00:00.000Z")
     );
     const provider = providerReader();
