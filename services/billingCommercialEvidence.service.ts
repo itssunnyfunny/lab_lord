@@ -206,6 +206,28 @@ function normalizedNullableId(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function providerRecord(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === "object"
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function normalizedRequiredString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizedProviderStatus(value: unknown) {
+  return normalizedRequiredString(value)?.toLowerCase() ?? null;
+}
+
+function normalizedOptionalProviderId(value: unknown) {
+  if (value == null) return { valid: true as const, value: null };
+  const normalized = normalizedNullableId(value);
+  return normalized
+    ? { valid: true as const, value: normalized }
+    : { valid: false as const, value: null };
+}
+
 function mismatch(code: CommercialEvidenceMismatchCode): ExactCommercialEvidenceResult {
   return { kind: "MISMATCH", code };
 }
@@ -338,7 +360,7 @@ function isCompleteIntent(intent: CommercialIntentRecord, requireBoundSubscripti
     );
 }
 
-export function validateExactCommercialEvidence(input: {
+type ExactCommercialEvidenceInput = {
   intent: CommercialIntentRecord | null;
   organizationId: string;
   providerMode: RazorpayMode;
@@ -353,7 +375,11 @@ export function validateExactCommercialEvidence(input: {
   invoice?: RazorpayInvoice | null;
   providerPlan?: RazorpayPlan | null;
   now?: Date;
-}): ExactCommercialEvidenceResult {
+};
+
+function validateExactCommercialEvidenceInternal(
+  input: ExactCommercialEvidenceInput
+): ExactCommercialEvidenceResult {
   const intent = input.intent;
   if (!intent) return mismatch("COMMERCIAL_INTENT_MISSING");
   if (!isCompleteIntent(intent, true)) return mismatch("COMMERCIAL_INTENT_INVALID");
@@ -371,107 +397,201 @@ export function validateExactCommercialEvidence(input: {
   if (intent.toQuantity != null && intent.toQuantity !== intent.authorizedQuantity) {
     return mismatch("COMMERCIAL_INTENT_INVALID");
   }
-  if (input.providerSubscription.entity !== "subscription"
-    || input.providerSubscription.id !== intent.authorizedRazorpaySubscriptionId
+
+  const providerSubscription = providerRecord(input.providerSubscription);
+  if (!providerSubscription
+    || providerSubscription.entity !== "subscription") {
+    return mismatch("MALFORMED_PROVIDER_EVIDENCE");
+  }
+  const providerSubscriptionId = normalizedRequiredString(providerSubscription.id);
+  const providerPlanId = normalizedRequiredString(providerSubscription.plan_id);
+  const providerSubscriptionStatus = normalizedProviderStatus(providerSubscription.status);
+  const providerQuantity = providerSubscription.quantity;
+  const providerOffer = normalizedOptionalProviderId(providerSubscription.offer_id);
+  if (!providerSubscriptionId
+    || !providerPlanId
+    || !providerSubscriptionStatus
+    || !positiveInteger(providerQuantity)
+    || !providerOffer.valid) {
+    return mismatch("MALFORMED_PROVIDER_EVIDENCE");
+  }
+  if (providerSubscriptionId !== intent.authorizedRazorpaySubscriptionId
     || input.localSubscription.razorpaySubscriptionId !== intent.authorizedRazorpaySubscriptionId) {
     return mismatch("SUBSCRIPTION_MISMATCH");
   }
-  if (input.providerSubscription.plan_id !== intent.authorizedRazorpayPlanId) {
+  if (providerPlanId !== intent.authorizedRazorpayPlanId) {
     return mismatch("PROVIDER_PLAN_MISMATCH");
   }
-  if (input.providerSubscription.quantity !== intent.authorizedQuantity) {
+  if (providerQuantity !== intent.authorizedQuantity) {
     return mismatch("QUANTITY_MISMATCH");
   }
-  if (normalizedNullableId(input.providerSubscription.offer_id)
-    !== normalizedNullableId(intent.authorizedRazorpayOfferId)) {
+  if (providerOffer.value !== normalizedNullableId(intent.authorizedRazorpayOfferId)) {
     return mismatch("OFFER_MISMATCH");
   }
 
-  const payment = input.payment ?? null;
-  if (payment) {
-    if (payment.entity !== "payment" || !positiveInteger(payment.amount)) {
+  const rawPayment = input.payment ?? null;
+  const payment = rawPayment ? providerRecord(rawPayment) : null;
+  let paymentId: string | null = null;
+  let paymentStatus: string | null = null;
+  let paymentCurrency: string | null = null;
+  let paymentSubscriptionId: string | null = null;
+  let paymentInvoiceId: string | null = null;
+  let paymentCaptured: boolean | undefined;
+  let paymentAmount: number | null = null;
+  if (rawPayment) {
+    const optionalInvoiceId = payment
+      ? normalizedOptionalProviderId(payment.invoice_id)
+      : { valid: false as const, value: null };
+    const optionalSubscriptionId = payment
+      ? normalizedOptionalProviderId(payment.subscription_id)
+      : { valid: false as const, value: null };
+    paymentId = payment ? normalizedRequiredString(payment.id) : null;
+    paymentStatus = payment ? normalizedProviderStatus(payment.status) : null;
+    paymentCurrency = payment ? normalizedCurrency(payment.currency) : null;
+    paymentAmount = payment && positiveInteger(payment.amount) ? payment.amount : null;
+    paymentCaptured = payment?.captured as boolean | undefined;
+    if (!payment
+      || payment.entity !== "payment"
+      || !paymentId
+      || !paymentStatus
+      || !paymentCurrency
+      || paymentCurrency.length !== 3
+      || paymentAmount == null
+      || !optionalInvoiceId.valid
+      || !optionalSubscriptionId.valid
+      || (payment.captured !== undefined && typeof payment.captured !== "boolean")) {
       return mismatch("MALFORMED_PROVIDER_EVIDENCE");
     }
-    if (input.expectedPaymentId && payment.id !== input.expectedPaymentId) {
+    paymentInvoiceId = optionalInvoiceId.value;
+    paymentSubscriptionId = optionalSubscriptionId.value;
+    if (input.expectedPaymentId && paymentId !== input.expectedPaymentId) {
       return mismatch("PAYMENT_ID_MISMATCH");
     }
-    if (payment.subscription_id !== intent.authorizedRazorpaySubscriptionId) {
+    if (paymentSubscriptionId !== intent.authorizedRazorpaySubscriptionId) {
       return mismatch("PAYMENT_SUBSCRIPTION_MISMATCH");
     }
-    if (normalizedCurrency(payment.currency) !== intent.authorizedCurrency) {
+    if (paymentCurrency !== intent.authorizedCurrency) {
       return mismatch("CURRENCY_MISMATCH");
     }
   }
 
-  const invoice = input.invoice ?? null;
-  if (!invoice) {
-    if (!payment) return { kind: "PENDING" };
-    if (payment.invoice_id && payment.status.toLowerCase() === "captured") {
+  const rawInvoice = input.invoice ?? null;
+  const invoice = rawInvoice ? providerRecord(rawInvoice) : null;
+  let invoiceId: string | null = null;
+  let invoiceStatus: string | null = null;
+  let invoiceCurrency: string | null = null;
+  let invoiceSubscriptionId: string | null = null;
+  let invoicePaymentId: string | null = null;
+  if (!rawInvoice) {
+    if (!rawPayment) return { kind: "PENDING" };
+    if (paymentInvoiceId) {
       return mismatch("INVOICE_PAYMENT_MISMATCH");
     }
-    if (!["authorized", "captured"].includes(payment.status.toLowerCase())) {
+    if (paymentStatus === "authorized" && paymentCaptured !== false) {
+      return mismatch("MALFORMED_PROVIDER_EVIDENCE");
+    }
+    if (paymentStatus === "captured" && paymentCaptured !== true) {
+      return mismatch("MALFORMED_PROVIDER_EVIDENCE");
+    }
+    if (!["authorized", "captured"].includes(paymentStatus!)) {
       return mismatch("PAYMENT_NOT_AUTHORIZED");
     }
-    if (!["created", "authenticated", "active"].includes(
-      input.providerSubscription.status.toLowerCase()
-    )) {
+    if (!["created", "authenticated", "active"].includes(providerSubscriptionStatus)) {
       return { kind: "PENDING" };
     }
     return { kind: "AUTHORIZATION_ONLY" };
   }
-  if (!payment) return mismatch("INVOICE_PAYMENT_MISMATCH");
-  if (invoice.entity !== "invoice"
+  if (!rawPayment) return mismatch("INVOICE_PAYMENT_MISMATCH");
+  const optionalInvoiceSubscriptionId = invoice
+    ? normalizedOptionalProviderId(invoice.subscription_id)
+    : { valid: false as const, value: null };
+  const optionalInvoicePaymentId = invoice
+    ? normalizedOptionalProviderId(invoice.payment_id)
+    : { valid: false as const, value: null };
+  invoiceId = invoice ? normalizedRequiredString(invoice.id) : null;
+  invoiceStatus = invoice ? normalizedProviderStatus(invoice.status) : null;
+  invoiceCurrency = invoice ? normalizedCurrency(invoice.currency) : null;
+  if (!invoice
+    || invoice.entity !== "invoice"
+    || !invoiceId
+    || !invoiceStatus
+    || !invoiceCurrency
+    || invoiceCurrency.length !== 3
     || !positiveInteger(invoice.amount)
     || !Number.isSafeInteger(invoice.amount_paid)
-    || !Number.isSafeInteger(invoice.amount_due)) {
+    || Number(invoice.amount_paid) < 0
+    || !Number.isSafeInteger(invoice.amount_due)
+    || Number(invoice.amount_due) < 0
+    || !optionalInvoiceSubscriptionId.valid
+    || !optionalInvoicePaymentId.valid) {
     return mismatch("MALFORMED_PROVIDER_EVIDENCE");
   }
-  if (invoice.subscription_id !== intent.authorizedRazorpaySubscriptionId) {
+  invoiceSubscriptionId = optionalInvoiceSubscriptionId.value;
+  invoicePaymentId = optionalInvoicePaymentId.value;
+  if (invoiceSubscriptionId !== intent.authorizedRazorpaySubscriptionId) {
     return mismatch("INVOICE_SUBSCRIPTION_MISMATCH");
   }
-  if (invoice.payment_id !== payment.id || payment.invoice_id !== invoice.id) {
+  if (invoicePaymentId !== paymentId || paymentInvoiceId !== invoiceId) {
     return mismatch("INVOICE_PAYMENT_MISMATCH");
   }
-  if (invoice.status.toLowerCase() !== "paid") return mismatch("INVOICE_NOT_PAID");
-  if (payment.status.toLowerCase() !== "captured" || payment.captured === false) {
+  if (invoiceStatus !== "paid") return mismatch("INVOICE_NOT_PAID");
+  if (paymentStatus !== "captured" || paymentCaptured === false) {
     return mismatch("PAYMENT_NOT_CAPTURED");
   }
+  if (paymentCaptured !== true) return mismatch("MALFORMED_PROVIDER_EVIDENCE");
   if (invoice.amount_due !== 0) return mismatch("INVOICE_AMOUNT_DUE");
   if (invoice.amount_paid !== invoice.amount) return mismatch("INVOICE_NOT_FULLY_PAID");
-  if (payment.amount !== invoice.amount) return mismatch("INVOICE_PAYMENT_AMOUNT_MISMATCH");
+  if (paymentAmount !== invoice.amount) return mismatch("INVOICE_PAYMENT_AMOUNT_MISMATCH");
   if (!positiveInteger(invoice.paid_at)
     || invoice.paid_at
       < Math.floor(intent.commercialIntentCapturedAt!.getTime() / 1000)) {
     return mismatch("STALE_SETTLEMENT");
   }
 
-  const invoiceCurrency = normalizedCurrency(invoice.currency);
-  const paymentCurrency = normalizedCurrency(payment.currency);
   if (invoiceCurrency !== paymentCurrency || invoiceCurrency !== intent.authorizedCurrency) {
     return mismatch("CURRENCY_MISMATCH");
   }
 
-  const providerPlan = input.providerPlan ?? null;
-  if (!providerPlan) return mismatch("PROVIDER_PLAN_EVIDENCE_MISSING");
-  if (providerPlan.entity !== "plan" || providerPlan.id !== intent.authorizedRazorpayPlanId) {
+  const rawProviderPlan = input.providerPlan ?? null;
+  if (!rawProviderPlan) return mismatch("PROVIDER_PLAN_EVIDENCE_MISSING");
+  const providerPlan = providerRecord(rawProviderPlan);
+  const providerPlanEvidenceId = providerPlan
+    ? normalizedRequiredString(providerPlan.id)
+    : null;
+  const providerPlanPeriod = providerPlan
+    ? normalizedProviderStatus(providerPlan.period)
+    : null;
+  const providerPlanItem = providerRecord(providerPlan?.item);
+  const providerPlanCurrency = normalizedCurrency(providerPlanItem?.currency);
+  if (!providerPlan
+    || providerPlan.entity !== "plan"
+    || !providerPlanEvidenceId
+    || !providerPlanPeriod
+    || !positiveInteger(providerPlan.interval)
+    || !providerPlanItem
+    || !positiveInteger(providerPlanItem.amount)
+    || providerPlanCurrency.length !== 3) {
+    return mismatch("MALFORMED_PROVIDER_EVIDENCE");
+  }
+  if (providerPlanEvidenceId !== intent.authorizedRazorpayPlanId) {
     return mismatch("PROVIDER_PLAN_MISMATCH");
   }
-  if (providerPlan.item?.amount !== intent.authorizedUnitAmountSubunits
-    || normalizedCurrency(providerPlan.item?.currency) !== intent.authorizedCurrency) {
+  if (providerPlanItem.amount !== intent.authorizedUnitAmountSubunits
+    || providerPlanCurrency !== intent.authorizedCurrency) {
     return mismatch("PLAN_AMOUNT_MISMATCH");
   }
-  if (providerPlan.period.trim().toLowerCase() !== intent.authorizedPeriod
+  if (providerPlanPeriod !== intent.authorizedPeriod
     || providerPlan.interval !== intent.authorizedInterval) {
     return mismatch("BILLING_CADENCE_MISMATCH");
   }
 
   let expectedAmountSubunits = intent.authorizedGrossAmountSubunits!;
   if (intent.authorizedRazorpayOfferId) {
-    if (!positiveInteger(input.providerSubscription.paid_count)
+    if (!positiveInteger(providerSubscription.paid_count)
       || !positiveInteger(intent.authorizedOfferValidThroughPaidCount)) {
       return mismatch("OFFER_CYCLE_EVIDENCE_MISSING");
     }
-    if (input.providerSubscription.paid_count <= intent.authorizedOfferValidThroughPaidCount) {
+    if (providerSubscription.paid_count <= intent.authorizedOfferValidThroughPaidCount) {
       expectedAmountSubunits = intent.authorizedExpectedAmountSubunits!;
     }
   }
@@ -479,10 +599,10 @@ export function validateExactCommercialEvidence(input: {
 
   if (!positiveInteger(invoice.billing_start)
     || !positiveInteger(invoice.billing_end)
-    || !positiveInteger(input.providerSubscription.current_start)
-    || !positiveInteger(input.providerSubscription.current_end)
-    || invoice.billing_start !== input.providerSubscription.current_start
-    || invoice.billing_end !== input.providerSubscription.current_end
+    || !positiveInteger(providerSubscription.current_start)
+    || !positiveInteger(providerSubscription.current_end)
+    || invoice.billing_start !== providerSubscription.current_start
+    || invoice.billing_end !== providerSubscription.current_end
     || invoice.billing_end <= invoice.billing_start) {
     return mismatch("BILLING_PERIOD_MISMATCH");
   }
@@ -490,7 +610,7 @@ export function validateExactCommercialEvidence(input: {
   if (invoice.billing_start > nowSeconds || invoice.billing_end <= nowSeconds) {
     return mismatch("BILLING_PERIOD_MISMATCH");
   }
-  if (input.providerSubscription.status.toLowerCase() !== "active") {
+  if (providerSubscriptionStatus !== "active") {
     return mismatch("MALFORMED_PROVIDER_EVIDENCE");
   }
 
@@ -500,4 +620,15 @@ export function validateExactCommercialEvidence(input: {
     periodStart: new Date(invoice.billing_start * 1000),
     periodEnd: new Date(invoice.billing_end * 1000),
   };
+}
+
+/** Treats every provider response as untrusted and never lets malformed evidence escape. */
+export function validateExactCommercialEvidence(
+  input: ExactCommercialEvidenceInput
+): ExactCommercialEvidenceResult {
+  try {
+    return validateExactCommercialEvidenceInternal(input);
+  } catch {
+    return mismatch("MALFORMED_PROVIDER_EVIDENCE");
+  }
 }

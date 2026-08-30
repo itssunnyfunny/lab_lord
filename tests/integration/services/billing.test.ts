@@ -1968,6 +1968,89 @@ describe("BillingService SaaS subscriptions", () => {
     });
   });
 
+  it("quarantines a captured payment without exact capture evidence and preserves access", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
+    await createBranch({ organizationId: org.id });
+    const checkout = await BillingService.createSubscriptionCheckout(
+      user.id,
+      org.id,
+      { plan: "BASIC" }
+    );
+    const providerNow = Math.floor(Date.now() / 1000);
+    const periodStart = providerNow - 60;
+    const periodEnd = providerNow + 30 * 24 * 60 * 60;
+
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "active",
+      total_count: 120,
+      quantity: 1,
+      paid_count: 1,
+      current_start: periodStart,
+      current_end: periodEnd,
+      offer_id: null,
+      payment_method: "card",
+    });
+    vi.mocked(fakeRazorpay.fetchSubscriptionInvoices).mockResolvedValue({
+      entity: "collection",
+      count: 1,
+      items: [{
+        id: "inv_missing_capture",
+        entity: "invoice",
+        subscription_id: "sub_basic",
+        payment_id: "pay_missing_capture",
+        status: "paid",
+        amount: 29900,
+        amount_paid: 29900,
+        amount_due: 0,
+        currency: "INR",
+        billing_start: periodStart,
+        billing_end: periodEnd,
+        issued_at: periodStart,
+        paid_at: providerNow,
+      }],
+    });
+    vi.mocked(fakeRazorpay.fetchPayment).mockResolvedValue({
+      id: "pay_missing_capture",
+      entity: "payment",
+      amount: 29900,
+      currency: "INR",
+      status: "captured",
+      order_id: null,
+      invoice_id: "inv_missing_capture",
+      subscription_id: "sub_basic",
+      method: "card",
+    });
+
+    await expect(BillingReconciliationService.reconcileByOrganization(org.id))
+      .rejects.toThrow("Razorpay returned malformed commercial evidence");
+
+    await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
+      where: { currentOrganizationId: org.id },
+    })).resolves.toMatchObject({
+      plan: "BASIC",
+      quantity: 1,
+      paidThrough: null,
+      confirmedCommercialIntentChangeId: null,
+      lastConfirmedInvoiceId: null,
+      lastConfirmedPaymentId: null,
+    });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: checkout.changeId },
+    })).resolves.toMatchObject({
+      status: "FAILED",
+      operationStatus: "FAILED",
+      failureCategory: "MANUAL_REVIEW_REQUIRED",
+      failureCode: "MALFORMED_PROVIDER_EVIDENCE",
+      resolvedAt: null,
+    });
+  });
+
   it("does not advance or regress paidThrough from an invoice for an older provider period", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);

@@ -64,8 +64,14 @@ const ACTIVE_AUTHORIZATION_STATUSES = [
 
 class StaleCommercialReconciliationError extends Error {}
 
-function status(value: string): SaasSubscriptionStatus {
-  const normalized = value.toUpperCase();
+function normalizedProviderStatus(value: unknown) {
+  return typeof value === "string" && value.trim()
+    ? value.trim().toLowerCase()
+    : null;
+}
+
+function status(value: unknown): SaasSubscriptionStatus {
+  const normalized = normalizedProviderStatus(value)?.toUpperCase() ?? "PENDING";
   return (SUBSCRIPTION_STATUSES.has(normalized) ? normalized : "PENDING") as SaasSubscriptionStatus;
 }
 
@@ -79,13 +85,49 @@ function currentPeriodInvoice(
 ) {
   return [...invoices]
     .filter(invoice =>
-      invoice.status.toLowerCase() === "paid"
+      normalizedProviderStatus(invoice.status) === "paid"
       && invoice.payment_id
       && invoice.subscription_id === subscription.id
       && invoice.billing_start === subscription.current_start
       && invoice.billing_end === subscription.current_end
     )
     .sort((left, right) => (right.paid_at ?? 0) - (left.paid_at ?? 0))[0] ?? null;
+}
+
+function hasProviderInvoiceCollectionShape(value: unknown): value is RazorpayInvoices {
+  if (!value || typeof value !== "object") return false;
+  const collection = value as Record<string, unknown>;
+  if (collection.entity !== "collection"
+    || !Number.isSafeInteger(collection.count)
+    || Number(collection.count) < 0
+    || !Array.isArray(collection.items)) return false;
+  return collection.items.every(item => {
+    if (!item || typeof item !== "object") return false;
+    const invoice = item as Record<string, unknown>;
+    const optionalId = (candidate: unknown) => candidate == null
+      || (typeof candidate === "string" && candidate.trim().length > 0);
+    const optionalTimestamp = (candidate: unknown) => candidate == null
+      || (Number.isSafeInteger(candidate) && Number(candidate) > 0);
+    return invoice.entity === "invoice"
+      && typeof invoice.id === "string"
+      && invoice.id.trim().length > 0
+      && typeof invoice.status === "string"
+      && invoice.status.trim().length > 0
+      && Number.isSafeInteger(invoice.amount)
+      && Number(invoice.amount) > 0
+      && Number.isSafeInteger(invoice.amount_paid)
+      && Number(invoice.amount_paid) >= 0
+      && Number.isSafeInteger(invoice.amount_due)
+      && Number(invoice.amount_due) >= 0
+      && typeof invoice.currency === "string"
+      && invoice.currency.trim().length === 3
+      && optionalId(invoice.subscription_id)
+      && optionalId(invoice.payment_id)
+      && optionalTimestamp(invoice.billing_start)
+      && optionalTimestamp(invoice.billing_end)
+      && optionalTimestamp(invoice.issued_at)
+      && optionalTimestamp(invoice.paid_at);
+  });
 }
 
 async function resolveCommercialIntent(
@@ -443,6 +485,35 @@ export class BillingReconciliationService {
       razorpay.fetchSubscriptionInvoices(razorpaySubscriptionId),
       options.paymentId ? razorpay.fetchPayment(options.paymentId) : Promise.resolve(null),
     ]);
+    if (!hasProviderInvoiceCollectionShape(invoices)) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "MALFORMED_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
+    const subscriptionEvidence = validateExactCommercialEvidence({
+      intent,
+      organizationId: localBeforeFetch.organizationId,
+      providerMode,
+      localSubscription: localBeforeFetch,
+      providerSubscription,
+      payment: null,
+      invoice: null,
+      providerPlan: null,
+      now,
+    });
+    if (subscriptionEvidence.kind === "MISMATCH") {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: subscriptionEvidence.code,
+        now,
+        options,
+      });
+    }
     const selectedInvoice = explicitPayment?.invoice_id
       ? invoices.items.find(invoice => invoice.id === explicitPayment.invoice_id) ?? null
       : explicitPayment
@@ -469,17 +540,18 @@ export class BillingReconciliationService {
       now,
     });
 
-    if (payment?.status.toLowerCase() === "failed"
-      && evidence.kind === "MISMATCH"
+    if (evidence.kind === "MISMATCH"
       && evidence.code === "PAYMENT_NOT_AUTHORIZED") {
-      return {
-        subscription: localBeforeFetch,
-        confirmedPaidPeriod: false,
-        evidenceKind: "DEFINITELY_REJECTED",
-        commercialIntentChangeId: intent?.id ?? null,
-        payment,
-        invoices,
-      };
+      if (normalizedProviderStatus(payment?.status) === "failed") {
+        return {
+          subscription: localBeforeFetch,
+          confirmedPaidPeriod: false,
+          evidenceKind: "DEFINITELY_REJECTED",
+          commercialIntentChangeId: intent?.id ?? null,
+          payment,
+          invoices,
+        };
+      }
     }
     if (evidence.kind === "MISMATCH") {
       return quarantineCommercialMismatch({
@@ -784,7 +856,7 @@ export class BillingReconciliationService {
                     paymentAmountSubunits: payment.amount,
                     paymentCurrency: payment.currency.toUpperCase(),
                     paymentStatus: payment.status.toLowerCase(),
-                    paymentCaptured: payment.captured !== false,
+                    paymentCaptured: payment.captured === true,
                     evidenceConfirmedAt: now,
                     evidenceFailureCode: null,
                   }
@@ -811,7 +883,7 @@ export class BillingReconciliationService {
                     paymentAmountSubunits: payment.amount,
                     paymentCurrency: payment.currency.toUpperCase(),
                     paymentStatus: payment.status.toLowerCase(),
-                    paymentCaptured: payment.captured !== false,
+                    paymentCaptured: payment.captured === true,
                     evidenceConfirmedAt: existingEvidence?.evidenceConfirmedAt ?? now,
                     evidenceFailureCode: null,
                   }

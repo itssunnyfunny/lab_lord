@@ -174,6 +174,24 @@ describe("exact billing commercial evidence", () => {
     })).toEqual({ kind: "AUTHORIZATION_ONLY" });
   });
 
+  it("accepts a captured token payment only when capture state is internally consistent", () => {
+    expect(validate({
+      subscription: providerSubscription({ status: "authenticated" }),
+      payment: payment({ amount: 500, captured: true, invoice_id: null }),
+      invoice: null,
+      plan: null,
+    })).toEqual({ kind: "AUTHORIZATION_ONLY" });
+  });
+
+  it.each([
+    ["authorized payment marked captured", payment({ status: "authorized", captured: true, invoice_id: null })],
+    ["captured payment marked uncaptured", payment({ status: "captured", captured: false, invoice_id: null })],
+    ["captured payment without capture evidence", payment({ status: "captured", captured: undefined, invoice_id: null })],
+  ])("quarantines a contradictory %s", (_label, paymentEvidence) => {
+    expect(validate({ payment: paymentEvidence, invoice: null, plan: null }))
+      .toEqual({ kind: "MISMATCH", code: "MALFORMED_PROVIDER_EVIDENCE" });
+  });
+
   it("accepts one exact, current, fully settled provider period", () => {
     expect(validate()).toEqual({
       kind: "EXACT_SETTLEMENT",
@@ -191,9 +209,21 @@ describe("exact billing commercial evidence", () => {
     ["invoice/payment currency mismatch", invoice(), payment({ currency: "USD" }), "CURRENCY_MISMATCH"],
     ["wrong expected currency", invoice({ currency: "USD" }), payment({ currency: "USD" }), "CURRENCY_MISMATCH"],
     ["uncaptured payment", invoice(), payment({ captured: false }), "PAYMENT_NOT_CAPTURED"],
+    ["missing capture evidence", invoice(), payment({ captured: undefined }), "MALFORMED_PROVIDER_EVIDENCE"],
   ])("rejects %s", (_label, invoiceEvidence, paymentEvidence, code) => {
     expect(validate({ invoice: invoiceEvidence, payment: paymentEvidence }))
       .toEqual({ kind: "MISMATCH", code });
+  });
+
+  it.each([
+    ["payment status", { payment: payment({ status: undefined }), invoice: invoice(), plan: providerPlan() }],
+    ["invoice status", { payment: payment(), invoice: invoice({ status: 42 as unknown as string }), plan: providerPlan() }],
+    ["subscription status", { payment: payment(), invoice: invoice(), subscription: providerSubscription({ status: null as unknown as string }), plan: providerPlan() }],
+    ["plan cadence", { payment: payment(), invoice: invoice(), plan: providerPlan({ period: {} as unknown as string }) }],
+    ["payment capture type", { payment: payment({ captured: "true" as unknown as boolean }), invoice: invoice(), plan: providerPlan() }],
+  ])("quarantines malformed provider %s without throwing", (_label, evidence) => {
+    expect(validate(evidence))
+      .toEqual({ kind: "MISMATCH", code: "MALFORMED_PROVIDER_EVIDENCE" });
   });
 
   it.each([

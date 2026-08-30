@@ -1558,7 +1558,9 @@ export class BillingService {
       };
     }
 
-    if (gatewayPayment.status.toLowerCase() === "captured" && gatewayPayment.invoice_id) {
+    if (typeof gatewayPayment.status === "string"
+      && gatewayPayment.status.toLowerCase() === "captured"
+      && gatewayPayment.invoice_id) {
       const reconciliation = await BillingReconciliationService.reconcileProviderSubscription(
         subscriptionId,
         {
@@ -2986,6 +2988,7 @@ export class BillingService {
       || !["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(evidenceKind)) return false;
     if (!isSupportedProviderPaymentMethod(subscription.providerPaymentMethod)) return;
     const providerAuthorizationConfirmed = ["AUTHENTICATED", "ACTIVE"].includes(subscription.status)
+      && typeof payment.status === "string"
       && ["authorized", "captured"].includes(payment.status.toLowerCase());
     if (!providerAuthorizationConfirmed) return false;
 
@@ -3051,6 +3054,7 @@ export class BillingService {
   ) {
     if (!commercialIntentChangeId
       || evidenceKind !== "DEFINITELY_REJECTED"
+      || typeof payment.status !== "string"
       || payment.status.toLowerCase() !== "failed") return false;
     const change = await prisma.organizationBillingChange.findFirst({
       where: {
