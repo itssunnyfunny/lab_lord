@@ -3,6 +3,7 @@ import {
   resolveTrustedPaidThrough,
   type BillingPaidEvidenceSubscription,
 } from "@/services/billingPaidEvidence.service";
+import { assertWorkspaceRolloutPaidEvidence } from "@/services/workspaceBillingRolloutPolicy.service";
 
 const now = new Date("2026-08-15T12:00:00.000Z");
 const periodStart = new Date("2026-08-01T00:00:00.000Z");
@@ -325,5 +326,26 @@ describe("stored paid commercial evidence", () => {
 
     expect(() => resolve(malformed)).not.toThrow();
     expect(resolve(malformed)).toBeNull();
+  });
+});
+
+describe("workspace billing rollout evidence", () => {
+  it("accepts the same exact current evidence used by entitlement", () => {
+    expect(assertWorkspaceRolloutPaidEvidence(exactSubscription(), now)).toEqual(periodEnd);
+  });
+
+  it("refuses a future paidThrough without exact evidence", () => {
+    expect(() => assertWorkspaceRolloutPaidEvidence(exactSubscription({ invoices: [] }), now))
+      .toThrow("stored paidThrough is not backed by exact settlement evidence");
+  });
+
+  it("refuses ACTIVE without a current exact settlement", () => {
+    expect(() => assertWorkspaceRolloutPaidEvidence(exactSubscription({
+      paidThrough: null,
+      lastConfirmedInvoiceId: null,
+      lastConfirmedPaymentId: null,
+      confirmedCommercialIntentChangeId: null,
+      invoices: [],
+    }), now)).toThrow("active paid access requires exact provider settlement evidence");
   });
 });

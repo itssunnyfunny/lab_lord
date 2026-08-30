@@ -2,7 +2,15 @@ import { config } from "dotenv";
 
 config({ path: process.env.BILLING_ENV_FILE ?? ".env", override: false });
 
-const { prisma } = await import("../lib/prisma");
+const [{ prisma }, {
+  BILLING_PAID_EVIDENCE_INCLUDE,
+}, {
+  assertWorkspaceRolloutPaidEvidence,
+}] = await Promise.all([
+  import("../lib/prisma"),
+  import("../services/billingPaidEvidence.service"),
+  import("../services/workspaceBillingRolloutPolicy.service"),
+]);
 
 const apply = process.argv.includes("--apply");
 const promoteArgument = process.argv.find(argument => argument.startsWith("--promote="));
@@ -59,7 +67,7 @@ async function promoteOrganization(organizationId: string) {
   const organization = await prisma.organization.findUnique({
     where: { id: organizationId },
     include: {
-      subscription: true,
+      subscription: { include: BILLING_PAID_EVIDENCE_INCLUDE },
       _count: { select: { branches: { where: { billingStatus: { not: "ARCHIVED" } } } } },
     },
   });
@@ -68,14 +76,12 @@ async function promoteOrganization(organizationId: string) {
 
   const subscription = organization.subscription;
   if (subscription) {
+    assertWorkspaceRolloutPaidEvidence(subscription, new Date());
     if (subscription.providerPaymentMethod !== "CARD") {
       throw new Error(`${organizationId}: provider payment method must be confirmed as CARD`);
     }
     if (!subscription.lastReconciledAt) {
       throw new Error(`${organizationId}: provider subscription and invoices must be reconciled first`);
-    }
-    if (["ACTIVE", "PENDING"].includes(subscription.status) && !subscription.paidThrough) {
-      throw new Error(`${organizationId}: active paid access requires provider-confirmed paidThrough`);
     }
   }
 
