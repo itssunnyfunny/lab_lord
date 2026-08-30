@@ -8,7 +8,7 @@ import {
   type RazorpayApiClient,
   type RazorpayPlanCatalogApiClient,
 } from "@/lib/razorpay";
-import { createBranch, createOrg, createUser } from "@/tests/factories";
+import { createBranch, createOrg, createSaasSubscription, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
 
 function createFakeRazorpayClient() {
@@ -1768,22 +1768,11 @@ describe("BillingService SaaS subscriptions", () => {
     const org = await createOrg({ ownerId: user.id, billingModelVersion: "WORKSPACE_V2" });
     const now = new Date();
     const paidThrough = new Date(now.getTime() + 17 * 24 * 60 * 60 * 1000);
-    await testPrisma.organizationSubscription.create({
-      data: {
-        organizationId: org.id,
-        currentOrganizationId: org.id,
-        providerMode: "TEST",
-        plan: "PRO",
-        amount: 499,
-        amountSubunits: 49900,
-        totalCount: 120,
-        quantity: 1,
-        razorpayPlanId: "plan_standard",
-        razorpaySubscriptionId: "sub_cancel_later",
-        status: "ACTIVE",
-        providerPaymentMethod: "CARD",
-        paidThrough,
-      },
+    await createSaasSubscription({
+      organizationId: org.id,
+      plan: "PRO",
+      status: "ACTIVE",
+      paidThrough,
     });
 
     const scheduled = await BillingService.scheduleWorkspaceCancellation(user.id, org.id, "cancel-early", now);
@@ -1803,7 +1792,7 @@ describe("BillingService SaaS subscriptions", () => {
     expect(overview.experience.customerMessage).not.toContain("Payment was not completed");
   });
 
-  it("processes Razorpay subscription webhooks idempotently", async () => {
+  it("processes Razorpay subscription webhooks idempotently from provider state", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
@@ -1862,7 +1851,7 @@ describe("BillingService SaaS subscriptions", () => {
     expect(stored).toMatchObject({
       status: "ACTIVE",
       authPaymentId: "pay_webhook",
-      razorpayCustomerId: "cust_webhook",
+      razorpayCustomerId: "cust_test",
     });
   });
 
