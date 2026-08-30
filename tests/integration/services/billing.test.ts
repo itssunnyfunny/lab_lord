@@ -2573,13 +2573,13 @@ describe("BillingService SaaS subscriptions", () => {
     expect(event?.processingError).toBeNull();
   });
 
-  it("keeps a webhook retryable until provider reconciliation succeeds", async () => {
+  it("keeps a legacy webhook retryable until provider reconciliation succeeds", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
     const org = await createOrg({
       ownerId: user.id,
-      billingModelVersion: "WORKSPACE_V2",
+      billingModelVersion: "LEGACY",
       selectedPostTrialPlan: "BASIC",
     });
     await createBranch({ organizationId: org.id });
@@ -2633,11 +2633,26 @@ describe("BillingService SaaS subscriptions", () => {
     expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(2);
     await expect(testPrisma.organizationSubscriptionHistory.count({
       where: { organizationId: org.id, event: "subscription.activated" },
-    })).resolves.toBe(1);
+    })).resolves.toBe(0);
   });
 
-  it("does not let stale webhooks regress an active or cancelled subscription", async () => {
+  it("uses fetched provider status instead of a signed legacy webhook snapshot", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValue({
+      id: "sub_basic",
+      entity: "subscription",
+      plan_id: "plan_basic",
+      status: "authenticated",
+      total_count: 120,
+      quantity: 1,
+      paid_count: 0,
+      remaining_count: 120,
+      current_start: null,
+      current_end: null,
+      charge_at: null,
+      ended_at: null,
+      offer_id: null,
+    });
     setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
     const org = await createOrg({ ownerId: user.id });
@@ -2656,6 +2671,19 @@ describe("BillingService SaaS subscriptions", () => {
               total_count: 120,
             },
           },
+          payment: {
+            entity: {
+              id: "pay_provider_authorization",
+              entity: "payment",
+              amount: 29900,
+              currency: "INR",
+              status: "captured",
+              captured: true,
+              order_id: null,
+              subscription_id: "sub_basic",
+              method: "card",
+            },
+          },
         },
       });
       return BillingService.handleRazorpayWebhook(
@@ -2666,15 +2694,13 @@ describe("BillingService SaaS subscriptions", () => {
     }
 
     await sendStatus("active", "evt_active");
-    await sendStatus("authenticated", "evt_stale_authenticated");
+    await sendStatus("cancelled", "evt_stale_cancelled");
     await expect(testPrisma.organizationSubscription.findUnique({
       where: { currentOrganizationId: org.id },
-    })).resolves.toMatchObject({ status: "ACTIVE" });
-
-    await sendStatus("cancelled", "evt_cancelled");
-    await sendStatus("active", "evt_stale_active");
-    await expect(testPrisma.organizationSubscription.findUnique({
-      where: { currentOrganizationId: org.id },
-    })).resolves.toMatchObject({ status: "CANCELLED" });
+    })).resolves.toMatchObject({ status: "AUTHENTICATED", paidThrough: null });
+    expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(2);
+    await expect(testPrisma.organizationSubscriptionHistory.count({
+      where: { organizationId: org.id, event: { startsWith: "subscription." } },
+    })).resolves.toBe(0);
   });
 });

@@ -180,6 +180,20 @@ async function resolveCommercialIntent(
   });
   if (activeChange) return activeChange;
 
+  const legacyTransition = await prisma.organizationBillingChange.findFirst({
+    where: {
+      organizationId: local.organizationId,
+      organizationSubscriptionId: local.id,
+      replacementSubscriptionId: null,
+      type: "LEGACY_TRANSITION",
+      commercialIntentVersion: 1,
+      status: "FAILED",
+      failureCategory: "MANUAL_REVIEW_REQUIRED",
+    },
+    orderBy: { sequence: "desc" },
+  });
+  if (legacyTransition) return legacyTransition;
+
   if (!local.confirmedCommercialIntentChangeId) return null;
   return prisma.organizationBillingChange.findFirst({
     where: {
