@@ -924,11 +924,6 @@ export function isInitialAuthorizationDue(
   return subscription.providerStartAt.getTime() + confirmationWindowMs <= now.getTime();
 }
 
-function isSuccessfulPayment(payment: RazorpayPayment | null) {
-  if (!payment) return true;
-  return payment.status === "captured" || payment.status === "authorized";
-}
-
 function getWebhookEntity<T extends Record<string, unknown>>(payload: unknown, key: string): T | null {
   if (!isRecord(payload)) return null;
   const wrapper = payload[key];
