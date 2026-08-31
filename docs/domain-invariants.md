@@ -318,8 +318,12 @@ Every statement uses one of these labels:
   commits before provider reconciliation, active nonowners acknowledge without
   reconciling, and expired claims are reclaimable. Provider work remains outside
   the claim transaction, and only the exact token/start/lease/attempt identity
-  may finalize success or retryable failure. (`app/api/razorpay/webhook/route.ts`,
-  `services/billing.service.ts`, billing webhook and reconciliation tests)
+  may finalize success or retryable failure. Deployment must hold webhook
+  ingress and prove the prior unfenced worker drained before the token-fenced
+  worker is promoted; additive columns do not make those worker protocols safe
+  to overlap. (`app/api/razorpay/webhook/route.ts`,
+  `services/billing.service.ts`, `docs/production-runbook.md`, billing webhook
+  and reconciliation tests)
 - **Must preserve—enforced:** Billing-change idempotency keys are globally
   unique and may be replayed only with the same payload. Each organization's
   changes have a monotonic FIFO sequence, use database locking/leases, reject a

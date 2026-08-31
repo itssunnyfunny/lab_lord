@@ -168,6 +168,10 @@ authentication boundaries, not open application routes.
   reclaimable; metadata, success, and failure finalization require the exact
   token, start time, lease deadline, and attempt number. Failed processing
   remains retryable and is not marked complete before reconciliation succeeds.
+- A webhook claim-protocol rollout must hold ingress and prove every prior
+  unfenced worker has terminated before promoting the token-fenced worker.
+  Additive schema compatibility alone never authorizes overlapping old/new
+  finalization protocols; rollback uses the same hold-and-drain boundary.
 - A valid legacy or V2 webhook is an identity-scoped reconciliation trigger.
   Do not copy status, customer, plan, quantity, period, or payment state from
   the signed payload into entitlement state; fetch and reconcile the matching

@@ -1645,9 +1645,17 @@ Migration `20260831120000_add_razorpay_webhook_claim` adds nullable
 `attemptCount` defaulting to zero and supporting indexes. It changes no receipt,
 subscription, billing-change, invoice, student-payment, or provider state.
 
-This is a database-first expansion. Back up the selected database, confirm the
-exact deployment target, and record these pre-operation counts without printing
-payloads or connection values:
+This is a database-first expansion, but the old and new webhook worker protocols
+must not overlap. The old application ignores the new token fields and can
+finalize by event ID/hash alone; schema compatibility is therefore not worker-
+protocol compatibility. Before the migration/application cutover, establish an
+operator-owned webhook-ingress hold that prevents new requests from reaching the
+old deployment, record the hold time in UTC, and retain provider deliveries for
+later replay/reconciliation. Do not use a client-side flag or a secret change as
+the hold.
+
+Back up the selected database, confirm the exact deployment target, and record
+these pre-operation counts without printing payloads or connection values:
 
 ```sql
 SELECT
@@ -1688,19 +1696,27 @@ SELECT
 FROM "RazorpayWebhookEvent";
 ```
 
-With delivery held for the comparison, the three receipt counts must equal the
-recorded pre-operation counts and `unexpectedly_claimed_existing_count` must be
-zero. If signed deliveries were intentionally left running on the old
-application, the total may increase, but no pre-existing receipt may disappear
-and every row must still have zero/null claim state before the new application
-is promoted. Stop on any other result.
+With ingress held, the three receipt counts must equal the recorded pre-
+operation counts and `unexpectedly_claimed_existing_count` must be zero. Stop on
+any other result. Next, use the old deployment's runtime logs and request state
+to prove that every webhook invocation started before the hold has terminated.
+The new two-minute lease is not evidence that an old worker drained, because the
+old code never owned that lease. If any old invocation is active or its outcome
+is unknown, keep ingress held and stop the promotion.
 
-The old application ignores these additive fields; the new application requires
-them. Therefore apply and verify the migration before deploying the new code.
-For application rollback, drain or let the two-minute receipt leases expire,
-deploy the last schema-compatible application, and retain the columns and all
-receipt evidence. Do not down-migrate or clear claims to manufacture recovery;
-prefer a compatible forward fix.
+Only after that proof may the new application be promoted. Verify its migration
+status and one signed canary, then release the ingress hold and use Razorpay
+delivery evidence plus provider-authoritative reconciliation to recover every
+event emitted during the hold. The old application ignores the additive fields;
+the new application requires them, so migration remains database-first even
+though worker promotion is drain-gated.
+
+For application rollback, re-establish the ingress hold, prove all new token-
+owned webhook invocations have terminated (or let their leases expire and
+reconcile them under the new protocol), and retain the columns and all receipt
+evidence. Do not roll directly back to the unfenced worker while a new claim is
+active. Do not down-migrate or clear claims to manufacture recovery; prefer a
+compatible forward fix.
 
 ### Webhook operations
 
