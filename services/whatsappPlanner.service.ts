@@ -8,16 +8,21 @@ import {
 } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
+  configuredWhatsAppLiveAutomationCanaryOrganizationIds,
+  configuredWhatsAppLiveDeliveryCanaryOrganizationIds,
   isWhatsAppAutomationPlannerEnabled,
+  isWhatsAppLiveAutomationOrganizationEnabled,
   resolveWhatsAppProviderMode,
 } from "@/lib/whatsappFeature";
 import {
   paiseToInrMicros,
+  assertWhatsAppRateCardCurrent,
   readWhatsAppRateCard,
   resolveWhatsAppUtilityRate,
   validateWhatsAppMonthlyBudgetMinor,
   type WhatsAppRateCard,
 } from "@/lib/whatsappCost";
+import { WhatsAppJobRunService } from "@/services/whatsappJobRun.service";
 import {
   getManagedWhatsAppTemplate,
   managedProviderTemplateMatches,
@@ -2251,6 +2256,19 @@ export class WhatsAppPlannerService {
   }): Promise<PlannerClaim | null> {
     if (!isWhatsAppAutomationPlannerEnabled(input.env)) return null;
     const providerMode = resolveWhatsAppProviderMode(input.env);
+    const liveOrganizationIds = providerMode === "LIVE"
+      ? [...configuredWhatsAppLiveAutomationCanaryOrganizationIds(input.env ?? process.env)]
+          .filter(organizationId =>
+            configuredWhatsAppLiveDeliveryCanaryOrganizationIds(input.env ?? process.env)
+              .has(organizationId)
+          )
+          .sort()
+      : null;
+    const organizationFilter = liveOrganizationIds === null
+      ? Prisma.sql``
+      : liveOrganizationIds.length === 0
+        ? Prisma.sql`AND FALSE`
+        : Prisma.sql`AND settings."organizationId" IN (${Prisma.join(liveOrganizationIds)})`;
     const leaseToken = randomUUID();
     const dueBefore = addMinutes(input.now, -WHATSAPP_PLANNER_BRANCH_INTERVAL_MINUTES);
     const leaseUntil = addMinutes(input.now, WHATSAPP_PLANNER_LEASE_MINUTES);
@@ -2268,6 +2286,7 @@ export class WhatsAppPlannerService {
           AND sender."providerMode" = ${providerMode}::"WhatsAppProviderMode"
           AND sender."status" = 'ACTIVE'::"WhatsAppSenderStatus"
         WHERE settings."enabled" = TRUE
+          ${organizationFilter}
           AND settings."automationEnabledAt" IS NOT NULL
           AND (settings."plannerLeaseUntil" IS NULL OR settings."plannerLeaseUntil" <= ${input.now})
           AND (settings."lastPlannedAt" IS NULL OR settings."lastPlannedAt" <= ${dueBefore})
@@ -2319,7 +2338,10 @@ export class WhatsAppPlannerService {
     }
     const providerMode = resolveWhatsAppProviderMode(input.env);
     const horizonEnd = addHours(input.now, WHATSAPP_PLANNER_HORIZON_HOURS);
-    const rateCard = readWhatsAppRateCard(input.env);
+    const rateCard = assertWhatsAppRateCardCurrent(
+      readWhatsAppRateCard(input.env),
+      input.now
+    );
 
     return prisma.$transaction(async tx => {
       await tx.$queryRaw(Prisma.sql`
@@ -2358,6 +2380,15 @@ export class WhatsAppPlannerService {
           now: input.now,
           code: "AUTOMATION_NOT_ACTIVE",
           cancelPending: true,
+        });
+      }
+      if (!isWhatsAppLiveAutomationOrganizationEnabled(settings.organizationId, input.env)) {
+        return disqualifyBranch({
+          tx,
+          claim: input.claim,
+          now: input.now,
+          code: "AUTOMATION_CANARY_REQUIRED",
+          cancelPending: false,
         });
       }
       try {
@@ -2598,6 +2629,7 @@ export class WhatsAppPlannerService {
   static async run(input: {
     now?: Date;
     limit?: number;
+    invocationId?: string;
     env?: Readonly<Record<string, string | undefined>>;
   } = {}): Promise<PlannerRunResult> {
     if (!isWhatsAppAutomationPlannerEnabled(input.env)) {
@@ -2617,41 +2649,83 @@ export class WhatsAppPlannerService {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > WHATSAPP_PLANNER_MAX_BRANCHES) {
       throw new Error("PLANNER_LIMIT_INVALID");
     }
+    const started = await WhatsAppJobRunService.start({
+      jobType: "COLLECTION_PLANNER",
+      invocationId: input.invocationId ?? `collection-planner:${randomUUID()}`,
+      providerMode: resolveWhatsAppProviderMode(input.env),
+      now,
+    });
+    if (!started.created) {
+      return {
+        held: started.run.status === "HELD",
+        claimedBranches: 0,
+        completedBranches: 0,
+        failedBranches: 0,
+        plannedMessages: 0,
+        skippedCandidates: 0,
+        cancelledMessages: 0,
+        limitReached: false,
+      };
+    }
     let claimedBranches = 0;
     let completedBranches = 0;
     let failedBranches = 0;
     let plannedMessages = 0;
     let skippedCandidates = 0;
     let cancelledMessages = 0;
-    for (; claimedBranches < limit;) {
-      const claim = await this.claimNextBranch({ now, env: input.env });
-      if (!claim) break;
-      claimedBranches += 1;
-      try {
-        const result = await this.planClaimedBranch({ claim, now, env: input.env });
-        plannedMessages += result.plannedMessages;
-        skippedCandidates += result.skippedCandidates;
-        cancelledMessages += result.cancelledMessages;
-        if (result.errorCode) failedBranches += 1;
-        else completedBranches += 1;
-      } catch (error) {
-        failedBranches += 1;
-        try {
-          await this.failClaim({ claim, now, code: safePlannerErrorCode(error) });
-        } catch {
-          // A stale worker must not clear a lease it no longer owns.
-        }
-      }
-    }
-    return {
-      held: false,
+    const jobCounts = () => ({
       claimedBranches,
       completedBranches,
       failedBranches,
       plannedMessages,
       skippedCandidates,
       cancelledMessages,
-      limitReached: claimedBranches >= limit,
-    };
+    });
+    try {
+      for (; claimedBranches < limit;) {
+        const claim = await this.claimNextBranch({ now, env: input.env });
+        if (!claim) break;
+        claimedBranches += 1;
+        try {
+          const result = await this.planClaimedBranch({ claim, now, env: input.env });
+          plannedMessages += result.plannedMessages;
+          skippedCandidates += result.skippedCandidates;
+          cancelledMessages += result.cancelledMessages;
+          if (result.errorCode) failedBranches += 1;
+          else completedBranches += 1;
+        } catch (error) {
+          failedBranches += 1;
+          try {
+            await this.failClaim({ claim, now, code: safePlannerErrorCode(error) });
+          } catch {
+            // A stale worker must not clear a lease it no longer owns.
+          }
+        }
+      }
+      await WhatsAppJobRunService.finish({
+        runId: started.run.id,
+        status: failedBranches > 0 ? "PARTIAL" : "SUCCEEDED",
+        counts: jobCounts(),
+        safeErrorCode: failedBranches > 0 ? "COLLECTION_PLANNER_PARTIAL_FAILURE" : null,
+      });
+      return {
+        held: false,
+        claimedBranches,
+        completedBranches,
+        failedBranches,
+        plannedMessages,
+        skippedCandidates,
+        cancelledMessages,
+        limitReached: claimedBranches >= limit,
+      };
+    } catch (error) {
+      await WhatsAppJobRunService.finish({
+        runId: started.run.id,
+        status: "FAILED",
+        counts: jobCounts(),
+        safeErrorCode: "COLLECTION_PLANNER_FAILED",
+      });
+      throw error;
+    }
   }
 }

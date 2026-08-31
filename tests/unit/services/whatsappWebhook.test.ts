@@ -195,6 +195,56 @@ describe("Meta webhook trust boundary", () => {
     })).toBe(false);
   });
 
+  it("deduplicates report commands by inbound provider message identity", () => {
+    const parsed = parseMetaWebhookEnvelope(Buffer.from(JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "123",
+        changes: [{
+          field: "messages",
+          value: {
+            metadata: { phone_number_id: "456" },
+            messages: [
+              {
+                id: "wamid.expired-confirmation",
+                from: "919876543210",
+                type: "text",
+                text: { body: "START REPORTS ABCDEFGHJK" },
+              },
+              {
+                id: "wamid.valid-confirmation",
+                from: "919876543210",
+                type: "text",
+                text: { body: "START REPORTS KJHGFEDCBA" },
+              },
+              {
+                id: "wamid.valid-confirmation",
+                from: "919876543210",
+                type: "text",
+                text: { body: "START REPORTS KJHGFEDCBA" },
+              },
+            ],
+          },
+        }],
+      }],
+    })));
+
+    expect(extractMetaWebhookEvents(parsed)).toEqual([
+      {
+        kind: "REPORT_CONFIRMATION",
+        providerMessageId: "wamid.expired-confirmation",
+        phoneE164: "+919876543210",
+        code: "ABCDEFGHJK",
+      },
+      {
+        kind: "REPORT_CONFIRMATION",
+        providerMessageId: "wamid.valid-confirmation",
+        phoneE164: "+919876543210",
+        code: "KJHGFEDCBA",
+      },
+    ]);
+  });
+
   it("extracts template status and category updates without retaining provider reasons", () => {
     const parsed = parseMetaWebhookEnvelope(Buffer.from(JSON.stringify({
       object: "whatsapp_business_account",

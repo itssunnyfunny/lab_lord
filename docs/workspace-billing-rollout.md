@@ -50,14 +50,14 @@ Vercel deployment, set `VERCEL_ENV` explicitly for the invocation:
 
 ```powershell
 vercel env pull .env.preview.local --environment=preview --yes
-pnpm exec cross-env VERCEL_ENV=preview tsx scripts/razorpay-preflight.ts --target=preview --env-file=.env.preview.local
+pnpm exec cross-env BILLING_ENV_FILE=.env.preview.local VERCEL_ENV=preview tsx scripts/razorpay-preflight.ts --target=preview
 ```
 
 Record the full Preview `databaseFingerprint`, then audit Production while writes and new V2 onboarding remain disabled:
 
 ```powershell
 vercel env pull .env.production.local --environment=production --yes
-pnpm exec cross-env VERCEL_ENV=production tsx scripts/razorpay-preflight.ts --target=production --env-file=.env.production.local --must-differ-from=<PREVIEW_DATABASE_FINGERPRINT> --expect-empty-provider-catalog
+pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/razorpay-preflight.ts --target=production --must-differ-from=<PREVIEW_DATABASE_FINGERPRINT> --expect-empty-provider-catalog
 ```
 
 The command exits non-zero for a shared database, wrong-mode row, credential mismatch, inaccessible provider entity, plan snapshot mismatch, unresolved configuration placeholder, unexpected feature-switch value, unavailable Methods API, or missing expected recurring capabilities. Use `--expect-billing-writes=enabled`, `--expect-v2=enabled`, or `--expect-multi-method-subscriptions=enabled` only after those switches are intentionally released.
@@ -65,7 +65,7 @@ The command exits non-zero for a shared database, wrong-mode row, credential mis
 After Card, UPI, and eMandate have been enabled and exercised in the target Razorpay mode, run the enabled check with evidence captured from that same mode:
 
 ```powershell
-pnpm exec cross-env VERCEL_ENV=preview tsx scripts/razorpay-preflight.ts --target=preview --env-file=.env.preview.local --expect-multi-method-subscriptions=enabled --confirm-subscription-settings --confirm-upi-intent --confirm-upi-qr --confirm-webhook-events --confirm-amount-eligibility
+pnpm exec cross-env BILLING_ENV_FILE=.env.preview.local VERCEL_ENV=preview tsx scripts/razorpay-preflight.ts --target=preview --expect-multi-method-subscriptions=enabled --confirm-subscription-settings --confirm-upi-intent --confirm-upi-qr --confirm-webhook-events --confirm-amount-eligibility
 ```
 
 The preflight has no `--apply`, cleanup, cancel, delete, or migration mode. Old Test artifacts in the operator-verified Production database require all of the following before any change: a current backup, a reviewed itemized report, explicit owner approval, and a separately reviewed one-off operation. Preserve organizations, branches, students, owner trials, selected post-trial plans, and subscription history. Do not improvise cleanup SQL from this runbook.
@@ -80,9 +80,15 @@ The preflight has no `--apply`, cleanup, cancel, delete, or migration mode. Old 
 6. Deploy `20260810150000_add_subscription_replacement_foundation` while the multi-method flag remains off.
 7. Deploy `20260810153000_cut_over_subscription_current_slot` after the expansion/backfill checks pass.
 8. Deploy additive migration `20260829120000_add_exact_commercial_evidence` database-first and complete its pre/post count, constraint, index, and migration-status checks from the production runbook. Do not backfill historical intent from the current plan catalog.
-9. Run `pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/prepare-workspace-billing-rollout.ts` for the operator-verified Production target's database-only dry audit. Verify the target fingerprint first.
+9. Run `pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/prepare-workspace-billing-rollout.ts --scope=organizations --organization-ids=<REVIEWED_ORGANIZATION_IDS>` for the operator-verified Production target's database-only dry audit. Record the database fingerprint and organization-set fingerprint reported through the selected Prisma connection.
 10. Run the new Razorpay preflight for the target environment.
-11. The rollout script is dry-run by default. Database mutation requires `--apply`; selected organization promotion requires both `--apply` and `--promote=<comma-separated-org-ids>`. Keep the explicit `BILLING_ENV_FILE` and `VERCEL_ENV` binding on every dry-run or apply invocation, verify the target again, and review the itemized database changes first. The script never calls Razorpay.
+11. The rollout script is dry-run by default. Database mutation requires `--apply`, `--target=production`, `--expect-razorpay-mode=LIVE`, `--expect-database-fingerprint=<FINGERPRINT_FROM_THIS_TARGET>`, `--scope=organizations`, and `--organization-ids=<REVIEWED_ORGANIZATION_IDS>`; selected organization promotion additionally requires `--promote=<comma-separated-org-ids>` and every promotion ID must be in the same allowlist. Keep the explicit `BILLING_ENV_FILE` and `VERCEL_ENV` binding on every dry-run or apply invocation and review a dry run with the identical organization allowlist first. The guard re-reads the database-resident identity before any scoped query, write, or provider fetch. The script never calls Razorpay.
+
+Example Production apply after review:
+
+```powershell
+pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/prepare-workspace-billing-rollout.ts --apply --target=production --expect-razorpay-mode=LIVE --expect-database-fingerprint=<PRODUCTION_DATABASE_FINGERPRINT> --scope=organizations --organization-ids=<REVIEWED_ORGANIZATION_IDS>
+```
 
 The provider-catalog migration labels all pre-existing plan, offer, and current-subscription references as `TEST`; there is no permanent database default. Its original empty-Live-account assumption is not repository-verifiable. Before applying it, obtain dated owner-approved provider evidence and reconcile every existing Live/Test entity. A Production preflight must fail until all legacy Test references in the verified target have been explicitly reviewed and resolved.
 
@@ -138,7 +144,7 @@ Follow this order exactly; do not combine the gates into one deployment:
 
 1. Deploy all replacement migrations and application code with `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED=false`.
 2. In Production, use the operator-approved Vercel control to pause only the hourly billing schedule, then wait for active mutation leases and in-flight billing operations to drain. Preview has no automatic cron worker; stop manual Preview invocations during the audit. Do not interrupt the daily student-payment schedule.
-3. Run `pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/audit-legacy-unsupported-method-cancellations.ts` and review every dry-run row against the verified target. After provider verification and manual-review resolution, rerun the same explicitly bound command with `--apply` to supersede eligible queued or failed legacy cancellations; retain both reports.
+3. Run `pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/audit-legacy-unsupported-method-cancellations.ts --scope=organizations --organization-ids=<REVIEWED_ORGANIZATION_IDS>` and review every scoped dry-run row against the verified target. After provider verification and manual-review resolution, rerun with `--apply --target=production --expect-razorpay-mode=LIVE --expect-database-fingerprint=<PRODUCTION_DATABASE_FINGERPRINT> --scope=organizations --organization-ids=<THE_SAME_REVIEWED_ORGANIZATION_IDS>` to supersede eligible queued or failed legacy cancellations; retain both reports. The apply guard must match both the database and organization-set fingerprints from that target's retained dry-run evidence.
 4. Enable Card, UPI AutoPay, and eMandate in Razorpay Test Mode. Turn on the application flag only in the isolated Preview environment, complete end-to-end acceptance, run the enabled preflight with all evidence flags, and resume only the approved manual Preview checks.
 5. Configure the same methods in Live Mode and admit one reviewed workspace with `RAZORPAY_LIVE_CANARY_ORG_IDS`. Keep global billing writes held, complete the Live canary, and reconcile subscription, invoice, payment, webhook, and access state.
 6. Remove the canary restriction and enable the application flag broadly only after reconciliation is clean. Re-enable the Production hourly schedule through the operator-approved control, verify its dashboard state, then enable global billing writes and V2 onboarding in separately observed redeployments.
@@ -162,7 +168,7 @@ If any capability disappears from the Methods API, a configured amount/method is
 13. Prove the plan is stored and fetchable in Production:
 
 ```powershell
-pnpm exec cross-env VERCEL_ENV=production tsx scripts/razorpay-preflight.ts --target=production --env-file=.env.production.local --must-differ-from=<PREVIEW_DATABASE_FINGERPRINT> --expect-plan-id=<LIVE_PLAN_ID> --expect-multi-method-subscriptions=enabled --confirm-subscription-settings --confirm-upi-intent --confirm-upi-qr --confirm-webhook-events --confirm-amount-eligibility
+pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/razorpay-preflight.ts --target=production --must-differ-from=<PREVIEW_DATABASE_FINGERPRINT> --expect-plan-id=<LIVE_PLAN_ID> --expect-multi-method-subscriptions=enabled --confirm-subscription-settings --confirm-upi-intent --confirm-upi-qr --confirm-webhook-events --confirm-amount-eligibility
 ```
 
 While the controlled Production organization remains allowlisted, append
@@ -172,7 +178,7 @@ preflight requires `RAZORPAY_LIVE_CANARY_ORG_IDS` to be empty.
 14. Prove the same ID is not stored in Preview:
 
 ```powershell
-pnpm exec cross-env VERCEL_ENV=preview tsx scripts/razorpay-preflight.ts --target=preview --env-file=.env.preview.local --must-differ-from=<PRODUCTION_DATABASE_FINGERPRINT> --forbid-plan-id=<LIVE_PLAN_ID>
+pnpm exec cross-env BILLING_ENV_FILE=.env.preview.local VERCEL_ENV=preview tsx scripts/razorpay-preflight.ts --target=preview --must-differ-from=<PRODUCTION_DATABASE_FINGERPRINT> --forbid-plan-id=<LIVE_PLAN_ID>
 ```
 
 These checks provide the four release assertions: Production contains no Test mapping; the empty Live catalog causes first authorization to create a Live plan; Preview and Production have different database fingerprints; and the returned Live plan is stored and provider-fetchable only in Production.

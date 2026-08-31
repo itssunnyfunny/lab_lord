@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   addWhatsAppLocalDays,
+  DEFAULT_WHATSAPP_REPORT_SEND_TIME,
   getWhatsAppLocalDateParts,
+  getWhatsAppReportCatchUpEndsAt,
+  getWhatsAppReportPlanningWindow,
   nextWhatsAppSendAt,
   manualWhatsAppAvailableAt,
   parseWhatsAppSendTime,
+  parseWhatsAppReportSendTime,
+  scheduleWhatsAppReportForLocalDate,
   scheduleWhatsAppForLocalDate,
   whatsappBudgetMonth,
   whatsappLocalDateTimeToUtc,
@@ -18,6 +23,71 @@ describe("WhatsApp scheduling", () => {
     expect(parseWhatsAppSendTime("20:00").minuteOfDay).toBe(1_200);
     expect(() => parseWhatsAppSendTime("07:59")).toThrow("between 08:00 and 20:00");
     expect(() => parseWhatsAppSendTime("20:01")).toThrow("between 08:00 and 20:00");
+  });
+
+  it("keeps the daily-report window separate with a one-hour Kolkata catch-up", () => {
+    expect(parseWhatsAppReportSendTime("18:00").minuteOfDay).toBe(1_080);
+    expect(parseWhatsAppReportSendTime("23:30").minuteOfDay).toBe(1_410);
+    expect(() => parseWhatsAppReportSendTime("17:59")).toThrow("between 18:00 and 23:30");
+    expect(() => parseWhatsAppReportSendTime("23:31")).toThrow("between 18:00 and 23:30");
+    const cutoff = scheduleWhatsAppReportForLocalDate({
+      localDate: { year: 2026, month: 8, day: 23 },
+      sendTimeLocal: DEFAULT_WHATSAPP_REPORT_SEND_TIME,
+      timeZone: "Asia/Kolkata",
+    });
+    expect(cutoff.toISOString()).toBe("2026-08-23T15:30:00.000Z");
+
+    const catchUp = getWhatsAppReportPlanningWindow({
+      now: new Date("2026-08-23T15:45:00.000Z"),
+      sendTimeLocal: DEFAULT_WHATSAPP_REPORT_SEND_TIME,
+      timeZone: "Asia/Kolkata",
+    });
+    expect(catchUp.localDateKey).toBe("2026-08-23");
+    expect(catchUp.eligible).toBe(true);
+    expect(catchUp.catchUpEndsAt.toISOString()).toBe("2026-08-23T16:30:00.000Z");
+  });
+
+  it("caps a 23:30 report at the next local midnight", () => {
+    const beforeMidnight = getWhatsAppReportPlanningWindow({
+      now: new Date("2026-08-23T18:29:59.999Z"),
+      sendTimeLocal: "23:30",
+      timeZone: "Asia/Kolkata",
+    });
+    expect(beforeMidnight.localDateKey).toBe("2026-08-23");
+    expect(beforeMidnight.scheduledCutoffAt.toISOString()).toBe("2026-08-23T18:00:00.000Z");
+    expect(beforeMidnight.catchUpEndsAt.toISOString()).toBe("2026-08-23T18:30:00.000Z");
+    expect(beforeMidnight.eligible).toBe(true);
+
+    const atMidnight = getWhatsAppReportPlanningWindow({
+      now: new Date("2026-08-23T18:30:00.000Z"),
+      sendTimeLocal: "23:30",
+      timeZone: "Asia/Kolkata",
+    });
+    expect(atMidnight.localDateKey).toBe("2026-08-23");
+    expect(atMidnight.eligible).toBe(false);
+    expect(atMidnight.missed).toBe(true);
+  });
+
+  it("uses the next IANA local midnight across a daylight-saving transition", () => {
+    const cutoff = scheduleWhatsAppReportForLocalDate({
+      localDate: { year: 2026, month: 3, day: 8 },
+      sendTimeLocal: "23:30",
+      timeZone: "America/New_York",
+    });
+    expect(cutoff.toISOString()).toBe("2026-03-09T03:30:00.000Z");
+    expect(getWhatsAppReportCatchUpEndsAt({
+      scheduledCutoffAt: cutoff,
+      timeZone: "America/New_York",
+    }).toISOString()).toBe("2026-03-09T04:00:00.000Z");
+
+    const atMidnight = getWhatsAppReportPlanningWindow({
+      now: new Date("2026-03-09T04:00:00.000Z"),
+      sendTimeLocal: "23:30",
+      timeZone: "America/New_York",
+    });
+    expect(atMidnight.localDateKey).toBe("2026-03-08");
+    expect(atMidnight.eligible).toBe(false);
+    expect(atMidnight.missed).toBe(true);
   });
 
   it("converts an IANA-zoned India slot without fixed-offset arithmetic", () => {

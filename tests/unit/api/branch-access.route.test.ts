@@ -28,6 +28,7 @@ const permissions = Object.fromEntries([
   "view_whatsapp",
   "send_whatsapp",
   "manage_whatsapp",
+  "receive_whatsapp_reports",
   "staff_management",
 ].map(action => [action, true])) as Record<StaffAction, boolean>;
 

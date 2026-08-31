@@ -40,6 +40,7 @@ const DELIVERY_ENV = Object.freeze({
   WHATSAPP_UTILITY_RATE_MICROS_INR: String(RATE_MICROS),
   WHATSAPP_RATE_CARD_VERSION: "integration-rate-v1",
   WHATSAPP_RATE_CARD_EFFECTIVE_AT: "2026-01-01T00:00:00.000Z",
+  WHATSAPP_RATE_CARD_EXPIRES_AT: "2027-01-01T00:00:00.000Z",
 } as const);
 
 type ManagedKey = "MULTI_STUDENT_COLLECTION_SUMMARY";
@@ -284,6 +285,7 @@ async function rejectionShape(operation: Promise<unknown>) {
 }
 
 beforeEach(async () => {
+  await resetDatabase();
   freezeTime(NOW);
   for (const [name, value] of Object.entries({
     ...DELIVERY_ENV,
@@ -291,7 +293,6 @@ beforeEach(async () => {
   })) {
     vi.stubEnv(name, value);
   }
-  await resetDatabase();
 });
 
 afterEach(() => {
@@ -658,6 +659,7 @@ describe("WhatsApp durable delivery integration", () => {
         status: "SUBMITTING",
         claimedAt: staleAt,
         submissionStartedAt: staleAt,
+        providerCallAdmittedAt: staleAt,
         leaseToken: "stale-provider-submission-lease",
         leaseUntil: staleAt,
       },
@@ -745,6 +747,7 @@ describe("WhatsApp durable delivery integration", () => {
         status: "SUBMITTING",
         claimedAt: staleAt,
         submissionStartedAt: staleAt,
+        providerCallAdmittedAt: staleAt,
         leaseToken: "removed-canary-provider-submission-lease",
         leaseUntil: staleAt,
       },

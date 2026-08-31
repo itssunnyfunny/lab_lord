@@ -15,6 +15,7 @@ export const STAFF_ACTIONS = [
     "view_whatsapp",
     "send_whatsapp",
     "manage_whatsapp",
+    "receive_whatsapp_reports",
     "staff_management",
 ] as const;
 
@@ -32,6 +33,7 @@ export const OVERRIDABLE_STAFF_ACTIONS = [
     "view_whatsapp",
     "send_whatsapp",
     "manage_whatsapp",
+    "receive_whatsapp_reports",
 ] as const satisfies readonly StaffAction[];
 
 export type OverridableStaffAction = typeof OVERRIDABLE_STAFF_ACTIONS[number];

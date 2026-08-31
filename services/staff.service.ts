@@ -44,6 +44,7 @@ export const PERMISSION_MATRIX: EntityPermissionMatrix = {
     view_whatsapp: [StaffRole.MANAGER, StaffRole.STAFF],
     send_whatsapp: [StaffRole.MANAGER, StaffRole.STAFF],
     manage_whatsapp: [StaffRole.MANAGER],
+    receive_whatsapp_reports: [StaffRole.MANAGER],
     staff_management: [], // OWNER only
 };
 
@@ -59,6 +60,7 @@ const ACTION_TO_PERMISSION_ACTION: Record<OverridableStaffAction, StaffPermissio
     view_whatsapp: StaffPermissionAction.VIEW_WHATSAPP,
     send_whatsapp: StaffPermissionAction.SEND_WHATSAPP,
     manage_whatsapp: StaffPermissionAction.MANAGE_WHATSAPP,
+    receive_whatsapp_reports: StaffPermissionAction.RECEIVE_WHATSAPP_REPORTS,
 };
 
 const OVERRIDABLE_ACTION_SET = new Set<string>(OVERRIDABLE_STAFF_ACTIONS);
@@ -138,7 +140,12 @@ export class StaffService {
         if (action === "analytics") {
             await EntitlementService.assertOrganizationEntitlement(organizationId, "ADVANCED_ANALYTICS", client);
         }
-        if (action === "view_whatsapp" || action === "send_whatsapp" || action === "manage_whatsapp") {
+        if (
+            action === "view_whatsapp"
+            || action === "send_whatsapp"
+            || action === "manage_whatsapp"
+            || action === "receive_whatsapp_reports"
+        ) {
             await EntitlementService.assertOrganizationEntitlement(organizationId, "WHATSAPP_AUTOMATION", client);
         }
     }
@@ -395,7 +402,7 @@ export class StaffService {
                 where: { id: staffId },
                 select: {
                     branchId: true,
-                    user: { select: { email: true } },
+                    user: { select: { id: true, email: true } },
                 },
             });
             if (!staffMember || staffMember.branchId !== branchId) {
@@ -425,6 +432,17 @@ export class StaffService {
             if (deleted.count !== 1) {
                 throw new Error("Staff member not found");
             }
+
+            const { WhatsAppReportService } = await import(
+                "@/services/whatsappReport.service"
+            );
+            await WhatsAppReportService.staleBranchSubscriptionsForUserInTransaction({
+                tx,
+                branchId,
+                userId: staffMember.user.id,
+                reason: "STAFF_REMOVED",
+                now,
+            });
 
             return deleted;
         });
@@ -471,7 +489,7 @@ export class StaffService {
 
         const staffMember = await db.staff.findUnique({
             where: { id: staffId },
-            select: { branchId: true },
+            select: { branchId: true, userId: true },
         });
         if (!staffMember || staffMember.branchId !== branchId) {
             throw new Error("Staff member not found");
@@ -514,7 +532,7 @@ export class StaffService {
                 });
             }
 
-            return tx.staff.findUniqueOrThrow({
+            const updated = await tx.staff.findUniqueOrThrow({
                 where: { id: staffId },
                 include: {
                     user: {
@@ -527,6 +545,27 @@ export class StaffService {
                     permissionOverrides: true,
                 },
             });
+            const effective = buildStaffPermissions(
+                updated.role,
+                updated.permissionOverrides
+            );
+            if (
+                !effective.view_whatsapp
+                || !effective.receive_whatsapp_reports
+                || !effective.view_payments
+                || !effective.analytics
+            ) {
+                const { WhatsAppReportService } = await import(
+                    "@/services/whatsappReport.service"
+                );
+                await WhatsAppReportService.staleBranchSubscriptionsForUserInTransaction({
+                    tx,
+                    branchId,
+                    userId: staffMember.userId,
+                    reason: "STAFF_ACCESS_LOST",
+                });
+            }
+            return updated;
         });
     }
 

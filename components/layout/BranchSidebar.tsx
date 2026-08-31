@@ -24,6 +24,7 @@ import { useBranchAccess } from "@/hooks/useBranchAccess";
 import type { StaffAction } from "@/types";
 import type { BillingFeatureKey } from "@/lib/billingPolicy";
 import { hasFeatureEntitlement } from "@/lib/billingPolicy";
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
 import { LogoMark } from "@/components/brand/AppLogo";
 import {
     chromeSidebarClass,
@@ -57,6 +58,12 @@ export function BranchSidebar() {
     };
 
     const featureAvailable = (feature?: BillingFeatureKey) => !feature || hasFeatureEntitlement(access?.entitlements ?? [], feature);
+    const canManageBranchSettings = canSee("manage_branch");
+    const canReceiveWhatsAppReports = getBranchCapabilityDecision(
+        access,
+        "whatsappReportReceive"
+    ).allowed;
+    const canOpenSettings = canManageBranchSettings || canReceiveWhatsAppReports;
 
     const overviewItems: BranchNavItem[] = [
         { icon: LayoutDashboard, label: "Dashboard", href: basePath, active: current => current === basePath },
@@ -130,7 +137,7 @@ export function BranchSidebar() {
                 </div>
             </div>
 
-            {(access?.isOwner || canSee("manage_branch")) && (
+            {(access?.isOwner || canOpenSettings) && (
                 <div className={chromeSidebarFooterClass}>
                     <div className="space-y-2">
                         {access?.isOwner && (
@@ -142,10 +149,10 @@ export function BranchSidebar() {
                                 density="compact"
                             />
                         )}
-                        {canSee("manage_branch") && (
+                        {canOpenSettings && (
                             <SidebarItem
                                 icon={Settings}
-                                label="Branch Settings"
+                                label={canManageBranchSettings ? "Branch Settings" : "WhatsApp Reports"}
                                 isActive={pathname === `${basePath}/settings`}
                                 href={`${basePath}/settings`}
                                 density="compact"
