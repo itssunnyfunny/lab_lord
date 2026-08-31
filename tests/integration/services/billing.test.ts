@@ -164,6 +164,32 @@ function exactBasicAuthorizationIntent(capturedAt = new Date()) {
   };
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(settle => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+function subscriptionActivatedWebhookBody() {
+  return JSON.stringify({
+    event: "subscription.activated",
+    payload: {
+      subscription: {
+        entity: {
+          id: "sub_basic",
+          entity: "subscription",
+          plan_id: "plan_basic",
+          status: "active",
+          total_count: 120,
+          quantity: 1,
+        },
+      },
+    },
+  });
+}
+
 describe("BillingService SaaS subscriptions", () => {
   afterAll(async () => {
     await disconnectDatabase();
@@ -2670,6 +2696,222 @@ describe("BillingService SaaS subscriptions", () => {
     expect(event?.processingError).toBeNull();
   });
 
+  it("verifies the signature before parsing malformed webhook JSON", async () => {
+    const rawBody = Buffer.from("{", "utf8");
+
+    await expect(BillingService.handleRazorpayWebhook(
+      rawBody,
+      "invalid-signature",
+      "evt_invalid_before_parse"
+    )).rejects.toThrow("Invalid Razorpay webhook signature");
+    await expect(testPrisma.razorpayWebhookEvent.count()).resolves.toBe(0);
+
+    await expect(BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_invalid_after_signature"
+    )).rejects.toThrow("Invalid Razorpay webhook payload");
+    await expect(testPrisma.razorpayWebhookEvent.count()).resolves.toBe(0);
+  });
+
+  it("rejects an event-id collision without overwriting the original receipt", async () => {
+    const firstBody = JSON.stringify({ event: "payment.captured", payload: {} });
+    const secondBody = JSON.stringify({ event: "payment.failed", payload: {} });
+
+    await BillingService.handleRazorpayWebhook(
+      firstBody,
+      hmacSha256Hex(firstBody, "webhook_secret"),
+      "evt_collision"
+    );
+    await expect(BillingService.handleRazorpayWebhook(
+      secondBody,
+      hmacSha256Hex(secondBody, "webhook_secret"),
+      "evt_collision"
+    )).rejects.toThrow("Razorpay webhook event id collision");
+
+    await expect(testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_collision" },
+    })).resolves.toMatchObject({
+      event: "payment.captured",
+      payloadHash: sha256Hex(firstBody),
+      attemptCount: 1,
+    });
+  });
+
+  it("accepts an in-flight duplicate without repeating provider reconciliation", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    const fetchSubscription = vi.mocked(fakeRazorpay.fetchSubscription);
+    const originalFetch = fetchSubscription.getMockImplementation();
+    if (!originalFetch) throw new Error("Missing fake Razorpay fetch implementation");
+    const providerStarted = deferred();
+    const releaseProvider = deferred();
+    fetchSubscription.mockImplementationOnce(async subscriptionId => {
+      providerStarted.resolve();
+      await releaseProvider.promise;
+      return originalFetch(subscriptionId);
+    });
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const rawBody = subscriptionActivatedWebhookBody();
+    const signature = hmacSha256Hex(rawBody, "webhook_secret");
+
+    const owner = BillingService.handleRazorpayWebhook(
+      rawBody,
+      signature,
+      "evt_concurrent_duplicate"
+    );
+    await providerStarted.promise;
+    const duplicate = await BillingService.handleRazorpayWebhook(
+      rawBody,
+      signature,
+      "evt_concurrent_duplicate"
+    );
+
+    expect(duplicate).toMatchObject({
+      ok: true,
+      event: "subscription.activated",
+      duplicate: true,
+      processing: true,
+    });
+    expect(fetchSubscription).toHaveBeenCalledTimes(1);
+
+    releaseProvider.resolve();
+    await expect(owner).resolves.toMatchObject({
+      ok: true,
+      event: "subscription.activated",
+      organizationId: org.id,
+    });
+    await expect(testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_concurrent_duplicate" },
+    })).resolves.toMatchObject({
+      attemptCount: 1,
+      processingToken: null,
+      processingLeaseUntil: null,
+      processingError: null,
+    });
+  });
+
+  it("reclaims an expired webhook processing lease", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const rawBody = subscriptionActivatedWebhookBody();
+    const startedAt = new Date(Date.now() - 5 * 60 * 1000);
+    await testPrisma.razorpayWebhookEvent.create({
+      data: {
+        eventId: "evt_expired_claim",
+        event: "subscription.activated",
+        payloadHash: sha256Hex(rawBody),
+        processingToken: "expired-token",
+        processingStartedAt: startedAt,
+        processingLeaseUntil: new Date(Date.now() - 1_000),
+        attemptCount: 1,
+      },
+    });
+
+    await expect(BillingService.handleRazorpayWebhook(
+      rawBody,
+      hmacSha256Hex(rawBody, "webhook_secret"),
+      "evt_expired_claim"
+    )).resolves.toMatchObject({ ok: true, organizationId: org.id });
+
+    const receipt = await testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_expired_claim" },
+    });
+    expect(receipt.attemptCount).toBe(2);
+    expect(receipt.processingStartedAt!.getTime()).toBeGreaterThan(startedAt.getTime());
+    expect(receipt.processingToken).toBeNull();
+    expect(receipt.processingLeaseUntil).toBeNull();
+    expect(receipt.processedAt).not.toBeNull();
+    expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("prevents an expired stale processor from finalizing a successor claim", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    const fetchSubscription = vi.mocked(fakeRazorpay.fetchSubscription);
+    const originalFetch = fetchSubscription.getMockImplementation();
+    if (!originalFetch) throw new Error("Missing fake Razorpay fetch implementation");
+    const firstStarted = deferred();
+    const secondStarted = deferred();
+    const releaseFirst = deferred();
+    const releaseSecond = deferred();
+    let providerAttempt = 0;
+    fetchSubscription.mockImplementation(async subscriptionId => {
+      providerAttempt += 1;
+      if (providerAttempt === 1) {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+      } else if (providerAttempt === 2) {
+        secondStarted.resolve();
+        await releaseSecond.promise;
+      }
+      return originalFetch(subscriptionId);
+    });
+    setRazorpayClientForTests(fakeRazorpay);
+    const user = await createUser();
+    const org = await createOrg({ ownerId: user.id });
+    await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    const rawBody = subscriptionActivatedWebhookBody();
+    const signature = hmacSha256Hex(rawBody, "webhook_secret");
+
+    const first = BillingService.handleRazorpayWebhook(
+      rawBody,
+      signature,
+      "evt_stale_processor"
+    );
+    await firstStarted.promise;
+    const firstReceipt = await testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_stale_processor" },
+    });
+    expect(firstReceipt.processingToken).not.toBeNull();
+    await testPrisma.razorpayWebhookEvent.update({
+      where: { id: firstReceipt.id },
+      data: { processingLeaseUntil: new Date(Date.now() - 1_000) },
+    });
+
+    const second = BillingService.handleRazorpayWebhook(
+      rawBody,
+      signature,
+      "evt_stale_processor"
+    );
+    await secondStarted.promise;
+    const successor = await testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_stale_processor" },
+    });
+    expect(successor.attemptCount).toBe(2);
+    expect(successor.processingToken).not.toBe(firstReceipt.processingToken);
+
+    releaseFirst.resolve();
+    await expect(first).resolves.toMatchObject({
+      ok: true,
+      duplicate: true,
+      processing: true,
+    });
+    await expect(testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_stale_processor" },
+    })).resolves.toMatchObject({
+      attemptCount: 2,
+      processingToken: successor.processingToken,
+      processedAt: null,
+    });
+
+    releaseSecond.resolve();
+    await expect(second).resolves.toMatchObject({ ok: true, organizationId: org.id });
+    await expect(testPrisma.razorpayWebhookEvent.findUniqueOrThrow({
+      where: { eventId: "evt_stale_processor" },
+    })).resolves.toMatchObject({
+      attemptCount: 2,
+      processingToken: null,
+      processingLeaseUntil: null,
+      processingError: null,
+    });
+    expect(fetchSubscription).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps a legacy webhook retryable until provider reconciliation succeeds", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);
@@ -2710,7 +2952,10 @@ describe("BillingService SaaS subscriptions", () => {
       where: { eventId: "evt_provider_retry" },
     })).resolves.toMatchObject({
       processedAt: null,
-      processingError: "temporary provider outage",
+      processingError: "Razorpay webhook reconciliation failed",
+      processingToken: null,
+      processingLeaseUntil: null,
+      attemptCount: 1,
     });
 
     await expect(BillingService.handleRazorpayWebhook(
@@ -2727,6 +2972,8 @@ describe("BillingService SaaS subscriptions", () => {
     });
     expect(event.processedAt).not.toBeNull();
     expect(event.processingError).toBeNull();
+    expect(event.attemptCount).toBe(2);
+    expect(event.processingToken).toBeNull();
     expect(fakeRazorpay.fetchSubscription).toHaveBeenCalledTimes(2);
     await expect(testPrisma.organizationSubscriptionHistory.count({
       where: { organizationId: org.id, event: "subscription.activated" },

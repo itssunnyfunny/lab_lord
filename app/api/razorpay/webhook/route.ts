@@ -1,6 +1,7 @@
 import { BillingService } from "@/services/billing.service";
 import {
   RazorpayWebhookPayloadTooLargeError,
+  RazorpayWebhookValidationError,
   readBoundedRazorpayWebhookBody,
 } from "@/lib/razorpayWebhook";
 import { NextResponse } from "next/server";
@@ -20,10 +21,11 @@ export async function POST(req: Request) {
     if (error instanceof RazorpayWebhookPayloadTooLargeError) {
       return NextResponse.json({ error: error.message }, { status: 413 });
     }
-    const message = error instanceof Error ? error.message : "Internal Server Error";
-    const status = message.includes("signature") || message.includes("collision") ? 400 : 500;
+    if (error instanceof RazorpayWebhookValidationError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
 
-    console.error("[RAZORPAY_WEBHOOK_POST]", error);
-    return NextResponse.json({ error: message }, { status });
+    console.error("[RAZORPAY_WEBHOOK_POST] Webhook processing failed");
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

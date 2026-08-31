@@ -193,4 +193,19 @@ describe("razorpay security helpers", () => {
     expect(verifyRazorpayWebhookSignature(body, signature)).toBe(true);
     expect(verifyRazorpayWebhookSignature(changed, signature)).toBe(false);
   });
+
+  it("keeps approved old webhook secrets valid during rotation", () => {
+    vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "current_secret");
+    vi.stubEnv("RAZORPAY_WEBHOOK_OLD_SECRETS", "previous_secret, oldest_secret");
+    const body = Buffer.from('{"event":"subscription.activated"}', "utf8");
+
+    expect(verifyRazorpayWebhookSignature(
+      body,
+      hmacSha256Hex(body, "previous_secret")
+    )).toBe(true);
+    expect(verifyRazorpayWebhookSignature(
+      body,
+      hmacSha256Hex(body, "unapproved_secret")
+    )).toBe(false);
+  });
 });

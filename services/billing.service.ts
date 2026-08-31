@@ -42,6 +42,7 @@ import {
   BillingChangeInProgressError,
   BillingManualReviewRequiredError,
 } from "@/lib/billingErrors";
+import { RazorpayWebhookValidationError } from "@/lib/razorpayWebhook";
 import {
   isSupportedProviderPaymentMethod,
   normalizeProviderPaymentMethod,
@@ -56,6 +57,7 @@ import type {
   OrganizationSubscription,
   OrganizationSubscriptionHistory,
   Prisma,
+  RazorpayWebhookEvent,
 } from "@/app/generated/prisma/client";
 import type { SaasPlan, SaasSubscriptionHistorySource, SaasSubscriptionStatus } from "@/types";
 
@@ -84,10 +86,31 @@ type CheckoutEventInput = {
 type WebhookProcessingResult = {
   event: string;
   duplicate?: boolean;
+  processing?: boolean;
   organizationId?: string | null;
   organizationSubscriptionId?: string | null;
   razorpayPaymentId?: string | null;
   razorpaySubscriptionId?: string | null;
+};
+
+type RazorpayWebhookOwnerClaim = {
+  kind: "OWNER";
+  receiptId: string;
+  eventId: string;
+  event: string;
+  payloadHash: string;
+  processingToken: string;
+  processingStartedAt: Date;
+  processingLeaseUntil: Date;
+  attemptCount: number;
+};
+
+type RazorpayWebhookClaim = RazorpayWebhookOwnerClaim | {
+  kind: "COMPLETED";
+  receipt: RazorpayWebhookEvent;
+} | {
+  kind: "IN_PROGRESS";
+  event: string;
 };
 
 const TERMINAL_STATUSES = new Set<SaasSubscriptionStatus>(["CANCELLED", "COMPLETED", "EXPIRED"]);
@@ -118,6 +141,7 @@ const TERMINAL_CHECKOUT_OPERATION_STATUSES = [
 const CHECKOUT_MUTATION_LEASE_MS = 2 * 60 * 1000;
 const CHECKOUT_MUTATION_WAIT_MS = 15 * 1000;
 const CHECKOUT_MUTATION_POLL_MS = 100;
+const RAZORPAY_WEBHOOK_PROCESSING_LEASE_MS = 2 * 60 * 1000;
 const EMANDATE_AUTHORIZATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const VALID_STATUSES = new Set<SaasSubscriptionStatus>([
   "CREATED",
@@ -516,8 +540,134 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function isUniqueConstraintError(error: unknown) {
-  return isRecord(error) && error.code === "P2002";
+function completedWebhookResult(receipt: RazorpayWebhookEvent) {
+  return {
+    ok: true,
+    event: receipt.event,
+    duplicate: true,
+    organizationId: receipt.organizationId,
+    organizationSubscriptionId: receipt.organizationSubscriptionId,
+    razorpayPaymentId: receipt.razorpayPaymentId,
+    razorpaySubscriptionId: receipt.razorpaySubscriptionId,
+  };
+}
+
+function inProgressWebhookResult(event: string) {
+  return {
+    ok: true,
+    event,
+    duplicate: true,
+    processing: true,
+  };
+}
+
+function exactWebhookClaimWhere(
+  claim: RazorpayWebhookOwnerClaim
+): Prisma.RazorpayWebhookEventWhereInput {
+  return {
+    id: claim.receiptId,
+    eventId: claim.eventId,
+    payloadHash: claim.payloadHash,
+    processedAt: null,
+    processingToken: claim.processingToken,
+    processingStartedAt: claim.processingStartedAt,
+    processingLeaseUntil: claim.processingLeaseUntil,
+    attemptCount: claim.attemptCount,
+  };
+}
+
+async function claimRazorpayWebhookReceipt(input: {
+  eventId: string;
+  event: string;
+  payloadHash: string;
+}): Promise<RazorpayWebhookClaim> {
+  const processingToken = crypto.randomUUID();
+  const processingStartedAt = new Date();
+  const processingLeaseUntil = new Date(
+    processingStartedAt.getTime() + RAZORPAY_WEBHOOK_PROCESSING_LEASE_MS
+  );
+  const receiptId = crypto.randomUUID();
+
+  return prisma.$transaction(async tx => {
+    const inserted = await tx.$executeRaw`
+      INSERT INTO "RazorpayWebhookEvent" (
+        "id",
+        "eventId",
+        "event",
+        "payloadHash",
+        "processingToken",
+        "processingStartedAt",
+        "processingLeaseUntil",
+        "attemptCount"
+      ) VALUES (
+        ${receiptId},
+        ${input.eventId},
+        ${input.event},
+        ${input.payloadHash},
+        ${processingToken},
+        ${processingStartedAt},
+        ${processingLeaseUntil},
+        1
+      )
+      ON CONFLICT ("eventId") DO NOTHING
+    `;
+    const receipts = await tx.$queryRaw<RazorpayWebhookEvent[]>`
+      SELECT *
+      FROM "RazorpayWebhookEvent"
+      WHERE "eventId" = ${input.eventId}
+      FOR UPDATE
+    `;
+    const receipt = receipts[0];
+    if (!receipt) throw new Error("Razorpay webhook receipt disappeared");
+    if (receipt.payloadHash !== input.payloadHash) {
+      throw new RazorpayWebhookValidationError("Razorpay webhook event id collision");
+    }
+    if (inserted === 1) {
+      return {
+        kind: "OWNER",
+        receiptId: receipt.id,
+        eventId: receipt.eventId,
+        event: receipt.event,
+        payloadHash: receipt.payloadHash,
+        processingToken,
+        processingStartedAt,
+        processingLeaseUntil,
+        attemptCount: 1,
+      };
+    }
+    if (receipt.processedAt) {
+      return { kind: "COMPLETED", receipt };
+    }
+    if (
+      receipt.processingToken
+      && receipt.processingLeaseUntil
+      && receipt.processingLeaseUntil > processingStartedAt
+    ) {
+      return { kind: "IN_PROGRESS", event: receipt.event };
+    }
+
+    const reclaimed = await tx.razorpayWebhookEvent.update({
+      where: { id: receipt.id },
+      data: {
+        processingToken,
+        processingStartedAt,
+        processingLeaseUntil,
+        attemptCount: { increment: 1 },
+        processingError: null,
+      },
+    });
+    return {
+      kind: "OWNER",
+      receiptId: reclaimed.id,
+      eventId: reclaimed.eventId,
+      event: reclaimed.event,
+      payloadHash: reclaimed.payloadHash,
+      processingToken,
+      processingStartedAt,
+      processingLeaseUntil,
+      attemptCount: reclaimed.attemptCount,
+    };
+  }, { maxWait: 10_000, timeout: 10_000 });
 }
 
 function mapSubscriptionStatus(status: string | null | undefined): SaasSubscriptionStatus {
@@ -3137,81 +3287,43 @@ export class BillingService {
     signature: string | null,
     eventId: string | null
   ) {
-    if (!verifyRazorpayWebhookSignature(rawBody, signature)) {
-      throw new Error("Invalid Razorpay webhook signature");
+    const rawBytes = typeof rawBody === "string" ? Buffer.from(rawBody) : Buffer.from(rawBody);
+    if (!verifyRazorpayWebhookSignature(rawBytes, signature)) {
+      throw new RazorpayWebhookValidationError("Invalid Razorpay webhook signature");
     }
 
-    const rawBytes = typeof rawBody === "string" ? Buffer.from(rawBody) : Buffer.from(rawBody);
-    const parsed = JSON.parse(rawBytes.toString("utf8")) as Record<string, unknown>;
+    let parsed: Record<string, unknown>;
+    try {
+      const value: unknown = JSON.parse(rawBytes.toString("utf8"));
+      if (!isRecord(value)) throw new Error("Webhook payload must be an object");
+      parsed = value;
+    } catch {
+      throw new RazorpayWebhookValidationError("Invalid Razorpay webhook payload");
+    }
     const event = typeof parsed.event === "string" && parsed.event.trim() ? parsed.event : "unknown";
     const payloadHash = sha256Hex(rawBytes);
     const safeEventId = eventId?.trim() || `evt_${payloadHash}`;
+    const claim = await claimRazorpayWebhookReceipt({
+      eventId: safeEventId,
+      event,
+      payloadHash,
+    });
+    if (claim.kind === "COMPLETED") return completedWebhookResult(claim.receipt);
+    if (claim.kind === "IN_PROGRESS") return inProgressWebhookResult(claim.event);
 
     try {
-      await prisma.razorpayWebhookEvent.create({
+      const processed = await this.applyWebhookPayload(parsed);
+      const stillOwned = await prisma.razorpayWebhookEvent.updateMany({
+        where: exactWebhookClaimWhere(claim),
         data: {
-          eventId: safeEventId,
-          event,
-          payloadHash,
+          organizationId: processed.organizationId ?? null,
+          organizationSubscriptionId: processed.organizationSubscriptionId ?? null,
+          razorpayPaymentId: processed.razorpayPaymentId ?? null,
+          razorpaySubscriptionId: processed.razorpaySubscriptionId ?? null,
+          processingError: null,
         },
       });
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) throw error;
-      const existing = await prisma.razorpayWebhookEvent.findUnique({ where: { eventId: safeEventId } });
-      if (!existing) throw error;
-      if (existing.payloadHash !== payloadHash) {
-        throw new Error("Razorpay webhook event id collision");
-      }
-    }
-
-    try {
-      const processed = await prisma.$transaction(async tx => {
-        await tx.$queryRaw<Array<{ id: string }>>`
-          SELECT "id"
-          FROM "RazorpayWebhookEvent"
-          WHERE "eventId" = ${safeEventId}
-          FOR UPDATE
-        `;
-        const webhookEvent = await tx.razorpayWebhookEvent.findUnique({
-          where: { eventId: safeEventId },
-        });
-        if (!webhookEvent) throw new Error("Razorpay webhook event disappeared");
-        if (webhookEvent.payloadHash !== payloadHash) {
-          throw new Error("Razorpay webhook event id collision");
-        }
-        if (webhookEvent.processedAt) {
-          return {
-            ok: true,
-            event: webhookEvent.event,
-            duplicate: true,
-            organizationId: webhookEvent.organizationId,
-            organizationSubscriptionId: webhookEvent.organizationSubscriptionId,
-            razorpayPaymentId: webhookEvent.razorpayPaymentId,
-            razorpaySubscriptionId: webhookEvent.razorpaySubscriptionId,
-          };
-        }
-
-        const result = await this.applyWebhookPayload(parsed, tx);
-        await tx.razorpayWebhookEvent.update({
-          where: { id: webhookEvent.id },
-          data: {
-            organizationId: result.organizationId ?? null,
-            organizationSubscriptionId: result.organizationSubscriptionId ?? null,
-            razorpayPaymentId: result.razorpayPaymentId ?? null,
-            razorpaySubscriptionId: result.razorpaySubscriptionId ?? null,
-            processingError: null,
-          },
-        });
-
-        return {
-          ok: true,
-          ...result,
-        };
-      }, { maxWait: 10_000, timeout: 30_000 });
-
-      if ("duplicate" in processed && processed.duplicate) {
-        return processed;
-      }
+      if (stillOwned.count !== 1) return inProgressWebhookResult(claim.event);
 
       if (processed.organizationId && processed.razorpaySubscriptionId) {
         // A signed webhook is only a reconciliation trigger. Both legacy and
@@ -3267,34 +3379,32 @@ export class BillingService {
         }
       }
 
-      await prisma.razorpayWebhookEvent.updateMany({
-        where: {
-          eventId: safeEventId,
-          payloadHash,
-          processedAt: null,
-        },
+      const finalized = await prisma.razorpayWebhookEvent.updateMany({
+        where: exactWebhookClaimWhere(claim),
         data: {
           processedAt: new Date(),
           processingError: null,
+          processingToken: null,
+          processingLeaseUntil: null,
         },
       });
+      if (finalized.count !== 1) return inProgressWebhookResult(claim.event);
 
-      return processed;
+      return { ok: true, ...processed };
     } catch (error) {
       try {
-        await prisma.razorpayWebhookEvent.updateMany({
-          where: {
-            eventId: safeEventId,
-            payloadHash,
-            processedAt: null,
-          },
+        const recorded = await prisma.razorpayWebhookEvent.updateMany({
+          where: exactWebhookClaimWhere(claim),
           data: {
             processedAt: null,
-            processingError: error instanceof Error ? error.message : "Webhook processing failed",
+            processingError: "Razorpay webhook reconciliation failed",
+            processingToken: null,
+            processingLeaseUntil: null,
           },
         });
-      } catch (recordingError) {
-        console.error("[RAZORPAY_WEBHOOK_ERROR_RECORDING_FAILED]", recordingError);
+        if (recorded.count !== 1) return inProgressWebhookResult(claim.event);
+      } catch {
+        console.error("[RAZORPAY_WEBHOOK_ERROR_RECORDING_FAILED]");
       }
       throw error;
     }
@@ -3389,8 +3499,7 @@ export class BillingService {
   }
 
   private static async applyWebhookPayload(
-    payload: Record<string, unknown>,
-    tx: Prisma.TransactionClient
+    payload: Record<string, unknown>
   ): Promise<WebhookProcessingResult> {
     const providerMode = resolveRazorpayMode();
     const event = typeof payload.event === "string" ? payload.event : "unknown";
@@ -3412,7 +3521,7 @@ export class BillingService {
       };
     }
 
-    const subscription = await tx.organizationSubscription.findUnique({
+    const subscription = await prisma.organizationSubscription.findUnique({
       where: { razorpaySubscriptionId: subscriptionId },
     });
 

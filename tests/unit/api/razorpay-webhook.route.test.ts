@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_RAZORPAY_WEBHOOK_BYTES } from "@/lib/razorpayWebhook";
+import {
+  MAX_RAZORPAY_WEBHOOK_BYTES,
+  RazorpayWebhookValidationError,
+} from "@/lib/razorpayWebhook";
 
 const mocks = vi.hoisted(() => ({
   handleRazorpayWebhook: vi.fn(),
@@ -96,5 +99,41 @@ describe("POST /api/razorpay/webhook", () => {
     expect(receivedBody).toEqual(Buffer.from(rawBody));
     expect(signature).toBe("exact-signature");
     expect(eventId).toBe("evt_exact_limit");
+  });
+
+  it("maps typed invalid deliveries to 400", async () => {
+    mocks.handleRazorpayWebhook.mockRejectedValueOnce(
+      new RazorpayWebhookValidationError("Invalid Razorpay webhook signature")
+    );
+    const request = new Request("http://test.local/api/razorpay/webhook", {
+      method: "POST",
+      body: "{}",
+    });
+    const { POST } = await import("@/app/api/razorpay/webhook/route");
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Invalid Razorpay webhook signature" });
+  });
+
+  it("does not expose or log provider processing errors", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.handleRazorpayWebhook.mockRejectedValueOnce(
+      new Error("provider response with private details")
+    );
+    const request = new Request("http://test.local/api/razorpay/webhook", {
+      method: "POST",
+      body: "{}",
+    });
+    const { POST } = await import("@/app/api/razorpay/webhook/route");
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Internal Server Error" });
+    expect(log).toHaveBeenCalledWith("[RAZORPAY_WEBHOOK_POST] Webhook processing failed");
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("private details"));
+    log.mockRestore();
   });
 });
