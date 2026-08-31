@@ -4,9 +4,15 @@ import {
   areWhatsAppOnboardingWritesEnabled,
   areWhatsAppTemplateWritesEnabled,
   configuredWhatsAppLiveDeliveryCanaryOrganizationIds,
+  configuredWhatsAppLiveAutomationCanaryOrganizationIds,
   isWhatsAppAutomationPlannerEnabled,
   isWhatsAppDeliverySchemaAccessEnabled,
   isWhatsAppIntegrationEnabled,
+  isWhatsAppHealthOrganizationEnabled,
+  isWhatsAppReportPlannerEnabled,
+  isWhatsAppReportsEnabled,
+  isWhatsAppServiceNoticesEnabled,
+  isWhatsAppLiveAutomationOrganizationEnabled,
   isWhatsAppWebhookIngestEnabled,
   resolveWhatsAppProviderMode,
   WhatsAppConfigurationError,
@@ -43,6 +49,44 @@ describe("WhatsApp feature gates", () => {
       NODE_ENV: "test",
       META_WHATSAPP_MODE: "TEST",
     })).toBe(false);
+    expect(isWhatsAppReportsEnabled({})).toBe(false);
+    expect(isWhatsAppReportPlannerEnabled({})).toBe(false);
+    expect(isWhatsAppServiceNoticesEnabled({})).toBe(false);
+  });
+
+  it("keeps PR4 report, planner, notice, health, and operations gates fail closed", () => {
+    const testEnv = {
+      NODE_ENV: "test",
+      META_WHATSAPP_MODE: "TEST",
+      WHATSAPP_INTEGRATION_ENABLED: "true",
+      WHATSAPP_REPORT_PLANNER_ENABLED: "true",
+      WHATSAPP_SERVICE_NOTICES_ENABLED: "true",
+      WHATSAPP_HEALTH_RECONCILIATION_ENABLED: "true",
+    };
+    expect(isWhatsAppReportPlannerEnabled(testEnv)).toBe(false);
+    expect(isWhatsAppServiceNoticesEnabled(testEnv)).toBe(true);
+    expect(isWhatsAppHealthOrganizationEnabled("org_1", testEnv)).toBe(true);
+    expect(isWhatsAppReportPlannerEnabled({
+      ...testEnv,
+      WHATSAPP_REPORTS_ENABLED: "true",
+    })).toBe(true);
+  });
+
+  it("requires both exact Live delivery and automation canaries for automatic sends", () => {
+    const env = {
+      ...BASE_ENV,
+      WHATSAPP_LIVE_DELIVERY_CANARY_ORG_IDS: "org_1,org_2",
+      WHATSAPP_LIVE_AUTOMATION_CANARY_ORG_IDS: "org_1",
+    };
+    expect(isWhatsAppLiveAutomationOrganizationEnabled("org_1", env)).toBe(true);
+    expect(isWhatsAppLiveAutomationOrganizationEnabled("org_2", env)).toBe(false);
+    expect(isWhatsAppLiveAutomationOrganizationEnabled("org_1", {
+      ...env,
+      WHATSAPP_LIVE_AUTOMATION_CANARY_ORG_IDS: "org_1,not valid",
+    })).toBe(false);
+    expect(configuredWhatsAppLiveAutomationCanaryOrganizationIds({
+      WHATSAPP_LIVE_AUTOMATION_CANARY_ORG_IDS: "org_1,org_1",
+    }).size).toBe(0);
   });
 
   it("requires the independent webhook ingest gate", () => {

@@ -15,6 +15,7 @@ const allPermissions = {
     view_whatsapp: true,
     send_whatsapp: true,
     manage_whatsapp: true,
+    receive_whatsapp_reports: true,
     staff_management: true,
 } satisfies Record<StaffAction, boolean>;
 
@@ -206,5 +207,30 @@ describe("branch capability decisions", () => {
         expect(getBranchCapabilityDecision(readOnly, "whatsappView").allowed).toBe(true);
         expect(getBranchCapabilityDecision(readOnly, "whatsappSend").blocker).toBe("read_only");
         expect(getBranchCapabilityDecision(readOnly, "whatsappManage").blocker).toBe("read_only");
+        expect(getBranchCapabilityDecision(readOnly, "whatsappReportReceive").allowed).toBe(true);
+        expect(getBranchCapabilityDecision(readOnly, "whatsappReportOperate").blocker).toBe("read_only");
+        expect(getBranchCapabilityDecision(readOnly, "whatsappServiceNotice").blocker).toBe("read_only");
+    });
+
+    it("keeps report controls reachable while requiring the complete permission set to operate", () => {
+        const recipient = access({
+            isOwner: false,
+            role: "STAFF",
+            permissions: {
+                ...allPermissions,
+                manage_branch: false,
+                manage_whatsapp: false,
+                send_whatsapp: false,
+            },
+        });
+
+        expect(getBranchCapabilityDecision(recipient, "whatsappReportReceive").allowed).toBe(true);
+        expect(getBranchCapabilityDecision(recipient, "whatsappReportOperate").allowed).toBe(true);
+        expect(getBranchCapabilityDecision({
+            ...recipient,
+            permissions: { ...recipient.permissions, analytics: false },
+        }, "whatsappReportOperate").blocker).toBe("permission");
+
+        expect(getBranchCapabilityDecision(recipient, "whatsappServiceNotice").blocker).toBe("permission");
     });
 });

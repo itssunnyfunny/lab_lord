@@ -10,6 +10,7 @@ Add Accepted or Superseded records here in numeric order:
 | ADR | Status | Decision | Superseded by |
 | --- | --- | --- | --- |
 | [0003](./0003-whatsapp-template-delivery-and-collections.md) | Accepted | Managed WhatsApp Utility delivery and collections automation | — |
+| [0004](./0004-whatsapp-daily-reports-and-operational-hardening.md) | Accepted | WhatsApp daily reports, typed service notices, and operational hardening | — |
 
 ## Proposed decision index
 

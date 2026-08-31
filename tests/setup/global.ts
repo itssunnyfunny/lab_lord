@@ -1,5 +1,6 @@
 import { config } from "dotenv";
 import path from "path";
+import { assertDisposableTestDatabaseTarget } from "./testDatabaseSafety";
 
 /**
  * Vitest GlobalSetup — runs ONCE before all test files.
@@ -18,33 +19,10 @@ export async function setup() {
     });
   }
 
-  if (!process.env.DATABASE_URL) {
-    throw new Error(
-      "❌ Tests require DATABASE_URL. Check your explicit test target or .env.test file."
-    );
-  }
-
-  const parsedDatabaseUrl = new URL(process.env.DATABASE_URL);
-  const databaseName = parsedDatabaseUrl.pathname.replace(/^\//, "");
-  const isPostgres = ["postgres:", "postgresql:"].includes(parsedDatabaseUrl.protocol);
-
-  // ❌ SAFETY GUARD: inspect the database name, not a coincidental `test`
-  // substring in a username, password, hostname, query, or schema parameter.
-  if (!isPostgres || !databaseName.toLowerCase().includes("test")) {
-    throw new Error(
-      "❌ Tests must use a PostgreSQL database whose database name contains 'test'.\n" +
-      "   Check your explicit test target or .env.test file."
-    );
-  }
-
-  if (
-    explicitTestDatabaseUrl &&
-    process.env.TEST_DATABASE_RESET_CONFIRM !== databaseName
-  ) {
-    throw new Error(
-      "Explicit TEST_DATABASE_URL requires TEST_DATABASE_RESET_CONFIRM to exactly match its database name."
-    );
-  }
+  const target = assertDisposableTestDatabaseTarget(
+    process.env.DATABASE_URL,
+    process.env
+  );
 
   // Provider-backed billing is deliberately mode-explicit. Integration tests
   // use isolated Test Mode records and may replace this key per test.
@@ -54,7 +32,7 @@ export async function setup() {
 
   console.log(
     "✅ Test environment loaded. DB:",
-    `${parsedDatabaseUrl.hostname}:${parsedDatabaseUrl.port || "5432"}/${databaseName}`
+    target.sanitizedIdentity
   );
 }
 

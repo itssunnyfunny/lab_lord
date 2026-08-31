@@ -1,6 +1,7 @@
 import type {
   Prisma,
   WhatsAppAutomationStage,
+  WhatsAppMessagePurpose,
   WhatsAppMessageTrigger,
 } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -67,6 +68,9 @@ export type WhatsAppUnsubmittedMessageScope = {
   excludeRecipientPhoneE164?: string;
   studentId?: string;
   paymentId?: string;
+  reportSubscriptionId?: string;
+  serviceNoticeId?: string;
+  purpose?: WhatsAppMessagePurpose;
   trigger?: WhatsAppMessageTrigger;
   automationStage?: WhatsAppAutomationStage;
 };
@@ -220,6 +224,9 @@ function assertCancellationScope(scope: WhatsAppUnsubmittedMessageScope) {
   if (scope.branchId) assertBoundedId(scope.branchId);
   if (scope.senderId) assertBoundedId(scope.senderId);
   if (scope.studentId) assertBoundedId(scope.studentId);
+  if (scope.paymentId) assertBoundedId(scope.paymentId);
+  if (scope.reportSubscriptionId) assertBoundedId(scope.reportSubscriptionId);
+  if (scope.serviceNoticeId) assertBoundedId(scope.serviceNoticeId);
   if (scope.recipientPhoneE164 && scope.excludeRecipientPhoneE164) {
     throw new WhatsAppValidationError();
   }
@@ -247,6 +254,11 @@ function unsubmittedMessageWhere(
         : {}),
     ...(scope.trigger ? { trigger: scope.trigger } : {}),
     ...(scope.automationStage ? { automationStage: scope.automationStage } : {}),
+    ...(scope.reportSubscriptionId
+      ? { reportSubscriptionId: scope.reportSubscriptionId }
+      : {}),
+    ...(scope.serviceNoticeId ? { serviceNoticeId: scope.serviceNoticeId } : {}),
+    ...(scope.purpose ? { purpose: scope.purpose } : {}),
   };
   const eligibility: Prisma.WhatsAppMessageWhereInput = {
     OR: [

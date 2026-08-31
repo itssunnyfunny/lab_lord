@@ -13,6 +13,7 @@ export const STAFF_ACTION_LABELS: Record<StaffAction, string> = {
     view_whatsapp: "WhatsApp viewing",
     send_whatsapp: "WhatsApp sending",
     manage_whatsapp: "WhatsApp management",
+    receive_whatsapp_reports: "WhatsApp daily-report receiving",
     staff_management: "owner-only staff management",
 };
 
