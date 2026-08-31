@@ -75,6 +75,7 @@ model Organization {
   razorpayWebhookEvents          RazorpayWebhookEvent[]
   ownerTrialGrant                OwnerTrialGrant?
   billingChanges                 OrganizationBillingChange[]
+  billingChangeAudits            OrganizationBillingChangeAudit[]
   offerGrants                    OrganizationOfferGrant[]
   subscriptionInvoices           OrganizationSubscriptionInvoice[]
   importRecipes                  ImportRecipe[]
@@ -1850,6 +1851,7 @@ enum BillingChangeStatus {
 }
 
 enum BillingOperationStatus {
+  PROVISIONING
   CHECKOUT_OPEN
   VERIFYING
   AWAITING_PROVIDER_CONFIRMATION
@@ -2072,7 +2074,14 @@ model OrganizationBillingChange {
   toQuantity                             Int?
   commercialIntentVersion                Int?
   commercialIntentCapturedAt             DateTime?
+  provisioningIntentVersion              Int?
+  provisioningSourceSubscriptionId       String?
+  providerMutationAdmittedAt             DateTime?
   authorizedProviderMode                 RazorpayMode?
+  authorizedBillingModelVersion          BillingModelVersion?
+  authorizedProviderStartAt              DateTime?
+  authorizedProviderExpireAt             DateTime?
+  authorizedTotalCount                   Int?
   authorizedSourceRazorpaySubscriptionId String?
   authorizedRazorpaySubscriptionId       String?
   authorizedSourceRazorpayPlanId         String?
@@ -2118,6 +2127,7 @@ model OrganizationBillingChange {
   replacementSubscription                OrganizationSubscription?         @relation("BillingChangeReplacementSubscription", fields: [replacementSubscriptionId], references: [id], onDelete: SetNull)
   confirmedCommercialSubscription        OrganizationSubscription?         @relation("ConfirmedCommercialIntent")
   commercialEvidenceInvoices             OrganizationSubscriptionInvoice[] @relation("InvoiceCommercialIntent")
+  auditEvents                            OrganizationBillingChangeAudit[]
   branch                                 Branch?                           @relation(fields: [branchId], references: [id], onDelete: SetNull)
 
   @@unique([organizationId, sequence])
@@ -2127,6 +2137,23 @@ model OrganizationBillingChange {
   @@index([authorizedProviderMode, authorizedRazorpaySubscriptionId, sequence], map: "BillingChange_authorized_subscription_idx")
   @@index([authorizedProviderMode, authorizedSourceRazorpaySubscriptionId, sequence], map: "BillingChange_authorized_source_subscription_idx")
   @@index([undoCutoffAt, status])
+}
+
+model OrganizationBillingChangeAudit {
+  id                     String                    @id @default(cuid())
+  organizationId         String
+  changeId               String
+  dedupeKey              String                    @unique
+  attemptCount           Int
+  outcome                String
+  failureCode            String?
+  providerSubscriptionId String?
+  createdAt              DateTime                  @default(now())
+  organization           Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  change                 OrganizationBillingChange @relation(fields: [changeId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([changeId, createdAt])
 }
 
 model OrganizationSubscriptionInvoice {
