@@ -262,6 +262,13 @@ Every statement uses one of these labels:
 - **Must preserve—enforced:** Subscription and billing mutation APIs are
   owner-only. Provider mode is part of the trust boundary: TEST records cannot
   grant or mutate LIVE access, and vice versa.
+- **Must preserve—enforced:** Billing preflight and maintenance commands isolate
+  the selected allowlisted environment and fail on conflicting ambient
+  database or Razorpay identities. Maintenance apply runs are fenced by the
+  expected deployment, provider mode, database-resident identity fingerprint,
+  and explicit organization allowlist before any scoped query, write, or
+  provider fetch.
+  (`scripts/billing-operation-target.ts`, billing-operation target tests)
 - **Must preserve—enforced:** An organization has one current subscription slot
   and one pending-replacement slot. Previous subscription rows remain as
   history and replacement lineage rather than being rewritten as the current

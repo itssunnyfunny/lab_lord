@@ -88,6 +88,14 @@ describe("Razorpay preflight arguments", () => {
       "--expect-canary-org-id=org_canary",
     ])).toThrow(/Production/);
   });
+
+  it("accepts an exact database fingerprint expectation", () => {
+    const fingerprint = "a".repeat(64);
+    expect(parsePreflightArguments([
+      "--target=production",
+      `--expect-database-fingerprint=${fingerprint}`,
+    ])).toMatchObject({ expectedDatabaseFingerprint: fingerprint });
+  });
 });
 
 describe("Razorpay preflight environment", () => {
@@ -252,17 +260,14 @@ describe("database fingerprint", () => {
 });
 
 describe("preflight environment loading", () => {
-  it("never inherits an ambient Accelerate endpoint for the target database", () => {
-    expect(buildIsolatedPreflightEnvironment(
+  it("rejects an ambient Accelerate endpoint for a different target database", () => {
+    expect(() => buildIsolatedPreflightEnvironment(
       { DATABASE_URL: "postgresql://preview.example.test/lablords" },
       {
         VERCEL_ENV: "preview",
         ACCELERATE_URL: "prisma://production.example.test/",
       }
-    )).toEqual({
-      DATABASE_URL: "postgresql://preview.example.test/lablords",
-      VERCEL_ENV: "preview",
-    });
+    )).toThrow(/ACCELERATE_URL/);
   });
 
   it("never inherits an ambient multi-method rollout switch", () => {

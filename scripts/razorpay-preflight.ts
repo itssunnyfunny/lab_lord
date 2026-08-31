@@ -1,16 +1,27 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { config as loadEnv } from "dotenv";
+import {
+  buildIsolatedBillingEnvironment,
+  databaseFingerprint,
+  describePrismaConnection,
+  installIsolatedBillingEnvironment,
+  loadIsolatedBillingEnvironment,
+  sanitizeBillingOperationError,
+  type BillingEnvironment,
+} from "./billing-operation-target";
+
+export { databaseFingerprint } from "./billing-operation-target";
 
 export type PreflightTarget = "preview" | "production";
 type ExpectedSwitch = "enabled" | "disabled";
-type Environment = Record<string, string | undefined>;
+type Environment = BillingEnvironment;
 
 export type PreflightArguments = {
   target: PreflightTarget;
   envFile: string;
   mustDifferFrom?: string;
+  expectedDatabaseFingerprint?: string;
   expectPlanId?: string;
   forbidPlanId?: string;
   expectEmptyProviderCatalog: boolean;
@@ -124,37 +135,6 @@ const FORBIDDEN_MUTATION_FLAGS = [
   "--write",
 ];
 
-const PREFLIGHT_ISOLATED_ENVIRONMENT_VARIABLES = [
-  "DATABASE_URL",
-  "ACCELERATE_URL",
-  "RAZORPAY_MODE",
-  "RAZORPAY_KEY_ID",
-  "RAZORPAY_KEY_SECRET",
-  "RAZORPAY_WEBHOOK_SECRET",
-  "RAZORPAY_WEBHOOK_OLD_SECRETS",
-  "RAZORPAY_BILLING_WRITES_ENABLED",
-  "RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED",
-  "RAZORPAY_LIVE_CANARY_ORG_IDS",
-  "WORKSPACE_BRANCH_BILLING_V2_ENABLED",
-  "NEXT_PUBLIC_RAZORPAY_KEY_ID",
-  "RAZORPAY_TEST_KEY_ID",
-  "RAZORPAY_TEST_KEY_SECRET",
-  "RAZORPAY_TEST_WEBHOOK_SECRET",
-  "TEST_API_KEY",
-  "TEST_KEY_SECRET",
-  "TEST_WEBHOOK_SECRET",
-  "Test_API_Key",
-  "Test_Key_Secret",
-  "Test_Webhook_Secret",
-  "CRON_SECRET",
-  "NEXT_PUBLIC_SITE_URL",
-  "NEXT_PUBLIC_SUPPORT_EMAIL",
-  "NEXT_PUBLIC_BUSINESS_ADDRESS",
-  "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
-  "CLERK_SECRET_KEY",
-  "VERCEL_ENV",
-] as const;
-
 function argumentValue(argument: string, name: string) {
   return argument.startsWith(`${name}=`) ? argument.slice(name.length + 1).trim() : null;
 }
@@ -180,6 +160,7 @@ export function parsePreflightArguments(argv: string[]): PreflightArguments {
     "--target=",
     "--env-file=",
     "--must-differ-from=",
+    "--expect-database-fingerprint=",
     "--expect-plan-id=",
     "--forbid-plan-id=",
     "--expect-billing-writes=",
@@ -199,7 +180,7 @@ export function parsePreflightArguments(argv: string[]): PreflightArguments {
     !confirmationFlags.includes(argument as typeof confirmationFlags[number]) &&
     !known.some(prefix => argument.startsWith(prefix))
   );
-  if (unknown) throw new Error(`Unknown preflight argument: ${unknown}`);
+  if (unknown) throw new Error("Unknown preflight argument");
 
   const targetValue = argv.map(argument => argumentValue(argument, "--target")).find(Boolean);
   if (targetValue !== "preview" && targetValue !== "production") {
@@ -212,6 +193,9 @@ export function parsePreflightArguments(argv: string[]): PreflightArguments {
     ".env";
   const mustDifferFrom = argv
     .map(argument => argumentValue(argument, "--must-differ-from"))
+    .find(Boolean) ?? undefined;
+  const expectedDatabaseFingerprint = argv
+    .map(argument => argumentValue(argument, "--expect-database-fingerprint"))
     .find(Boolean) ?? undefined;
   const expectPlanId = argv
     .map(argument => argumentValue(argument, "--expect-plan-id"))
@@ -246,6 +230,18 @@ export function parsePreflightArguments(argv: string[]): PreflightArguments {
 
   if (mustDifferFrom && !/^[a-f0-9]{64}$/i.test(mustDifferFrom)) {
     throw new Error("--must-differ-from must be a complete SHA-256 database fingerprint");
+  }
+  if (expectedDatabaseFingerprint && !/^[a-f0-9]{64}$/i.test(expectedDatabaseFingerprint)) {
+    throw new Error(
+      "--expect-database-fingerprint must be a complete SHA-256 database fingerprint"
+    );
+  }
+  if (
+    mustDifferFrom &&
+    expectedDatabaseFingerprint &&
+    mustDifferFrom.toLowerCase() === expectedDatabaseFingerprint.toLowerCase()
+  ) {
+    throw new Error("The expected database fingerprint cannot also be forbidden");
   }
   for (const [flag, planId] of [
     ["--expect-plan-id", expectPlanId],
@@ -293,6 +289,7 @@ export function parsePreflightArguments(argv: string[]): PreflightArguments {
     target: targetValue,
     envFile,
     mustDifferFrom,
+    expectedDatabaseFingerprint: expectedDatabaseFingerprint?.toLowerCase(),
     expectPlanId,
     forbidPlanId,
     expectEmptyProviderCatalog: argv.includes("--expect-empty-provider-catalog"),
@@ -331,37 +328,14 @@ export function buildIsolatedPreflightEnvironment(
   loaded: Environment,
   invocation: Environment
 ) {
-  const target = { ...loaded };
-  if (invocation.VERCEL_ENV?.trim()) {
-    target.VERCEL_ENV = invocation.VERCEL_ENV;
-  }
-  return target;
+  return buildIsolatedBillingEnvironment(loaded, invocation);
 }
 
 export function loadPreflightEnvironment(
   envFile: string,
   invocation: Environment = process.env
 ) {
-  const loaded: Record<string, string> = {};
-  const result = loadEnv({
-    path: envFile,
-    processEnv: loaded,
-    override: true,
-    quiet: true,
-  });
-  if (result.error) {
-    throw new Error(`Unable to load the requested preflight environment file: ${envFile}`);
-  }
-  return buildIsolatedPreflightEnvironment(loaded, invocation);
-}
-
-function installPreflightEnvironment(target: Environment) {
-  for (const name of PREFLIGHT_ISOLATED_ENVIRONMENT_VARIABLES) {
-    delete process.env[name];
-  }
-  for (const [name, value] of Object.entries(target)) {
-    if (value !== undefined) process.env[name] = value;
-  }
+  return loadIsolatedBillingEnvironment(envFile, invocation);
 }
 
 function configuredCanaryOrganizations(environment: Environment) {
@@ -631,13 +605,6 @@ export async function fetchRazorpayMethods(
   return payload;
 }
 
-export function databaseFingerprint(databaseIdentity: string) {
-  return crypto
-    .createHash("sha256")
-    .update(`lab-lords-billing-database:v1:${databaseIdentity}`)
-    .digest("hex");
-}
-
 function idFingerprint(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
@@ -651,28 +618,11 @@ function providerErrorCategory(error: unknown) {
   return "provider_error";
 }
 
-function redactedError(error: unknown) {
-  let message = error instanceof Error ? error.message : "Preflight failed";
-  for (const name of [
-    "DATABASE_URL",
-    "ACCELERATE_URL",
-    "RAZORPAY_KEY_ID",
-    "RAZORPAY_KEY_SECRET",
-    "RAZORPAY_WEBHOOK_SECRET",
-    "CRON_SECRET",
-    "CLERK_SECRET_KEY",
-  ]) {
-    const secret = process.env[name];
-    if (secret && secret.length >= 4) message = message.replaceAll(secret, `[${name} redacted]`);
-  }
-  return message.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[credentials-redacted]@");
-}
-
 async function runPreflight(arguments_: PreflightArguments) {
   // Load into an isolated object first. Ambient DATABASE_URL/ACCELERATE_URL or
   // Razorpay credentials must never influence the requested audit target.
   const targetEnvironment = loadPreflightEnvironment(arguments_.envFile);
-  installPreflightEnvironment(targetEnvironment);
+  installIsolatedBillingEnvironment(targetEnvironment);
 
   const failures = validatePreflightEnvironment(arguments_.target, process.env, arguments_);
   if (failures.length > 0) {
@@ -752,6 +702,12 @@ async function runPreflight(arguments_: PreflightArguments) {
 
     if (arguments_.mustDifferFrom && fingerprint === arguments_.mustDifferFrom.toLowerCase()) {
       failures.push("Database fingerprint matches the environment that must remain isolated");
+    }
+    if (
+      arguments_.expectedDatabaseFingerprint &&
+      fingerprint !== arguments_.expectedDatabaseFingerprint
+    ) {
+      failures.push("Database fingerprint does not match the explicitly expected target");
     }
     if (
       arguments_.expectEmptyProviderCatalog &&
@@ -939,6 +895,7 @@ async function runPreflight(arguments_: PreflightArguments) {
       target: arguments_.target,
       providerMode: expectedProviderMode,
       databaseFingerprint: fingerprint,
+      prismaConnection: describePrismaConnection(process.env),
       switches: {
         billingWrites: process.env.RAZORPAY_BILLING_WRITES_ENABLED,
         multiMethodSubscriptions: featureFlagValue(
@@ -1002,6 +959,9 @@ async function runPreflight(arguments_: PreflightArguments) {
         databaseIsIsolated: arguments_.mustDifferFrom
           ? fingerprint !== arguments_.mustDifferFrom.toLowerCase()
           : null,
+        databaseMatchesExpectedTarget: arguments_.expectedDatabaseFingerprint
+          ? fingerprint === arguments_.expectedDatabaseFingerprint
+          : null,
         providerCatalogIsEmpty: arguments_.expectEmptyProviderCatalog
           ? plans.length === 0 &&
             subscriptions.length === 0 &&
@@ -1057,6 +1017,7 @@ Usage:
 Options:
   --env-file=PATH                         Load a specific local environment file
   --must-differ-from=SHA256               Assert database isolation
+  --expect-database-fingerprint=SHA256    Bind the audit to one exact database identity
   --expect-empty-provider-catalog         Assert local provider rows and Razorpay plans are empty
   --expect-plan-id=plan_...               Assert a provider plan is stored and fetchable
   --forbid-plan-id=plan_...               Assert a provider plan is not stored here
@@ -1086,7 +1047,7 @@ if (isMainModule) {
     try {
       await runPreflight(parsePreflightArguments(argv));
     } catch (error) {
-      console.error(`Razorpay preflight failed: ${redactedError(error)}`);
+      console.error(`Razorpay preflight failed: ${sanitizeBillingOperationError(error)}`);
       process.exitCode = 1;
     }
   }

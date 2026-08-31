@@ -535,6 +535,12 @@ The repository contains both legacy billing and Workspace Billing V2.
   and resolution outcomes. Branch restoration is atomic with confirmed provider
   undo.
 - Razorpay plan provisioning uses database leases and provider-mode-aware catalog records.
+- Billing preflight and maintenance scripts load `BILLING_ENV_FILE` through a
+  shared allowlist, reject conflicting ambient database/provider identities,
+  and report Prisma connection precedence without connection details. The two
+  maintenance `--apply` paths require an explicit deployment, provider mode,
+  database-resident identity fingerprint, and organization allowlist before
+  any scoped query, write, or provider fetch; dry-run remains the default.
 - Webhook processing verifies the raw-body HMAC, persists unique event receipts, detects event-ID collisions, and reconciles provider state.
 - `/api/cron/billing/hourly` processes billing deadlines and requires `Authorization: Bearer <CRON_SECRET>`.
 

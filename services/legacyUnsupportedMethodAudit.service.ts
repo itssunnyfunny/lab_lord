@@ -29,10 +29,13 @@ export function legacyUnsupportedMethodCancellationDisposition(input: {
 }
 
 export class LegacyUnsupportedMethodAuditService {
-  static async run(options: { apply: boolean }) {
+  static async run(options: { apply: boolean; organizationIds?: readonly string[] }) {
     const providerMode = resolveRazorpayMode();
     const changes = await prisma.organizationBillingChange.findMany({
       where: {
+        ...(options.organizationIds
+          ? { organizationId: { in: [...options.organizationIds] } }
+          : {}),
         type: "UNSUPPORTED_METHOD_CANCELLATION",
         status: { in: ["QUEUED", "FAILED"] },
       },
