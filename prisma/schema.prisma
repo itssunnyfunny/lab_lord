@@ -2209,6 +2209,10 @@ model RazorpayWebhookEvent {
   receivedAt                 DateTime                  @default(now())
   processedAt                DateTime?
   processingError            String?
+  processingToken            String?                   @unique
+  processingStartedAt        DateTime?
+  processingLeaseUntil       DateTime?
+  attemptCount               Int                       @default(0)
   organization               Organization?             @relation(fields: [organizationId], references: [id])
   organizationSubscription   OrganizationSubscription? @relation(fields: [organizationSubscriptionId], references: [id])
 
@@ -2216,6 +2220,7 @@ model RazorpayWebhookEvent {
   @@index([organizationSubscriptionId])
   @@index([razorpayPaymentId])
   @@index([razorpaySubscriptionId])
+  @@index([processedAt, processingLeaseUntil])
 }
 
 enum AuditAction {
