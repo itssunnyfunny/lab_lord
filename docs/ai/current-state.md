@@ -528,6 +528,12 @@ The repository contains both legacy billing and Workspace Billing V2.
   sequencing, so it is not simply a count of rows currently marked `ACTIVE`.
 - Owner trial state, branch activation/removal, plan changes, quantity changes, cancellation, recovery, payment-method replacement, invoices, subscription history, and provider reconciliation are modeled.
 - Card changes can use provider subscription updates; supported non-card changes use separately authorized replacement subscriptions and controlled cutover logic.
+- Provider mutations and scheduled-update undo use organization leases plus
+  exact attempt fencing. Ambiguous outcomes and expired attempts enter manual
+  review without automatic resubmission; owner retry reconciles provider state,
+  adopts an exact target when safe, and records SYSTEM history for manual-review
+  and resolution outcomes. Branch restoration is atomic with confirmed provider
+  undo.
 - Razorpay plan provisioning uses database leases and provider-mode-aware catalog records.
 - Webhook processing verifies the raw-body HMAC, persists unique event receipts, detects event-ID collisions, and reconciles provider state.
 - `/api/cron/billing/hourly` processes billing deadlines and requires `Authorization: Bearer <CRON_SECRET>`.

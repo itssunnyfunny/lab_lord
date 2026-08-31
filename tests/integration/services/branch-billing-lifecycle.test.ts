@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { BranchService } from "@/services/branch.service";
 import { EntitlementService } from "@/services/entitlement.service";
+import { BillingChangeInProgressError } from "@/lib/billingErrors";
 import { createBranch, createOrg, createUser } from "@/tests/factories";
 import { disconnectDatabase, resetDatabase, testPrisma } from "@/tests/setup/db";
 
@@ -203,6 +204,46 @@ describe("workspace branch billing lifecycle", () => {
       .resolves.toMatchObject({ status: "APPLIED" });
     await expect(testPrisma.branch.findUnique({ where: { id: first.id } })).resolves.not.toBeNull();
   });
+
+  it.each(["PROCESSING", "AWAITING_PAYMENT", "MANUAL_REVIEW", "UNKNOWN_FAILED"] as const)(
+    "does not restore a branch while provider quantity is unresolved (%s)",
+    async unresolvedState => {
+      const { owner, organization } = await trialOrganization();
+      const branch = await createBranch({ organizationId: organization.id, name: "Unresolved removal" });
+      await testPrisma.branch.update({
+        where: { id: branch.id },
+        data: { billingStatus: "REMOVAL_SCHEDULED" },
+      });
+      const change = await testPrisma.organizationBillingChange.create({
+        data: {
+          organizationId: organization.id,
+          branchId: branch.id,
+          sequence: 1,
+          idempotencyKey: `unresolved-removal-${unresolvedState}`,
+          type: "BRANCH_REMOVAL",
+          status: unresolvedState === "MANUAL_REVIEW" || unresolvedState === "UNKNOWN_FAILED"
+            ? "FAILED"
+            : unresolvedState,
+          operationStatus: unresolvedState === "PROCESSING"
+            ? "AWAITING_PROVIDER_CONFIRMATION"
+            : "FAILED",
+          failureCategory: unresolvedState === "MANUAL_REVIEW"
+            ? "MANUAL_REVIEW_REQUIRED"
+            : null,
+          fromQuantity: 2,
+          toQuantity: 1,
+          effectiveAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        },
+      });
+
+      await expect(BranchService.undoBillingRemoval(owner.id, branch.id))
+        .rejects.toBeInstanceOf(BillingChangeInProgressError);
+      await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+        .resolves.toMatchObject({ status: change.status });
+      await expect(testPrisma.branch.findUniqueOrThrow({ where: { id: branch.id } }))
+        .resolves.toMatchObject({ billingStatus: "REMOVAL_SCHEDULED" });
+    }
+  );
 
   it("replays branch removal without creating another change", async () => {
     const { owner, organization } = await trialOrganization();

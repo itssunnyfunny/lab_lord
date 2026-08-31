@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/prisma";
-import { BillingMutationService } from "@/services/billingMutation.service";
+import {
+  BillingMutationService,
+  recordBillingMutationAudit,
+} from "@/services/billingMutation.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BranchService } from "@/services/branch.service";
 import { OwnerTrialService } from "@/services/ownerTrial.service";
@@ -45,10 +48,53 @@ export async function recoverExpiredBillingMutationLease(
       return false;
     }
 
-    await tx.organizationBillingChange.updateMany({
+    const processing = await tx.organizationBillingChange.findFirst({
       where: { organizationId: organization.id, status: "PROCESSING" },
-      data: { status: "QUEUED", processingStartedAt: null, lastError: "Recovered expired mutation lease" },
+      orderBy: { sequence: "asc" },
+      select: {
+        id: true,
+        organizationSubscriptionId: true,
+        attemptCount: true,
+        processingStartedAt: true,
+        failureCode: true,
+      },
     });
+    if (processing) {
+      const scheduledUndo = processing.failureCode === "SCHEDULED_UNDO_PROCESSING"
+        || processing.failureCode === "SCHEDULED_UNDO_RETRY_PROCESSING";
+      const failureCode = scheduledUndo
+        ? "SCHEDULED_UNDO_LEASE_EXPIRED"
+        : "PROVIDER_MUTATION_LEASE_EXPIRED";
+      const quarantined = await tx.organizationBillingChange.updateMany({
+        where: {
+          id: processing.id,
+          status: "PROCESSING",
+          attemptCount: processing.attemptCount,
+          processingStartedAt: processing.processingStartedAt,
+        },
+        data: {
+          status: "FAILED",
+          operationStatus: "FAILED",
+          failedAt: now,
+          resolvedAt: null,
+          failureCategory: "MANUAL_REVIEW_REQUIRED",
+          failureCode,
+          lastError: scheduledUndo
+            ? "Scheduled-change undo lease expired with an unresolved provider outcome"
+            : "Provider mutation lease expired with an unresolved outcome",
+        },
+      });
+      if (quarantined.count === 1) {
+        await recordBillingMutationAudit(tx, {
+          changeId: processing.id,
+          organizationId: organization.id,
+          organizationSubscriptionId: processing.organizationSubscriptionId,
+          attemptCount: processing.attemptCount,
+          outcome: "MANUAL_REVIEW_REQUIRED",
+          failureCode,
+        });
+      }
+    }
     const released = await tx.organization.updateMany({
       where: {
         id: organization.id,
@@ -84,10 +130,7 @@ export class BillingDeadlineService {
         status: "FAILED",
         type: { notIn: ["SUBSCRIPTION_AUTHORIZATION", "UNSUPPORTED_METHOD_CANCELLATION"] },
         replacementSubscriptionId: null,
-        OR: [
-          { failureCategory: null },
-          { failureCategory: { not: "MANUAL_REVIEW_REQUIRED" } },
-        ],
+        failureCategory: { in: ["PROVIDER_REJECTED", "PRE_PROVIDER_FAILURE"] },
         attemptCount: { lt: MAX_AUTOMATIC_ATTEMPTS },
         organization: { billingModelVersion: "WORKSPACE_V2" },
       },
