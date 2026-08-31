@@ -183,4 +183,14 @@ describe("razorpay security helpers", () => {
     expect(verifyRazorpayWebhookSignature(body, signature)).toBe(true);
     expect(verifyRazorpayWebhookSignature(JSON.stringify({ event: "payment.failed" }), signature)).toBe(false);
   });
+
+  it("verifies webhook signatures over the exact received bytes", () => {
+    vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "webhook_secret");
+    const body = Buffer.from('{"event":"payment.captured","note":"नमस्ते"}', "utf8");
+    const signature = hmacSha256Hex(body, "webhook_secret");
+    const changed = Buffer.concat([body, Buffer.from(" ")]);
+
+    expect(verifyRazorpayWebhookSignature(body, signature)).toBe(true);
+    expect(verifyRazorpayWebhookSignature(changed, signature)).toBe(false);
+  });
 });

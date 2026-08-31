@@ -398,7 +398,7 @@ export function fromRazorpaySubunits(amountSubunits: number, currency: string) {
   return amountSubunits / multiplier;
 }
 
-export function hmacSha256Hex(message: string, secret: string) {
+export function hmacSha256Hex(message: string | Uint8Array, secret: string) {
   return crypto.createHmac("sha256", secret).update(message).digest("hex");
 }
 
@@ -434,7 +434,10 @@ export function verifyRazorpaySubscriptionSignature(input: {
   return timingSafeHexEqual(expected, input.signature);
 }
 
-export function verifyRazorpayWebhookSignature(rawBody: string, signature: string | null) {
+export function verifyRazorpayWebhookSignature(
+  rawBody: string | Uint8Array,
+  signature: string | null
+) {
   if (!signature) return false;
   return getRazorpayWebhookSecrets().some(secret => {
     const expected = hmacSha256Hex(rawBody, secret);
@@ -442,7 +445,7 @@ export function verifyRazorpayWebhookSignature(rawBody: string, signature: strin
   });
 }
 
-export function sha256Hex(message: string) {
+export function sha256Hex(message: string | Uint8Array) {
   return crypto.createHash("sha256").update(message).digest("hex");
 }
 

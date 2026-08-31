@@ -3132,14 +3132,19 @@ export class BillingService {
     });
   }
 
-  static async handleRazorpayWebhook(rawBody: string, signature: string | null, eventId: string | null) {
+  static async handleRazorpayWebhook(
+    rawBody: string | Uint8Array,
+    signature: string | null,
+    eventId: string | null
+  ) {
     if (!verifyRazorpayWebhookSignature(rawBody, signature)) {
       throw new Error("Invalid Razorpay webhook signature");
     }
 
-    const parsed = JSON.parse(rawBody) as Record<string, unknown>;
+    const rawBytes = typeof rawBody === "string" ? Buffer.from(rawBody) : Buffer.from(rawBody);
+    const parsed = JSON.parse(rawBytes.toString("utf8")) as Record<string, unknown>;
     const event = typeof parsed.event === "string" && parsed.event.trim() ? parsed.event : "unknown";
-    const payloadHash = sha256Hex(rawBody);
+    const payloadHash = sha256Hex(rawBytes);
     const safeEventId = eventId?.trim() || `evt_${payloadHash}`;
 
     try {
