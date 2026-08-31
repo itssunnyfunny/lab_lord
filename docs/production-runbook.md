@@ -1627,10 +1627,80 @@ Operational expectations:
 ## Razorpay webhook and billing rollout
 
 The webhook endpoint is `POST /api/razorpay/webhook`. It requires a valid
-Razorpay signature over the raw body before processing. The event ID and payload
-hash provide durable duplicate detection: retrying the same event and body is
-safe; reusing an event ID with a different body is treated as a collision.
-Failed processing remains retryable.
+Razorpay signature over the exact bounded raw bytes before parsing. A numeric
+`Content-Length` above 512 KiB is rejected before body access; streamed bodies
+are cancelled at the first byte above the same limit and receive `413`. The
+event ID and raw-byte payload hash provide durable duplicate detection: retrying
+the same event and body is safe; reusing an event ID with a different body is a
+`400` collision. A receipt claim commits before provider reconciliation. An
+unexpired nonowner duplicate receives `2xx` with `processing: true` and performs
+no provider work; expired claims are reclaimable. Only the exact claim token,
+start time, lease deadline, and attempt number can finalize success or failure.
+Failed owner processing remains retryable.
+
+### Webhook receipt-claim migration
+
+Migration `20260831120000_add_razorpay_webhook_claim` adds nullable
+`processingToken`, `processingStartedAt`, and `processingLeaseUntil`, plus
+`attemptCount` defaulting to zero and supporting indexes. It changes no receipt,
+subscription, billing-change, invoice, student-payment, or provider state.
+
+This is a database-first expansion. Back up the selected database, confirm the
+exact deployment target, and record these pre-operation counts without printing
+payloads or connection values:
+
+```sql
+SELECT
+  COUNT(*) AS receipt_count,
+  COUNT(*) FILTER (WHERE "processedAt" IS NOT NULL) AS processed_count,
+  COUNT(*) FILTER (WHERE "processedAt" IS NULL) AS unprocessed_count
+FROM "RazorpayWebhookEvent";
+```
+
+Apply through the protected migration workflow, or use the approved target-bound
+shell with `pnpm prisma migrate status`, `pnpm prisma migrate deploy`, and a
+second `pnpm prisma migrate status`. Before promoting the new application,
+verify the expansion and existing-row backfill:
+
+```sql
+SELECT "column_name", "is_nullable", "column_default"
+FROM information_schema.columns
+WHERE "table_schema" = 'public'
+  AND "table_name" = 'RazorpayWebhookEvent'
+  AND "column_name" IN (
+    'processingToken',
+    'processingStartedAt',
+    'processingLeaseUntil',
+    'attemptCount'
+  )
+ORDER BY "column_name";
+
+SELECT
+  COUNT(*) AS receipt_count,
+  COUNT(*) FILTER (WHERE "processedAt" IS NOT NULL) AS processed_count,
+  COUNT(*) FILTER (WHERE "processedAt" IS NULL) AS unprocessed_count,
+  COUNT(*) FILTER (
+    WHERE "attemptCount" <> 0
+       OR "processingToken" IS NOT NULL
+       OR "processingStartedAt" IS NOT NULL
+       OR "processingLeaseUntil" IS NOT NULL
+  ) AS unexpectedly_claimed_existing_count
+FROM "RazorpayWebhookEvent";
+```
+
+With delivery held for the comparison, the three receipt counts must equal the
+recorded pre-operation counts and `unexpectedly_claimed_existing_count` must be
+zero. If signed deliveries were intentionally left running on the old
+application, the total may increase, but no pre-existing receipt may disappear
+and every row must still have zero/null claim state before the new application
+is promoted. Stop on any other result.
+
+The old application ignores these additive fields; the new application requires
+them. Therefore apply and verify the migration before deploying the new code.
+For application rollback, drain or let the two-minute receipt leases expire,
+deploy the last schema-compatible application, and retain the columns and all
+receipt evidence. Do not down-migrate or clear claims to manufacture recovery;
+prefer a compatible forward fix.
 
 ### Webhook operations
 
@@ -1642,11 +1712,15 @@ Failed processing remains retryable.
    [Workspace billing V2 rollout](./workspace-billing-rollout.md) and
    [Razorpay live-review checklist](./razorpay-live-review.md).
 4. Send a provider-signed Test delivery, require `2xx`, and verify one durable
-   receipt and provider-authoritative reconciliation. Confirm the stored status,
-   customer, plan, quantity, paid period, invoice, and payment came from the
-   provider fetch, not from the otherwise-valid signed payload snapshot.
-5. Replay the same event to confirm duplicate handling. Test out-of-order and
-   lost-callback recovery in Preview before Production.
+   receipt with `attemptCount = 1` and provider-authoritative reconciliation.
+   Confirm the stored status, customer, plan, quantity, paid period, invoice,
+   and payment came from the provider fetch, not from the otherwise-valid signed
+   payload snapshot.
+5. Replay the same event after completion, then issue two simultaneous copies in
+   Preview. Confirm one owner reconciles, the nonowner receives the generic
+   in-progress success response, and one receipt is finalized. Test expired-
+   claim recovery, out-of-order delivery, hash collision rejection, and lost-
+   callback recovery before Production.
 6. For secret rotation, add the new current secret and retain old secrets only
    through the owner-approved overlap in `RAZORPAY_WEBHOOK_OLD_SECRETS`. Redeploy,
    verify a signed delivery using the new secret, then remove the old secret and

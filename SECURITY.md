@@ -153,13 +153,21 @@ authentication boundaries, not open application routes.
   subscription, payment, plan, quantity, offer, amount, currency, billing
   period, mode, and settlement state through the shared exact-commercial-
   evidence validator.
-- Webhook signatures must be verified over the untouched raw body before JSON
-  parsing or processing.
+- Webhook requests are bounded to 512 KiB before authentication: an excessive
+  numeric `Content-Length` is rejected before body access, chunked or
+  underreported bodies are cancelled at the first byte above the limit, and
+  signatures plus payload hashes are computed over the same untouched raw
+  bytes before JSON parsing or processing.
 - Webhook event IDs and payload hashes must provide durable replay safety.
   Replaying the same event/body is safe; reusing an ID with a different payload
   must fail.
-- Failed webhook processing must remain retryable and must not be marked
-  complete before reconciliation succeeds.
+- A valid receipt is atomically claimed with an expiring unpredictable token
+  and attempt identity before provider reconciliation. Provider work runs only
+  after that claim commits and outside its transaction. An unexpired nonowner
+  duplicate is acknowledged without reconciling; an expired claim is
+  reclaimable; metadata, success, and failure finalization require the exact
+  token, start time, lease deadline, and attempt number. Failed processing
+  remains retryable and is not marked complete before reconciliation succeeds.
 - A valid legacy or V2 webhook is an identity-scoped reconciliation trigger.
   Do not copy status, customer, plan, quantity, period, or payment state from
   the signed payload into entitlement state; fetch and reconcile the matching
