@@ -1,14 +1,17 @@
 import { prisma } from "@/lib/prisma";
 import {
   BillingMutationService,
-  recordBillingMutationAudit,
 } from "@/services/billingMutation.service";
+import { recordBillingMutationAudit } from "@/services/billingMutationAudit.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BranchService } from "@/services/branch.service";
 import { OwnerTrialService } from "@/services/ownerTrial.service";
 import { areRazorpayBillingWritesEnabled } from "@/lib/billingFeature";
 import { isSupportedProviderPaymentMethod } from "@/services/billingPaymentMethod.service";
-import { BillingReplacementService } from "@/services/billingReplacement.service";
+import {
+  BillingReplacementService,
+  isCandidateCancellationReconciliationCode,
+} from "@/services/billingReplacement.service";
 import {
   cancelLapsedInitialAuthorization,
   isInitialAuthorizationDue,
@@ -57,14 +60,22 @@ export async function recoverExpiredBillingMutationLease(
         attemptCount: true,
         processingStartedAt: true,
         failureCode: true,
+        operationStatus: true,
       },
     });
     if (processing) {
       const scheduledUndo = processing.failureCode === "SCHEDULED_UNDO_PROCESSING"
         || processing.failureCode === "SCHEDULED_UNDO_RETRY_PROCESSING";
+      const candidateCancellation = processing.failureCode === "CANDIDATE_CANCELLATION_PROCESSING";
+      const replacementUndoCancellation = processing.failureCode
+        ?.startsWith("REPLACEMENT_UNDO_CANCELLATION_PROCESSING_") === true;
       const failureCode = scheduledUndo
         ? "SCHEDULED_UNDO_LEASE_EXPIRED"
-        : "PROVIDER_MUTATION_LEASE_EXPIRED";
+        : candidateCancellation
+          ? "CANDIDATE_CANCELLATION_LEASE_EXPIRED"
+          : replacementUndoCancellation
+            ? processing.failureCode!.replace("_PROCESSING_", "_LEASE_EXPIRED_")
+            : "PROVIDER_MUTATION_LEASE_EXPIRED";
       const quarantined = await tx.organizationBillingChange.updateMany({
         where: {
           id: processing.id,
@@ -74,14 +85,18 @@ export async function recoverExpiredBillingMutationLease(
         },
         data: {
           status: "FAILED",
-          operationStatus: "FAILED",
+          operationStatus: candidateCancellation || replacementUndoCancellation
+            ? processing.operationStatus
+            : "FAILED",
           failedAt: now,
           resolvedAt: null,
           failureCategory: "MANUAL_REVIEW_REQUIRED",
           failureCode,
           lastError: scheduledUndo
             ? "Scheduled-change undo lease expired with an unresolved provider outcome"
-            : "Provider mutation lease expired with an unresolved outcome",
+            : candidateCancellation || replacementUndoCancellation
+              ? "Replacement candidate cancellation lease expired with an unresolved provider outcome"
+              : "Provider mutation lease expired with an unresolved outcome",
         },
       });
       if (quarantined.count === 1) {
@@ -193,7 +208,21 @@ export class BillingDeadlineService {
             },
             {
               status: { in: [...TERMINAL_REPLACEMENT_STATUSES] },
-              failureCode: "CANDIDATE_CANCELLATION_PENDING",
+              OR: [
+                {
+                  failureCode: {
+                    in: [
+                      "CANDIDATE_CANCELLATION_PENDING",
+                      "CANDIDATE_CANCELLATION_OUTCOME_UNKNOWN",
+                      "CANDIDATE_CANCELLATION_PROVIDER_REJECTED",
+                      "CANDIDATE_CANCELLATION_LEASE_EXPIRED",
+                    ],
+                  },
+                },
+                { failureCode: { startsWith: "REPLACEMENT_UNDO_CANCELLATION_OUTCOME_UNKNOWN_" } },
+                { failureCode: { startsWith: "REPLACEMENT_UNDO_CANCELLATION_PROVIDER_REJECTED_" } },
+                { failureCode: { startsWith: "REPLACEMENT_UNDO_CANCELLATION_LEASE_EXPIRED_" } },
+              ],
               replacementSubscription: {
                 is: { pendingReplacementOrganizationId: { not: null } },
               },
@@ -214,14 +243,9 @@ export class BillingDeadlineService {
           if (TERMINAL_REPLACEMENT_STATUSES.includes(
             change.status as typeof TERMINAL_REPLACEMENT_STATUSES[number]
           )) {
-            if (change.failureCode === "CANDIDATE_CANCELLATION_PENDING"
+            if (isCandidateCancellationReconciliationCode(change.failureCode)
               && candidate.pendingReplacementOrganizationId) {
-              await BillingReplacementService.failReplacementCheckout(
-                change.id,
-                change.operationStatus === "ABANDONED" ? "ABANDONED" : "FAILED",
-                now,
-                change.lastError ?? "Retrying replacement candidate cancellation"
-              );
+              await BillingReplacementService.reconcileCandidateCancellation(change.id, now);
               retriedReplacementCancellations += 1;
             }
             continue;

@@ -28,8 +28,11 @@ describe("workspace billing deadlines", () => {
         currency: "INR",
         status: status === "authenticated" ? "authorized" : "failed",
         order_id: null,
+        invoice_id: null,
         subscription_id: "sub_deadline",
         method: paymentMethod,
+        captured: false,
+        created_at: 1788220800,
       })),
       fetchOrderPayments: vi.fn(async () => ({ entity: "collection" as const, count: 0, items: [] })),
       capturePayment: vi.fn(async () => { throw new Error("unused"); }),
@@ -49,6 +52,68 @@ describe("workspace billing deadlines", () => {
       fetchSubscriptionInvoices: vi.fn(async () => ({ entity: "collection" as const, count: 0, items: [] })),
       cancelSubscription: vi.fn(async () => { throw new Error("unused"); }),
     };
+  }
+
+  function exactDeadlineAuthorizationIntent(
+    capturedAt = new Date("2026-09-01T00:00:00.000Z")
+  ) {
+    return {
+      fromPlan: null,
+      toPlan: "BASIC" as const,
+      fromQuantity: null,
+      toQuantity: 1,
+      commercialIntentVersion: 1,
+      commercialIntentCapturedAt: capturedAt,
+      authorizedProviderMode: "TEST" as const,
+      authorizedSourceRazorpaySubscriptionId: "sub_deadline",
+      authorizedRazorpaySubscriptionId: "sub_deadline",
+      authorizedSourceRazorpayPlanId: "plan_basic",
+      authorizedRazorpayPlanId: "plan_basic",
+      authorizedPlan: "BASIC" as const,
+      authorizedQuantity: 1,
+      authorizedRazorpayOfferId: null,
+      authorizedUnitAmountSubunits: 29900,
+      authorizedGrossAmountSubunits: 29900,
+      authorizedExpectedAmountSubunits: 29900,
+      authorizedOfferValidThroughPaidCount: null,
+      authorizedCurrency: "INR",
+      authorizedPeriod: "monthly",
+      authorizedInterval: 1,
+    };
+  }
+
+  async function attachConfirmedDeadlineIntent(input: {
+    organizationId: string;
+    subscriptionId: string;
+    idempotencyKey: string;
+    confirmedAt: Date;
+  }) {
+    const intent = await testPrisma.organizationBillingChange.create({
+      data: {
+        organizationId: input.organizationId,
+        organizationSubscriptionId: input.subscriptionId,
+        sequence: 1,
+        idempotencyKey: input.idempotencyKey,
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        status: "APPLIED",
+        operationStatus: "APPLIED",
+        ...exactDeadlineAuthorizationIntent(input.confirmedAt),
+        providerConfirmedAt: input.confirmedAt,
+        appliedAt: input.confirmedAt,
+        resolvedAt: input.confirmedAt,
+      },
+    });
+    await Promise.all([
+      testPrisma.organization.update({
+        where: { id: input.organizationId },
+        data: { billingMutationSequence: 1 },
+      }),
+      testPrisma.organizationSubscription.update({
+        where: { id: input.subscriptionId },
+        data: { confirmedCommercialIntentChangeId: intent.id },
+      }),
+    ]);
+    return intent;
   }
 
   it("expires a trial and archives a provider-free scheduled branch at its boundary", async () => {
@@ -257,6 +322,7 @@ describe("workspace billing deadlines", () => {
         type: "SUBSCRIPTION_AUTHORIZATION",
         status: "AWAITING_PAYMENT",
         operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+        ...exactDeadlineAuthorizationIntent(),
         confirmationDeadlineAt: new Date("2026-09-02T23:45:00.000Z"),
       },
     });
@@ -304,6 +370,7 @@ describe("workspace billing deadlines", () => {
         type: "SUBSCRIPTION_AUTHORIZATION",
         status: "AWAITING_PAYMENT",
         operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+        ...exactDeadlineAuthorizationIntent(),
         confirmationDeadlineAt: new Date("2026-09-02T23:45:00.000Z"),
       },
     });
@@ -362,6 +429,7 @@ describe("workspace billing deadlines", () => {
         type: "SUBSCRIPTION_AUTHORIZATION",
         status: "AWAITING_PAYMENT",
         operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+        ...exactDeadlineAuthorizationIntent(),
         providerPaymentId: "pay_deadline_auth",
         confirmationDeadlineAt: new Date("2026-09-02T23:45:00.000Z"),
       },
@@ -410,6 +478,12 @@ describe("workspace billing deadlines", () => {
         providerPaymentMethod: "EMANDATE",
         providerStartAt: new Date("2026-09-09T00:00:00.000Z"),
       },
+    });
+    await attachConfirmedDeadlineIntent({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      idempotencyKey: "emandate-lapse-confirmed-intent",
+      confirmedAt: new Date("2026-09-01T00:00:00.000Z"),
     });
 
     const waitingResult = await BillingDeadlineService.run(insideConfirmationWindow);
@@ -489,6 +563,12 @@ describe("workspace billing deadlines", () => {
         authorizationExpiresAt: now,
       },
     });
+    await attachConfirmedDeadlineIntent({
+      organizationId: organization.id,
+      subscriptionId: subscription.id,
+      idempotencyKey: "emandate-expiry-confirmed-intent",
+      confirmedAt: new Date("2026-09-01T00:00:00.000Z"),
+    });
 
     const result = await BillingDeadlineService.run(now);
 
@@ -537,6 +617,7 @@ describe("workspace billing deadlines", () => {
         type: "SUBSCRIPTION_AUTHORIZATION",
         status: "AWAITING_PAYMENT",
         operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
+        ...exactDeadlineAuthorizationIntent(),
         providerPaymentId: "pay_deadline_auth",
         confirmationDeadlineAt: new Date("2026-09-09T00:00:00.000Z"),
         failureCategory: "PROVIDER_CONFIRMATION_PENDING",

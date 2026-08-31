@@ -2,12 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   cancelSubscription: vi.fn(),
+  billingChangeFindUnique: vi.fn(),
   planMappingFindFirst: vi.fn(),
   transaction: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { $transaction: mocks.transaction },
+  prisma: {
+    $transaction: mocks.transaction,
+    organizationBillingChange: { findUnique: mocks.billingChangeFindUnique },
+  },
 }));
 
 vi.mock("@/lib/billingFeature", () => ({
@@ -15,6 +19,7 @@ vi.mock("@/lib/billingFeature", () => ({
 }));
 
 vi.mock("@/lib/razorpay", () => ({
+  RazorpayApiError: class RazorpayApiError extends Error {},
   resolveRazorpayMode: () => "TEST",
   getRazorpayClient: () => ({ cancelSubscription: mocks.cancelSubscription }),
 }));
@@ -56,6 +61,7 @@ describe("replacement access orchestration", () => {
       quantity: 2,
       razorpayPlanId: "plan_basic",
       razorpaySubscriptionId: "sub_candidate",
+      confirmedCommercialIntentChangeId: "change_1",
       providerPaymentMethod: "UPI",
       status: "AUTHENTICATED",
       cancelledAt: null,
@@ -71,8 +77,28 @@ describe("replacement access orchestration", () => {
       status: "AWAITING_PAYMENT",
       operationStatus: "AWAITING_PROVIDER_CONFIRMATION",
       failureCategory: null,
+      failureCode: null,
+      attemptCount: 1,
+      updatedAt: new Date("2026-08-10T11:00:00.000Z"),
       toPlan: "BASIC",
       toQuantity: 2,
+      commercialIntentVersion: 1,
+      commercialIntentCapturedAt: new Date("2026-08-01T00:00:00.000Z"),
+      authorizedProviderMode: "TEST",
+      authorizedSourceRazorpaySubscriptionId: "sub_source",
+      authorizedRazorpaySubscriptionId: "sub_candidate",
+      authorizedSourceRazorpayPlanId: "plan_basic",
+      authorizedRazorpayPlanId: "plan_basic",
+      authorizedPlan: "BASIC",
+      authorizedQuantity: 2,
+      authorizedRazorpayOfferId: null,
+      authorizedUnitAmountSubunits: 29900,
+      authorizedGrossAmountSubunits: 59800,
+      authorizedExpectedAmountSubunits: 59800,
+      authorizedOfferValidThroughPaidCount: null,
+      authorizedCurrency: "INR",
+      authorizedPeriod: "monthly",
+      authorizedInterval: 1,
       accessGrantedAt: null,
       accessRevokedAt: null,
       effectiveAt: new Date("2026-09-01T00:00:00.000Z"),
@@ -91,9 +117,15 @@ describe("replacement access orchestration", () => {
       replacementSubscription: { ...candidate },
       branch: { ...branch },
     });
+    mocks.billingChangeFindUnique.mockImplementation(async args => args.select
+      ? { organizationId: change.organizationId }
+      : loadedChange());
     tx = {
       $queryRaw: vi.fn().mockResolvedValue([]),
       organization: {
+        findUnique: vi.fn(async () => ({
+          billingMutationLeaseToken: organizationLeaseToken,
+        })),
         findUniqueOrThrow: vi.fn(async () => ({
           billingMutationLeaseToken: organizationLeaseToken,
         })),
@@ -118,15 +150,28 @@ describe("replacement access orchestration", () => {
           : loadedChange()),
         findUniqueOrThrow: vi.fn(async () => ({ ...change })),
         update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          change = { ...change, ...data };
+          const persisted = Object.fromEntries(
+            Object.entries(data).filter(([, value]) => value !== undefined)
+          );
+          change = { ...change, ...persisted };
           return { ...change };
         }),
-        updateMany: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          if ("accessGrantedAt" in data && change.accessGrantedAt) return { count: 0 };
-          if ("accessRevokedAt" in data && (!change.accessGrantedAt || change.accessRevokedAt)) {
+        updateMany: vi.fn(async ({ where, data }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          if ("accessGrantedAt" in data && "accessGrantedAt" in where && change.accessGrantedAt) {
             return { count: 0 };
           }
-          change = { ...change, ...data };
+          if ("accessRevokedAt" in data
+            && "accessRevokedAt" in where
+            && (!change.accessGrantedAt || change.accessRevokedAt)) {
+            return { count: 0 };
+          }
+          const persisted = Object.fromEntries(
+            Object.entries(data).filter(([, value]) => value !== undefined)
+          );
+          change = { ...change, ...persisted };
           return { count: 1 };
         }),
       },
@@ -134,6 +179,7 @@ describe("replacement access orchestration", () => {
         findFirst: mocks.planMappingFindFirst,
       },
       organizationSubscription: {
+        findFirst: vi.fn(async () => ({ ...source })),
         update: vi.fn(async ({ where, data }: {
           where: { id: string };
           data: Record<string, unknown>;
@@ -146,9 +192,37 @@ describe("replacement access orchestration", () => {
           candidate = { ...candidate, ...data };
           return { ...candidate };
         }),
+        updateMany: vi.fn(async ({ where, data }: {
+          where: { id: string; pendingReplacementOrganizationId?: string };
+          data: Record<string, unknown>;
+        }) => {
+          if (where.id !== candidate.id
+            || (where.pendingReplacementOrganizationId
+              && where.pendingReplacementOrganizationId !== candidate.pendingReplacementOrganizationId)) {
+            return { count: 0 };
+          }
+          candidate = { ...candidate, ...data };
+          return { count: 1 };
+        }),
       },
       organizationSubscriptionHistory: {
         upsert: vi.fn().mockResolvedValue({}),
+      },
+      organizationSubscriptionInvoice: {
+        findUnique: vi.fn(async () => ({
+          commercialEvidenceVersion: 1,
+          commercialIntentChangeId: "change_1",
+          organizationSubscriptionId: "candidate_row",
+          providerMode: "TEST",
+          razorpaySubscriptionId: "sub_candidate",
+          razorpayPlanId: "plan_basic",
+          providerQuantity: 2,
+          razorpayOfferId: null,
+          razorpayPaymentId: candidate.lastConfirmedPaymentId ?? null,
+          paymentStatus: "captured",
+          paymentCaptured: true,
+          periodEnd: candidate.currentEnd ?? null,
+        })),
       },
       branch: {
         update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -171,7 +245,11 @@ describe("replacement access orchestration", () => {
     mocks.transaction.mockImplementation(async (callback: (client: typeof tx) => unknown) => callback(tx));
     mocks.cancelSubscription.mockResolvedValue({
       id: "sub_candidate",
+      entity: "subscription",
+      plan_id: "plan_basic",
       status: "cancelled",
+      total_count: 120,
+      quantity: 2,
       ended_at: Math.floor(now.getTime() / 1000),
     });
   });
@@ -191,15 +269,54 @@ describe("replacement access orchestration", () => {
       paidThrough: new Date("2026-09-01T00:00:00.000Z"),
     });
     expect(candidate.pendingReplacementOrganizationId).toBe("org_1");
-    const mappingQuery = mocks.planMappingFindFirst.mock.calls[0][0];
-    expect(mappingQuery).toMatchObject({
-      where: {
-        providerMode: "TEST",
-        plan: "BASIC",
-        razorpayPlanId: "plan_basic",
+    expect(mocks.planMappingFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("resolves an exact manual-review replacement only through explicit reconciliation", async () => {
+    change = {
+      ...change,
+      status: "FAILED",
+      operationStatus: "FAILED",
+      failureCategory: "MANUAL_REVIEW_REQUIRED",
+      failureCode: "PROVIDER_EVIDENCE_UNCERTAIN",
+      failedAt: new Date("2026-08-10T11:30:00.000Z"),
+      lastError: "Awaiting exact provider evidence",
+    };
+
+    await expect(BillingReplacementService.syncAuthorizedAccess("change_1", now))
+      .resolves.toMatchObject({ action: "NONE", change: { status: "FAILED" } });
+    expect(change).toMatchObject({
+      status: "FAILED",
+      failureCategory: "MANUAL_REVIEW_REQUIRED",
+      accessGrantedAt: null,
+    });
+
+    await expect(BillingReplacementService.syncAuthorizedAccess(
+      "change_1",
+      now,
+      { resolveManualReview: true }
+    )).resolves.toMatchObject({
+      action: "GRANT",
+      change: {
+        status: "SCHEDULED",
+        operationStatus: "SCHEDULED",
+        failureCategory: null,
       },
     });
-    expect(mappingQuery.where).not.toHaveProperty("active");
+
+    expect(change).toMatchObject({
+      status: "SCHEDULED",
+      operationStatus: "SCHEDULED",
+      failureCategory: null,
+      failureCode: null,
+      failedAt: null,
+      accessGrantedAt: now,
+    });
+    expect(branch).toMatchObject({ billingStatus: "ACTIVE", billingActivatedAt: now });
+    expect((tx.organizationSubscriptionHistory as { upsert: ReturnType<typeof vi.fn> }).upsert)
+      .toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ event: "billing_change:PROVIDER_STATE_ADOPTED:NONE" }),
+      }));
   });
 
   it("activates a future-start trial branch only after replacement authorization", async () => {
@@ -273,7 +390,7 @@ describe("replacement access orchestration", () => {
     expect(branch.billingStatus).toBe("PENDING_ACTIVATION");
   });
 
-  it("promotes against the exact historical plan mapping even when it is inactive", async () => {
+  it("promotes from exact frozen intent and linked invoice evidence without catalog lookup", async () => {
     source.status = "EXPIRED";
     candidate = {
       ...candidate,
@@ -296,13 +413,7 @@ describe("replacement access orchestration", () => {
     await expect(BillingReplacementService.promoteIfReady("change_1", now))
       .resolves.toMatchObject({ promoted: true, change: { status: "APPLIED" } });
 
-    const mappingQuery = mocks.planMappingFindFirst.mock.calls[0][0];
-    expect(mappingQuery.where).toMatchObject({
-      providerMode: "TEST",
-      plan: "BASIC",
-      razorpayPlanId: "plan_basic",
-    });
-    expect(mappingQuery.where).not.toHaveProperty("active");
+    expect(mocks.planMappingFindFirst).not.toHaveBeenCalled();
     expect(source.currentOrganizationId).toBeNull();
     expect(candidate).toMatchObject({
       pendingReplacementOrganizationId: null,

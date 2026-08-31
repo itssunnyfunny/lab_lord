@@ -275,9 +275,23 @@ Every statement uses one of these labels:
   row. (`prisma/schema.prisma`, billing integration tests)
 - **Must preserve—enforced:** Provider subscription status alone never grants
   paid access. `paidThrough` advances monotonically only after reconciliation
-  finds a current-period paid invoice and captured payment whose subscription,
-  invoice, and payment identifiers agree and whose method is supported.
+  validates the immutable authorized commercial intent against a current-period
+  paid invoice and captured payment. Subscription, invoice, payment, provider
+  mode, plan, quantity, offer, amount, currency, cadence, and period must agree;
+  `amount_due` must be zero and the invoice must be fully settled.
   (`services/billingReconciliation.service.ts`, billing tests)
+- **Must preserve—enforced:** Every new subscription authorization or billing
+  change freezes versioned commercial intent before its provider mutation. The
+  source subscription, provider mode, operation, plan, quantity, offer-adjusted
+  total, currency, period, and interval come from that snapshot; a replacement
+  provider subscription ID is bound exactly once after provider creation. Both
+  callbacks and reconciliation use the same validator and never reconstruct
+  historical intent from the current plan catalog. A mismatch preserves the
+  previously confirmed subscription, plan, quantity, and `paidThrough`, revokes
+  invalid provisional replacement access, and enters
+  `MANUAL_REVIEW_REQUIRED`. (`prisma/schema.prisma`,
+  `services/billingCommercialEvidence.service.ts`,
+  `services/billingReconciliation.service.ts`, exact-evidence and billing tests)
 - **Must preserve—enforced:** Checkout completion verifies the server signature,
   retrieves provider-side objects, and matches expected organization intent,
   subscription, payment, plan, quantity, and payment state before trusting the
@@ -295,22 +309,36 @@ Every statement uses one of these labels:
   intent. The source subscription is immutable for the mutation.
   (`services/billingMutation.service.ts`, billing-mutation integration tests)
 - **Must preserve—enforced:** Every provider subscription mutation, including
-  cancellation of a scheduled update, is finalized only by the exact lease and
-  attempt that submitted it. A timeout, network failure, provider 5xx, HTTP 408,
+  cancellation of a scheduled update or replacement candidate, is finalized
+  only by the exact lease and attempt that submitted it. A timeout, network
+  failure, provider 5xx, HTTP 408,
   malformed success, expired in-flight lease, or post-provider finalization
   failure is quarantined as `MANUAL_REVIEW_REQUIRED` and is never automatically
   resubmitted. Retry reads provider state first; only a definitely rejected or
-  pre-provider failure may issue a second mutation, while exact target evidence
-  may be adopted without another write. Manual-review and reconciliation
-  outcomes append deduplicated SYSTEM subscription-history evidence.
+  pre-provider failure may issue a second mutation after a read confirms the
+  provider object is still nonterminal, while exact target or terminal-
+  cancellation evidence may be adopted without another write. Manual-review and
+  reconciliation outcomes append deduplicated SYSTEM subscription-history evidence.
   (`services/billingMutation.service.ts`, `services/billingDeadline.service.ts`,
   billing-mutation and billing-deadline integration tests)
+- **Must preserve—enforced:** Owner-visible manual-review operations are read
+  and reconciled without a provider mutation. Pending, rejected-but-unresolved,
+  malformed, or mismatched evidence remains quarantined with a typed error;
+  only an exact frozen authorization or settlement may adopt provider state.
+  Replacement adoption is explicitly fenced to the same failed row and cannot
+  promote, grant access, cancel a source subscription, or issue another charge
+  while evidence remains unresolved. (`services/billing.service.ts`,
+  `services/billingReplacement.service.ts`, billing reconciliation tests)
 - **Must preserve—enforced:** Local billing undo cannot pass an in-flight,
   awaiting-payment, manual-review, or unclassified failed provider mutation.
   A branch scheduled for removal is restored only in the same transaction that
   durably records provider-confirmed scheduled-change undo; unresolved provider
-  quantity never restores branch access. (`services/billing.service.ts`,
-  `services/branch.service.ts`, billing and branch lifecycle integration tests)
+  quantity never restores branch access. Replacement-candidate cancellation uses
+  its own durable attempt; ambiguous cleanup is read-only on retry, and branch
+  restoration shares the exact transaction that clears the provider-confirmed
+  candidate slot. (`services/billing.service.ts`,
+  `services/billingReplacement.service.ts`, `services/branch.service.ts`, billing
+  and branch lifecycle integration tests)
 - **Must preserve—enforced:** Replacement access remains fail-closed until the
   replacement is authenticated or active and its lineage, plan, and quantity
   exactly match the approved intent. A mismatch removes provisional trust and

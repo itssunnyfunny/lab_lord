@@ -129,6 +129,8 @@ export type RazorpayInvoice = {
   amount_paid: number;
   amount_due: number;
   currency: string;
+  billing_start?: number | null;
+  billing_end?: number | null;
   issued_at?: number | null;
   paid_at?: number | null;
 };
@@ -172,6 +174,7 @@ export interface RazorpayApiClient {
     item: { name: string; amount: number; currency: string; description?: string };
     notes: Record<string, string>;
   }): Promise<RazorpayPlan>;
+  fetchPlan?(planId: string): Promise<RazorpayPlan>;
   createSubscription(input: {
     plan_id: string;
     total_count: number;
@@ -380,6 +383,19 @@ export function toRazorpaySubunits(amount: number, currency: string) {
   }
 
   return subunits;
+}
+
+export function fromRazorpaySubunits(amountSubunits: number, currency: string) {
+  if (!Number.isSafeInteger(amountSubunits) || amountSubunits <= 0) {
+    throw new Error("Payment amount must be a positive integer");
+  }
+
+  const normalizedCurrency = normalizeCurrency(currency);
+  const multiplier = ZERO_DECIMAL_CURRENCIES.has(normalizedCurrency) ? 1 : 100;
+  if (amountSubunits % multiplier !== 0) {
+    throw new Error("Payment amount cannot be represented in whole currency units");
+  }
+  return amountSubunits / multiplier;
 }
 
 export function hmacSha256Hex(message: string, secret: string) {

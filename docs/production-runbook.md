@@ -195,6 +195,112 @@ and release sequence. Follow the
 [Workspace billing V2 rollout](./workspace-billing-rollout.md) rather than
 reconstructing that order here.
 
+### Exact commercial-evidence migration
+
+Migration `20260829120000_add_exact_commercial_evidence` is an additive billing
+expansion. It adds:
+
+- the `COMMERCIAL_RECONCILIATION` billing-change type;
+- immutable commercial-intent fields on `OrganizationBillingChange` for the
+  source and target provider identities, mode, plan, quantity, offer-adjusted
+  amounts, currency, and cadence;
+- the confirmed-intent pointer on `OrganizationSubscription`;
+- exact provider, invoice, payment, amount, currency, and settlement evidence
+  on `OrganizationSubscriptionInvoice`;
+- supporting foreign keys, indexes, and all-null-or-complete check constraints.
+
+The migration does not update, delete, or infer any existing commercial row.
+In particular, it does not backfill historical intent from the current plan
+catalog. Existing rows remain valid with the new evidence tuple entirely null.
+
+Before an operator-approved application, verify the target through the normal
+protected migration preflight, take the approved backup, record the application
+commit, and capture these counts privately:
+
+```sql
+SELECT
+  (SELECT COUNT(*) FROM "OrganizationBillingChange") AS billing_change_count,
+  (SELECT COUNT(*) FROM "OrganizationSubscription") AS subscription_count,
+  (SELECT COUNT(*) FROM "OrganizationSubscriptionInvoice") AS invoice_count;
+
+SELECT "migration_name", "finished_at", "rolled_back_at"
+FROM "_prisma_migrations"
+WHERE "migration_name" = '20260829120000_add_exact_commercial_evidence';
+```
+
+The migration-history query must return no row before the first application. If
+it reports an applied or rolled-back record, stop and reconcile migration
+history; never edit or reapply an already applied migration. For strict
+pre/post count comparison, pause the hourly billing processor and signed billing
+event processing through the approved operational controls and drain active
+leases. Holding `RAZORPAY_BILLING_WRITES_ENABLED` alone is insufficient because
+it does not stop signed reconciliation.
+
+Deploy database-first. The previous application is compatible with the added
+nullable columns, enum value, indexes, foreign keys, and permissive all-null
+branch of the checks. Apply and verify the migration before deploying code that
+writes or reads exact commercial evidence. Do not enable a billing flag or Live
+canary between those steps.
+
+Immediately after migration and before the new application processes billing,
+repeat the three row counts and run:
+
+```sql
+SELECT
+  COUNT(*) FILTER (WHERE "commercialIntentVersion" IS NOT NULL)
+    AS versioned_change_count,
+  COUNT(*) FILTER (WHERE "authorizedRazorpaySubscriptionId" IS NOT NULL)
+    AS bound_target_count
+FROM "OrganizationBillingChange";
+
+SELECT
+  COUNT(*) FILTER (WHERE "confirmedCommercialIntentChangeId" IS NOT NULL)
+    AS confirmed_intent_pointer_count
+FROM "OrganizationSubscription";
+
+SELECT
+  COUNT(*) FILTER (WHERE "commercialEvidenceVersion" IS NOT NULL)
+    AS versioned_invoice_count
+FROM "OrganizationSubscriptionInvoice";
+
+SELECT conname, pg_get_constraintdef(oid) AS definition
+FROM pg_constraint
+WHERE conname IN (
+  'OrganizationBillingChange_commercial_intent_complete_check',
+  'OrganizationSubscriptionInvoice_commercial_evidence_check',
+  'OrganizationSubscription_confirmedCommercialIntentChangeId_fkey',
+  'OrganizationSubscriptionInvoice_commercialIntentChangeId_fkey'
+)
+ORDER BY conname;
+
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE indexname IN (
+  'OrganizationSubscription_confirmedCommercialIntentChangeId_key',
+  'BillingChange_commercial_intent_idx',
+  'BillingChange_authorized_subscription_idx',
+  'BillingChange_authorized_source_subscription_idx',
+  'SubscriptionInvoice_provider_period_idx',
+  'SubscriptionInvoice_commercial_intent_idx'
+)
+ORDER BY indexname;
+```
+
+With billing processing held, all three versioned-evidence counts are expected
+to be zero and the table row counts must equal the recorded pre-migration
+counts. The constraint query must return four rows and the index query six.
+Then run `pnpm prisma migrate status`, Prisma validation/generation, the focused
+billing unit and integration suites, lint, and the Production build before
+resuming billing processing or enabling a canary.
+
+There is no automatic down migration. An application rollback may leave this
+additive schema in place; the previous application ignores it. Prefer a
+compatible forward repair. Once the new application has written a commercial
+intent, confirmed-intent pointer, invoice evidence, or manual-review history,
+dropping these fields or links would destroy billing lineage and is prohibited.
+The migration itself performs no Razorpay operation, refund, cancellation, or
+charge; an application rollback likewise does not reverse provider state.
+
 ### Payment identity and resolution-event migration
 
 Migration `20260822090000_payment_type_identity_and_resolution_events` changes
@@ -1502,7 +1608,9 @@ Operational expectations:
   approved manual rerun. A `5xx` means the invocation failed closed and must be
   investigated before retry. For hourly billing,
   retry only after checking durable operation state; ambiguous/manual-review
-  billing cases must not be forced through automatically.
+  billing cases must not be forced through automatically. A
+  `retriedReplacementCancellations` count represents provider reads that reconcile
+  candidate cleanup; it must never represent another cancellation submission.
 - A planner rerun reclaims only an expired branch lease and uses stable business-
   event dedupe; a branch failure must not block later branches. Inspect
   `lastPlannerErrorCode`, queue/budget counts, and configuration revision before
