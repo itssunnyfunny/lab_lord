@@ -9,6 +9,8 @@ describe("permission messages", () => {
         expect(STAFF_ACTION_LABELS.view_whatsapp).toBe("WhatsApp viewing");
         expect(STAFF_ACTION_LABELS.send_whatsapp).toBe("WhatsApp sending");
         expect(STAFF_ACTION_LABELS.manage_whatsapp).toBe("WhatsApp management");
+        expect(STAFF_ACTION_LABELS.receive_whatsapp_reports)
+            .toBe("WhatsApp daily-report receiving");
     });
 
     it("explains who can adjust permissions", () => {

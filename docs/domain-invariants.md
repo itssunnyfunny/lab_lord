@@ -271,6 +271,13 @@ Every statement uses one of these labels:
 - **Must preserve—enforced:** Subscription and billing mutation APIs are
   owner-only. Provider mode is part of the trust boundary: TEST records cannot
   grant or mutate LIVE access, and vice versa.
+- **Must preserve—enforced:** Billing preflight and maintenance commands isolate
+  the selected allowlisted environment and fail on conflicting ambient
+  database or Razorpay identities. Maintenance apply runs are fenced by the
+  expected deployment, provider mode, database-resident identity fingerprint,
+  and explicit organization allowlist before any scoped query, write, or
+  provider fetch.
+  (`scripts/billing-operation-target.ts`, billing-operation target tests)
 - **Must preserve—enforced:** An organization has one current subscription slot
   and one pending-replacement slot. Previous subscription rows remain as
   history and replacement lineage rather than being rewritten as the current
@@ -450,7 +457,11 @@ Every statement uses one of these labels:
   events after reaching the tail. (`services/whatsappPlanner.service.ts`)
 - **Must preserve—enforced:** No Meta call runs inside a domain transaction.
   Template provisioning and message delivery follow: short authorization/claim
-  transaction, commit, bounded provider request, then lease-owned finalization.
+  transaction, a short final admission transaction, commit, bounded provider
+  request, then lease-owned finalization. The final admission atomically checks
+  full/requested pause state and stamps `providerCallAdmittedAt`; unadmitted
+  stale submissions are safely requeued while admitted stale submissions become
+  `UNKNOWN`.
   The dispatcher rechecks provider mode, integration/message flags, Live
   delivery canary, tenant, entitlement, writability, sender assignment, consent
   and mapping, approved managed binding, source payments/events, schedule,
@@ -504,7 +515,136 @@ Every statement uses one of these labels:
   provider client exposes only controlled managed Utility-template creation and
   one approved individual template send; there is no free-form, media,
   marketing, authentication/OTP, arbitrary-recipient/template, automatic-reply,
-  daily-report, or AI-to-provider capability.
+  or AI-to-provider capability.
+
+## WhatsApp aggregate reports and operational hardening
+
+- **Must preserve—enforced:** A report subscription is self-service only and
+  proves control of the exact normalized WhatsApp phone through a signed inbound
+  `START REPORTS <code>` challenge for the exact assigned sender. The ten-
+  character challenge is stored only as a sender/subscription/phone-bound hash,
+  expires after 15 minutes, and allows at most five failures. Confirmation
+  rechecks current owner or staff membership, tenant and branch scope, sender
+  assignment, entitlement, writability, and every report permission inside the
+  transaction before activating `OWNER_REPORT` consent. No owner or manager may
+  confirm another user's phone. (`lib/whatsappReportConfirmation.ts`,
+  `services/whatsappReport.service.ts`, `services/whatsappWebhook.service.ts`)
+- **Must preserve—enforced:** Normalized report confirmation commands retain the
+  inbound provider message ID. Repeated copies of one provider identity are
+  deduplicated, while distinct message IDs from the same sender/phone remain in
+  provider envelope order.
+- **Must preserve—enforced:** Branch reports require the current user to hold
+  `view_whatsapp`, `receive_whatsapp_reports`, `view_payments`, and `analytics`
+  for that branch, plus `WHATSAPP_AUTOMATION` entitlement and writable scope.
+  Organization reports are owner-only. Removal, permission loss, sender
+  reassignment/disconnect, owner change, or user-phone change makes affected
+  subscriptions stale or paused and cancels only safely unsubmitted report
+  rows; it never transfers consent or deletes submitted history.
+- **Must preserve—enforced:** Exact signed `STOP REPORTS`, the exact managed
+  `Stop reports` quick-reply label, and its compatibility payload opt out only
+  `OWNER_REPORT`, pause matching subscriptions, and cancel unsubmitted reports.
+  Existing exact full `STOP` also pauses reports while preserving its broader
+  operational-consent behavior. Neither command sends a reply, logs raw text,
+  or changes payment truth.
+- **Must preserve—enforced:** Every daily report message references an immutable,
+  versioned, hash-validated snapshot created before its outbox row. Snapshots
+  contain aggregates only and bind one canonical UTC `metricsAsOfAt`. Payments,
+  active-student state, shift-slot capacity/use, canonical open dues/overdue,
+  and aggregate WhatsApp outcomes are calculated and labelled at that one
+  transaction-snapshot instant. They contain no student, staff, phone, payment,
+  seat, or variable branch list and never describe shift-slot allocation as
+  attendance. Delayed sends reuse the original snapshot.
+- **Service-layer contract—not DB-enforced:** Report day/cutoff calculations use
+  the organization's IANA timezone. Reports are prospective, schedule only in
+  the reviewed 18:00–23:30 local window (default 21:00). Catch-up ends
+  exclusively at the earlier of one hour after cutoff or next local midnight;
+  a planner does not synthesize a full historical backlog. A missed window or
+  unprovable canonical metrics set creates bounded safe `REPORT_FAILURE`
+  evidence and skips/suppresses before provider submission. Branch report
+  metrics and organization totals share the same canonical definitions.
+- **Must preserve—enforced:** Snapshot identity is `(scope, scopeKey,
+  localReportDate, scheduledCutoffAt, metricsVersion)`. Same-scope subscriptions
+  with the same cutoff share one immutable snapshot. Different per-subscription
+  cutoffs create distinct snapshots, source fingerprints, and message dedupe
+  identities and may both be delivered during their own trust windows.
+- **Must preserve—enforced:** Branch daily reports use the existing branch
+  estimated monthly budget and automatic daily frequency reservation.
+  Organization reports use the distinct owner-configured organization report
+  budget and may have a null branch; they must never consume an arbitrary
+  branch's budget. Snapshot creation, idempotent outbox creation, frequency
+  reservation, and budget reservation are atomic. Cancellation releases only a
+  `RESERVED` estimate; accepted or ambiguous work remains committed.
+- **Must preserve—enforced:** Operational service notices are limited to the
+  server-owned `BRANCH_CLOSED`, `HOURS_CHANGED`, and `MAINTENANCE_WINDOW`
+  contracts, reason labels, typed dates/times, and managed Utility templates.
+  There is no browser-authored provider text, AI copy, promotion, media, payment
+  link, OTP, or generic broadcast. The audience is derived from current active
+  branch mappings for the assigned sender with current `OPERATIONAL` opt-in,
+  deduplicated by phone, and contains no student name. More than 500 unique
+  recipients rejects the whole request before reservation.
+- **Must preserve—enforced:** Notice preview is read-only. Queueing requires a
+  bounded idempotency key, explicit estimated-charge confirmation, no more than
+  30 days of scheduling horizon, a safe local send time, current authorization,
+  exact provider-approved Utility binding, and an atomic full-audience branch-
+  budget reservation before one outbox row per unique phone. Cancellation and
+  completion reconcile only safe local rows; a notice with already submitted
+  recipients may be `PARTIAL` and history remains immutable.
+- **Must preserve—enforced:** Collections, branch reports, organization reports,
+  and service notices share the one `WhatsAppMessage` outbox but have separate
+  strict source validators. Only organization reports may omit `branchId`.
+  Every dispatcher claim rechecks its purpose-specific immutable source,
+  subscription or consent, permissions, sender, managed binding, language,
+  schedule, frequency, budget, flags, canaries, rate card, and safety state
+  immediately before the provider call. Existing collection validation remains
+  unchanged.
+- **Must preserve—enforced:** The operator-owned INR rate card has a version,
+  strict UTC effective time, and strict UTC expiry. Preview may describe an
+  unavailable estimate, but reservation/planner/dispatcher work fails closed
+  before effectiveness and at expiry. Estimated cost is never presented as a
+  Meta invoice or exact charge.
+- **Must preserve—enforced:** Live automatic collection and report work requires
+  the organization in both the manual-delivery canary and the separate
+  automation canary. Report, report-planner, notice, provider-health, operations-
+  UI, and Live automation gates are independent and false/empty by default;
+  malformed canary input enables no organization. Machine cron authentication
+  does not bypass tenant entitlement, current source eligibility, or sender
+  safety.
+- **Must preserve—enforced:** Sender safety is local and conservative. Three
+  ambiguous outcomes or ten reviewed sender/provider failures in a rolling ten-
+  minute window pauses new submissions; an invalid individual destination does
+  not count. A pause request blocks every new provider admission, remains
+  pending until earlier durable admissions drain, and becomes fully paused only
+  when no admitted `SUBMITTING` message remains. Manual pause makes no Meta
+  mutation. Owner-only resume requires
+  explicit confirmation, a current rate card, active unrestricted sender,
+  recent successful unrestricted read-only reconciliation, healthy exact
+  bindings for current queued work, and healthy templates for currently enabled
+  or configured functionality, with no blocking critical incident. Unused
+  languages and optional templates do not block resume, but each send still
+  fails closed without its exact binding. Resume never retries an `UNKNOWN` row
+  or removes incident history.
+- **Must preserve—enforced:** Operational incidents are tenant-scoped,
+  deduplicated, and contain only bounded safe codes/details. Every ambiguous
+  submission and stale `SUBMITTING` lease has inspectable evidence and is never
+  automatically retried. A later valid signed provider status may project the
+  original row and resolve its incident without resending. Acknowledgement
+  records human awareness only; it cannot invent provider resolution.
+- **Must preserve—enforced:** Provider-health reconciliation is read-only and
+  bounded to WABA, phone/registration/quality/restriction, subscribed-app, and
+  template status/category queries. It uses database leases, mode/health
+  canaries, and fixed timeouts; an ambiguous read preserves prior provider truth.
+  It may not register a phone, subscribe an app, create a template, send a
+  message, remove an asset, or share credit. Webhook-stale incidents require
+  recent provider activity that made a callback reasonably expected; idle sender
+  silence alone is not an incident.
+- **Must preserve—enforced:** Cron run evidence contains integer-only aggregate
+  counts and bounded status/error codes—never IDs, names, phones, amounts,
+  message content, or secrets—and expires after 30 days. Daily maintenance may
+  expire confirmation challenges and old pending subscriptions, recover safe
+  stale leases, reconcile notice completion, detect stuck work, and delete
+  unreferenced report snapshots older than 400 days in bounded batches. It never
+  deletes accepted message, consent, or audit history, resolves a payment, or
+  calls Meta.
 
 ## Imports and AI boundaries
 

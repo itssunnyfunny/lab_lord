@@ -1075,6 +1075,7 @@ function OrgSettingsContent({ params }: { params: Promise<{ orgId: string }> }) 
 
                 <OrganizationWhatsAppPanel
                     organizationId={orgId}
+                    organizationName={org.name}
                     onAvailabilityChange={setWhatsAppAvailable}
                 />
 

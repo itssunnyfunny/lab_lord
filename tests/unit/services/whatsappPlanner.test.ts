@@ -3,12 +3,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
   settingsUpdateMany: vi.fn(),
+  jobRunStart: vi.fn(),
+  jobRunFinish: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: mocks.transaction,
     branchWhatsAppSettings: { updateMany: mocks.settingsUpdateMany },
+  },
+}));
+
+vi.mock("@/services/whatsappJobRun.service", () => ({
+  WhatsAppJobRunService: {
+    start: mocks.jobRunStart,
+    finish: mocks.jobRunFinish,
   },
 }));
 
@@ -257,6 +266,14 @@ describe("WhatsApp planner durability", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    mocks.jobRunStart.mockResolvedValue({
+      created: true,
+      run: { id: "job_run_1", status: "RUNNING" },
+    });
+    mocks.jobRunFinish.mockResolvedValue({
+      changed: true,
+      run: { id: "job_run_1", status: "SUCCEEDED" },
+    });
   });
 
   it("returns held before any database access when the planner flag is off", async () => {

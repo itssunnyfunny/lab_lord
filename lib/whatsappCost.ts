@@ -3,6 +3,8 @@ export const WHATSAPP_UTILITY_RATE_MICROS_INR_ENV =
 export const WHATSAPP_RATE_CARD_VERSION_ENV = "WHATSAPP_RATE_CARD_VERSION" as const;
 export const WHATSAPP_RATE_CARD_EFFECTIVE_AT_ENV =
   "WHATSAPP_RATE_CARD_EFFECTIVE_AT" as const;
+export const WHATSAPP_RATE_CARD_EXPIRES_AT_ENV =
+  "WHATSAPP_RATE_CARD_EXPIRES_AT" as const;
 
 export const INR_MICROS_PER_RUPEE = 1_000_000;
 export const INR_MICROS_PER_PAISA = 10_000;
@@ -14,9 +16,12 @@ export const MAX_WHATSAPP_UTILITY_RATE_MICROS_INR = 10 * INR_MICROS_PER_RUPEE;
 export type WhatsAppRateCard = Readonly<{
   currency: "INR";
   effectiveAt: Date;
+  expiresAt: Date;
   rateMicros: number;
   version: string;
 }>;
+
+export type WhatsAppRateCardStatus = "NOT_YET_EFFECTIVE" | "VALID" | "EXPIRING" | "EXPIRED";
 
 export type WhatsAppCostErrorCode =
   | "RATE_UNAVAILABLE"
@@ -32,6 +37,26 @@ export class WhatsAppCostConfigurationError extends Error {
     this.name = "WhatsAppCostConfigurationError";
   }
 }
+
+const UTC_RATE_CARD_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+
+function parseUtcRateCardTimestamp(value: string, label: "effective" | "expiry") {
+  const normalized = value.includes(".") ? value : value.replace(/Z$/, ".000Z");
+  const parsed = new Date(value);
+  if (
+    !UTC_RATE_CARD_TIMESTAMP_PATTERN.test(value)
+    || Number.isNaN(parsed.getTime())
+    || parsed.toISOString() !== normalized
+  ) {
+    throw new WhatsAppCostConfigurationError(
+      "RATE_UNAVAILABLE",
+      `WhatsApp rate-card ${label} date is invalid`
+    );
+  }
+  return parsed;
+}
+
 function requiredEnvironmentValue(
   env: Readonly<Record<string, string | undefined>>,
   name: string
@@ -52,6 +77,7 @@ export function readWhatsAppRateCard(
   const rawRate = requiredEnvironmentValue(env, WHATSAPP_UTILITY_RATE_MICROS_INR_ENV);
   const version = requiredEnvironmentValue(env, WHATSAPP_RATE_CARD_VERSION_ENV);
   const rawEffectiveAt = requiredEnvironmentValue(env, WHATSAPP_RATE_CARD_EFFECTIVE_AT_ENV);
+  const rawExpiresAt = requiredEnvironmentValue(env, WHATSAPP_RATE_CARD_EXPIRES_AT_ENV);
 
   if (!/^[1-9]\d{0,9}$/.test(rawRate)) {
     throw new WhatsAppCostConfigurationError(
@@ -72,21 +98,44 @@ export function readWhatsAppRateCard(
       "WhatsApp rate-card version is invalid"
     );
   }
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(rawEffectiveAt)) {
+  const effectiveAt = parseUtcRateCardTimestamp(rawEffectiveAt, "effective");
+  const expiresAt = parseUtcRateCardTimestamp(rawExpiresAt, "expiry");
+  if (expiresAt.getTime() <= effectiveAt.getTime()) {
     throw new WhatsAppCostConfigurationError(
       "RATE_UNAVAILABLE",
-      "WhatsApp rate-card effective date is invalid"
-    );
-  }
-  const effectiveAt = new Date(rawEffectiveAt);
-  if (Number.isNaN(effectiveAt.getTime())) {
-    throw new WhatsAppCostConfigurationError(
-      "RATE_UNAVAILABLE",
-      "WhatsApp rate-card effective date is invalid"
+      "WhatsApp rate-card expiry date is invalid"
     );
   }
 
-  return Object.freeze({ currency: "INR", effectiveAt, rateMicros, version });
+  return Object.freeze({ currency: "INR", effectiveAt, expiresAt, rateMicros, version });
+}
+
+export function getWhatsAppRateCardStatus(
+  card: WhatsAppRateCard,
+  at = new Date()
+): WhatsAppRateCardStatus {
+  const time = at.getTime();
+  if (time < card.effectiveAt.getTime()) return "NOT_YET_EFFECTIVE";
+  if (time >= card.expiresAt.getTime()) return "EXPIRED";
+  const expiringThreshold = card.expiresAt.getTime() - 7 * 24 * 60 * 60 * 1_000;
+  return time >= expiringThreshold ? "EXPIRING" : "VALID";
+}
+
+export function assertWhatsAppRateCardCurrent(card: WhatsAppRateCard, at = new Date()) {
+  const status = getWhatsAppRateCardStatus(card, at);
+  if (status === "NOT_YET_EFFECTIVE") {
+    throw new WhatsAppCostConfigurationError(
+      "RATE_UNAVAILABLE",
+      "WhatsApp utility rate configuration is not effective yet"
+    );
+  }
+  if (status === "EXPIRED") {
+    throw new WhatsAppCostConfigurationError(
+      "RATE_UNAVAILABLE",
+      "WhatsApp utility rate configuration has expired"
+    );
+  }
+  return card;
 }
 
 export function resolveWhatsAppUtilityRate(input: {
@@ -101,14 +150,7 @@ export function resolveWhatsAppUtilityRate(input: {
     );
   }
   const card = readWhatsAppRateCard(input.env);
-  const at = input.at ?? new Date();
-  if (card.effectiveAt.getTime() > at.getTime()) {
-    throw new WhatsAppCostConfigurationError(
-      "RATE_UNAVAILABLE",
-      "WhatsApp utility rate configuration is not effective yet"
-    );
-  }
-  return card;
+  return assertWhatsAppRateCardCurrent(card, input.at ?? new Date());
 }
 
 export function paiseToInrMicros(paise: number) {

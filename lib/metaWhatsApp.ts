@@ -5,7 +5,6 @@ import { z } from "zod";
 import {
   prepareManagedWhatsAppTemplate,
   resolveExactManagedWhatsAppTemplateDefinition,
-  WHATSAPP_MANAGED_STOP_PAYLOAD,
   type WhatsAppManagedTemplateDefinition,
 } from "@/lib/whatsappManagedTemplates";
 import {
@@ -503,7 +502,7 @@ function safeRequestId(response: Response, traceId?: string) {
     : null;
 }
 
-const META_RATE_LIMIT_CODES = new Set([4, 80007, 130429, 131056]);
+const META_RATE_LIMIT_CODES = new Set([4, 80007, 80008, 130429, 131056]);
 
 function providerErrorKind(
   status: number,
@@ -945,7 +944,7 @@ class DefaultMetaWhatsAppClient implements MetaWhatsAppProviderClient {
               type: "button",
               sub_type: "quick_reply",
               index: "0",
-              parameters: [{ type: "payload", payload: WHATSAPP_MANAGED_STOP_PAYLOAD }],
+              parameters: [{ type: "payload", payload: prepared.definition.stopPayload }],
             },
           ],
         },

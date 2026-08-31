@@ -102,6 +102,7 @@ function permissions(overrides: Partial<Record<StaffAction, boolean>> = {}) {
     view_whatsapp: false,
     send_whatsapp: false,
     manage_whatsapp: false,
+    receive_whatsapp_reports: false,
     staff_management: false,
     ...overrides,
   } satisfies Record<StaffAction, boolean>;
