@@ -317,7 +317,7 @@ describe("WhatsAppTemplateProvisioningService.install", () => {
       catalogVersion: 1,
       languages: ["en_IN"],
     });
-    expect(result.templates).toHaveLength(9);
+    expect(result.templates).toHaveLength(definitions().length);
     expect(result.templates[0]).toMatchObject({
       providerCategory: "UTILITY",
       providerStatus: "APPROVED",
@@ -390,10 +390,10 @@ describe("WhatsAppTemplateProvisioningService.install", () => {
 
     const result = await WhatsAppTemplateProvisioningService.install(INPUT);
 
-    expect(result.templates).toHaveLength(9);
+    expect(result.templates).toHaveLength(definitions().length);
     expect(result.templates.every(item => item.status === "READY" && item.active)).toBe(true);
     expect(mocks.createManagedUtilityTemplate).not.toHaveBeenCalled();
-    expect(mocks.bindingUpsert).toHaveBeenCalledTimes(9);
+    expect(mocks.bindingUpsert).toHaveBeenCalledTimes(definitions().length);
     expect(mocks.auditCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         action: "MANAGED_TEMPLATE_INSTALL_COMPLETED",

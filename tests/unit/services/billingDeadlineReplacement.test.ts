@@ -128,7 +128,7 @@ describe("replacement billing deadlines", () => {
     mocks.promoteIfReady.mockResolvedValue({ promoted: false });
   });
 
-  it("keeps replacements and manual-review changes out of generic retries", async () => {
+  it("automatically retries only failures proven safe for provider resubmission", async () => {
     await BillingDeadlineService.run(now);
 
     const retryQuery = mocks.billingChangeFindMany.mock.calls
@@ -137,10 +137,7 @@ describe("replacement billing deadlines", () => {
     expect(retryQuery.where).toMatchObject({
       replacementSubscriptionId: null,
       attemptCount: { lt: 3 },
-      OR: [
-        { failureCategory: null },
-        { failureCategory: { not: "MANUAL_REVIEW_REQUIRED" } },
-      ],
+      failureCategory: { in: ["PROVIDER_REJECTED", "PRE_PROVIDER_FAILURE"] },
     });
     expect(mocks.retryMutation).not.toHaveBeenCalled();
   });

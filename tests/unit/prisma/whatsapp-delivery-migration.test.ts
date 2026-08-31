@@ -63,11 +63,11 @@ describe("WhatsApp template delivery and collections migration", () => {
       expect(migration).toContain(`CREATE TYPE "${enumName}" AS ENUM`);
     }
 
-    expect(migration).toContain(
-      'ALTER TYPE "WhatsAppWebhookReceiptStatus"\n  ADD VALUE IF NOT EXISTS \'PROCESSING\''
+    expect(migration).toMatch(
+      /ALTER TYPE "WhatsAppWebhookReceiptStatus"\r?\n\s+ADD VALUE IF NOT EXISTS 'PROCESSING'/
     );
-    expect(migration).toContain(
-      'ALTER TYPE "WhatsAppMessagePurpose"\n  ADD VALUE IF NOT EXISTS \'PAYMENT_CORRECTION\''
+    expect(migration).toMatch(
+      /ALTER TYPE "WhatsAppMessagePurpose"\r?\n\s+ADD VALUE IF NOT EXISTS 'PAYMENT_CORRECTION'/
     );
 
     for (const action of [
@@ -269,7 +269,7 @@ describe("WhatsApp template delivery and collections migration", () => {
     expect(confirmationOffset).toBeLessThan(truncateOffset);
     expect(databaseReset).toContain("SELECT current_database()");
     expect(databaseReset).toContain(
-      "connectedDatabaseName !== expectedDatabaseName"
+      "connectedDatabaseName !== target.databaseName"
     );
 
     for (const table of [

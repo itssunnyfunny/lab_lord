@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   getManagedWhatsAppTemplate,
+  hasCompleteManagedWhatsAppTemplateCatalog,
   hashWhatsAppTemplateComponents,
   listManagedWhatsAppTemplates,
   prepareManagedWhatsAppTemplate,
   resolveExactManagedWhatsAppTemplateDefinition,
   WHATSAPP_MANAGED_STOP_PAYLOAD,
+  WHATSAPP_MANAGED_REPORT_STOP_PAYLOAD,
   WHATSAPP_MANAGED_TEMPLATE_CATALOG_VERSION,
   WHATSAPP_MANAGED_TEMPLATE_KEYS,
   WHATSAPP_MANAGED_TEMPLATE_LANGUAGES,
@@ -15,6 +17,25 @@ import {
 } from "@/lib/whatsappManagedTemplates";
 
 describe("managed WhatsApp utility-template catalogue", () => {
+  it("requires every key and supported language before declaring a catalogue healthy", () => {
+    const identities = listManagedWhatsAppTemplates().map(definition => ({
+      managedKey: definition.managedKey,
+      language: definition.language,
+      catalogVersion: definition.catalogVersion,
+    }));
+
+    expect(hasCompleteManagedWhatsAppTemplateCatalog(identities)).toBe(true);
+    expect(hasCompleteManagedWhatsAppTemplateCatalog(identities.slice(1))).toBe(false);
+    expect(hasCompleteManagedWhatsAppTemplateCatalog([
+      ...identities.slice(1),
+      { ...identities[0]!, language: "en_US" },
+    ])).toBe(false);
+    expect(hasCompleteManagedWhatsAppTemplateCatalog([
+      ...identities,
+      identities[0]!,
+    ])).toBe(false);
+  });
+
   it("contains every versioned key in only the two officially supported product languages", () => {
     const definitions = listManagedWhatsAppTemplates();
 
@@ -32,7 +53,8 @@ describe("managed WhatsApp utility-template catalogue", () => {
       expect(definition.providerTemplateName).toMatch(/^lablords_[a-z0-9_]+_v1$/);
       expect(definition.category).toBe("UTILITY");
       expect(definition.parameterFormat).toBe("POSITIONAL");
-      expect(definition.stopPayload).toBe(WHATSAPP_MANAGED_STOP_PAYLOAD);
+      expect([WHATSAPP_MANAGED_STOP_PAYLOAD, WHATSAPP_MANAGED_REPORT_STOP_PAYLOAD])
+        .toContain(definition.stopPayload);
       expect(definition.catalogHash).toMatch(/^[a-f0-9]{64}$/);
       expect(Object.isFrozen(definition)).toBe(true);
       expect(Object.isFrozen(definition.components)).toBe(true);
@@ -44,6 +66,33 @@ describe("managed WhatsApp utility-template catalogue", () => {
           buttons: [expect.objectContaining({ type: "QUICK_REPLY" })],
         }),
       ]);
+    }
+  });
+
+  it("adds aggregate report and typed notice templates without changing legacy catalogue identity", () => {
+    expect(getManagedWhatsAppTemplate("FEE_RENEWAL_POLITE", "en_IN").catalogHash)
+      .toBe("58800b11e0a626b0cbaf698dec49c8e413bdb9e6b5be1edceac8e8c9aae82e40");
+
+    const report = getManagedWhatsAppTemplate("DAILY_BRANCH_REPORT", "en_IN");
+    expect(report.stopPayload).toBe(WHATSAPP_MANAGED_REPORT_STOP_PAYLOAD);
+    expect(report.variables.map(variable => variable.key)).not.toContain("studentName");
+    expect(report.components).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "FOOTER", text: expect.stringContaining("STOP REPORTS") }),
+      expect.objectContaining({
+        type: "BUTTONS",
+        buttons: [expect.objectContaining({ text: "Stop reports" })],
+      }),
+    ]));
+
+    for (const key of [
+      "BRANCH_CLOSED_NOTICE",
+      "BRANCH_HOURS_CHANGED_NOTICE",
+      "BRANCH_MAINTENANCE_NOTICE",
+    ] as const) {
+      const notice = getManagedWhatsAppTemplate(key, "en_IN");
+      expect(notice.category).toBe("UTILITY");
+      expect(notice.variables.map(variable => variable.key)).not.toContain("studentName");
+      expect(notice.stopPayload).toBe(WHATSAPP_MANAGED_STOP_PAYLOAD);
     }
   });
 

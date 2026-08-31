@@ -97,6 +97,7 @@ const PERMISSION_OPTIONS: {
     { action: "view_whatsapp", label: "View WhatsApp", summary: "See sender readiness and branch communication settings" },
     { action: "send_whatsapp", label: "Send WhatsApp", summary: "Queue reviewed, managed-template payment reminders when branch delivery is configured; no arbitrary message text" },
     { action: "manage_whatsapp", label: "Manage WhatsApp", summary: "Manage branch WhatsApp configuration; provider ownership remains owner-only" },
+    { action: "receive_whatsapp_reports", label: "Receive WhatsApp reports", summary: "Confirm and receive aggregate daily branch reports when payment and analytics access are also allowed" },
 ];
 
 const PERMISSION_ACTION_MAP: Record<OverridableStaffAction, PermissionActionCode> = {
@@ -111,6 +112,7 @@ const PERMISSION_ACTION_MAP: Record<OverridableStaffAction, PermissionActionCode
     view_whatsapp: "VIEW_WHATSAPP",
     send_whatsapp: "SEND_WHATSAPP",
     manage_whatsapp: "MANAGE_WHATSAPP",
+    receive_whatsapp_reports: "RECEIVE_WHATSAPP_REPORTS",
 };
 
 const ROLE_DEFAULT_PERMISSIONS: Record<StaffRoleOption, Record<OverridableStaffAction, boolean>> = {
@@ -126,6 +128,7 @@ const ROLE_DEFAULT_PERMISSIONS: Record<StaffRoleOption, Record<OverridableStaffA
         view_whatsapp: true,
         send_whatsapp: true,
         manage_whatsapp: true,
+        receive_whatsapp_reports: true,
     },
     STAFF: {
         manage_branch: false,
@@ -139,6 +142,7 @@ const ROLE_DEFAULT_PERMISSIONS: Record<StaffRoleOption, Record<OverridableStaffA
         view_whatsapp: true,
         send_whatsapp: true,
         manage_whatsapp: false,
+        receive_whatsapp_reports: false,
     },
 };
 

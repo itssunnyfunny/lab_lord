@@ -1,6 +1,10 @@
 const LOCAL_TIME_PATTERN = /^(\d{2}):(\d{2})$/;
 export const WHATSAPP_SEND_WINDOW_START_MINUTE = 8 * 60;
 export const WHATSAPP_SEND_WINDOW_END_MINUTE = 20 * 60;
+export const WHATSAPP_REPORT_SEND_WINDOW_START_MINUTE = 18 * 60;
+export const WHATSAPP_REPORT_SEND_WINDOW_END_MINUTE = 23 * 60 + 30;
+export const DEFAULT_WHATSAPP_REPORT_SEND_TIME = "21:00" as const;
+export const WHATSAPP_REPORT_CATCH_UP_MS = 60 * 60 * 1_000;
 
 export type LocalDateParts = Readonly<{
   year: number;
@@ -21,6 +25,23 @@ export function parseWhatsAppSendTime(value: string) {
     || minuteOfDay > WHATSAPP_SEND_WINDOW_END_MINUTE
   ) {
     throw new Error("Send time must be between 08:00 and 20:00 local time");
+  }
+  return { hour, minute, minuteOfDay } as const;
+}
+
+export function parseWhatsAppReportSendTime(value: string) {
+  const match = LOCAL_TIME_PATTERN.exec(value);
+  if (!match) throw new Error("Report time must use HH:mm");
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const minuteOfDay = hour * 60 + minute;
+  if (
+    hour > 23
+    || minute > 59
+    || minuteOfDay < WHATSAPP_REPORT_SEND_WINDOW_START_MINUTE
+    || minuteOfDay > WHATSAPP_REPORT_SEND_WINDOW_END_MINUTE
+  ) {
+    throw new Error("Report time must be between 18:00 and 23:30 local time");
   }
   return { hour, minute, minuteOfDay } as const;
 }
@@ -84,7 +105,10 @@ export function isWithinWhatsAppSendWindow(date: Date, timeZone: string) {
 }
 
 export function whatsappLocalDateKey(date: Date, timeZone: string) {
-  const { year, month, day } = getWhatsAppLocalDateParts(date, timeZone);
+  return whatsappLocalDatePartsKey(getWhatsAppLocalDateParts(date, timeZone));
+}
+
+export function whatsappLocalDatePartsKey({ year, month, day }: LocalDateParts) {
   return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
@@ -158,6 +182,80 @@ export function scheduleWhatsAppForLocalDate(input: {
     minute: sendTime.minute,
     timeZone: input.timeZone,
   });
+}
+
+export function scheduleWhatsAppReportForLocalDate(input: {
+  localDate: LocalDateParts;
+  sendTimeLocal: string;
+  timeZone: string;
+}) {
+  const sendTime = parseWhatsAppReportSendTime(input.sendTimeLocal);
+  return whatsappLocalDateTimeToUtc({
+    date: input.localDate,
+    hour: sendTime.hour,
+    minute: sendTime.minute,
+    timeZone: input.timeZone,
+  });
+}
+
+/**
+ * Returns the exclusive end of the report catch-up window. Catch-up is bounded
+ * to one hour and can never continue into the next local report day.
+ */
+export function getWhatsAppReportCatchUpEndsAt(input: {
+  scheduledCutoffAt: Date;
+  timeZone: string;
+}) {
+  if (Number.isNaN(input.scheduledCutoffAt.getTime())) {
+    throw new Error("Report cutoff is invalid");
+  }
+  const localDate = getWhatsAppLocalDateParts(input.scheduledCutoffAt, input.timeZone);
+  const nextLocalMidnight = whatsappLocalDateTimeToUtc({
+    date: addWhatsAppLocalDays(localDate, 1),
+    hour: 0,
+    minute: 0,
+    timeZone: input.timeZone,
+  });
+  return new Date(Math.min(
+    input.scheduledCutoffAt.getTime() + WHATSAPP_REPORT_CATCH_UP_MS,
+    nextLocalMidnight.getTime()
+  ));
+}
+
+export function getWhatsAppReportPlanningWindow(input: {
+  now: Date;
+  sendTimeLocal: string;
+  timeZone: string;
+}) {
+  const today = getWhatsAppLocalDateParts(input.now, input.timeZone);
+  const todayCutoff = scheduleWhatsAppReportForLocalDate({
+    localDate: today,
+    sendTimeLocal: input.sendTimeLocal,
+    timeZone: input.timeZone,
+  });
+  const localDate = input.now.getTime() >= todayCutoff.getTime()
+    ? today
+    : addWhatsAppLocalDays(today, -1);
+  const scheduledCutoffAt = localDate === today
+    ? todayCutoff
+    : scheduleWhatsAppReportForLocalDate({
+        localDate,
+        sendTimeLocal: input.sendTimeLocal,
+        timeZone: input.timeZone,
+      });
+  const catchUpEndsAt = getWhatsAppReportCatchUpEndsAt({
+    scheduledCutoffAt,
+    timeZone: input.timeZone,
+  });
+  return {
+    localDate,
+    localDateKey: whatsappLocalDatePartsKey(localDate),
+    scheduledCutoffAt,
+    catchUpEndsAt,
+    eligible: input.now.getTime() >= scheduledCutoffAt.getTime()
+      && input.now.getTime() < catchUpEndsAt.getTime(),
+    missed: input.now.getTime() >= catchUpEndsAt.getTime(),
+  } as const;
 }
 
 export function nextWhatsAppSendAt(input: {

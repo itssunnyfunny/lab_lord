@@ -4,12 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const tx = {
     $queryRaw: vi.fn(),
+    whatsAppSender: {
+      updateMany: vi.fn(),
+    },
+    whatsAppReportSubscription: {
+      updateMany: vi.fn(),
+    },
     whatsAppWebhookReceipt: {
       findFirst: vi.fn(),
       updateMany: vi.fn(),
     },
     whatsAppMessage: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       findUnique: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -48,6 +55,10 @@ const mocks = vi.hoisted(() => {
     schemaProbe: vi.fn(),
     transaction: vi.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
     disableSenderPhone: vi.fn(),
+    recordDelivered: vi.fn(),
+    resolveIncident: vi.fn(),
+    createOrTouchIncident: vi.fn(),
+    confirmReportSubscription: vi.fn(),
   };
 });
 
@@ -74,6 +85,25 @@ vi.mock("@/lib/whatsappSchema", () => ({
 vi.mock("@/services/whatsappRecipient.service", () => ({
   WhatsAppRecipientService: {
     disableSenderPhoneInTransaction: mocks.disableSenderPhone,
+  },
+}));
+
+vi.mock("@/services/whatsappSenderSafety.service", () => ({
+  WhatsAppSenderSafetyService: {
+    recordDeliveredInTransaction: mocks.recordDelivered,
+  },
+}));
+
+vi.mock("@/services/whatsappIncident.service", () => ({
+  WhatsAppIncidentService: {
+    resolveInTransaction: mocks.resolveIncident,
+    createOrTouchInTransaction: mocks.createOrTouchIncident,
+  },
+}));
+
+vi.mock("@/services/whatsappReport.service", () => ({
+  WhatsAppReportService: {
+    confirmSubscriptionInTransaction: mocks.confirmReportSubscription,
   },
 }));
 
@@ -144,15 +174,25 @@ beforeEach(() => {
   mocks.schemaProbe.mockResolvedValue(false);
   mocks.tx.whatsAppWebhookReceipt.findFirst.mockResolvedValue({ id: "receipt_1" });
   mocks.tx.$queryRaw.mockResolvedValue([{ id: "sender_1" }]);
+  mocks.tx.whatsAppSender.updateMany.mockResolvedValue({ count: 1 });
+  mocks.tx.whatsAppReportSubscription.updateMany.mockResolvedValue({ count: 0 });
   mocks.tx.whatsAppWebhookReceipt.updateMany.mockResolvedValue({ count: 1 });
   mocks.tx.whatsAppMessageEvent.createMany.mockResolvedValue({ count: 1 });
   mocks.tx.whatsAppMessageEvent.deleteMany.mockResolvedValue({ count: 0 });
   mocks.tx.whatsAppMessageEvent.updateMany.mockResolvedValue({ count: 1 });
+  mocks.tx.whatsAppMessage.findMany.mockResolvedValue([]);
   mocks.tx.whatsAppMessage.updateMany.mockResolvedValue({ count: 1 });
+  mocks.recordDelivered.mockResolvedValue(undefined);
+  mocks.resolveIncident.mockResolvedValue({ count: 0 });
+  mocks.createOrTouchIncident.mockResolvedValue({ id: "incident_1" });
   mocks.disableSenderPhone.mockResolvedValue({
     disabledCount: 0,
     cancelledCount: 0,
     releasedReservationCount: 0,
+  });
+  mocks.confirmReportSubscription.mockResolvedValue({
+    matched: false,
+    activated: false,
   });
 });
 
@@ -574,11 +614,52 @@ describe("WhatsApp webhook durable processing", () => {
           disabledRecipientCount: 2,
           cancelledMessageCount: 3,
           releasedReservationCount: 3,
+          pausedReportSubscriptionCount: 0,
         },
       }),
     });
     expect(JSON.stringify(mocks.tx.whatsAppAuditEvent.create.mock.calls))
       .not.toContain("+919876543210");
+  });
+
+  it("processes an expired then valid report confirmation from one phone", async () => {
+    vi.stubEnv("WHATSAPP_REPORTS_ENABLED", "true");
+    mocks.confirmReportSubscription
+      .mockResolvedValueOnce({ matched: false, activated: false })
+      .mockResolvedValueOnce({ matched: true, activated: true });
+
+    await WhatsAppWebhookService.handle(signedRequest(messagesEnvelope({
+      messages: [
+        {
+          id: "wamid.expired-confirmation",
+          from: "919876543210",
+          type: "text",
+          text: { body: "START REPORTS ABCDEFGHJK" },
+        },
+        {
+          id: "wamid.valid-confirmation",
+          from: "919876543210",
+          type: "text",
+          text: { body: "START REPORTS KJHGFEDCBA" },
+        },
+      ],
+    })));
+
+    expect(mocks.confirmReportSubscription).toHaveBeenCalledTimes(2);
+    expect(mocks.confirmReportSubscription).toHaveBeenNthCalledWith(1, {
+      tx: mocks.tx,
+      senderId: "sender_1",
+      phoneE164: "+919876543210",
+      code: "ABCDEFGHJK",
+      now: NOW,
+    });
+    expect(mocks.confirmReportSubscription).toHaveBeenNthCalledWith(2, {
+      tx: mocks.tx,
+      senderId: "sender_1",
+      phoneE164: "+919876543210",
+      code: "KJHGFEDCBA",
+      now: NOW,
+    });
   });
 
   it("deactivates an unsafe template binding and suppresses only unsubmitted messages", async () => {

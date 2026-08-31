@@ -21,6 +21,8 @@ import { StaffService } from "@/services/staff.service";
 import { WhatsAppAuthorizationService } from "@/services/whatsappAuthorization.service";
 import { WhatsAppRecipientService } from "@/services/whatsappRecipient.service";
 import { isWhatsAppDeliverySchemaReady } from "@/lib/whatsappSchema";
+import { WhatsAppReportService } from "@/services/whatsappReport.service";
+import { WhatsAppServiceNoticeService } from "@/services/whatsappServiceNotice.service";
 
 const SAFE_SENDER_SELECT = {
   id: true,
@@ -349,6 +351,20 @@ export class WhatsAppSenderService {
           scope: { branchId: branch.id, senderId: previousSender.id },
           reason: "SENDER_REASSIGNED",
         });
+        await WhatsAppReportService.staleSubscriptionsForSenderInTransaction({
+          tx,
+          organizationId: input.organizationId,
+          branchId: branch.id,
+          senderId: previousSender.id,
+          reason: "SENDER_REASSIGNED",
+        });
+        await WhatsAppServiceNoticeService.cancelForSenderMutationInTransaction({
+          tx,
+          organizationId: input.organizationId,
+          branchId: branch.id,
+          senderId: previousSender.id,
+          reason: "SENDER_REASSIGNED",
+        });
       }
       if (previousSender) {
         await tx.whatsAppAuditEvent.create({
@@ -442,6 +458,20 @@ export class WhatsAppSenderService {
           scope: { branchId: branch.id, senderId: previousSender.id },
           reason: "SENDER_UNASSIGNED",
         });
+        await WhatsAppReportService.staleSubscriptionsForSenderInTransaction({
+          tx,
+          organizationId: input.organizationId,
+          branchId: branch.id,
+          senderId: previousSender.id,
+          reason: "SENDER_UNASSIGNED",
+        });
+        await WhatsAppServiceNoticeService.cancelForSenderMutationInTransaction({
+          tx,
+          organizationId: input.organizationId,
+          branchId: branch.id,
+          senderId: previousSender.id,
+          reason: "SENDER_UNASSIGNED",
+        });
       }
       await tx.whatsAppAuditEvent.create({
         data: {
@@ -519,6 +549,18 @@ export class WhatsAppSenderService {
         await WhatsAppRecipientService.cancelUnsubmittedMessagesInTransaction({
           tx,
           scope: { organizationId: input.organizationId, senderId: sender.id },
+          reason: "SENDER_DISCONNECTED",
+        });
+        await WhatsAppReportService.staleSubscriptionsForSenderInTransaction({
+          tx,
+          organizationId: input.organizationId,
+          senderId: sender.id,
+          reason: "SENDER_DISCONNECTED",
+        });
+        await WhatsAppServiceNoticeService.cancelForSenderMutationInTransaction({
+          tx,
+          organizationId: input.organizationId,
+          senderId: sender.id,
           reason: "SENDER_DISCONNECTED",
         });
       }
