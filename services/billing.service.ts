@@ -527,18 +527,6 @@ function mapSubscriptionStatus(status: string | null | undefined): SaasSubscript
     : "PENDING";
 }
 
-function resolveWebhookStatus(
-  current: SaasSubscriptionStatus,
-  incoming: SaasSubscriptionStatus
-): SaasSubscriptionStatus {
-  if (TERMINAL_STATUSES.has(current)) return current;
-  if (TERMINAL_STATUSES.has(incoming)) return incoming;
-  if (incoming === "CREATED") return current;
-  if (incoming === "AUTHENTICATED" && current !== "CREATED") return current;
-  if (["HALTED", "PAUSED"].includes(current) && incoming === "PENDING") return current;
-  return incoming;
-}
-
 function timestampToDate(value: unknown) {
   if (value === null) return null;
   if (typeof value !== "number") return undefined;
@@ -2744,8 +2732,10 @@ export class BillingService {
                 }
               : {}),
           });
-      if (manualReview
-        && !["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(reconciliation.evidenceKind)) {
+      const manualEvidenceResolved = change.type === "LEGACY_TRANSITION"
+        ? reconciliation.evidenceKind === "EXACT_SETTLEMENT"
+        : ["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(reconciliation.evidenceKind);
+      if (manualReview && !manualEvidenceResolved) {
         const retained = await this.retainManualReviewAfterReconciliationFailure(
           change.id,
           new Error(reconciliation.evidenceKind === "DEFINITELY_REJECTED"
@@ -3219,59 +3209,56 @@ export class BillingService {
       }
 
       if (processed.organizationId && processed.razorpaySubscriptionId) {
-        const organization = await prisma.organization.findUnique({
-          where: { id: processed.organizationId },
-          select: { billingModelVersion: true },
+        // A signed webhook is only a reconciliation trigger. Both legacy and
+        // Workspace V2 subscriptions must be read back from Razorpay before a
+        // provider status can influence local billing state or entitlement.
+        const reconciliation = await BillingReconciliationService.reconcileProviderSubscription(
+          processed.razorpaySubscriptionId,
+          { paymentId: processed.razorpayPaymentId }
+        );
+        const replacementChange = await prisma.organizationBillingChange.findUnique({
+          where: { replacementSubscriptionId: reconciliation.subscription.id },
+          include: { organizationSubscription: true },
         });
-        if (organization?.billingModelVersion === "WORKSPACE_V2") {
-          const reconciliation = await BillingReconciliationService.reconcileProviderSubscription(
-            processed.razorpaySubscriptionId,
-            { paymentId: processed.razorpayPaymentId }
-          );
-          const replacementChange = await prisma.organizationBillingChange.findUnique({
-            where: { replacementSubscriptionId: reconciliation.subscription.id },
-            include: { organizationSubscription: true },
-          });
-          if (replacementChange) {
-            const now = new Date();
-            if (reconciliation.payment?.status === "failed") {
-              await BillingReplacementService.failReplacementCheckout(
-                replacementChange.id,
-                "FAILED",
-                now,
-                reconciliation.payment.error_description ?? "Razorpay reported a failed replacement payment"
-              );
-            } else {
-              await BillingReplacementService.syncAuthorizedAccess(replacementChange.id, now);
-              if (replacementChange.undoCutoffAt && now >= replacementChange.undoCutoffAt) {
-                await BillingReplacementService.scheduleSourceCancellation(replacementChange.id, now);
-              }
-              if (reconciliation.confirmedPaidPeriod && replacementChange.organizationSubscription) {
-                await BillingReconciliationService.reconcileProviderSubscription(
-                  replacementChange.organizationSubscription.razorpaySubscriptionId,
-                  { now }
-                );
-              }
-              await BillingReplacementService.promoteIfReady(replacementChange.id, now);
+        if (replacementChange) {
+          const now = new Date();
+          if (reconciliation.payment?.status === "failed") {
+            await BillingReplacementService.failReplacementCheckout(
+              replacementChange.id,
+              "FAILED",
+              now,
+              reconciliation.payment.error_description ?? "Razorpay reported a failed replacement payment"
+            );
+          } else {
+            await BillingReplacementService.syncAuthorizedAccess(replacementChange.id, now);
+            if (replacementChange.undoCutoffAt && now >= replacementChange.undoCutoffAt) {
+              await BillingReplacementService.scheduleSourceCancellation(replacementChange.id, now);
             }
-          } else if (reconciliation.evidenceKind === "DEFINITELY_REJECTED"
-            && reconciliation.payment) {
-            await this.applyProviderFailedAuthorization(
-              reconciliation.commercialIntentChangeId,
-              reconciliation.subscription,
-              reconciliation.payment,
-              reconciliation.evidenceKind
-            );
-          } else if (["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(
-            reconciliation.evidenceKind
-          )) {
-            await this.applyProviderConfirmedAuthorization(
-              reconciliation.commercialIntentChangeId,
-              reconciliation.subscription,
-              reconciliation.payment,
-              reconciliation.evidenceKind
-            );
+            if (reconciliation.confirmedPaidPeriod && replacementChange.organizationSubscription) {
+              await BillingReconciliationService.reconcileProviderSubscription(
+                replacementChange.organizationSubscription.razorpaySubscriptionId,
+                { now }
+              );
+            }
+            await BillingReplacementService.promoteIfReady(replacementChange.id, now);
           }
+        } else if (reconciliation.evidenceKind === "DEFINITELY_REJECTED"
+          && reconciliation.payment) {
+          await this.applyProviderFailedAuthorization(
+            reconciliation.commercialIntentChangeId,
+            reconciliation.subscription,
+            reconciliation.payment,
+            reconciliation.evidenceKind
+          );
+        } else if (["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(
+          reconciliation.evidenceKind
+        )) {
+          await this.applyProviderConfirmedAuthorization(
+            reconciliation.commercialIntentChangeId,
+            reconciliation.subscription,
+            reconciliation.payment,
+            reconciliation.evidenceKind
+          );
         }
       }
 
@@ -3432,38 +3419,6 @@ export class BillingService {
       };
     }
     assertSubscriptionProviderMode(subscription, providerMode);
-
-    const updateData: Prisma.OrganizationSubscriptionUpdateInput = {};
-    if (subscriptionEntity) {
-      const snapshot = subscriptionSnapshotData(subscriptionEntity);
-      // A signed webhook is a reconciliation trigger, not sufficient proof of
-      // a seat change. Quantity is accepted only after a provider fetch checks
-      // the matching serialized billing operation.
-      delete snapshot.quantity;
-      const resolvedStatus = resolveWebhookStatus(
-        subscription.status as SaasSubscriptionStatus,
-        mapSubscriptionStatus(subscriptionEntity.status)
-      );
-      snapshot.status = resolvedStatus;
-      if (resolvedStatus === "CANCELLED") {
-        snapshot.cancelAtCycleEnd = false;
-        snapshot.cancelledAt = timestampToDate(subscriptionEntity.ended_at) ?? new Date();
-      }
-      Object.assign(updateData, snapshot);
-    }
-
-    if (Object.keys(updateData).length > 0) {
-      const stored = await tx.organizationSubscription.update({
-        where: { id: subscription.id },
-        data: updateData,
-      });
-      await recordSubscriptionHistory(tx, stored, {
-        source: "WEBHOOK",
-        fromStatus: subscription.status,
-        event,
-        razorpayPaymentId: paymentId,
-      });
-    }
 
     return {
       event,

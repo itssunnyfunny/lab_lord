@@ -46,6 +46,8 @@ export type CommercialEvidenceMismatchCode =
   | "STALE_SETTLEMENT"
   | "COMMERCIAL_FINALIZATION_FAILED"
   | "BILLING_PERIOD_MISMATCH"
+  | "AMBIGUOUS_PROVIDER_EVIDENCE"
+  | "INCOMPLETE_PROVIDER_EVIDENCE"
   | "MALFORMED_PROVIDER_EVIDENCE";
 
 export type CommercialIntentRecord = {
@@ -262,6 +264,8 @@ export function commercialEvidenceMessage(code: CommercialEvidenceMismatchCode) 
     STALE_SETTLEMENT: "The provider settlement predates the commercial authorization",
     COMMERCIAL_FINALIZATION_FAILED: "Exact provider evidence could not be finalized locally",
     BILLING_PERIOD_MISMATCH: "The invoice billing period does not match the provider subscription",
+    AMBIGUOUS_PROVIDER_EVIDENCE: "Multiple provider invoices could represent the current paid period",
+    INCOMPLETE_PROVIDER_EVIDENCE: "The provider invoice collection is incomplete",
     MALFORMED_PROVIDER_EVIDENCE: "Razorpay returned malformed commercial evidence",
   };
   return messages[code];

@@ -93,8 +93,12 @@ Every statement uses one of these labels:
   (`app/api/cron/payments/daily/route.ts`, `services/payment.service.ts`)
 - **Must preserve—enforced:** Workspace Billing V2 base access fails closed:
   - an active owner trial grants the trial's PRO access;
-  - paid access requires the subscription mode to match the runtime provider
-    mode and `paidThrough` to be later than now;
+  - ordinary paid access requires the subscription mode to match the runtime
+    provider mode and a current `paidThrough` returned by the shared exact-
+    settlement resolver. A raw date or provider status is insufficient: the
+    stored subscription pointers, immutable applied commercial intent, paid
+    invoice, captured payment, amount, currency, plan, quantity, offer,
+    cadence, and period must form one exact tuple;
   - `PENDING` or `PAUSED` may remain writable through an already-paid period,
     with warning state;
   - `HALTED`, an expired paid period, or an untrusted current subscription is
@@ -103,9 +107,14 @@ Every statement uses one of these labels:
   (`lib/billingState.ts`, `services/entitlement.service.ts`, entitlement tests)
 - **Must preserve—enforced:** Legacy billing-model organizations remain writable.
   A legacy organization with no subscription receives the deliberate Basic
-  fallback; an untrusted legacy subscription is downgraded to Basic entitlements
-  but still returns full write access. Do not apply V2 fail-closed status rules
-  to the legacy branch.
+  fallback. `AUTHENTICATED` means mandate readiness, and neither
+  `AUTHENTICATED`, `ACTIVE`, nor an unbacked future `paidThrough` grants premium
+  entitlement. An untrusted legacy subscription is downgraded to Basic
+  entitlements but still returns full write access; exact current settlement
+  evidence grants the subscribed plan through the same normal paid-period
+  boundary as V2. Owner trials and explicitly bounded replacement access remain
+  separate grants. Do not apply V2 read-only fallback rules to the legacy
+  branch.
 - **Must preserve—enforced:** An owner trial is granted once, lasts 30 days, is
   bound to its organization, and is not extended by adding branches. A migrated
   trial is available only to an organization that has never been billed.
@@ -274,12 +283,17 @@ Every statement uses one of these labels:
   history and replacement lineage rather than being rewritten as the current
   row. (`prisma/schema.prisma`, billing integration tests)
 - **Must preserve—enforced:** Provider subscription status alone never grants
-  paid access. `paidThrough` advances monotonically only after reconciliation
-  validates the immutable authorized commercial intent against a current-period
-  paid invoice and captured payment. Subscription, invoice, payment, provider
-  mode, plan, quantity, offer, amount, currency, cadence, and period must agree;
-  `amount_due` must be zero and the invoice must be fully settled.
-  (`services/billingReconciliation.service.ts`, billing tests)
+  paid access. Entitlement and billing-experience reads accept `paidThrough`
+  only when the stored current pointers resolve back to an applied immutable
+  commercial intent and its exact current-period paid invoice/captured payment
+  tuple. Reconciliation advances `paidThrough` only from that same tuple.
+  Subscription, invoice, payment, provider mode, plan, quantity, offer, amount,
+  currency, cadence, and period must agree; `amount_due` must be zero and the
+  invoice must be fully settled. The fetched collection count must be complete,
+  every paid item must carry subscription/payment/period identity, and an
+  explicit payment ID never bypasses duplicate-current-period detection.
+  (`services/billingPaidEvidence.service.ts`,
+  `services/billingReconciliation.service.ts`, paid-evidence and billing tests)
 - **Must preserve—enforced:** Every new subscription authorization or billing
   change freezes versioned commercial intent before its provider mutation. The
   source subscription, provider mode, operation, plan, quantity, offer-adjusted

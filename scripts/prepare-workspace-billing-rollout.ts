@@ -52,7 +52,16 @@ export async function runWorkspaceBillingRollout(
   const isolatedEnvironment = loadIsolatedBillingEnvironment(arguments_.envFile, invocation);
   installIsolatedBillingEnvironment(isolatedEnvironment);
 
-  const { prisma } = await import("../lib/prisma");
+  const [{ prisma }, {
+    BILLING_PAID_EVIDENCE_INCLUDE,
+  }, {
+    applyWorkspaceBillingPromotion,
+    assertWorkspaceRolloutPaidEvidence,
+  }] = await Promise.all([
+    import("../lib/prisma"),
+    import("../services/billingPaidEvidence.service"),
+    import("../services/workspaceBillingRolloutPolicy.service"),
+  ]);
 
   async function readDatabaseIdentity() {
     const rows = await prisma.$queryRaw<Array<{ identity: string }>>`
@@ -124,7 +133,7 @@ export async function runWorkspaceBillingRollout(
     const organization = await prisma.organization.findUnique({
       where: { id: organizationId },
       include: {
-        subscription: true,
+        subscription: { include: BILLING_PAID_EVIDENCE_INCLUDE },
         _count: { select: { branches: { where: { billingStatus: { not: "ARCHIVED" } } } } },
       },
     });
@@ -135,14 +144,12 @@ export async function runWorkspaceBillingRollout(
 
     const subscription = organization.subscription;
     if (subscription) {
+      assertWorkspaceRolloutPaidEvidence(subscription, new Date());
       if (subscription.providerPaymentMethod !== "CARD") {
         throw new Error(`${organizationId}: provider payment method must be confirmed as CARD`);
       }
       if (!subscription.lastReconciledAt) {
         throw new Error(`${organizationId}: provider subscription and invoices must be reconciled first`);
-      }
-      if (["ACTIVE", "PENDING"].includes(subscription.status) && !subscription.paidThrough) {
-        throw new Error(`${organizationId}: active paid access requires provider-confirmed paidThrough`);
       }
     }
 
@@ -156,41 +163,7 @@ export async function runWorkspaceBillingRollout(
     }
 
     return prisma.$transaction(async tx => {
-      await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id" FROM "Organization" WHERE "id" = ${organizationId} FOR UPDATE
-      `;
-      let transitionId: string | null = null;
-      if (subscription && subscription.quantity !== organization._count.branches) {
-        const sequence = organization.billingMutationSequence + 1;
-        await tx.organization.update({
-          where: { id: organizationId },
-          data: { billingMutationSequence: sequence },
-        });
-        const transition = await tx.organizationBillingChange.upsert({
-          where: {
-            idempotencyKey: `legacy-transition:${organizationId}:${organization._count.branches}`,
-          },
-          create: {
-            organizationId,
-            organizationSubscriptionId: subscription.id,
-            sequence,
-            idempotencyKey: `legacy-transition:${organizationId}:${organization._count.branches}`,
-            type: "LEGACY_TRANSITION",
-            fromPlan: subscription.plan,
-            toPlan: subscription.plan,
-            fromQuantity: subscription.quantity,
-            toQuantity: organization._count.branches,
-            effectiveAt: subscription.currentEnd ?? subscription.paidThrough,
-          },
-          update: {},
-        });
-        transitionId = transition.id;
-      }
-      await tx.organization.update({
-        where: { id: organizationId },
-        data: { billingModelVersion: "WORKSPACE_V2" },
-      });
-      return { organizationId, unchanged: false, transitionId };
+      return applyWorkspaceBillingPromotion(tx, organizationId, new Date());
     });
   }
 

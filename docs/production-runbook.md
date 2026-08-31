@@ -1642,7 +1642,9 @@ Failed processing remains retryable.
    [Workspace billing V2 rollout](./workspace-billing-rollout.md) and
    [Razorpay live-review checklist](./razorpay-live-review.md).
 4. Send a provider-signed Test delivery, require `2xx`, and verify one durable
-   receipt and provider-authoritative reconciliation.
+   receipt and provider-authoritative reconciliation. Confirm the stored status,
+   customer, plan, quantity, paid period, invoice, and payment came from the
+   provider fetch, not from the otherwise-valid signed payload snapshot.
 5. Replay the same event to confirm duplicate handling. Test out-of-order and
    lost-callback recovery in Preview before Production.
 6. For secret rotation, add the new current secret and retain old secrets only
@@ -1678,6 +1680,16 @@ Use the repository scripts as follows:
 - `scripts/prepare-workspace-billing-rollout.ts` is a dry run unless `--apply`
   is present. Selecting promotion targets uses
   `--promote=<comma-separated-org-ids>`; selection alone does not apply changes.
+  Promotion refuses any existing current subscription whose `paidThrough` or
+  paid status lacks the same exact stored settlement evidence used by runtime
+  entitlement. Apply takes the organization mutation lock, reloads subscription
+  evidence, branch count, billing model, and mutation sequence, and reruns all
+  guards before promotion.
+- `scripts/reconcile-legacy-paid-entitlements.ts` is provider-read-only and a
+  database dry run unless `--apply` is present. Both modes require an explicit
+  organization allowlist and expected Razorpay mode. Apply additionally requires
+  the exact deployment target, database fingerprint, and fresh batch proposal
+  hash; ambiguous evidence becomes manual review and never paid access.
 - `scripts/audit-legacy-unsupported-method-cancellations.ts` is a dry run unless
   `--apply` is present. Resolve every manual-review row before any apply run.
 
@@ -1720,6 +1732,61 @@ Retain preflight fingerprints and redacted aggregate reports privately. Never
 publish organization, subscription, payment, or credential values. Follow the
 full Preview acceptance, Live canary, provider-Dashboard, migration, and flag
 sequence in the [Workspace billing V2 rollout](./workspace-billing-rollout.md).
+
+### Legacy paid-entitlement transition
+
+Finding 5 uses the exact-commercial-evidence schema already deployed by
+`20260829120000_add_exact_commercial_evidence`; it adds no migration or new
+environment variable. Do not infer or bulk-write paid state from
+`AUTHENTICATED`, `ACTIVE`, or a future `paidThrough`.
+
+Before applying the shared entitlement gate to a target, take the approved
+backup, hold Razorpay writes and Live canaries, pause only the hourly billing
+schedule through the operator control, and let active billing leases drain.
+Use small, reviewed organization batches. The Production dry run is:
+
+```powershell
+pnpm exec tsx scripts/reconcile-legacy-paid-entitlements.ts --env-file=.env.production.local --target=production --expect-razorpay-mode=LIVE --scope=organizations --organization-ids=<COMMA_SEPARATED_ORG_IDS>
+```
+
+The dry run performs database and Razorpay reads only. Privately retain its
+target binding, database fingerprint, organization-set fingerprint,
+`batchProposalHash`, pre-operation stored-evidence counts, proposal counts, and
+itemized dispositions. Verify every organization belongs in the batch and stop
+on a wrong target, wrong mode, missing record, ambiguous/incomplete provider
+evidence, overlapping current invoices, mismatched commercial tuple, or provider
+read failure. A status-only record is not an exact proposal.
+
+Immediately before apply, rerun the same dry command and require an unchanged
+database fingerprint and a freshly reviewed proposal hash. Apply exactly that
+batch with:
+
+```powershell
+pnpm exec tsx scripts/reconcile-legacy-paid-entitlements.ts --apply --env-file=.env.production.local --target=production --expect-razorpay-mode=LIVE --expect-database-fingerprint=<DATABASE_SHA256> --scope=organizations --organization-ids=<SAME_COMMA_SEPARATED_ORG_IDS> --confirm-batch-proposal-hash=<FRESH_BATCH_PROPOSAL_SHA256>
+```
+
+Apply re-fetches provider evidence before each local transaction. It writes only
+an exact current settlement tuple and its idempotent `LEGACY_TRANSITION` lineage,
+or durable manual-review history for unresolved evidence; it never calls a
+Razorpay mutation. A changed local/provider proposal is quarantined rather than
+adopted. Require `postCounts.exactBackedCurrentPeriods` to increase only by the
+reviewed exact-apply dispositions, require every unresolved record to appear in
+manual review, and rerun the dry command to prove idempotence. Retain the
+redacted pre/apply/post reports privately.
+
+Only after those counts are reconciled should the exact entitlement code be
+released and any organization be considered for Workspace V2 promotion. The
+rollout audit rejects unbacked paid state independently. Resume the hourly
+schedule and billing writes only after legacy Basic fallback, exact paid access,
+trial access, manual-review visibility, and provider-mode isolation pass the
+target smoke tests.
+
+There is no destructive rollback for this transition. Do not delete exact
+invoice/payment/intent lineage or clear manual-review history. If rollout
+verification fails, keep billing writes and V2 promotion held, preserve the
+reports, and deploy a compatible forward repair. An application rollback must
+not restore status-only premium entitlement; provider reconciliation remains the
+recovery path.
 
 ## Rollback and recovery are different operations
 

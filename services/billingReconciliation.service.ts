@@ -79,7 +79,7 @@ function date(value: number | null | undefined) {
   return value && value > 0 ? new Date(value * 1000) : null;
 }
 
-function currentPeriodInvoice(
+function currentPeriodInvoices(
   subscription: RazorpaySubscription,
   invoices: RazorpayInvoice[]
 ) {
@@ -91,7 +91,19 @@ function currentPeriodInvoice(
       && invoice.billing_start === subscription.current_start
       && invoice.billing_end === subscription.current_end
     )
-    .sort((left, right) => (right.paid_at ?? 0) - (left.paid_at ?? 0))[0] ?? null;
+    .sort((left, right) => (right.paid_at ?? 0) - (left.paid_at ?? 0));
+}
+
+function paidInvoiceHasIncompleteIdentity(invoice: RazorpayInvoice) {
+  if (normalizedProviderStatus(invoice.status) !== "paid") return false;
+  return typeof invoice.subscription_id !== "string"
+    || invoice.subscription_id.trim().length === 0
+    || typeof invoice.payment_id !== "string"
+    || invoice.payment_id.trim().length === 0
+    || !Number.isSafeInteger(invoice.billing_start)
+    || Number(invoice.billing_start) <= 0
+    || !Number.isSafeInteger(invoice.billing_end)
+    || Number(invoice.billing_end) <= Number(invoice.billing_start);
 }
 
 function hasProviderInvoiceCollectionShape(value: unknown): value is RazorpayInvoices {
@@ -179,6 +191,20 @@ async function resolveCommercialIntent(
     orderBy: { sequence: "asc" },
   });
   if (activeChange) return activeChange;
+
+  const legacyTransition = await prisma.organizationBillingChange.findFirst({
+    where: {
+      organizationId: local.organizationId,
+      organizationSubscriptionId: local.id,
+      replacementSubscriptionId: null,
+      type: "LEGACY_TRANSITION",
+      commercialIntentVersion: 1,
+      status: "FAILED",
+      failureCategory: "MANUAL_REVIEW_REQUIRED",
+    },
+    orderBy: { sequence: "desc" },
+  });
+  if (legacyTransition) return legacyTransition;
 
   if (!local.confirmedCommercialIntentChangeId) return null;
   return prisma.organizationBillingChange.findFirst({
@@ -494,6 +520,24 @@ export class BillingReconciliationService {
         options,
       });
     }
+    if (invoices.count !== invoices.items.length) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "INCOMPLETE_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
+    if (invoices.items.some(paidInvoiceHasIncompleteIdentity)) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "INCOMPLETE_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
     const subscriptionEvidence = validateExactCommercialEvidence({
       intent,
       organizationId: localBeforeFetch.organizationId,
@@ -514,11 +558,33 @@ export class BillingReconciliationService {
         options,
       });
     }
+    if (invoices.items.some(invoice =>
+      normalizedProviderStatus(invoice.status) === "paid"
+      && invoice.subscription_id !== providerSubscription.id
+    )) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "MALFORMED_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
+    const matchingCurrentInvoices = currentPeriodInvoices(providerSubscription, invoices.items);
+    if (matchingCurrentInvoices.length > 1) {
+      return quarantineCommercialMismatch({
+        local: localBeforeFetch,
+        intent,
+        code: "AMBIGUOUS_PROVIDER_EVIDENCE",
+        now,
+        options,
+      });
+    }
     const selectedInvoice = explicitPayment?.invoice_id
       ? invoices.items.find(invoice => invoice.id === explicitPayment.invoice_id) ?? null
       : explicitPayment
         ? null
-        : currentPeriodInvoice(providerSubscription, invoices.items);
+        : matchingCurrentInvoices[0] ?? null;
     const payment = explicitPayment
       ?? (selectedInvoice?.payment_id
         ? await razorpay.fetchPayment(selectedInvoice.payment_id)
