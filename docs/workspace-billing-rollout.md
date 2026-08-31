@@ -132,6 +132,12 @@ Enable exactly:
 
 Do not configure `subscription.expired`. Authorization/start deadlines and missing webhook state are resolved through local deadlines and provider reconciliation. Browser success, `AUTHENTICATED`, `ACTIVE`, and signed webhook snapshot fields alone never grant access or advance `paidThrough`; both legacy and V2 deliveries are reconciliation triggers.
 
+The public endpoint accepts at most 512 KiB, verifies the HMAC and payload hash
+over the exact received bytes before JSON parsing, and uses an expiring
+token-fenced receipt claim. Concurrent same-body deliveries must produce one
+provider reconciliation; the nonowner is acknowledged as in progress. Reusing
+an event ID with a different payload remains a `400` collision.
+
 ## Scheduled jobs
 
 - `/api/cron/billing/hourly`: cancellation cutoffs, expired mutation leases, bounded retries, authorization/start deadlines, branch reductions, and missing-webhook reconciliation.
@@ -143,7 +149,7 @@ Both routes require `Authorization: Bearer $CRON_SECRET`. Vercel Cron invokes sc
 
 Follow this order exactly; do not combine the gates into one deployment:
 
-1. Deploy all replacement migrations and application code with `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED=false`.
+1. Establish an operator-owned Razorpay webhook-ingress hold, record its UTC start, and prove every old-deployment webhook invocation has terminated. Keep ingress held while applying and verifying all additive migrations, including `20260831120000_add_razorpay_webhook_claim`, and while promoting the application code with `RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED=false`. Schema compatibility does not make the old unfenced worker safe to overlap with the new token-fenced worker. Release the hold only after the new deployment reports the applied migration and one signed canary is ready; reconcile provider state for the held interval.
 2. In Production, use the operator-approved Vercel control to pause only the hourly billing schedule, then wait for active mutation leases and in-flight billing operations to drain. Preview has no automatic cron worker; stop manual Preview invocations during the audit. Do not interrupt the daily student-payment schedule.
 3. Run `pnpm exec cross-env BILLING_ENV_FILE=.env.production.local VERCEL_ENV=production tsx scripts/audit-legacy-unsupported-method-cancellations.ts --scope=organizations --organization-ids=<REVIEWED_ORGANIZATION_IDS>` and review every scoped dry-run row against the verified target. After provider verification and manual-review resolution, rerun with `--apply --target=production --expect-razorpay-mode=LIVE --expect-database-fingerprint=<PRODUCTION_DATABASE_FINGERPRINT> --scope=organizations --organization-ids=<THE_SAME_REVIEWED_ORGANIZATION_IDS>` to supersede eligible queued or failed legacy cancellations; retain both reports. The apply guard must match both the database and organization-set fingerprints from that target's retained dry-run evidence.
 4. Enable Card, UPI AutoPay, and eMandate in Razorpay Test Mode. Turn on the application flag only in the isolated Preview environment, complete end-to-end acceptance, run the enabled preflight with all evidence flags, and resume only the approved manual Preview checks.
@@ -156,7 +162,7 @@ If any capability disappears from the Methods API, a configured amount/method is
 
 1. Apply all migrations to the isolated Preview database and add demo-only data.
 2. Confirm the Preview preflight reports only `TEST` rows and a database fingerprint different from Production.
-3. Complete initial Card, UPI AutoPay, and eMandate authorisation, including UPI app/QR, delayed eMandate activation, decline/retry, lost callback plus signed webhook, duplicate/out-of-order delivery, pause/resume, cancellation, hosted recovery, and confirmed `paidThrough` in Test Mode.
+3. Complete initial Card, UPI AutoPay, and eMandate authorisation, including UPI app/QR, delayed eMandate activation, decline/retry, lost callback plus signed webhook, simultaneous duplicate/in-progress handling, expired-claim recovery, collision rejection, out-of-order delivery, pause/resume, cancellation, hosted recovery, and confirmed `paidThrough` in Test Mode.
 4. Exercise a Card in-place update and UPI/eMandate replacement for upgrade, downgrade, quantity increase/reduction, proactive method switch, Undo before the 72-hour cutoff, and safe-cycle cutover. Confirm no early downgrade, proration, duplicate charge, or client-trusted access grant.
 5. Run authenticated desktop and mobile browser tests with a restricted Preview QA account, including eligible and ineligible amount/device combinations.
 6. Run the enabled multi-method preflight with all five explicit evidence flags and retain its aggregate Methods API report.

@@ -311,11 +311,19 @@ Every statement uses one of these labels:
   subscription, payment, plan, quantity, and payment state before trusting the
   result.
 - **Must preserve—enforced:** A webhook is only a signed reconciliation trigger,
-  not proof of quantity or entitlement. Its signature is verified over the raw
-  body. Event IDs are deduplicated with a payload hash; reuse with a different
-  payload is rejected. Failed events remain retryable and are marked processed
-  only after reconciliation succeeds. (`app/api/razorpay/webhook/route.ts`,
-  billing webhook and reconciliation tests)
+  not proof of quantity or entitlement. The public body is bounded to 512 KiB;
+  its signature and payload hash are verified over the same untouched bytes
+  before JSON parsing. Event IDs are deduplicated with a payload hash; reuse
+  with a different payload is rejected. A short token-fenced receipt claim
+  commits before provider reconciliation, active nonowners acknowledge without
+  reconciling, and expired claims are reclaimable. Provider work remains outside
+  the claim transaction, and only the exact token/start/lease/attempt identity
+  may finalize success or retryable failure. Deployment must hold webhook
+  ingress and prove the prior unfenced worker drained before the token-fenced
+  worker is promoted; additive columns do not make those worker protocols safe
+  to overlap. (`app/api/razorpay/webhook/route.ts`,
+  `services/billing.service.ts`, `docs/production-runbook.md`, billing webhook
+  and reconciliation tests)
 - **Must preserve—enforced:** Billing-change idempotency keys are globally
   unique and may be replayed only with the same payload. Each organization's
   changes have a monotonic FIFO sequence, use database locking/leases, reject a

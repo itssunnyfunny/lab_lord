@@ -62,6 +62,20 @@ Authenticated import start / confirmed immutable plan
 Uploaded bytes, staged rows, branch configuration, complete mutation payloads,
 and authorization conclusions do not cross the Workflow input/output boundary.
 
+Razorpay webhook processing keeps public input and provider truth separate:
+
+```text
+Bounded raw bytes (512 KiB maximum)
+  -> HMAC and payload hash over the exact bytes
+  -> JSON parsing and atomic expiring receipt claim
+  -> provider-authoritative reconciliation outside the claim transaction
+  -> exact-token/attempt finalization
+```
+
+An unexpired duplicate is acknowledged as in progress without repeating
+provider reconciliation. An expired receipt can be reclaimed, while the stale
+processor cannot finalize or clear its successor's claim.
+
 WhatsApp adds independently gated onboarding, template, outbox, and webhook
 paths:
 
@@ -671,10 +685,10 @@ The following modules exist but are not referenced by current application routes
 
 | Integration | Repository truth | Deployment state |
 | --- | --- | --- |
-| PostgreSQL / Prisma | Required; schema and 37 timestamped migrations exist, including the three additive WhatsApp expansions and additive exact billing commercial evidence | Database target, applied migration set, backups, and health are unknown |
+| PostgreSQL / Prisma | Required; schema and 38 timestamped migrations exist, including the three additive WhatsApp expansions, exact billing commercial evidence, and the additive Razorpay webhook claim | Database target, applied migration set, backups, and health are unknown |
 | Clerk | Real auth and local-user linking are implemented | Active instance, keys, redirect/origin configuration, and account health are unknown |
 | Gemini | Reports, message drafts, and import mapping are wired with fallbacks | API key, selected model availability, quota, and data-processing configuration are unknown |
-| Razorpay | Server API client, Checkout, signatures, webhook receipts, reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
+| Razorpay | Server API client, Checkout, exact-byte bounded webhook signatures, token-fenced webhook receipts, provider-authoritative reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
 | Meta WhatsApp Cloud API | Direct bounded `v25.0` provider client, owner-bound Embedded Signup, sender/branch state, phone registration, template/health reads, managed Utility creation, individual approved Utility-template delivery, deterministic aggregate reports, typed notices, durable outbox, signed status/scoped/full STOP processing, safety/incidents, and expiring estimated-cost controls exist; arbitrary delivery and credit sharing do not | App Review/Advanced Access, app/config/system-user credentials, Test/Live assets, callback reachability, flags/canaries, template approval/category, current rate-card signoff, customer billing/legal ownership, `UNKNOWN` operations, alerts, and provider health are unknown |
 | Vercel Workflow | Workflow 4.6 integration, opaque-ID orchestration, and a PostgreSQL import ledger/runner are implemented | Production approval, Fluid Compute/runtime setup, provider retention/residency review, feature flag, mutation cap, benchmarks, SLOs, and active-run health are unknown |
 | Vercel Cron | Eight Production GET schedules are declared: daily payment, hourly billing, daily import retention, collection planning every 15 minutes, report planning every 15 minutes, dispatch every 5 minutes, provider-health reconciliation every 30 minutes, and WhatsApp maintenance daily. WhatsApp jobs return held before gated work when their controls are false | Whether the deployment plan accepts these frequencies, the deployment is Production, schedules/callback protection are correct, and recent run evidence is healthy is unknown |
@@ -687,7 +701,7 @@ Never infer a deployed state from local `.env` files, ignored Vercel metadata, s
 
 At this anchor the repository contains focused WhatsApp unit, component,
 provider-contract, service, route, webhook, and migration-contract coverage in
-addition to the existing Vitest/Playwright suites, plus 37 timestamped migration directories. These
+addition to the existing Vitest/Playwright suites, plus 38 timestamped migration directories. These
 counts are orientation data, not invariants.
 
 ### Automated coverage by area

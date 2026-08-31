@@ -71,7 +71,7 @@ Webhook events:
 - `payment.captured`
 - `payment.failed`
 
-Do not select `subscription.expired`. Verify a signed delivery receives `2xx` and produces one idempotent receipt before acceptance. Invoice-only events must resolve their subscription/payment IDs and reconcile provider state. Frontend success and `subscription.activated` alone never advance `paidThrough`.
+Do not select `subscription.expired`. Verify a signed delivery receives `2xx` and produces one idempotent receipt before acceptance. The endpoint must reject declared and streamed bodies above 512 KiB with `413`, authenticate exact bytes before parsing, reconcile only once for simultaneous same-body deliveries, acknowledge the nonowner as in progress, reclaim an expired claim, and reject same-ID/different-body collisions. Invoice-only events must resolve their subscription/payment IDs and reconcile provider state. Frontend success and `subscription.activated` alone never advance `paidThrough`.
 
 ## Test Mode acceptance
 
@@ -86,7 +86,7 @@ Use the isolated Preview database, Test credentials, and a restricted Clerk QA a
 7. Verify upgrades and branch additions receive complimentary access only after candidate mandate confirmation while canonical billing remains on the old subscription. Verify downgrades and branch removals do not apply early, and Undo works until 72 hours before cutover.
 8. Test candidate failure/undo, old-subscription cancellation retry, duplicate events, orphan adoption after response loss, overlapping-charge manual review, atomic cutover, and the three-day eMandate bank-confirmation grace. Do not expect an automatic refund.
 9. Test renewal `PENDING`, `PAUSED`, `HALTED`, hosted mandate recovery, Card fallback recovery, and full-access restoration only after captured payment/paid invoice advances `paidThrough`.
-10. Replay callbacks and webhooks out of order and confirm one invoice/history/activation effect.
+10. Replay callbacks and webhooks out of order, race two identical signed deliveries, reclaim one deliberately expired Test claim, and confirm one provider reconciliation plus one invoice/history/activation effect. Confirm a stale token cannot finalize its successor.
 11. Run the enabled preflight with Subscription settings, UPI Intent, UPI QR, webhook, and amount evidence flags; retain its aggregate account Methods API report.
 12. Invoke the protected Preview billing cron manually. Vercel schedules crons only on Production deployments.
 
@@ -107,7 +107,7 @@ After the controlled authorization, rerun the preflight with the returned Live `
 
 Also retain evidence of a signed Live webhook `2xx`, completed processing page, correct quantity and charge date, `paidThrough` behavior, replacement/cutover, pause/resume, cancellation, hosted recovery, and successful Production hourly cron invocation.
 
-The release order is: deploy migrations and code with the multi-method flag off; have an authorized operator pause the Production hourly billing cron through the approved Vercel control and drain mutation leases; audit legacy unsupported-method cancellations against the explicitly bound, verified target; enable and validate all three methods in Test Mode; run one allowlisted Live workspace; then enable the application flag broadly only after reconciliation is clean. Preview has no automatic cron worker. Any ambiguous provider state or overlapping charge goes to manual review, never an automatic refund.
+The release order is: place Razorpay webhook ingress on an operator-owned hold and prove every old-deployment webhook request has terminated; deploy and verify the additive receipt-claim migration; promote the new token-fenced code with the multi-method flag off; verify a signed canary and reconcile the held interval before releasing ingress; have an authorized operator pause the Production hourly billing cron through the approved Vercel control and drain mutation leases; audit legacy unsupported-method cancellations against the explicitly bound, verified target; enable and validate all three methods in Test Mode; run one allowlisted Live workspace; then enable the application flag broadly only after reconciliation is clean. Never overlap the old unfenced webhook worker with the new worker merely because both versions accept the expanded schema. Preview has no automatic cron worker. Any ambiguous provider state or overlapping charge goes to manual review, never an automatic refund.
 
 ## Reviewer access
 
