@@ -7,6 +7,8 @@ import { BillingReadOnlyError, SubscriptionEntitlementError } from "@/services/e
 import { BillingWritesDisabledError } from "@/lib/billingFeature";
 import { BillingChangeInProgressError } from "@/lib/billingErrors";
 import { BillingService } from "@/services/billing.service";
+import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
+import { billingHttpStatus } from "@/lib/billingHttp";
 
 // Correctly type the params as a Promise for Next.js 15+
 interface Params {
@@ -27,17 +29,14 @@ export async function GET(_req: Request, { params }: Params) {
             );
         }
 
-        const isOwner = await OrganizationService.isOwner(orgId, user.id);
-        if (!isOwner) {
-            return NextResponse.json(
-                { error: "Forbidden: You do not own this organization" },
-                { status: 403 }
-            );
-        }
+        await OrganizationService.getOrganizationForOwnerAccess(orgId, user.id);
 
         const branches = await BranchService.getBranchesByOrganizationId(orgId);
         return NextResponse.json(branches);
     } catch (error) {
+        if (error instanceof OrganizationAccessNotFoundError) {
+            return NextResponse.json({ error: error.message }, { status: 404 });
+        }
         console.error("Error fetching branches:", error);
         return NextResponse.json(
             { error: "Internal Server Error" },
@@ -58,13 +57,7 @@ export async function POST(req: Request, { params }: Params) {
             );
         }
 
-        const isOwner = await OrganizationService.isOwner(orgId, user.id);
-        if (!isOwner) {
-            return NextResponse.json(
-                { error: "Forbidden: You do not own this organization" },
-                { status: 403 }
-            );
-        }
+        await OrganizationService.getOrganizationForOwnerAccess(orgId, user.id);
         const idempotencyKey = req.headers.get("idempotency-key")?.trim();
         if (!idempotencyKey) {
             return NextResponse.json({ error: "Idempotency-Key is required" }, { status: 400 });
@@ -92,6 +85,9 @@ export async function POST(req: Request, { params }: Params) {
             status: branch.billingStatus === "PENDING_ACTIVATION" ? 202 : 201,
         });
     } catch (error) {
+        if (error instanceof OrganizationAccessNotFoundError) {
+            return NextResponse.json({ error: error.message }, { status: 404 });
+        }
         if (error instanceof SubscriptionEntitlementError || error instanceof BillingReadOnlyError) {
             return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
         }
@@ -104,10 +100,14 @@ export async function POST(req: Request, { params }: Params) {
                 { status: 409 }
             );
         }
+        const status = billingHttpStatus(error, 500);
         console.error("Error creating branch:", error);
+        if (status !== 500 && error instanceof Error) {
+            return NextResponse.json({ error: error.message }, { status });
+        }
         return NextResponse.json(
             { error: "Internal Server Error" },
-            { status: 500 }
+            { status }
         );
     }
 }

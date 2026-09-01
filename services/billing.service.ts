@@ -9,6 +9,7 @@ import {
   sha256Hex,
   verifyRazorpaySubscriptionSignature,
   verifyRazorpayWebhookSignature,
+  RazorpayConfigurationError,
   type RazorpayPayment,
   type RazorpayInvoice,
   type RazorpaySubscription,
@@ -63,7 +64,10 @@ import {
 import {
   BillingChangeInProgressError,
   BillingManualReviewRequiredError,
+  BillingResourceNotFoundError,
+  BillingValidationError,
 } from "@/lib/billingErrors";
+import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 import { RazorpayWebhookValidationError } from "@/lib/razorpayWebhook";
 import {
   isSupportedProviderPaymentMethod,
@@ -192,7 +196,7 @@ async function claimCheckoutMutationLease(organizationId: string) {
       const locked = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "Organization" WHERE "id" = ${organizationId} FOR UPDATE
       `;
-      if (locked.length === 0) throw new Error("Organization not found");
+      if (locked.length === 0) throw new OrganizationAccessNotFoundError();
       const organization = await tx.organization.findUniqueOrThrow({
         where: { id: organizationId },
         select: { billingMutationLeaseToken: true, billingMutationLeaseUntil: true },
@@ -215,7 +219,10 @@ async function claimCheckoutMutationLease(organizationId: string) {
     if (claimed) return leaseToken;
     await new Promise(resolve => setTimeout(resolve, CHECKOUT_MUTATION_POLL_MS));
   }
-  throw new Error("Another billing operation is still processing; retry shortly");
+  throw new BillingChangeInProgressError(
+    null,
+    "Another billing operation is still processing; retry shortly"
+  );
 }
 
 async function releaseCheckoutMutationLease(organizationId: string, leaseToken: string) {
@@ -230,7 +237,7 @@ function assertSubscriptionProviderMode(
   providerMode: ReturnType<typeof resolveRazorpayMode>
 ) {
   if (subscription && subscription.providerMode !== providerMode) {
-    throw new Error(
+    throw new RazorpayConfigurationError(
       `This subscription belongs to Razorpay ${subscription.providerMode} mode and cannot be used in ${providerMode} mode`
     );
   }
@@ -460,7 +467,7 @@ async function enqueueAuthorizationOperation(input: {
       WHERE "id" = ${input.organizationId}
       FOR UPDATE
     `;
-    if (lockedOrganizations.length === 0) throw new Error("Organization not found");
+    if (lockedOrganizations.length === 0) throw new OrganizationAccessNotFoundError();
 
     const currentSubscription = await tx.organizationSubscription.findUnique({
       where: { id: input.subscriptionId },
@@ -1495,10 +1502,10 @@ function timestampToDate(value: unknown) {
 }
 
 function assertRazorpayId(value: unknown, prefix: "sub" | "pay") {
-  if (typeof value !== "string") throw new Error(`Missing Razorpay ${prefix} id`);
+  if (typeof value !== "string") throw new BillingValidationError(`Missing Razorpay ${prefix} id`);
   const trimmed = value.trim();
   if (!new RegExp(`^${prefix}_[A-Za-z0-9]+$`).test(trimmed)) {
-    throw new Error(`Invalid Razorpay ${prefix} id`);
+    throw new BillingValidationError(`Invalid Razorpay ${prefix} id`);
   }
   return trimmed;
 }
@@ -1509,7 +1516,9 @@ function getSubscriptionCycles() {
 
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1200) {
-    throw new Error("RAZORPAY_DEFAULT_SUBSCRIPTION_CYCLES must be an integer from 1 to 1200");
+    throw new RazorpayConfigurationError(
+      "RAZORPAY_DEFAULT_SUBSCRIPTION_CYCLES must be an integer from 1 to 1200"
+    );
   }
   return parsed;
 }
@@ -1964,9 +1973,9 @@ export class BillingService {
   }
 
   static async createSubscriptionCheckout(userId: string, organizationId: string, input: CheckoutInput) {
+    const org = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     assertRazorpayBillingWritesEnabled(organizationId);
     const selectedPlan = getActiveBillingPlan(input.plan);
-    const org = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     const now = new Date();
     await expireOverdueAuthorizationOperations(organizationId, now);
     const providerMode = resolveRazorpayMode();
@@ -1977,7 +1986,7 @@ export class BillingService {
           where: { organizationId, billingStatus: { not: "ARCHIVED" } },
         })
       : 1;
-    if (quantity < 1) throw new Error("At least one billable branch is required");
+    if (quantity < 1) throw new BillingValidationError("At least one billable branch is required");
     const razorpayPlan = await ensureRazorpayPlanCatalogEntry({
       plan: selectedPlan.id as SaasPlan,
       name: selectedPlan.name,
@@ -1988,7 +1997,7 @@ export class BillingService {
       interval: selectedPlan.interval,
     });
     if (razorpayPlan.providerMode !== providerMode) {
-      throw new Error("Razorpay plan catalog mode mismatch");
+      throw new RazorpayConfigurationError("Razorpay plan catalog mode mismatch");
     }
     const trialEndsAt = workspaceBilling
       && org.ownerTrialGrant?.status === "ACTIVE"
@@ -2124,9 +2133,11 @@ export class BillingService {
         }
         if (existing.status !== "CREATED" && !TERMINAL_STATUSES.has(existing.status)) {
           if (existing.plan === selectedPlan.id) {
-            throw new Error(`This organization already has a ${existing.status.toLowerCase()} ${selectedPlan.shortName} subscription`);
+            throw new BillingValidationError(
+              `This organization already has a ${existing.status.toLowerCase()} ${selectedPlan.shortName} subscription`
+            );
           }
-          throw new Error("Cancel or complete the current subscription before changing plans");
+          throw new BillingValidationError("Cancel or complete the current subscription before changing plans");
         }
       }
 
@@ -2390,7 +2401,7 @@ export class BillingService {
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     const providerMode = resolveRazorpayMode();
     if (typeof input.changeId !== "string" || !input.changeId.trim()) {
-      throw new Error("Missing billing change id");
+      throw new BillingValidationError("Missing billing change id");
     }
     let change = await prisma.organizationBillingChange.findFirst({
       where: {
@@ -2400,11 +2411,11 @@ export class BillingService {
       },
       include: { replacementSubscription: true },
     });
-    if (!change) throw new Error("Billing operation not found");
+    if (!change) throw new BillingResourceNotFoundError("Billing operation not found");
     if (isProviderConfirmedOperationStatus(change.operationStatus)) {
       const confirmedSubscription = change.replacementSubscription
         ?? await prisma.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } });
-      if (!confirmedSubscription) throw new Error("Subscription not found");
+      if (!confirmedSubscription) throw new BillingResourceNotFoundError("Subscription not found");
       assertSubscriptionProviderMode(confirmedSubscription, providerMode);
       return {
         verified: true as const,
@@ -2416,7 +2427,7 @@ export class BillingService {
     const subscriptionId = assertRazorpayId(input.razorpay_subscription_id, "sub");
     const paymentId = assertRazorpayId(input.razorpay_payment_id, "pay");
     if (typeof input.razorpay_signature !== "string" || !input.razorpay_signature.trim()) {
-      throw new Error("Missing Razorpay signature");
+      throw new BillingValidationError("Missing Razorpay signature");
     }
 
     const isVerified = verifyRazorpaySubscriptionSignature({
@@ -2424,24 +2435,24 @@ export class BillingService {
       paymentId,
       signature: input.razorpay_signature,
     });
-    if (!isVerified) throw new Error("Invalid Razorpay signature");
+    if (!isVerified) throw new BillingValidationError("Invalid Razorpay signature");
     const verifiedCallbackAt = new Date();
 
     const subscription = await prisma.organizationSubscription.findFirst({
       where: { organizationId, razorpaySubscriptionId: subscriptionId },
     });
-    if (!subscription) throw new Error("Subscription does not belong to this organization");
+    if (!subscription) throw new BillingResourceNotFoundError("Subscription not found");
     assertSubscriptionProviderMode(subscription, providerMode);
     const expectedOperationSubscriptionId = change.replacementSubscriptionId
       ?? change.organizationSubscriptionId;
     if (expectedOperationSubscriptionId !== subscription.id) {
-      throw new Error("Billing operation subscription mismatch");
+      throw new BillingValidationError("Billing operation subscription mismatch");
     }
     if (change.toPlan && change.toPlan !== subscription.plan) {
-      throw new Error("Billing operation plan mismatch");
+      throw new BillingValidationError("Billing operation plan mismatch");
     }
     if (change.toQuantity && change.toQuantity !== subscription.quantity) {
-      throw new Error("Billing operation quantity mismatch");
+      throw new BillingValidationError("Billing operation quantity mismatch");
     }
 
     const verificationAttempt = change.attemptCount;
@@ -2850,18 +2861,18 @@ export class BillingService {
     userId: string,
     organizationId: string
   ) {
-    assertRazorpayBillingWritesEnabled(organizationId);
     await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    assertRazorpayBillingWritesEnabled(organizationId);
     const providerMode = resolveRazorpayMode();
     const leaseToken = await claimCheckoutMutationLease(organizationId);
     const razorpay = getRazorpayClient();
     let providerCancellationSubmitted = false;
     try {
       const subscription = await prisma.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } });
-      if (!subscription) throw new Error("Subscription not found");
+      if (!subscription) throw new BillingResourceNotFoundError("Subscription not found");
       assertSubscriptionProviderMode(subscription, providerMode);
       if (TERMINAL_STATUSES.has(subscription.status)) {
-        throw new Error("Subscription has already ended");
+        throw new BillingValidationError("Subscription has already ended");
       }
       if (subscription.cancelAtCycleEnd) {
         return {
@@ -2871,7 +2882,9 @@ export class BillingService {
         };
       }
       if (subscription.status !== "ACTIVE") {
-        throw new Error("Only an active subscription can be cancelled at the end of its billing cycle");
+        throw new BillingValidationError(
+          "Only an active subscription can be cancelled at the end of its billing cycle"
+        );
       }
 
       const gatewaySubscription = await razorpay.cancelSubscription(
@@ -2880,7 +2893,7 @@ export class BillingService {
       );
       providerCancellationSubmitted = true;
       if (gatewaySubscription.id !== subscription.razorpaySubscriptionId) {
-        throw new Error("Razorpay subscription mismatch during cancellation");
+        throw new BillingValidationError("Razorpay subscription mismatch during cancellation");
       }
 
       const updated = await prisma.$transaction(async tx => {
@@ -2952,14 +2965,14 @@ export class BillingService {
     idempotencyKey: string,
     returnPath?: unknown
   ) {
+    const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     assertRazorpayBillingWritesEnabled(organizationId);
     const selectedPlan = getActiveBillingPlan(planId);
-    const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
     if (organization.billingModelVersion !== "WORKSPACE_V2") {
-      throw new Error("Workspace billing is not enabled for this organization");
+      throw new BillingValidationError("Workspace billing is not enabled for this organization");
     }
     const subscription = organization.subscription;
-    if (!subscription) throw new Error("Subscription not found");
+    if (!subscription) throw new BillingResourceNotFoundError("Subscription not found");
     assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
     if (subscription.plan === selectedPlan.id) {
       await prisma.organization.update({
@@ -2984,7 +2997,9 @@ export class BillingService {
       mutationType: type,
     });
     if (replacementRequired && !areRazorpayMultiMethodSubscriptionsEnabled()) {
-      throw new Error("This payment method requires a replacement mandate; multi-method billing is not enabled yet");
+      throw new BillingValidationError(
+        "This payment method requires a replacement mandate; multi-method billing is not enabled yet"
+      );
     }
     const change = await BillingMutationService.enqueue({
       organizationId,
@@ -3056,20 +3071,22 @@ export class BillingService {
     idempotencyKey: string,
     returnPath?: unknown
   ) {
-    assertRazorpayBillingWritesEnabled(organizationId);
-    if (!areRazorpayMultiMethodSubscriptionsEnabled()) {
-      throw new Error("Multi-method billing is not enabled yet");
-    }
     const organization = await OrganizationService.getOrganizationForOwnerAccess(
       organizationId,
       userId
     );
+    assertRazorpayBillingWritesEnabled(organizationId);
+    if (!areRazorpayMultiMethodSubscriptionsEnabled()) {
+      throw new BillingValidationError("Multi-method billing is not enabled yet");
+    }
     const subscription = organization.subscription;
-    if (!subscription) throw new Error("Subscription not found");
+    if (!subscription) throw new BillingResourceNotFoundError("Subscription not found");
     assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
     if (!isSupportedProviderPaymentMethod(subscription.providerPaymentMethod)
       || ["CREATED", "CANCELLED", "COMPLETED", "EXPIRED"].includes(subscription.status)) {
-      throw new Error("An active recurring mandate is required before changing payment method");
+      throw new BillingValidationError(
+        "An active recurring mandate is required before changing payment method"
+      );
     }
     const plan = getActiveBillingPlan(subscription.plan);
     const change = await BillingMutationService.enqueue({
@@ -3135,7 +3152,7 @@ export class BillingService {
     }
     assertRazorpayBillingWritesEnabled(organizationId);
     const subscription = organization.subscription;
-    if (!subscription) throw new Error("Subscription not found");
+    if (!subscription) throw new BillingResourceNotFoundError("Subscription not found");
     assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
     const trialActive = organization.ownerTrialGrant?.status === "ACTIVE"
       && organization.ownerTrialGrant.trialEndsAt != null
@@ -3143,7 +3160,7 @@ export class BillingService {
     const boundary = trialActive
       ? organization.ownerTrialGrant!.trialEndsAt!
       : subscription.paidThrough ?? subscription.currentEnd;
-    if (!boundary) throw new Error("Cancellation boundary is unavailable");
+    if (!boundary) throw new BillingValidationError("Cancellation boundary is unavailable");
     const undoCutoffAt = new Date(boundary.getTime() - 24 * 60 * 60 * 1000);
     const change = await BillingMutationService.enqueue({
       organizationId,
@@ -3174,9 +3191,9 @@ export class BillingService {
       where: { organizationId, type: "CANCELLATION", status: "QUEUED" },
       orderBy: { sequence: "desc" },
     });
-    if (!change) throw new Error("Undoable cancellation not found");
+    if (!change) throw new BillingResourceNotFoundError("Undoable cancellation not found");
     if (!change.undoCutoffAt || change.undoCutoffAt <= now) {
-      throw new Error("The cancellation is no longer undoable");
+      throw new BillingValidationError("The cancellation is no longer undoable");
     }
     await prisma.organizationBillingChange.update({
       where: { id: change.id },
@@ -3191,18 +3208,20 @@ export class BillingService {
   }
 
   static async getRecoveryCheckout(userId: string, organizationId: string, returnPath?: unknown) {
-    assertRazorpayBillingWritesEnabled(organizationId);
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
+    assertRazorpayBillingWritesEnabled(organizationId);
     const subscription = organization.subscription;
     if (!subscription || !["PENDING", "HALTED"].includes(subscription.status)) {
-      throw new Error("Payment recovery is only available for pending or halted subscriptions");
+      throw new BillingValidationError(
+        "Payment recovery is only available for pending or halted subscriptions"
+      );
     }
     assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
     let hostedRecoveryUrl: string | null = null;
     if (areRazorpayMultiMethodSubscriptionsEnabled()) {
       const gateway = await getRazorpayClient().fetchSubscription(subscription.razorpaySubscriptionId);
       if (gateway.id !== subscription.razorpaySubscriptionId) {
-        throw new Error("Razorpay recovery subscription mismatch");
+        throw new BillingValidationError("Razorpay recovery subscription mismatch");
       }
       hostedRecoveryUrl = safeRazorpayHostedUrl(gateway.short_url);
       if (!hostedRecoveryUrl && subscription.providerPaymentMethod !== "CARD") {
@@ -3256,7 +3275,7 @@ export class BillingService {
         auditEvents: { orderBy: { createdAt: "asc" } },
       },
     });
-    if (!change) throw new Error("Billing operation not found");
+    if (!change) throw new BillingResourceNotFoundError("Billing operation not found");
     assertSubscriptionProviderMode(change.organizationSubscription, resolveRazorpayMode());
     assertSubscriptionProviderMode(change.replacementSubscription, resolveRazorpayMode());
     const replacementPlan = change.replacementSubscription
@@ -3299,7 +3318,7 @@ export class BillingService {
       .includes(typeof input.event === "string" ? input.event : "")
       ? input.event as "ABANDONED" | "DECLINED" | "FAILED" | "AWAITING_PROVIDER_CONFIRMATION"
       : null;
-    if (!event) throw new Error("Unsupported checkout event");
+    if (!event) throw new BillingValidationError("Unsupported checkout event");
     const change = await prisma.organizationBillingChange.findFirst({
       where: {
         id: changeId,
@@ -3308,7 +3327,7 @@ export class BillingService {
       },
       include: { organizationSubscription: true, replacementSubscription: true },
     });
-    if (!change) throw new Error("Billing operation not found");
+    if (!change) throw new BillingResourceNotFoundError("Billing operation not found");
     assertSubscriptionProviderMode(change.organizationSubscription, resolveRazorpayMode());
     assertSubscriptionProviderMode(change.replacementSubscription, resolveRazorpayMode());
     if (["APPLIED", "SCHEDULED"].includes(change.operationStatus)) {
@@ -3385,7 +3404,7 @@ export class BillingService {
       },
     });
     const updated = await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
-    if (!updated) throw new Error("Billing operation not found after checkout event");
+    if (!updated) throw new BillingResourceNotFoundError("Billing operation not found after checkout event");
     return {
       operation: serializeBillingOperation(updated),
       ...(checkoutEventUpdate.count === 0 ? { ignored: true as const } : {}),
@@ -3398,7 +3417,7 @@ export class BillingService {
       where: { id: changeId, organizationId },
       include: { organizationSubscription: true, replacementSubscription: true },
     });
-    if (!change) throw new Error("Billing operation not found");
+    if (!change) throw new BillingResourceNotFoundError("Billing operation not found");
     if (isInitialProvisioningChange(change)) {
       return this.reconcileMutation(userId, organizationId, change.id);
     }
@@ -3429,16 +3448,18 @@ export class BillingService {
         return { operation: serializeBillingOperation(change), reconciled: true };
       }
       if (change.failureCode === "CANDIDATE_CANCELLATION_PENDING") {
-        throw new Error("The failed replacement mandate is still being cancelled; retry after provider confirmation");
+        throw new BillingValidationError(
+          "The failed replacement mandate is still being cancelled; retry after provider confirmation"
+        );
       }
       if (["UNDONE", "SUPERSEDED"].includes(change.status)) {
-        throw new Error("The replacement mandate was discarded and cannot be retried");
+        throw new BillingValidationError("The replacement mandate was discarded and cannot be retried");
       }
       if (change.undoCutoffAt && change.undoCutoffAt <= new Date()) {
-        throw new Error("The replacement authorization window has closed");
+        throw new BillingValidationError("The replacement authorization window has closed");
       }
       if (change.replacementSubscription.pendingReplacementOrganizationId !== organizationId) {
-        throw new Error("The replacement mandate is no longer pending for this workspace");
+        throw new BillingValidationError("The replacement mandate is no longer pending for this workspace");
       }
       if (change.status === "SCHEDULED" || change.providerConfirmedAt) {
         return this.getBillingOperation(userId, organizationId, change.id);
@@ -3447,7 +3468,9 @@ export class BillingService {
         change.replacementSubscription.razorpaySubscriptionId
       );
       if (["cancelled", "completed", "expired"].includes(gateway.status.toLowerCase())) {
-        throw new Error("The replacement mandate is no longer reusable; discard it and start again");
+        throw new BillingValidationError(
+          "The replacement mandate is no longer reusable; discard it and start again"
+        );
       }
       await BillingReconciliationService.reconcileProviderSubscription(
         change.replacementSubscription.razorpaySubscriptionId,
@@ -3478,7 +3501,7 @@ export class BillingService {
     if (change.type === "SUBSCRIPTION_AUTHORIZATION") {
       assertRazorpayBillingWritesEnabled(organizationId);
       const subscription = change.organizationSubscription;
-      if (!subscription) throw new Error("Subscription not found");
+      if (!subscription) throw new BillingResourceNotFoundError("Subscription not found");
       assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
       if (isProviderConfirmedOperationStatus(change.operationStatus)) {
         return { operation: serializeBillingOperation(change), reconciled: true };
@@ -3627,7 +3650,7 @@ export class BillingService {
     const safeProviderRetry = isSafeFailedBillingMutationForLocalUndo(change.failureCategory);
     const retried = await BillingMutationService.retry(change.id);
     const current = retried ?? await prisma.organizationBillingChange.findUnique({ where: { id: change.id } });
-    if (!current) throw new Error("Billing operation not found after retry");
+    if (!current) throw new BillingResourceNotFoundError("Billing operation not found after retry");
     return {
       operation: serializeBillingOperation(current),
       processingUrl: `/org/${encodeURIComponent(organizationId)}/billing/processing/${encodeURIComponent(change.id)}`,
@@ -3644,7 +3667,7 @@ export class BillingService {
       where: { id: changeId, organizationId },
       include: { organizationSubscription: true, replacementSubscription: true },
     });
-    if (!change) throw new Error("Billing change not found");
+    if (!change) throw new BillingResourceNotFoundError("Billing change not found");
     if (isInitialProvisioningChange(change)) {
       const leaseToken = await claimCheckoutMutationLease(organizationId);
       try {
@@ -3895,7 +3918,7 @@ export class BillingService {
         status: { in: ["QUEUED", "PROCESSING", "AWAITING_PAYMENT", "SCHEDULED", "FAILED"] },
       },
     });
-    if (!change) throw new Error("Undoable billing change not found");
+    if (!change) throw new BillingResourceNotFoundError("Undoable billing change not found");
     if (change.status === "PROCESSING") {
       throw new BillingChangeInProgressError(
         change.id,
@@ -3922,16 +3945,18 @@ export class BillingService {
       return { undone: true, replayed: result.replayed, replayError: result.replayError };
     }
     await prisma.$transaction(async tx => {
-      await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id" FROM "Organization" WHERE "id" = ${organizationId} FOR UPDATE
+      const lockedOrganization = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "Organization"
+        WHERE "id" = ${organizationId} AND "ownerId" = ${userId}
+        FOR UPDATE
       `;
-      const currentOrganization = await tx.organization.findUnique({
-        where: { id: organizationId },
-        select: { ownerId: true, billingMutationLeaseToken: true },
+      if (lockedOrganization.length === 0) throw new OrganizationAccessNotFoundError();
+      const currentOrganization = await tx.organization.findFirst({
+        where: { id: organizationId, ownerId: userId },
+        select: { billingMutationLeaseToken: true },
       });
-      if (!currentOrganization || currentOrganization.ownerId !== userId) {
-        throw new Error("Unauthorized");
-      }
+      if (!currentOrganization) throw new OrganizationAccessNotFoundError();
       if (currentOrganization?.billingMutationLeaseToken) {
         throw new BillingChangeInProgressError(
           change.id,

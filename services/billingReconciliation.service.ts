@@ -1,8 +1,13 @@
-import { BillingManualReviewRequiredError } from "@/lib/billingErrors";
+import {
+  BillingManualReviewRequiredError,
+  BillingResourceNotFoundError,
+} from "@/lib/billingErrors";
+import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 import { prisma } from "@/lib/prisma";
 import {
   fromRazorpaySubunits,
   getRazorpayClient,
+  RazorpayConfigurationError,
   resolveRazorpayMode,
   type RazorpayInvoice,
   type RazorpayInvoices,
@@ -466,7 +471,7 @@ export class BillingReconciliationService {
     const local = await prisma.organizationSubscription.findUnique({
       where: { currentOrganizationId: organizationId },
     });
-    if (!local) throw new Error("Subscription not found");
+    if (!local) throw new BillingResourceNotFoundError("Subscription not found");
     return this.reconcileProviderSubscription(local.razorpaySubscriptionId, options);
   }
 
@@ -479,10 +484,10 @@ export class BillingReconciliationService {
     const localBeforeFetch = await prisma.organizationSubscription.findUnique({
       where: { razorpaySubscriptionId },
     });
-    if (!localBeforeFetch) throw new Error("Subscription not found");
+    if (!localBeforeFetch) throw new BillingResourceNotFoundError("Subscription not found");
     const providerMode = resolveRazorpayMode();
     if (localBeforeFetch.providerMode !== providerMode) {
-      throw new Error(
+      throw new RazorpayConfigurationError(
         `Subscription provider mode ${localBeforeFetch.providerMode} cannot be reconciled in ${providerMode} mode`
       );
     }
@@ -503,7 +508,7 @@ export class BillingReconciliationService {
         orderBy: { sequence: "desc" },
       }),
     ]);
-    if (!organizationSnapshot) throw new Error("Organization not found");
+    if (!organizationSnapshot) throw new OrganizationAccessNotFoundError();
 
     const razorpay = getRazorpayClient();
     const [providerSubscription, invoices, explicitPayment] = await Promise.all([

@@ -1,3 +1,5 @@
+import { BillingValidationError } from "@/lib/billingErrors";
+
 export type BillingPlanId = "BASIC" | "PRO" | "AGENT_CONTROL" | "CUSTOM";
 export type CheckoutBillingPlanId = "BASIC" | "PRO";
 
@@ -157,9 +159,9 @@ export function isCheckoutBillingPlanId(
 
 export function getActiveBillingPlan(planId: string): BillingPlan {
   const plan = getBillingPlan(planId);
-  if (!plan) throw new Error("Unknown subscription plan");
+  if (!plan) throw new BillingValidationError("Unknown subscription plan");
   if (!plan.visible || !plan.active || plan.amount == null) {
-    throw new Error(`${plan.shortName} is not available for checkout yet`);
+    throw new BillingValidationError(`${plan.shortName} is not available for checkout yet`);
   }
   return plan;
 }

@@ -18,6 +18,7 @@ import { POST as reactivateBranch } from "@/app/api/branches/[branchId]/billing/
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   isOwner: vi.fn(),
+  getOrganizationForOwnerAccess: vi.fn(),
   createBranchForOrg: vi.fn(),
   scheduleBillingRemoval: vi.fn(),
   reactivateArchivedBranch: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("@/lib/auth", () => ({
 vi.mock("@/services/organization.service", () => ({
   OrganizationService: {
     isOwner: mocks.isOwner,
+    getOrganizationForOwnerAccess: mocks.getOrganizationForOwnerAccess,
   },
 }));
 
@@ -91,6 +93,7 @@ describe("billable-change route conflicts", () => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: "owner_1", email: "owner@test.com" });
     mocks.isOwner.mockResolvedValue(true);
+    mocks.getOrganizationForOwnerAccess.mockResolvedValue({ id: "org_1" });
   });
 
   it("returns a structured 409 for an initial subscription conflict", async () => {

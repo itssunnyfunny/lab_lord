@@ -35,3 +35,21 @@ export class BillingManualReviewRequiredError extends Error {
     this.changeId = changeId;
   }
 }
+
+export class BillingResourceNotFoundError extends Error {
+  readonly code = "BILLING_RESOURCE_NOT_FOUND";
+
+  constructor(message = "Billing resource not found") {
+    super(message);
+    this.name = "BillingResourceNotFoundError";
+  }
+}
+
+export class BillingValidationError extends Error {
+  readonly code = "BILLING_INVALID_REQUEST";
+
+  constructor(message = "Invalid billing request") {
+    super(message);
+    this.name = "BillingValidationError";
+  }
+}

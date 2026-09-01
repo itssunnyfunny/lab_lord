@@ -15,6 +15,7 @@ import { BillingReadOnlyError, SubscriptionEntitlementError } from "@/services/e
 import { BillingWritesDisabledError } from "@/lib/billingFeature";
 import { BillingChangeInProgressError } from "@/lib/billingErrors";
 import { BillingService } from "@/services/billing.service";
+import { billingHttpStatus } from "@/lib/billingHttp";
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : "Internal Server Error";
@@ -38,10 +39,7 @@ export async function POST(req: Request) {
         if (!organizationId || typeof organizationId !== "string") {
             return NextResponse.json({ error: "organizationId is required" }, { status: 400 });
         }
-        const isOwner = await OrganizationService.isOwner(organizationId, user.id);
-        if (!isOwner) {
-            return NextResponse.json({ error: "Forbidden: You do not own this organization" }, { status: 403 });
-        }
+        await OrganizationService.getOrganizationForOwnerAccess(organizationId, user.id);
         const idempotencyKey = req.headers.get("idempotency-key")?.trim();
         if (!idempotencyKey) {
             return NextResponse.json({ error: "Idempotency-Key is required" }, { status: 400 });
@@ -104,7 +102,7 @@ export async function POST(req: Request) {
         }
         return NextResponse.json(
             { error: message },
-            { status: message.includes("not found") ? 404 : 400 }
+            { status: billingHttpStatus(error) }
         );
     }
 }

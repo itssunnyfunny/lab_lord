@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { BranchService } from "@/services/branch.service";
 import { resetDatabase, disconnectDatabase, testPrisma } from "@/tests/setup/db";
 import { createUser, createOrg, createStaff } from "@/tests/factories";
+import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 
 /**
  * INTEGRATION TESTS: BranchService
@@ -135,20 +136,35 @@ describe("BranchService Integration", () => {
       expect(staffRecord!.role).toBe("MANAGER");
     });
 
-    it("rejects branch creation for an organization the user does not own", async () => {
+    it("returns the same generic access error for foreign and missing organizations", async () => {
       const owner = await createUser();
       const otherUser = await createUser();
       const org = await createOrg({ ownerId: owner.id });
 
-      await expect(
+      const attempt = (organizationId: string) =>
         BranchService.createBranchForOrg({
-          organizationId: org.id,
+          organizationId,
           userId: otherUser.id,
           name: "Unauthorized Branch",
           contactPhone: "9876543210",
           idempotencyKey: branchCreateKey(),
-        })
-      ).rejects.toThrow(/Unauthorized/i);
+        });
+
+      const [foreignError, missingError] = await Promise.all([
+        attempt(org.id).catch(error => error),
+        attempt("org_missing").catch(error => error),
+      ]);
+
+      expect(foreignError).toBeInstanceOf(OrganizationAccessNotFoundError);
+      expect(missingError).toBeInstanceOf(OrganizationAccessNotFoundError);
+      expect({ message: foreignError.message, code: foreignError.code }).toEqual({
+        message: "Organization not found",
+        code: "ORGANIZATION_NOT_FOUND",
+      });
+      expect({ message: missingError.message, code: missingError.code }).toEqual({
+        message: "Organization not found",
+        code: "ORGANIZATION_NOT_FOUND",
+      });
 
       await expect(
         testPrisma.branch.count({ where: { organizationId: org.id } })

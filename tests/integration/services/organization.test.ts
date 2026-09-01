@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { OrganizationService } from "@/services/organization.service";
 import { resetDatabase, disconnectDatabase } from "@/tests/setup/db";
 import { createUser, createOrg, createBranch } from "@/tests/factories";
+import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 
 /**
  * INTEGRATION TESTS: OrganizationService
@@ -44,6 +45,38 @@ describe("OrganizationService Integration", () => {
           contactPhone: "",
         })
       ).rejects.toThrow(/contact phone is required/i);
+    });
+  });
+
+  describe("getOrganizationForOwnerAccess", () => {
+    it("returns the complete organization view to its owner", async () => {
+      const owner = await createUser();
+      const org = await createOrg({ ownerId: owner.id });
+      await createBranch({ organizationId: org.id, name: "Owned Branch" });
+
+      const found = await OrganizationService.getOrganizationForOwnerAccess(org.id, owner.id);
+
+      expect(found.id).toBe(org.id);
+      expect(found.branches).toHaveLength(1);
+    });
+
+    it("makes foreign and nonexistent organizations indistinguishable", async () => {
+      const owner = await createUser();
+      const stranger = await createUser();
+      const org = await createOrg({ ownerId: owner.id });
+
+      const [foreign, missing] = await Promise.all([
+        OrganizationService.getOrganizationForOwnerAccess(org.id, stranger.id).catch(error => error),
+        OrganizationService.getOrganizationForOwnerAccess("org_missing", stranger.id).catch(error => error),
+      ]);
+
+      expect(foreign).toBeInstanceOf(OrganizationAccessNotFoundError);
+      expect(missing).toBeInstanceOf(OrganizationAccessNotFoundError);
+      expect({ name: foreign.name, code: foreign.code, message: foreign.message }).toEqual({
+        name: missing.name,
+        code: missing.code,
+        message: missing.message,
+      });
     });
   });
 
@@ -102,14 +135,25 @@ describe("OrganizationService Integration", () => {
       expect(updated.name).toBe("Renamed Academy");
     });
 
-    it("REJECTS update by non-owner", async () => {
+    it("rejects foreign and nonexistent updates identically", async () => {
       const owner = await createUser();
       const stranger = await createUser();
       const org = await createOrg({ ownerId: owner.id });
 
-      await expect(
+      const [foreign, missing] = await Promise.all([
         OrganizationService.updateOrganization(org.id, stranger.id, { name: "Hijacked" })
-      ).rejects.toThrow(/Unauthorized/i);
+          .catch(error => error),
+        OrganizationService.updateOrganization("org_missing", stranger.id, { name: "Hijacked" })
+          .catch(error => error),
+      ]);
+
+      expect(foreign).toBeInstanceOf(OrganizationAccessNotFoundError);
+      expect(missing).toBeInstanceOf(OrganizationAccessNotFoundError);
+      expect({ name: foreign.name, code: foreign.code, message: foreign.message }).toEqual({
+        name: missing.name,
+        code: missing.code,
+        message: missing.message,
+      });
     });
 
     it("updates persisted organization settings", async () => {

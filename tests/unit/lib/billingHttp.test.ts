@@ -4,7 +4,10 @@ import { billingHttpStatus } from "@/lib/billingHttp";
 import {
   BillingChangeInProgressError,
   BillingManualReviewRequiredError,
+  BillingResourceNotFoundError,
+  BillingValidationError,
 } from "@/lib/billingErrors";
+import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 import { RazorpayApiError, RazorpayConfigurationError } from "@/lib/razorpay";
 
 describe("billingHttpStatus", () => {
@@ -16,7 +19,6 @@ describe("billingHttpStatus", () => {
   it("maps held and misconfigured billing to a retryable service response", () => {
     expect(billingHttpStatus(new BillingWritesDisabledError())).toBe(503);
     expect(billingHttpStatus(new RazorpayConfigurationError("mode mismatch"))).toBe(503);
-    expect(billingHttpStatus(new Error("Subscription provider mode TEST cannot be used in LIVE mode"))).toBe(503);
   });
 
   it("maps provider failures without treating them as customer validation errors", () => {
@@ -26,9 +28,18 @@ describe("billingHttpStatus", () => {
     }))).toBe(502);
   });
 
-  it("preserves authorization, lookup, and validation semantics", () => {
-    expect(billingHttpStatus(new Error("Unauthorized"))).toBe(403);
-    expect(billingHttpStatus(new Error("Subscription not found"))).toBe(404);
-    expect(billingHttpStatus(new Error("Invalid request"))).toBe(400);
+  it("maps typed tenant-safe lookup and validation failures", () => {
+    expect(billingHttpStatus(new OrganizationAccessNotFoundError())).toBe(404);
+    expect(billingHttpStatus(new BillingResourceNotFoundError("Subscription not found"))).toBe(404);
+    expect(billingHttpStatus(new BillingValidationError("Invalid request"))).toBe(400);
+  });
+
+  it("does not infer HTTP status from arbitrary error messages", () => {
+    expect(billingHttpStatus(new Error("Unauthorized"), 500)).toBe(500);
+    expect(billingHttpStatus(new Error("Subscription not found"), 500)).toBe(500);
+    expect(billingHttpStatus(
+      new Error("Subscription provider mode TEST cannot be used in LIVE mode"),
+      500
+    )).toBe(500);
   });
 });

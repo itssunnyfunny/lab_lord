@@ -11,6 +11,11 @@ import {
 } from "@/lib/settingsValidation";
 import { CreateOrganizationDto, UpdateOrganizationSettingsDto, WEEK_STARTS_ON } from "@/types";
 import { EntitlementService } from "@/services/entitlement.service";
+import type { Prisma } from "@/app/generated/prisma/client";
+import {
+    OrganizationAccessNotFoundError,
+    OrganizationValidationError,
+} from "@/lib/organizationErrors";
 
 const ORG_SETTINGS_FIELDS = [
     "name",
@@ -24,6 +29,19 @@ const ORG_SETTINGS_FIELDS = [
     "weekStartsOn",
     "paymentGraceDays",
 ] as const;
+
+const ORGANIZATION_OWNER_VIEW = {
+    owner: {
+        select: { id: true, name: true, email: true },
+    },
+    branches: {
+        select: { id: true, name: true, city: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+    },
+    subscription: true,
+    ownerTrialGrant: true,
+    _count: { select: { branches: true } },
+} satisfies Prisma.OrganizationInclude;
 
 export class OrganizationService {
     static async createOrganization(data: CreateOrganizationDto) {
@@ -52,18 +70,7 @@ export class OrganizationService {
     static async getOrganizationById(id: string) {
         return await prisma.organization.findUnique({
             where: { id },
-            include: {
-                owner: {
-                    select: { id: true, name: true, email: true },
-                },
-                branches: {
-                    select: { id: true, name: true, city: true, createdAt: true },
-                    orderBy: { createdAt: "desc" },
-                },
-                subscription: true,
-                ownerTrialGrant: true,
-                _count: { select: { branches: true } },
-            },
+            include: ORGANIZATION_OWNER_VIEW,
         });
     }
 
@@ -74,9 +81,11 @@ export class OrganizationService {
     }
 
     static async getOrganizationForOwnerAccess(id: string, userId: string) {
-        const org = await this.getOrganizationById(id);
-        if (!org) throw new Error("Organization not found");
-        if (org.ownerId !== userId) throw new Error("Unauthorized");
+        const org = await prisma.organization.findFirst({
+            where: { id, ownerId: userId },
+            include: ORGANIZATION_OWNER_VIEW,
+        });
+        if (!org) throw new OrganizationAccessNotFoundError();
         return org;
     }
 
@@ -127,23 +136,32 @@ export class OrganizationService {
 
     static async updateSettings(id: string, userId: string, body: unknown) {
         await this.assertOwnerCanWrite(id, userId);
-        const data = this.parseSettingsPayload(body);
+        let data: UpdateOrganizationSettingsDto;
+        try {
+            data = this.parseSettingsPayload(body);
+        } catch (error) {
+            throw new OrganizationValidationError(
+                error instanceof Error ? error.message : "Invalid organization settings"
+            );
+        }
         return prisma.organization.update({ where: { id }, data });
     }
 
     private static async assertOwnerCanWrite(id: string, userId: string) {
-        const org = await prisma.organization.findUnique({ where: { id }, select: { ownerId: true } });
-        if (!org) throw new Error("Organization not found");
-        if (org.ownerId !== userId) throw new Error("Unauthorized");
+        const org = await prisma.organization.findFirst({
+            where: { id, ownerId: userId },
+            select: { id: true },
+        });
+        if (!org) throw new OrganizationAccessNotFoundError();
         await EntitlementService.assertOrganizationWritable(id);
     }
 
     static async isOwner(organizationId: string, userId: string): Promise<boolean> {
-        const org = await prisma.organization.findUnique({
-            where: { id: organizationId },
-            select: { ownerId: true },
+        const org = await prisma.organization.findFirst({
+            where: { id: organizationId, ownerId: userId },
+            select: { id: true },
         });
-        return org?.ownerId === userId;
+        return org != null;
     }
 }
 

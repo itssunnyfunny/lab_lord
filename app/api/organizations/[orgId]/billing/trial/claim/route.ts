@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { OwnerTrialService } from "@/services/ownerTrial.service";
+import { billingHttpStatus } from "@/lib/billingHttp";
 
 export async function POST(_request: Request, context: { params: Promise<{ orgId: string }> }) {
   try {
@@ -10,6 +11,6 @@ export async function POST(_request: Request, context: { params: Promise<{ orgId
     return NextResponse.json(await OwnerTrialService.claimMigratedTrial(user.id, orgId));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to claim trial";
-    return NextResponse.json({ error: message }, { status: /not found/i.test(message) ? 404 : 400 });
+    return NextResponse.json({ error: message }, { status: billingHttpStatus(error) });
   }
 }

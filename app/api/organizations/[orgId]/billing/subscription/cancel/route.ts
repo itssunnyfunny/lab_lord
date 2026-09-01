@@ -3,20 +3,6 @@ import { getSessionUser } from "@/lib/auth";
 import { BillingService } from "@/services/billing.service";
 import { billingHttpStatus } from "@/lib/billingHttp";
 
-function errorStatus(message: string, error: unknown) {
-  const shared = billingHttpStatus(error, 500);
-  if (shared !== 500) return shared;
-  if (message.includes("not found")) return 404;
-  if (message.includes("Unauthorized")) return 403;
-  if (
-    message.includes("must be")
-    || message.includes("already ended")
-    || message.includes("Only an active")
-    || message.includes("mismatch")
-  ) return 400;
-  return 500;
-}
-
 export async function POST(
   req: Request,
   context: { params: Promise<{ orgId: string }> }
@@ -34,7 +20,7 @@ export async function POST(
     return NextResponse.json(result, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: message }, { status: errorStatus(message, error) });
+    return NextResponse.json({ error: message }, { status: billingHttpStatus(error, 500) });
   }
 }
 
@@ -49,6 +35,6 @@ export async function DELETE(
     return NextResponse.json(await BillingService.undoWorkspaceCancellation(user.id, orgId));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: message }, { status: errorStatus(message, error) });
+    return NextResponse.json({ error: message }, { status: billingHttpStatus(error, 500) });
   }
 }

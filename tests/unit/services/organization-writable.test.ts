@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  findUnique: vi.fn(),
+  findFirst: vi.fn(),
   update: vi.fn(),
   assertOrganizationWritable: vi.fn(),
 }));
@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     organization: {
-      findUnique: mocks.findUnique,
+      findFirst: mocks.findFirst,
       update: mocks.update,
     },
   },
@@ -26,7 +26,7 @@ import { OrganizationService } from "@/services/organization.service";
 describe("OrganizationService writable settings guard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.findUnique.mockResolvedValue({ ownerId: "owner_1" });
+    mocks.findFirst.mockResolvedValue({ id: "org_1" });
   });
 
   it("checks billing write access before validating or updating settings", async () => {
@@ -37,6 +37,10 @@ describe("OrganizationService writable settings guard", () => {
     ).rejects.toThrow("Workspace is read-only");
 
     expect(mocks.assertOrganizationWritable).toHaveBeenCalledWith("org_1");
+    expect(mocks.findFirst).toHaveBeenCalledWith({
+      where: { id: "org_1", ownerId: "owner_1" },
+      select: { id: true },
+    });
     expect(mocks.update).not.toHaveBeenCalled();
   });
 
