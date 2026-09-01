@@ -17,6 +17,7 @@ export async function recordBillingMutationAudit(
       | "LOCAL_FINALIZATION_FAILED";
     failureCode?: string | null;
     providerSubscriptionId?: string | null;
+    recordSubscriptionHistory?: boolean;
   }
 ) {
   const safeFailureCode = input.failureCode?.replace(/[^A-Z0-9_]/g, "_").slice(0, 80)
@@ -44,7 +45,7 @@ export async function recordBillingMutationAudit(
     update: {},
   });
 
-  if (!input.organizationSubscriptionId) return;
+  if (!input.organizationSubscriptionId || input.recordSubscriptionHistory === false) return;
   const subscription = await tx.organizationSubscription.findFirst({
     where: {
       id: input.organizationSubscriptionId,
