@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { BillingService } from "@/services/billing.service";
-import { BillingChangeInProgressError } from "@/lib/billingErrors";
+import {
+  BillingChangeInProgressError,
+  BillingManualReviewRequiredError,
+} from "@/lib/billingErrors";
 import { billingHttpStatus } from "@/lib/billingHttp";
 
 type Context = { params: Promise<{ orgId: string; changeId: string }> };
@@ -20,7 +23,17 @@ export async function POST(request: Request, context: Context) {
     ));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to reconcile billing change";
-    return NextResponse.json({ error: message }, { status: /Unauthorized/.test(message) ? 403 : 400 });
+    return NextResponse.json(
+      error instanceof BillingManualReviewRequiredError
+        ? {
+            error: message,
+            code: error.code,
+            changeId: error.changeId,
+            resolutionOutcome: error.resolutionOutcome,
+          }
+        : { error: message },
+      { status: billingHttpStatus(error) }
+    );
   }
 }
 
