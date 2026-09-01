@@ -208,6 +208,9 @@ describe("replacement access orchestration", () => {
       organizationSubscriptionHistory: {
         upsert: vi.fn().mockResolvedValue({}),
       },
+      organizationBillingChangeAudit: {
+        upsert: vi.fn().mockResolvedValue({}),
+      },
       organizationSubscriptionInvoice: {
         findUnique: vi.fn(async () => ({
           commercialEvidenceVersion: 1,
