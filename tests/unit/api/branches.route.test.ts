@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
-  isOwner: vi.fn(),
+  getOrganizationForOwnerAccess: vi.fn(),
   createBranchForOrg: vi.fn(),
 }));
 
@@ -12,7 +13,7 @@ vi.mock("@/lib/auth", () => ({
 
 vi.mock("@/services/organization.service", () => ({
   OrganizationService: {
-    isOwner: mocks.isOwner,
+    getOrganizationForOwnerAccess: mocks.getOrganizationForOwnerAccess,
   },
 }));
 
@@ -45,13 +46,13 @@ describe("POST /api/branches", () => {
 
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "Unauthorized" });
-    expect(mocks.isOwner).not.toHaveBeenCalled();
+    expect(mocks.getOrganizationForOwnerAccess).not.toHaveBeenCalled();
     expect(mocks.createBranchForOrg).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when the signed-in user does not own the organization", async () => {
+  it("returns the generic 404 when the signed-in user does not own the organization", async () => {
     mocks.getSessionUser.mockResolvedValue({ id: "user_1", email: "user@test.com" });
-    mocks.isOwner.mockResolvedValue(false);
+    mocks.getOrganizationForOwnerAccess.mockRejectedValue(new OrganizationAccessNotFoundError());
     const { POST } = await import("@/app/api/branches/route");
 
     const response = await POST(request({
@@ -60,15 +61,15 @@ describe("POST /api/branches", () => {
       seatCount: 10,
     }));
 
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({ error: "Forbidden: You do not own this organization" });
-    expect(mocks.isOwner).toHaveBeenCalledWith("org_1", "user_1");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Organization not found" });
+    expect(mocks.getOrganizationForOwnerAccess).toHaveBeenCalledWith("org_1", "user_1");
     expect(mocks.createBranchForOrg).not.toHaveBeenCalled();
   });
 
   it("creates the branch when the signed-in user owns the organization", async () => {
     mocks.getSessionUser.mockResolvedValue({ id: "owner_1", email: "owner@test.com" });
-    mocks.isOwner.mockResolvedValue(true);
+    mocks.getOrganizationForOwnerAccess.mockResolvedValue({ id: "org_1" });
     mocks.createBranchForOrg.mockResolvedValue({ id: "branch_1", name: "Second Branch" });
     const { POST } = await import("@/app/api/branches/route");
 
@@ -99,7 +100,7 @@ describe("POST /api/branches", () => {
 
   it("requires an idempotency key before creating a branch", async () => {
     mocks.getSessionUser.mockResolvedValue({ id: "owner_1", email: "owner@test.com" });
-    mocks.isOwner.mockResolvedValue(true);
+    mocks.getOrganizationForOwnerAccess.mockResolvedValue({ id: "org_1" });
     const { POST } = await import("@/app/api/branches/route");
 
     const response = await POST(request({
@@ -116,7 +117,7 @@ describe("POST /api/branches", () => {
 
   it("passes custom seat numbering to the service", async () => {
     mocks.getSessionUser.mockResolvedValue({ id: "owner_1", email: "owner@test.com" });
-    mocks.isOwner.mockResolvedValue(true);
+    mocks.getOrganizationForOwnerAccess.mockResolvedValue({ id: "org_1" });
     mocks.createBranchForOrg.mockResolvedValue({ id: "branch_1", name: "Second Branch" });
     const { POST } = await import("@/app/api/branches/route");
 
