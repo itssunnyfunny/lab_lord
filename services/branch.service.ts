@@ -312,6 +312,26 @@ async function findLockedBranchMutationReplay(input: {
     });
 }
 
+async function assertNoActiveOrganizationBillingLease(
+    tx: Prisma.TransactionClient,
+    organizationId: string
+) {
+    const organization = await tx.organization.findUniqueOrThrow({
+        where: { id: organizationId },
+        select: { billingMutationLeaseToken: true },
+    });
+    if (!organization.billingMutationLeaseToken) return;
+    const activeChange = await tx.organizationBillingChange.findFirst({
+        where: { organizationId, resolvedAt: null },
+        orderBy: { sequence: "desc" },
+        select: { id: true },
+    });
+    throw new BillingChangeInProgressError(
+        activeChange?.id ?? null,
+        "A provider billing operation is still processing; retry the branch change shortly"
+    );
+}
+
 async function createAtomicBranchChange(
     tx: Prisma.TransactionClient,
     input: AtomicBranchChangeInput
@@ -465,6 +485,7 @@ export class BranchService {
                 expectedBranch,
             });
             if (replay) return replay;
+            await assertNoActiveOrganizationBillingLease(tx, organizationId);
 
             const lockedOrg = await tx.organization.findUnique({
                 where: { id: organizationId },
@@ -826,6 +847,7 @@ export class BranchService {
                 branchId,
             });
             if (replay) return replay;
+            await assertNoActiveOrganizationBillingLease(tx, branch.organizationId);
 
             const current = await tx.branch.findUnique({
                 where: { id: branchId },
@@ -912,6 +934,7 @@ export class BranchService {
                 branchId,
             });
             if (replay) return replay;
+            await assertNoActiveOrganizationBillingLease(tx, branch.organizationId);
 
             const current = await tx.branch.findUnique({
                 where: { id: branchId },

@@ -19,6 +19,7 @@ export const INITIAL_PROVISIONING_LIST_FAILED_CODE = "SUBSCRIPTION_CREATE_RECONC
 export const INITIAL_PROVISIONING_PROVIDER_REJECTED_CODE = "SUBSCRIPTION_CREATE_PROVIDER_REJECTED";
 export const INITIAL_PROVISIONING_MALFORMED_RESPONSE_CODE = "SUBSCRIPTION_CREATE_MALFORMED_RESPONSE";
 export const INITIAL_PROVISIONING_LOCAL_FINALIZATION_CODE = "SUBSCRIPTION_CREATE_LOCAL_FINALIZATION_FAILED";
+export const INITIAL_PROVISIONING_MODE_MISMATCH_CODE = "SUBSCRIPTION_CREATE_MODE_MISMATCH";
 
 export type InitialProvisioningTuple = {
   changeId: string;
@@ -101,11 +102,18 @@ export function classifyInitialProvisioningMatches(
   if (exact.length === 0) return { kind: "NO_MATCH" };
   if (exact.length > 1) return { kind: "MULTIPLE_MATCHES", subscriptions: exact };
   const subscription = exact[0];
-  if (subscription.status.toLowerCase() === "created"
-    && (subscription.paid_count ?? 0) === 0) {
+  if (isUnchargedCreatedInitialProvisioning(subscription)) {
     return { kind: "ONE_SAFE_CREATED", subscription };
   }
   return { kind: "UNSAFE_MATCH", subscription };
+}
+
+export function isUnchargedCreatedInitialProvisioning(
+  subscription: RazorpaySubscription
+) {
+  return subscription.status.toLowerCase() === "created"
+    && Number.isSafeInteger(subscription.paid_count)
+    && subscription.paid_count === 0;
 }
 
 export async function discoverInitialProvisioning(

@@ -1,9 +1,9 @@
 export class BillingChangeInProgressError extends Error {
   readonly code = "BILLING_CHANGE_IN_PROGRESS";
-  readonly existingChangeId: string;
+  readonly existingChangeId: string | null;
 
   constructor(
-    existingChangeId: string,
+    existingChangeId: string | null,
     message = "Another billable change is already awaiting authorization or cutover"
   ) {
     super(message);

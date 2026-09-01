@@ -45,6 +45,7 @@ import {
   INITIAL_PROVISIONING_LIST_FAILED_CODE,
   INITIAL_PROVISIONING_LOCAL_FINALIZATION_CODE,
   INITIAL_PROVISIONING_MALFORMED_RESPONSE_CODE,
+  INITIAL_PROVISIONING_MODE_MISMATCH_CODE,
   INITIAL_PROVISIONING_MULTIPLE_MATCHES_CODE,
   INITIAL_PROVISIONING_NO_MATCH_CODE,
   INITIAL_PROVISIONING_OUTCOME_UNKNOWN_CODE,
@@ -56,6 +57,7 @@ import {
   initialProvisioningNotes,
   isDefinitelyRejectedInitialProvisioningError,
   isSameInitialProvisioningIntent,
+  isUnchargedCreatedInitialProvisioning,
   type InitialProvisioningTuple,
 } from "@/services/billingProvisioning.service";
 import {
@@ -634,6 +636,7 @@ async function prepareInitialProvisioningIntent(input: {
   leaseToken: string;
   providerMode: RazorpayMode;
   billingModelVersion: BillingModelVersion;
+  expectedBillingMutationSequence: number;
   plan: SaasPlan;
   quantity: number;
   totalCount: number;
@@ -652,12 +655,28 @@ async function prepareInitialProvisioningIntent(input: {
     const organization = await tx.organization.findUnique({
       where: { id: input.organizationId },
       select: {
+        billingModelVersion: true,
         billingMutationLeaseToken: true,
         billingMutationSequence: true,
       },
     });
     if (organization?.billingMutationLeaseToken !== input.leaseToken) {
       throw new Error("Billing mutation lease was lost before subscription provisioning");
+    }
+    if (organization.billingModelVersion !== input.billingModelVersion
+      || organization.billingMutationSequence !== input.expectedBillingMutationSequence) {
+      throw new Error("Organization billing state changed before subscription provisioning");
+    }
+    const billableBranchCount = input.billingModelVersion === "WORKSPACE_V2"
+      ? await tx.branch.count({
+          where: {
+            organizationId: input.organizationId,
+            billingStatus: { not: "ARCHIVED" },
+          },
+        })
+      : 1;
+    if (billableBranchCount !== input.quantity) {
+      throw new Error("Billable branch quantity changed before subscription provisioning");
     }
 
     const unresolved = await tx.organizationBillingChange.findFirst({
@@ -922,8 +941,7 @@ async function finalizeInitialProvisioning(input: {
   if (!isSameInitialProvisioningIntent(input.providerSubscription, intent)) {
     throw new Error("Razorpay subscription does not match the provisioning intent");
   }
-  if (input.providerSubscription.status.toLowerCase() !== "created"
-    || (input.providerSubscription.paid_count ?? 0) !== 0) {
+  if (!isUnchargedCreatedInitialProvisioning(input.providerSubscription)) {
     throw new Error("Only one uncharged CREATED subscription can be adopted");
   }
 
@@ -933,7 +951,11 @@ async function finalizeInitialProvisioning(input: {
     `;
     const organization = await tx.organization.findUnique({
       where: { id: input.change.organizationId },
-      select: { billingMutationLeaseToken: true },
+      select: {
+        billingModelVersion: true,
+        billingMutationLeaseToken: true,
+        billingMutationSequence: true,
+      },
     });
     if (organization?.billingMutationLeaseToken !== input.leaseToken) {
       throw new Error("Billing mutation lease was lost before subscription finalization");
@@ -954,6 +976,21 @@ async function finalizeInitialProvisioning(input: {
       || (latest.authorizedRazorpaySubscriptionId != null
         && latest.authorizedRazorpaySubscriptionId !== input.providerSubscription.id)) {
       throw new Error("Subscription provisioning attempt changed before finalization");
+    }
+    if (organization.billingModelVersion !== intent.billingModelVersion
+      || organization.billingMutationSequence !== latest.sequence) {
+      throw new Error("Organization billing state changed before subscription finalization");
+    }
+    const billableBranchCount = intent.billingModelVersion === "WORKSPACE_V2"
+      ? await tx.branch.count({
+          where: {
+            organizationId: input.change.organizationId,
+            billingStatus: { not: "ARCHIVED" },
+          },
+        })
+      : 1;
+    if (billableBranchCount !== intent.quantity) {
+      throw new Error("Billable branch quantity changed before subscription finalization");
     }
 
     const current = await tx.organizationSubscription.findUnique({
@@ -1161,9 +1198,14 @@ async function reconcileInitialProvisioning(input: {
   const intent = readInitialProvisioningTuple(input.change);
   const providerMode = resolveRazorpayMode();
   if (intent.providerMode !== providerMode) {
-    throw new Error(
-      `This provisioning intent belongs to Razorpay ${intent.providerMode} mode and cannot be used in ${providerMode} mode`
-    );
+    await retainInitialProvisioningManualReview({
+      change: input.change,
+      leaseToken: input.leaseToken,
+      failureCode: INITIAL_PROVISIONING_MODE_MISMATCH_CODE,
+      lastError: "The provisioning intent belongs to a different Razorpay mode; no provider mutation was submitted",
+      now: input.now,
+    });
+    throw new BillingManualReviewRequiredError(input.change.id);
   }
   const razorpay = getRazorpayClient();
   let discovery;
@@ -2178,6 +2220,7 @@ export class BillingService {
         leaseToken,
         providerMode,
         billingModelVersion: org.billingModelVersion,
+        expectedBillingMutationSequence: org.billingMutationSequence,
         plan: selectedPlan.id as SaasPlan,
         quantity,
         totalCount,
@@ -3214,10 +3257,6 @@ export class BillingService {
       },
     });
     if (!change) throw new Error("Billing operation not found");
-    if (isInitialProvisioningChange(change)
-      && change.authorizedProviderMode !== resolveRazorpayMode()) {
-      throw new Error("Initial subscription provisioning belongs to another Razorpay mode");
-    }
     assertSubscriptionProviderMode(change.organizationSubscription, resolveRazorpayMode());
     assertSubscriptionProviderMode(change.replacementSubscription, resolveRazorpayMode());
     const replacementPlan = change.replacementSubscription

@@ -129,7 +129,6 @@ export class BillingDeadlineService {
 
     const staleLeases = await prisma.organization.findMany({
       where: {
-        billingModelVersion: "WORKSPACE_V2",
         billingMutationLeaseUntil: { lte: now },
       },
       select: { id: true, billingMutationLeaseToken: true },
