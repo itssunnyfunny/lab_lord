@@ -1,8 +1,8 @@
 # Lab Lords: Current Architecture and Implementation State
 
-> Last verified: 2026-08-31
+> Last verified: 2026-09-01
 >
-> Repository anchor: PR4 WhatsApp reports, service notices, and hardening plus target-bound billing operations and exact-commercial-evidence billing remediation
+> Repository anchor: PR4 WhatsApp reports, service notices, and hardening plus completed Razorpay billing remediation and tenant-safe organization owner access
 >
 > Scope: repository implementation only
 
@@ -159,11 +159,14 @@ The tenant hierarchy is `User -> Organization -> Branch`:
 
 Normal application queries and services enforce tenant isolation, but the schema
 does not define PostgreSQL row-level security or composite same-branch foreign
-keys for every related record. Some ID-first mutation paths also distinguish an
-existing foreign record from a nonexistent record. Every read and mutation must
-therefore preserve explicit organization/branch scoping, and uniform generic
-tenant-safe not-found behavior remains a required target rather than a universal
-current guarantee.
+keys for every related record. Organization owner details, settings, branch
+lists, and subscription-billing entry points use a combined organization/owner
+lookup and one typed generic not-found response before loading billing state.
+Some unrelated ID-first mutation paths still distinguish an existing foreign
+record from a nonexistent record. Every read and mutation must therefore
+preserve explicit organization/branch scoping, and uniform generic tenant-safe
+not-found behavior remains a required target outside the corrected owner and
+billing boundary.
 
 ## Domain model
 
@@ -531,6 +534,10 @@ Accepted).
 
 The repository contains both legacy billing and Workspace Billing V2.
 
+- Organization owner and subscription-billing APIs scope the initial lookup by
+  both organization and owner ID. Foreign and nonexistent organization IDs
+  receive the exact same generic 404 response, route status mapping is typed,
+  and rejected requests perform no Razorpay read or mutation.
 - `BASIC` is displayed as Basic and costs INR 299 per active branch per month.
 - Database plan `PRO` is displayed as Standard and costs INR 499 per active branch per month.
 - Standard grants staff management, advanced analytics, AI access, and the

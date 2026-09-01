@@ -48,8 +48,10 @@ Every statement uses one of these labels:
   both cases indistinguishable, while payment, allocation, and student mutation
   paths may return forbidden for an existing foreign record and not found for a
   missing record. Generic tenant-safe not-found behavior is the target policy,
-  not a universal current guarantee. (Tenant-safe API tests and service tests
-  under `tests/integration/`)
+  not a universal current guarantee. Organization owner access and its billing
+  APIs are not part of this discrepancy: they use a combined organization/owner
+  lookup and the same typed generic not-found result. (Tenant-safe API tests and
+  service tests under `tests/integration/`)
 
 ## Roles, permissions, and projections
 
@@ -268,6 +270,13 @@ Every statement uses one of these labels:
 
 ## SaaS subscriptions and provider events
 
+- **Must preserve—enforced:** Organization details, settings, branch lists, and
+  subscription-billing owner entry points resolve the organization with both
+  `id` and `ownerId` before loading billing data or performing provider work.
+  Foreign and nonexistent organization IDs return the exact same generic 404
+  body. HTTP mappings use typed errors rather than authorization/not-found
+  message matching. (`services/organization.service.ts`, `lib/billingHttp.ts`,
+  organization access route and integration tests)
 - **Must preserve—enforced:** Subscription and billing mutation APIs are
   owner-only. Provider mode is part of the trust boundary: TEST records cannot
   grant or mutate LIVE access, and vice versa.

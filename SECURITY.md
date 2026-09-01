@@ -103,6 +103,11 @@ operator workstation or CI runner that can access credentials.
 - Foreign and nonexistent identifiers must produce the same generic,
   tenant-safe response. Responses must not reveal whether a foreign record
   exists, who owns it, or whether an identifier was valid.
+- Organization owner and subscription-billing entry points resolve ownership in
+  the database with the combined organization and owner identifiers before
+  loading tenant or billing state. Both foreign and nonexistent organizations
+  use the typed generic `404 {"error":"Organization not found"}` response;
+  routes must not reconstruct authorization outcomes from error-message text.
 - Parent and child identifiers must be resolved together. A child ID must never
   be trusted independently of its authorized branch or organization.
 - Permission-shaped responses must not expose unrelated counts, settings,
