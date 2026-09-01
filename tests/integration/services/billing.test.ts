@@ -6,6 +6,7 @@ import {
   BillingChangeInProgressError,
   BillingManualReviewRequiredError,
 } from "@/lib/billingErrors";
+import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 import {
   hmacSha256Hex,
   RazorpayApiError,
@@ -243,6 +244,43 @@ describe("BillingService SaaS subscriptions", () => {
   afterEach(() => {
     setRazorpayClientForTests(null);
     vi.unstubAllEnvs();
+  });
+
+  it("rejects foreign and nonexistent organizations before billing or provider access", async () => {
+    const fakeRazorpay = createFakeRazorpayClient();
+    setRazorpayClientForTests(fakeRazorpay);
+    const owner = await createUser();
+    const stranger = await createUser();
+    const org = await createOrg({ ownerId: owner.id });
+    const missingOrganizationId = "org_missing";
+
+    const attempts = await Promise.all([
+      BillingService.listPlansForOrganization(stranger.id, org.id).catch(error => error),
+      BillingService.listPlansForOrganization(stranger.id, missingOrganizationId).catch(error => error),
+      BillingService.createSubscriptionCheckout(stranger.id, org.id, { plan: "BASIC" })
+        .catch(error => error),
+      BillingService.createSubscriptionCheckout(stranger.id, missingOrganizationId, { plan: "BASIC" })
+        .catch(error => error),
+      BillingService.getBillingOperation(stranger.id, org.id, "change_unknown")
+        .catch(error => error),
+      BillingService.getBillingOperation(stranger.id, missingOrganizationId, "change_unknown")
+        .catch(error => error),
+    ]);
+
+    expect(attempts.every(error => error instanceof OrganizationAccessNotFoundError)).toBe(true);
+    expect(attempts.map(error => ({
+      name: error.name,
+      code: error.code,
+      message: error.message,
+    }))).toEqual(Array.from({ length: attempts.length }, () => ({
+      name: "OrganizationAccessNotFoundError",
+      code: "ORGANIZATION_NOT_FOUND",
+      message: "Organization not found",
+    })));
+    expect(fakeRazorpay.createPlan).not.toHaveBeenCalled();
+    expect(fakeRazorpay.createSubscription).not.toHaveBeenCalled();
+    expect(fakeRazorpay.listSubscriptions).not.toHaveBeenCalled();
+    expect(fakeRazorpay.fetchSubscription).not.toHaveBeenCalled();
   });
 
   it("creates a Razorpay subscription checkout for the Basic SaaS plan", async () => {
