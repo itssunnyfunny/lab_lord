@@ -1,6 +1,9 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BillingChangeInProgressError } from "@/lib/billingErrors";
+import {
+  BillingChangeInProgressError,
+  BillingManualReviewRequiredError,
+} from "@/lib/billingErrors";
 import { POST as createBranch } from "@/app/api/branches/route";
 import { POST as createOrganizationBranch } from "@/app/api/organizations/[orgId]/branches/route";
 import {
@@ -8,6 +11,7 @@ import {
   POST as createSubscription,
 } from "@/app/api/organizations/[orgId]/billing/subscription/route";
 import { POST as changePaymentMethod } from "@/app/api/organizations/[orgId]/billing/subscription/payment-method/route";
+import { POST as reconcileMutation } from "@/app/api/organizations/[orgId]/billing/mutations/[changeId]/route";
 import { POST as scheduleBranchRemoval } from "@/app/api/branches/[branchId]/billing-removal/route";
 import { POST as reactivateBranch } from "@/app/api/branches/[branchId]/billing/reactivate/route";
 
@@ -21,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   createSubscriptionCheckout: vi.fn(),
   createPaymentMethodReplacement: vi.fn(),
   getBillingOperation: vi.fn(),
+  reconcileMutation: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -47,6 +52,7 @@ vi.mock("@/services/billing.service", () => ({
     createSubscriptionCheckout: mocks.createSubscriptionCheckout,
     createPaymentMethodReplacement: mocks.createPaymentMethodReplacement,
     getBillingOperation: mocks.getBillingOperation,
+    reconcileMutation: mocks.reconcileMutation,
   },
 }));
 
@@ -94,6 +100,44 @@ describe("billable-change route conflicts", () => {
       request("/api/organizations/org_1/billing/subscription", { plan: "PRO" }),
       { params: Promise.resolve({ orgId: "org_1" }) }
     ));
+  });
+
+  it("returns an owner-actionable 409 when initial provisioning remains ambiguous", async () => {
+    mocks.createSubscriptionCheckout.mockRejectedValueOnce(
+      new BillingManualReviewRequiredError("change_provisioning")
+    );
+
+    const response = await createSubscription(
+      request("/api/organizations/org_1/billing/subscription", { plan: "PRO" }),
+      { params: Promise.resolve({ orgId: "org_1" }) }
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Provider evidence remains ambiguous; manual billing review is still required",
+      code: "BILLING_MANUAL_REVIEW_REQUIRED",
+      changeId: "change_provisioning",
+      resolutionOutcome: "MANUAL_REVIEW_RETAINED",
+    });
+  });
+
+  it("keeps read-only provisioning reconciliation in manual review with a typed 409", async () => {
+    mocks.reconcileMutation.mockRejectedValueOnce(
+      new BillingManualReviewRequiredError("change_provisioning")
+    );
+
+    const response = await reconcileMutation(
+      request("/api/organizations/org_1/billing/mutations/change_provisioning", {}),
+      { params: Promise.resolve({ orgId: "org_1", changeId: "change_provisioning" }) }
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Provider evidence remains ambiguous; manual billing review is still required",
+      code: "BILLING_MANUAL_REVIEW_REQUIRED",
+      changeId: "change_provisioning",
+      resolutionOutcome: "MANUAL_REVIEW_RETAINED",
+    });
   });
 
   it("returns a structured 409 for a plan-change conflict", async () => {

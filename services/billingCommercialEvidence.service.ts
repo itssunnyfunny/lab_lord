@@ -118,6 +118,22 @@ export type CommercialIntentWriteData = {
   authorizedInterval: number;
 };
 
+export type UnboundCommercialIntentWriteData = Omit<
+  CommercialIntentWriteData,
+  "authorizedSourceRazorpaySubscriptionId" | "authorizedRazorpaySubscriptionId"
+> & {
+  authorizedSourceRazorpaySubscriptionId: null;
+  authorizedRazorpaySubscriptionId: null;
+};
+
+type BuildCommercialIntentWriteData = Omit<
+  CommercialIntentWriteData,
+  "authorizedSourceRazorpaySubscriptionId" | "authorizedRazorpaySubscriptionId"
+> & {
+  authorizedSourceRazorpaySubscriptionId: string | null;
+  authorizedRazorpaySubscriptionId: string | null;
+};
+
 export function readCommercialIntentSnapshot(
   intent: CommercialIntentRecord,
   options: { requireBoundSubscription?: boolean } = {}
@@ -271,9 +287,10 @@ export function commercialEvidenceMessage(code: CommercialEvidenceMismatchCode) 
   return messages[code];
 }
 
-export function buildCommercialIntentSnapshot(
-  input: CommercialIntentSnapshotInput
-): CommercialIntentWriteData {
+function buildCommercialIntentSnapshotInternal(
+  input: CommercialIntentSnapshotInput,
+  allowUnboundSubscription: boolean
+): BuildCommercialIntentWriteData {
   if (!positiveInteger(input.quantity)
     || !positiveInteger(input.unitAmountSubunits)
     || !positiveInteger(input.interval)) {
@@ -285,7 +302,10 @@ export function buildCommercialIntentSnapshot(
   const providerPlanId = normalizedNullableId(input.razorpayPlanId);
   const currency = normalizedCurrency(input.currency);
   const period = input.period.trim().toLowerCase();
-  if (!sourceProviderSubscriptionId || !providerPlanId || currency.length !== 3 || !period) {
+  if ((!sourceProviderSubscriptionId && !allowUnboundSubscription)
+    || !providerPlanId
+    || currency.length !== 3
+    || !period) {
     throw new Error("Commercial intent requires source and plan provider IDs, currency, and billing period");
   }
   const grossAmountSubunits = input.unitAmountSubunits * input.quantity;
@@ -333,6 +353,25 @@ export function buildCommercialIntentSnapshot(
     authorizedPeriod: period,
     authorizedInterval: input.interval,
   };
+}
+
+export function buildCommercialIntentSnapshot(
+  input: CommercialIntentSnapshotInput
+): CommercialIntentWriteData {
+  return buildCommercialIntentSnapshotInternal(input, false) as CommercialIntentWriteData;
+}
+
+export function buildUnboundCommercialIntentSnapshot(
+  input: Omit<
+    CommercialIntentSnapshotInput,
+    "sourceRazorpaySubscriptionId" | "razorpaySubscriptionId"
+  >
+): UnboundCommercialIntentWriteData {
+  return buildCommercialIntentSnapshotInternal({
+    ...input,
+    sourceRazorpaySubscriptionId: null,
+    razorpaySubscriptionId: null,
+  }, true) as UnboundCommercialIntentWriteData;
 }
 
 function isCompleteIntent(intent: CommercialIntentRecord, requireBoundSubscription = false) {

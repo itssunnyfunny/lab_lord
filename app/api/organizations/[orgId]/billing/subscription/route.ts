@@ -7,10 +7,14 @@ import {
   RazorpayPlanCatalogBusyError,
   RazorpayPlanCatalogProvisioningError,
 } from "@/services/razorpayPlanCatalog.service";
-import { BillingChangeInProgressError } from "@/lib/billingErrors";
+import {
+  BillingChangeInProgressError,
+  BillingManualReviewRequiredError,
+} from "@/lib/billingErrors";
 
 function errorStatus(message: string, error?: unknown) {
   if (error instanceof BillingChangeInProgressError) return 409;
+  if (error instanceof BillingManualReviewRequiredError) return 409;
   if (error instanceof BillingWritesDisabledError) return 503;
   if (
     error instanceof RazorpayConfigurationError
@@ -47,7 +51,14 @@ export async function POST(
     return NextResponse.json(
       error instanceof BillingChangeInProgressError
         ? { error: message, code: error.code, existingChangeId: error.existingChangeId }
-        : { error: message },
+        : error instanceof BillingManualReviewRequiredError
+          ? {
+              error: message,
+              code: error.code,
+              changeId: error.changeId,
+              resolutionOutcome: error.resolutionOutcome,
+            }
+          : { error: message },
       { status: errorStatus(message, error) }
     );
   }

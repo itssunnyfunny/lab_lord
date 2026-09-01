@@ -218,6 +218,46 @@ describe("workspace billing deadlines", () => {
       });
   });
 
+  it("quarantines and releases an expired LEGACY provisioning lease", async () => {
+    const now = new Date("2026-09-03T00:00:00.000Z");
+    const owner = await createUser();
+    const organization = await createOrg({ ownerId: owner.id, billingModelVersion: "LEGACY" });
+    const change = await testPrisma.organizationBillingChange.create({
+      data: {
+        organizationId: organization.id,
+        sequence: 1,
+        idempotencyKey: "legacy-expired-provisioning",
+        type: "SUBSCRIPTION_AUTHORIZATION",
+        status: "PROCESSING",
+        operationStatus: "PROVISIONING",
+        attemptCount: 1,
+        processingStartedAt: new Date("2026-09-02T23:55:00.000Z"),
+      },
+    });
+    await testPrisma.organization.update({
+      where: { id: organization.id },
+      data: {
+        billingMutationLeaseToken: "legacy-expired-lease",
+        billingMutationLeaseUntil: new Date("2026-09-02T23:59:00.000Z"),
+      },
+    });
+
+    await expect(BillingDeadlineService.run(now)).resolves.toMatchObject({
+      recoveredLeases: 1,
+      errors: [],
+    });
+    await expect(testPrisma.organization.findUniqueOrThrow({ where: { id: organization.id } }))
+      .resolves.toMatchObject({ billingMutationLeaseToken: null, billingMutationLeaseUntil: null });
+    await expect(testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .resolves.toMatchObject({
+        status: "FAILED",
+        operationStatus: "FAILED",
+        failureCategory: "MANUAL_REVIEW_REQUIRED",
+        failureCode: "PROVIDER_MUTATION_LEASE_EXPIRED",
+        resolvedAt: null,
+      });
+  });
+
   it("quarantines an expired scheduled-change undo attempt with its exact attempt identity", async () => {
     const now = new Date("2026-09-03T00:00:00.000Z");
     const owner = await createUser();

@@ -126,6 +126,8 @@ async function legacySubscription(paidThrough: Date | null = null) {
 
 describe("legacy paid-entitlement transition", () => {
   beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
     await resetDatabase();
     vi.stubEnv("RAZORPAY_MODE", "TEST");
     vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_legacy_transition");
@@ -133,6 +135,7 @@ describe("legacy paid-entitlement transition", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
   afterAll(async () => {

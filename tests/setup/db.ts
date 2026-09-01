@@ -95,6 +95,7 @@ export async function resetDatabase() {
       "PaymentResolutionEvent",
       "AuditLog",
       "OrganizationSubscriptionInvoice",
+      "OrganizationBillingChangeAudit",
       "OrganizationBillingChange",
       "OrganizationOfferGrant",
       "BillingOffer",

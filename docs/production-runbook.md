@@ -1718,6 +1718,108 @@ evidence. Do not roll directly back to the unfenced worker while a new claim is
 active. Do not down-migrate or clear claims to manufacture recovery; prefer a
 compatible forward fix.
 
+### Initial subscription-provisioning migration
+
+Migration `20260831160000_add_subscription_provisioning_intent` adds the
+`PROVISIONING` billing-operation state, nullable immutable provisioning fields
+to `OrganizationBillingChange`, and the tenant-scoped,
+deduplicated `OrganizationBillingChangeAudit` ledger. It performs no backfill,
+provider request, subscription cancellation, entitlement change, or rewrite of
+an existing billing change.
+
+This expansion is database-first, but old and new initial-checkout protocols
+must not overlap. The old deployment can call Razorpay before recording a local
+intent; the new deployment relies on the durable intent and admission marker to
+decide that a create must never be repeated. Before migration, put
+`RAZORPAY_BILLING_WRITES_ENABLED` on an operator-owned server-side hold, record
+the UTC hold time, and stop new owner checkout submissions. Prove from runtime
+request state and logs that every old-deployment initial-subscription request
+and provider-create call started before the hold has terminated. A zero lease
+count is useful but is not sufficient proof because the old create-before-intent
+path could be between its provider call and local persistence.
+
+After an approved backup and exact target/deployment confirmation, record these
+pre-migration values without provider IDs or connection details:
+
+```sql
+SELECT COUNT(*) AS billing_change_count
+FROM "OrganizationBillingChange";
+
+SELECT COUNT(*) AS active_organization_mutation_leases
+FROM "Organization"
+WHERE "billingMutationLeaseToken" IS NOT NULL
+  AND "billingMutationLeaseUntil" > CURRENT_TIMESTAMP;
+
+SELECT "migration_name", "finished_at", "rolled_back_at"
+FROM "_prisma_migrations"
+WHERE "migration_name" = '20260831160000_add_subscription_provisioning_intent';
+```
+
+The active lease count must be zero after the request/provider-call drain, and
+the migration-history query must return no row on first application. Stop on
+any other result. Apply through the protected migration workflow, then run the
+normal before/after `pnpm prisma migrate status` checks. While billing writes
+remain held, verify the exact expansion:
+
+```sql
+SELECT enumlabel
+FROM pg_enum
+JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+WHERE pg_type.typname = 'BillingOperationStatus'
+  AND enumlabel = 'PROVISIONING';
+
+SELECT "column_name", "is_nullable"
+FROM information_schema.columns
+WHERE "table_schema" = 'public'
+  AND "table_name" = 'OrganizationBillingChange'
+  AND "column_name" IN (
+    'provisioningIntentVersion',
+    'provisioningSourceSubscriptionId',
+    'providerMutationAdmittedAt',
+    'authorizedBillingModelVersion',
+    'authorizedProviderStartAt',
+    'authorizedProviderExpireAt',
+    'authorizedTotalCount'
+  )
+ORDER BY "column_name";
+
+SELECT
+  to_regclass('"OrganizationBillingChangeAudit"') AS audit_table,
+  to_regclass('"OrganizationBillingChangeAudit_dedupeKey_key"') AS audit_dedupe,
+  to_regclass('"OrganizationBillingChangeAudit_organizationId_createdAt_idx"') AS audit_org_time,
+  to_regclass('"OrganizationBillingChangeAudit_changeId_createdAt_idx"') AS audit_change_time;
+
+SELECT
+  COUNT(*) AS billing_change_count,
+  COUNT(*) FILTER (
+    WHERE "provisioningIntentVersion" IS NOT NULL
+       OR "provisioningSourceSubscriptionId" IS NOT NULL
+       OR "providerMutationAdmittedAt" IS NOT NULL
+       OR "authorizedBillingModelVersion" IS NOT NULL
+       OR "authorizedProviderStartAt" IS NOT NULL
+       OR "authorizedProviderExpireAt" IS NOT NULL
+       OR "authorizedTotalCount" IS NOT NULL
+  ) AS unexpectedly_initialized_existing_count
+FROM "OrganizationBillingChange";
+
+SELECT COUNT(*) AS audit_count
+FROM "OrganizationBillingChangeAudit";
+```
+
+Require one `PROVISIONING` enum row, all seven nullable columns, all four
+non-null `regclass` values, the exact pre-migration billing-change count,
+`unexpectedly_initialized_existing_count = 0`, `audit_count = 0`, and clean
+migration status. Then promote the new provisioning code while writes remain
+held. In isolated Test mode, create one checkout and verify an intent-created,
+call-admitted, and provider-state-adopted audit sequence before releasing a
+single allowlisted canary and then the broader billing-write gate.
+
+For rollback, re-establish the billing-write hold and drain every new request and
+lease. Retain the additive columns, audit ledger, and all provider/local
+evidence. Do not send traffic to the old create-before-intent code while any new
+provisioning row is unresolved or any admitted provider call may still be in
+flight. There is no automatic down migration; prefer a compatible forward fix.
+
 ### Webhook operations
 
 1. Use separate Test and Live endpoints, credentials, and webhook secrets.
