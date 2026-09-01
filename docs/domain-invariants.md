@@ -306,6 +306,17 @@ Every statement uses one of these labels:
   `MANUAL_REVIEW_REQUIRED`. (`prisma/schema.prisma`,
   `services/billingCommercialEvidence.service.ts`,
   `services/billingReconciliation.service.ts`, exact-evidence and billing tests)
+- **Must preserve—enforced:** Initial Razorpay subscription creation persists an
+  immutable organization/mode/change/billing-model/plan/provider-plan/quantity/
+  offer/start/expiry/total-count intent and a one-time provider-call admission
+  before the create request. The same tuple is sent in provider notes. An
+  ambiguous create is never automatically cancelled or repeated; retry performs
+  provider reads only. Exactly one matching uncharged `CREATED` object may be
+  adopted with the original lease and attempt fence. No match, multiple matches,
+  authorized or charged state, wrong tenant or mode, provider-read failure, and
+  local-finalization failure remain typed manual review and append immutable
+  operation-audit evidence. (`services/billingProvisioning.service.ts`,
+  `services/billing.service.ts`, provisioning unit/integration tests)
 - **Must preserve—enforced:** Checkout completion verifies the server signature,
   retrieves provider-side objects, and matches expected organization intent,
   subscription, payment, plan, quantity, and payment state before trusting the

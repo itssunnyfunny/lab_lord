@@ -202,6 +202,16 @@ authentication boundaries, not open application routes.
   confirmed entitlement and `paidThrough`, avoid copying provider plan or
   quantity locally, revoke invalid provisional access, and require manual
   review.
+- Initial subscription creation must persist a tenant- and mode-bound,
+  immutable provisioning intent plus a one-time provider-call admission before
+  `POST /subscriptions`. The exact organization, change, billing model, plan,
+  provider plan, quantity, offer, start, expiry, and total-count tuple is copied
+  into provider notes. A lost, timed-out, 5xx, or malformed create response is
+  never cancelled, recreated, or resubmitted automatically. Retry lists or
+  fetches provider state only: exactly one uncharged `CREATED` match may be
+  adopted with the original attempt fence; no match, multiple matches, an
+  authorized/charged match, wrong tenant/mode, or failed reads remain typed,
+  owner-readable manual review with immutable operation-audit evidence.
 - Billing mutation idempotency keys, payload matching, per-organization FIFO
   ordering, locks, leases, stale-worker protection, and replacement lineage must
   remain durable.

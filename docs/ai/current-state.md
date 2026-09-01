@@ -177,7 +177,7 @@ current guarantee.
 - Imports: `ImportSession`, `ImportRow`, `ImportQuestion`, `ImportCommit`,
   `ImportRowEvaluation`, `ImportPlan`, `ImportRun`, `ImportRunItem`, and
   `ImportRecipe`.
-- SaaS billing: `OwnerTrialGrant`, `SaasRazorpayPlan`, `RazorpayPlanProvisioning`, `BillingOffer`, `OrganizationOfferGrant`, `OrganizationSubscription`, `OrganizationBillingChange`, `OrganizationSubscriptionInvoice`, `OrganizationSubscriptionHistory`, and `RazorpayWebhookEvent`.
+- SaaS billing: `OwnerTrialGrant`, `SaasRazorpayPlan`, `RazorpayPlanProvisioning`, `BillingOffer`, `OrganizationOfferGrant`, `OrganizationSubscription`, `OrganizationBillingChange`, `OrganizationBillingChangeAudit`, `OrganizationSubscriptionInvoice`, `OrganizationSubscriptionHistory`, and `RazorpayWebhookEvent`.
 - WhatsApp: organization-owned `WhatsAppSender`, leased connection and template
   provisioning state, branch settings/rules, provider-authoritative templates
   and managed bindings, current and append-only consent, explicit student
@@ -559,6 +559,13 @@ The repository contains both legacy billing and Workspace Billing V2.
   quantity, offer-adjusted amount, currency, and cadence. Replacement target
   IDs are bound exactly once after creation; historical intent is never rebuilt
   from the current plan catalog.
+- Initial subscription checkout now persists its complete tenant/mode/change,
+  billing-model, plan, quantity, offer, start, expiry, and cycle-count intent and
+  one-time call admission before Razorpay creation. An ambiguous response is not
+  cancelled or repeated. Owner retry discovers the exact provider tuple with
+  reads only, adopts exactly one uncharged `CREATED` object under the original
+  attempt fence, and keeps zero, multiple, authorized, charged, wrong-mode, or
+  unreadable outcomes in auditable manual review.
 - Checkout callbacks, webhooks, owner retries, and reconciliation share exact
   commercial-evidence validation. Paid periods require a fully settled invoice
   and captured payment with exact subscription/invoice/payment linkage, amount,
@@ -685,7 +692,7 @@ The following modules exist but are not referenced by current application routes
 
 | Integration | Repository truth | Deployment state |
 | --- | --- | --- |
-| PostgreSQL / Prisma | Required; schema and 38 timestamped migrations exist, including the three additive WhatsApp expansions, exact billing commercial evidence, and the additive Razorpay webhook claim | Database target, applied migration set, backups, and health are unknown |
+| PostgreSQL / Prisma | Required; schema and 39 timestamped migrations exist, including the three additive WhatsApp expansions, exact billing commercial evidence, the additive Razorpay webhook claim, and durable initial-subscription provisioning intent/audit state | Database target, applied migration set, backups, and health are unknown |
 | Clerk | Real auth and local-user linking are implemented | Active instance, keys, redirect/origin configuration, and account health are unknown |
 | Gemini | Reports, message drafts, and import mapping are wired with fallbacks | API key, selected model availability, quota, and data-processing configuration are unknown |
 | Razorpay | Server API client, Checkout, exact-byte bounded webhook signatures, token-fenced webhook receipts, provider-authoritative reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
@@ -701,7 +708,7 @@ Never infer a deployed state from local `.env` files, ignored Vercel metadata, s
 
 At this anchor the repository contains focused WhatsApp unit, component,
 provider-contract, service, route, webhook, and migration-contract coverage in
-addition to the existing Vitest/Playwright suites, plus 38 timestamped migration directories. These
+addition to the existing Vitest/Playwright suites, plus 39 timestamped migration directories. These
 counts are orientation data, not invariants.
 
 ### Automated coverage by area
