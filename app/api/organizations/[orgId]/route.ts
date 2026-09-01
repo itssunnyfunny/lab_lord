@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { OrganizationService } from "@/services/organization.service";
 import { getSessionUser } from "@/lib/auth";
 import { BillingReadOnlyError } from "@/services/entitlement.service";
+import {
+    OrganizationAccessNotFoundError,
+    OrganizationValidationError,
+} from "@/lib/organizationErrors";
 
 /**
  * GET /api/organizations/[orgId]
@@ -20,11 +24,10 @@ export async function GET(
 
         return NextResponse.json(org);
     } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : "Internal Server Error";
-        const status = message.includes("not found") ? 404
-            : message.includes("Unauthorized") ? 403
-                : 500;
-        return NextResponse.json({ error: message }, { status });
+        if (error instanceof OrganizationAccessNotFoundError) {
+            return NextResponse.json({ error: error.message }, { status: 404 });
+        }
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 
@@ -45,14 +48,15 @@ export async function PATCH(
 
         return NextResponse.json(updated);
     } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : "Internal Server Error";
         if (error instanceof BillingReadOnlyError) {
-            return NextResponse.json({ error: message, code: error.code }, { status: 403 });
+            return NextResponse.json({ error: error.message, code: error.code }, { status: 403 });
         }
-        const status = message.includes("not found") ? 404
-            : message.includes("Unauthorized") ? 403
-                : message.includes("Unknown") || message.includes("must") || message.includes("required") || message.includes("supported") ? 400
-                    : 500;
-        return NextResponse.json({ error: message }, { status });
+        if (error instanceof OrganizationAccessNotFoundError) {
+            return NextResponse.json({ error: error.message }, { status: 404 });
+        }
+        if (error instanceof OrganizationValidationError) {
+            return NextResponse.json({ error: error.message }, { status: 400 });
+        }
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

@@ -1,12 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { BillingService } from "@/services/billing.service";
-
-function errorStatus(message: string) {
-  if (message.includes("not found")) return 404;
-  if (message.includes("Unauthorized")) return 403;
-  return 500;
-}
+import { billingHttpStatus } from "@/lib/billingHttp";
 
 export async function GET(
   _req: NextRequest,
@@ -22,6 +17,6 @@ export async function GET(
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: message }, { status: errorStatus(message) });
+    return NextResponse.json({ error: message }, { status: billingHttpStatus(error, 500) });
   }
 }

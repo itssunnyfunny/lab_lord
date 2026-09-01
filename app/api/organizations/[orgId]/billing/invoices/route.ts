@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { OrganizationService } from "@/services/organization.service";
 import { prisma } from "@/lib/prisma";
+import { billingHttpStatus } from "@/lib/billingHttp";
 
 export async function GET(request: Request, context: { params: Promise<{ orgId: string }> }) {
   const user = await getSessionUser();
@@ -21,6 +22,6 @@ export async function GET(request: Request, context: { params: Promise<{ orgId: 
     return NextResponse.json({ items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load invoices";
-    return NextResponse.json({ error: message }, { status: /Unauthorized/.test(message) ? 403 : 404 });
+    return NextResponse.json({ error: message }, { status: billingHttpStatus(error, 500) });
   }
 }

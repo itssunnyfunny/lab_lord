@@ -1,38 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { BillingService } from "@/services/billing.service";
-import { BillingWritesDisabledError } from "@/lib/billingFeature";
-import { RazorpayApiError, RazorpayConfigurationError } from "@/lib/razorpay";
-import {
-  RazorpayPlanCatalogBusyError,
-  RazorpayPlanCatalogProvisioningError,
-} from "@/services/razorpayPlanCatalog.service";
+import { billingHttpStatus } from "@/lib/billingHttp";
 import {
   BillingChangeInProgressError,
   BillingManualReviewRequiredError,
 } from "@/lib/billingErrors";
-
-function errorStatus(message: string, error?: unknown) {
-  if (error instanceof BillingChangeInProgressError) return 409;
-  if (error instanceof BillingManualReviewRequiredError) return 409;
-  if (error instanceof BillingWritesDisabledError) return 503;
-  if (
-    error instanceof RazorpayConfigurationError
-    || error instanceof RazorpayPlanCatalogBusyError
-    || error instanceof RazorpayPlanCatalogProvisioningError
-  ) return 503;
-  if (error instanceof RazorpayApiError) return 502;
-  if (message.includes("not found")) return 404;
-  if (message.includes("Unauthorized")) return 403;
-  if (
-    message.includes("Unknown") ||
-    message.includes("not available") ||
-    message.includes("already has") ||
-    message.includes("Cancel or complete") ||
-    message.includes("must be")
-  ) return 400;
-  return 500;
-}
 
 export async function POST(
   req: NextRequest,
@@ -59,7 +32,7 @@ export async function POST(
               resolutionOutcome: error.resolutionOutcome,
             }
           : { error: message },
-      { status: errorStatus(message, error) }
+      { status: billingHttpStatus(error, 500) }
     );
   }
 }
@@ -85,7 +58,7 @@ export async function PATCH(
       error instanceof BillingChangeInProgressError
         ? { error: message, code: error.code, existingChangeId: error.existingChangeId }
         : { error: message },
-      { status: errorStatus(message, error) }
+      { status: billingHttpStatus(error, 500) }
     );
   }
 }

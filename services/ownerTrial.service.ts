@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
+import { BillingValidationError } from "@/lib/billingErrors";
+import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 
 const TRIAL_DAYS = 30;
 
@@ -55,14 +57,14 @@ export class OwnerTrialService {
           _count: { select: { subscriptionHistory: true } },
         },
       });
-      if (!organization) throw new Error("Organization not found");
+      if (!organization) throw new OrganizationAccessNotFoundError();
       if (organization.subscription || organization._count.subscriptionHistory > 0) {
-        throw new Error("Only a never-billed organization can claim this trial");
+        throw new BillingValidationError("Only a never-billed organization can claim this trial");
       }
 
       const grant = await tx.ownerTrialGrant.findUnique({ where: { ownerId } });
       if (!grant || grant.source !== "MIGRATION" || grant.status !== "AVAILABLE") {
-        throw new Error("No migrated trial is available");
+        throw new BillingValidationError("No migrated trial is available");
       }
 
       return tx.ownerTrialGrant.update({

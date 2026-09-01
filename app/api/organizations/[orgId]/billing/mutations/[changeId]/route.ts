@@ -45,7 +45,7 @@ export async function GET(_request: Request, context: Context) {
     return NextResponse.json(await BillingService.getBillingOperation(user.id, orgId, changeId));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load billing operation";
-    return NextResponse.json({ error: message }, { status: /Unauthorized/.test(message) ? 403 : /not found/.test(message) ? 404 : 400 });
+    return NextResponse.json({ error: message }, { status: billingHttpStatus(error) });
   }
 }
 
