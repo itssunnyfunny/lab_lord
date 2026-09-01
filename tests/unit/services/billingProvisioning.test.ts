@@ -77,6 +77,12 @@ describe("initial Razorpay subscription provisioning", () => {
       provider({ paid_count: 1 }),
     ], intent)).toMatchObject({ kind: "UNSAFE_MATCH" });
     expect(classifyInitialProvisioningMatches([
+      provider({ paid_count: undefined }),
+    ], intent)).toMatchObject({ kind: "UNSAFE_MATCH" });
+    expect(classifyInitialProvisioningMatches([
+      provider({ paid_count: 0.5 }),
+    ], intent)).toMatchObject({ kind: "UNSAFE_MATCH" });
+    expect(classifyInitialProvisioningMatches([
       provider({ notes: { ...initialProvisioningNotes(intent), organization_id: "org_other" } }),
     ], intent)).toEqual({ kind: "NO_MATCH" });
   });
