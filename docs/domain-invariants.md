@@ -37,12 +37,13 @@ Every statement uses one of these labels:
   same-branch checks in the services.
   (`prisma/schema.prisma`, `services/student.service.ts`,
   `services/seatAllocation.service.ts`, `services/payment.service.ts`)
-- **Known discrepancy—do not rely on:** Cross-branch mixing is not
-  structurally impossible. `SeatAllocation`, `Payment`, `MessageDraft`, the
-  student's fee-source IDs, and audit payment references do not use composite
-  tenant foreign keys. Direct Prisma writes can create relationships that the
-  normal services reject. Any documentation claiming database-enforced tenant
-  consistency is inaccurate.
+- **Must preserve—enforced:** Allocation, payment/student, payment-resolution,
+  payment-audit, draft/student, student fee-source and MultiShift-component links
+  use branch-scoped composite foreign keys. A component branch is inherited from
+  its parent bundle by nested Prisma writes. Draft student deletion nulls only
+  studentId, preserving branch history. Database integrity remains distinct from
+  caller authorization; other relationship coverage is tracked in the ongoing
+  architecture consolidation matrix.
 - **Known discrepancy—do not rely on:** Foreign and nonexistent IDs do not yet
   have one uniform response. Some scoped staff and MultiShift operations make
   both cases indistinguishable, while payment, allocation, and student mutation

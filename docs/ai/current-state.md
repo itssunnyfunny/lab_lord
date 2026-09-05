@@ -37,6 +37,11 @@ rollout/rollback compatibility.
 
 ## Refresh contract
 
+Architecture consolidation continues from `6ee00d0`. The next additive migration
+extends branch FKs to payments, payment history, student fee sources, drafts and
+bundle components; see [the outcome matrix](architecture-consolidation-2026-09-05.md)
+for the broader A–F scope and incomplete outcomes. Prior hardening remains intact.
+
 Refresh this snapshot whenever a change materially alters architecture, route or
 service ownership, schema, external integrations, release gates, implemented
 features, or known limitations. Re-inspect the relevant code, schema, migrations,

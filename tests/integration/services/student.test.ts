@@ -535,28 +535,28 @@ describe("StudentService Integration", () => {
       ).resolves.toBe(0);
     });
 
-    it("does not resolve a corrupt payment whose branch differs from its student", async () => {
+    it("rejects a corrupt payment at the database boundary before student resolution", async () => {
       const { user, branch } = await createTestWorld();
       const { branch: foreignBranch } = await createTestWorld();
       const student = await createStudent({ branchId: branch.id });
-      const corruptPayment = await createPayment({
+      await expect(createPayment({
         branchId: foreignBranch.id,
         studentId: student.id,
         dueDate: new Date("2026-06-05T00:00:00.000Z"),
         periodStart: new Date("2026-06-01T00:00:00.000Z"),
         periodEnd: new Date("2026-06-30T23:59:59.999Z"),
-      });
+      })).rejects.toMatchObject({ code: "P2003" });
 
       await StudentService.updateStudentStatus(user.id, student.id, "INACTIVE", "PAID");
 
       await expect(
-        testPrisma.payment.findUnique({ where: { id: corruptPayment.id } })
-      ).resolves.toMatchObject({ status: "DUE", paidAt: null });
-      await expect(
-        testPrisma.auditLog.count({ where: { paymentId: corruptPayment.id } })
+        testPrisma.payment.count({ where: { studentId: student.id } })
       ).resolves.toBe(0);
       await expect(
-        testPrisma.paymentResolutionEvent.count({ where: { paymentId: corruptPayment.id } })
+        testPrisma.auditLog.count({ where: { branchId: branch.id } })
+      ).resolves.toBe(0);
+      await expect(
+        testPrisma.paymentResolutionEvent.count({ where: { branchId: branch.id } })
       ).resolves.toBe(0);
     });
 

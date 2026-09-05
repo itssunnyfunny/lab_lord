@@ -8,6 +8,40 @@ Last reconciled with the repository: 2026-09-05 (hardening additions; older oper
 
 ## AI ownership and inbound identity migration handoff
 
+### Subsequent operational tenant migration
+
+`20260905170000_scope_operational_relationships` adds scoped payment/student,
+resolution/payment, audit/payment, draft/student and fee-source keys, plus
+MultiShiftComponent.branchId and scoped bundle/shift keys. Before approved
+deployment, stop/drain affected writers and execute the seven count predicates
+from the migration's preflight as read-only SELECTs. Record counts separately
+for Payment, PaymentResolutionEvent, AuditLog, MessageDraft, each Student fee
+source and MultiShiftComponent. Every inconsistent-reference count must be zero;
+otherwise hold for reviewed repair. No row is deleted or guessed.
+
+Record each table's total row count, nullable draft-student count and component
+count before and after. The migration locks all affected tables, verifies both
+component parents agree, derives only component branch IDs, installs its keys
+and commits atomically. All row totals and historical values must remain equal;
+component branch/null/mismatch counts must be zero. Verify all seven scoped
+relationship families through pg_constraint.convalidated and direct synthetic
+mixed-parent rejection in an isolated target before promotion.
+
+New nested component writers inherit branchId via Prisma's composite relation;
+old writers do not provide it. No old/new writer overlap is supported. Apply the
+migration and matching generated client before resuming traffic. Preserve the
+previous MultiShift active-component edit guard and fee-update behavior.
+
+The draft FK uses PostgreSQL's `ON DELETE SET NULL (studentId)` column subset to
+preserve branchId. Prisma represents SetNull but cannot express the column list;
+its validation warning is expected. Never replace the maintained SQL with a
+generated all-column SET NULL constraint. See the official
+[PostgreSQL foreign-key documentation](https://www.postgresql.org/docs/17/ddl-constraints.html).
+Bootstrap must use migrations, not db push. Rollback requires holding affected
+writers and forward repair; retain history and keys. Reverting to an old binary
+without an explicit compatibility patch is unsupported. No Production operation
+is authorized or performed by this note.
+
 `20260905143000_fence_ai_and_inbound_messages` follows the allocation migration.
 It adds `BranchGenerationLease` (branch FK, unique branch/kind),
 `WhatsAppInboundMessageReceipt` (sender FK, unique sender/providerMessageId), and

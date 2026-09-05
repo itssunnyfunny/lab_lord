@@ -166,6 +166,8 @@ model Student {
   whatsAppMessages      WhatsAppMessage[]
   whatsAppRecipients    WhatsAppStudentRecipient[]
   branch                Branch                     @relation(fields: [branchId], references: [id])
+  feeLinkedShift        Shift?                     @relation("StudentFeeShift", fields: [feeLinkedShiftId, branchId], references: [id, branchId], onDelete: Restrict)
+  feeLinkedMultiShift   MultiShift?                @relation("StudentFeeMultiShift", fields: [feeLinkedMultiShiftId, branchId], references: [id, branchId], onDelete: Restrict)
 
   @@index([branchId])
   @@unique([id, branchId])
@@ -200,6 +202,7 @@ model Shift {
   createdAt            DateTime              @default(now())
   seatAllocations      SeatAllocation[]
   multiShiftComponents MultiShiftComponent[]
+  feeLinkedStudents    Student[] @relation("StudentFeeShift")
   branch               Branch                @relation(fields: [branchId], references: [id])
 
   @@index([branchId])
@@ -216,6 +219,7 @@ model MultiShift {
   branch      Branch                @relation(fields: [branchId], references: [id])
   components  MultiShiftComponent[]
   allocations SeatAllocation[]
+  feeLinkedStudents Student[] @relation("StudentFeeMultiShift")
 
   @@unique([id, branchId])
   @@unique([branchId, name])
@@ -224,13 +228,15 @@ model MultiShift {
 
 model MultiShiftComponent {
   id           String     @id @default(cuid())
+  branchId     String
   multiShiftId String
   shiftId      String
   order        Int        @default(0)
-  multiShift   MultiShift @relation(fields: [multiShiftId], references: [id], onDelete: Cascade)
-  shift        Shift      @relation(fields: [shiftId], references: [id])
+  multiShift   MultiShift @relation(fields: [multiShiftId, branchId], references: [id, branchId], onDelete: Cascade)
+  shift        Shift      @relation(fields: [shiftId, branchId], references: [id, branchId])
 
   @@unique([multiShiftId, shiftId])
+  @@index([branchId, shiftId])
 }
 
 model SeatAllocation {
@@ -268,12 +274,14 @@ model Payment {
   type                   PaymentType              @default(MONTHLY)
   createdAt              DateTime                 @default(now())
   branch                 Branch                   @relation(fields: [branchId], references: [id])
-  student                Student                  @relation(fields: [studentId], references: [id])
+  student                Student                  @relation(fields: [studentId, branchId], references: [id, branchId])
+  auditLogs              AuditLog[]
   resolutionEvents       PaymentResolutionEvent[]
   whatsAppMessages       WhatsAppMessage[]
   whatsAppMessageSources WhatsAppMessagePayment[]
 
   @@unique([studentId, type, periodStart], map: "Payment_studentId_type_periodStart_key")
+  @@unique([id, branchId])
   @@index([branchId, dueDate])
 }
 
@@ -294,7 +302,7 @@ model PaymentResolutionEvent {
   referenceId      String?
   details          Json?
   occurredAt       DateTime                     @default(now())
-  payment          Payment                      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  payment          Payment                      @relation(fields: [paymentId, branchId], references: [id, branchId], onDelete: Restrict)
   branch           Branch                       @relation(fields: [branchId], references: [id], onDelete: Restrict)
   actor            User?                        @relation("PaymentResolutionEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
   whatsAppMessages WhatsAppMessage[]
@@ -363,7 +371,8 @@ model MessageDraft {
   message   String
   createdAt DateTime @default(now())
   branch    Branch   @relation(fields: [branchId], references: [id])
-  student   Student? @relation(fields: [studentId], references: [id])
+  /// SQL migration uses SET NULL (studentId), preserving the required branch.
+  student   Student? @relation(fields: [studentId, branchId], references: [id, branchId], onDelete: SetNull)
 
   @@index([branchId, studentId])
   @@unique([branchId, studentId, action, language])
@@ -1772,6 +1781,7 @@ model AuditLog {
 
   branch Branch @relation(fields: [branchId], references: [id])
   user   User   @relation(fields: [userId], references: [id])
+  payment Payment @relation(fields: [paymentId, branchId], references: [id, branchId], onDelete: Restrict)
 
   @@index([branchId])
   @@index([paymentId])

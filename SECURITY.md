@@ -713,6 +713,12 @@ Treat these as review context and remediation candidates, not accepted risks:
 
 ## Review conduct
 
+- Operational payment/history, fee-source, draft/student and bundle-component
+  relationships now have composite branch foreign keys, alongside allocations.
+  Direct database writes must satisfy them; inconsistent historical references
+  block migration. This adds integrity, not user authorization or permission to
+  reassign historical ownership.
+
 - Trace findings from an attacker-controlled source through authorization,
   tenant scoping, data access, mutation, external action, and observable impact.
 - Review route and service layers together; a safe UI or route wrapper does not
