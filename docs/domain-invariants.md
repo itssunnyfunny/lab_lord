@@ -888,6 +888,14 @@ Every statement uses one of these labels:
 
 ## Analytics
 
+- **Must preserve—enforced:** Daily trend ranges contain at most 31 points,
+  preserve existing month-to-date and 30-day presets, and require real dates in
+  ascending order before any per-day snapshot queries. AI report access requires
+  `analytics` and `view_payments` for the entire cached/generated response.
+- **Must preserve—enforced:** Branch detail and settings response staff
+  projections require `manage_branch` and `STAFF_MANAGEMENT`, including counts
+  and nested identities. Ownership alone does not bypass this entitlement.
+
 - **Must preserve—enforced:** Capacity and utilization are measured in
   seat-shift slots, not distinct physical seats: physical seats multiplied by
   active shifts. Organization rollups use the same slot unit. Legacy fields

@@ -173,6 +173,20 @@ tests; `pnpm test generation-callers billing-mutation` then passed 2 files / 65
 tests, including the additional CREATED control and real AI caller races.
 No new billing schema or environment requirements.
 
+## Slice C completed
+
+#11 confirmed staff projections checked permission but not entitlement. A shared
+projection now protects identities and counts on detail and settings responses.
+#14 confirmed the complete AI report (including cached narrative) was reachable
+without payment-view permission; the route and UI gates now require it.
+#16 confirmed unbounded daily loops; real calendar-date/order validation and a
+31-point limit run before all three helper loops and before route dispatch.
+The limit preserves current month-to-date and 30-day UI presets. No schema,
+environment or commercial policy change. Read-only review found no remaining
+defect in these paths. `pnpm test trend-range ai-entitlement
+branch-details-projection branchPageAccess`: 5 files / 29 tests passed, including
+route 400-before-query and each helper's pre-query rejection.
+
 ## Findings checkpoint
 
 | Finding | Status | Continuation |
@@ -187,12 +201,12 @@ No new billing schema or environment requirements.
 | #8 Legacy cancellation | Fixed | Client key, cancellation intent and history use durable operations; no compensation. |
 | #9 Full-day overlap | Open | Not implemented in this run. |
 | #10 Allocated MultiShift edits | Open | Not implemented in this run. |
-| #11 Staff projection entitlement | Open | Not implemented in this run. |
+| #11 Staff projection entitlement | Fixed | Shared entitled detail/settings projection. |
 | #12 WhatsApp message deduplication | Open | Not implemented in this run. |
 | #13 AI ownership fencing | Open | Not implemented in this run. |
-| #14 AI payment-derived response | Open | Not implemented in this run. |
+| #14 AI payment-derived response | Fixed | Whole report requires payment-view permission; UI aligned. |
 | #15 Draft generation ownership | Open | Not implemented in this run. |
-| #16 Bounded analytics dates | Open | Not implemented in this run. |
+| #16 Bounded analytics dates | Fixed | Real dates, ordered range, 31 daily points, before queries. |
 | #17 Import payment aliases | Open | Not implemented in this run. |
 
 No finding is classified as already fixed at baseline. Items #9–17 retain the

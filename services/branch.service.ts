@@ -181,7 +181,8 @@ export type BranchDetailsResponse = Pick<Branch, "id" | "organizationId" | "name
 
 function projectBranchDetails(
     branch: BranchDetailsRecord,
-    permissions: Record<StaffAction, boolean>
+    permissions: Record<StaffAction, boolean>,
+    staffEntitled: boolean
 ): BranchDetailsResponse {
     const canManageBranch = permissions.manage_branch;
     const canViewStudents = permissions.students;
@@ -235,11 +236,11 @@ function projectBranchDetails(
     }
     if (canViewStudents) counts.students = branch._count.students;
     if (canViewPayments) counts.payments = branch._count.payments;
-    if (canManageBranch) counts.staff = branch._count.staff;
+    if (canManageBranch && staffEntitled) counts.staff = branch._count.staff;
     if (Object.keys(counts).length > 0) result._count = counts;
 
     if (canViewSeatData) result.shifts = branch.shifts;
-    if (canManageBranch) result.staff = branch.staff;
+    if (canManageBranch && staffEntitled) result.staff = branch.staff;
 
     return result;
 }
@@ -641,7 +642,7 @@ export class BranchService {
             where: { id: branchId },
             select: BRANCH_DETAILS_SELECT,
         });
-        return branch ? projectBranchDetails(branch, access.permissions) : null;
+        return branch ? projectBranchDetails(branch, access.permissions, access.entitlements.includes("STAFF_MANAGEMENT")) : null;
     }
 
     static parseSettingsPayload(body: unknown): UpdateBranchSettingsDto {

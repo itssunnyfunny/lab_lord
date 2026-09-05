@@ -5,6 +5,7 @@ import { getPaymentTrend } from "@/analytics/trends/payment.trends"
 import { getSeatUtilizationTrend } from "@/analytics/trends/seat.trends"
 import { AnalyticsPeriod } from "@/analytics/payment.analytics"
 import { StaffService } from "@/services/staff.service"
+import { assertTrendRange, parseTrendDate } from "@/analytics/trends/range"
 
 export async function GET(
     request: NextRequest,
@@ -37,11 +38,13 @@ export async function GET(
         )
     }
 
-    const from = new Date(fromParam)
-    const to = new Date(toParam)
-
-    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
-        return NextResponse.json({ error: "Invalid date format" }, { status: 400 })
+    let from: Date, to: Date
+    try {
+        from = parseTrendDate(fromParam)
+        to = parseTrendDate(toParam)
+        assertTrendRange(from, to)
+    } catch {
+        return NextResponse.json({ error: "Invalid date range; use real dates in order and at most 31 daily points" }, { status: 400 })
     }
 
     try {

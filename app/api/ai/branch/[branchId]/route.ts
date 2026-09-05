@@ -16,6 +16,7 @@ export async function GET(
         }
 
         await StaffService.authorize(user.id, params.branchId, "analytics")
+        await StaffService.authorize(user.id, params.branchId, "view_payments")
         await EntitlementService.assertBranchEntitlement(params.branchId, "AI_ACCESS")
         await EntitlementService.assertBranchWritable(params.branchId)
 

@@ -118,11 +118,20 @@ function access(permissionOverrides: Partial<Record<StaffAction, boolean>>): Bra
     staffId: "staff_1",
     permissions: permissions(permissionOverrides),
     effectivePlan: "PRO",
-    entitlements: [],
+    entitlements: ["STAFF_MANAGEMENT"],
   };
 }
 
 describe("BranchService branch response projection", () => {
+  it.each([false, true])("omits staff identities and counts without entitlement (owner=%s)", async isOwner => {
+    mocks.getBranchAccess.mockResolvedValue({ ...access({ manage_branch: true }), isOwner, entitlements: [] });
+    const read = await BranchService.getBranchDetails("user_2", "branch_1");
+    const updated = await BranchService.updateSettings("user_2", "branch_1", { name: "Main Branch" });
+    for (const result of [read, updated]) {
+      expect(result).not.toHaveProperty("staff");
+      expect(result?._count).not.toHaveProperty("staff");
+    }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.branchFindUnique.mockResolvedValue(branchRecord);

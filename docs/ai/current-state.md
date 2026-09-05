@@ -22,6 +22,12 @@ cancellation requires fresh exact candidate evidence. Legacy cancellation now
 uses durable operations and preserves client keys and customer history.
 See [the execution checkpoint](hardening-sprint-2026-09-05.md).
 
+Branch detail/settings staff projections now require the staff entitlement as
+well as branch management permission. Complete AI reports require payment-view
+permission, and navigation gates match the route. Daily analytics ranges are
+validated in the route and all three helpers with a 31-point maximum matching
+the existing UI presets.
+
 ## Refresh contract
 
 Refresh this snapshot whenever a change materially alters architecture, route or
@@ -659,7 +665,7 @@ All Gemini calls originate on the server through `ai/llm/gemini.client.ts`. The 
 `GET /api/ai/branch/[branchId]` requires:
 
 - an authenticated local user;
-- branch `analytics` authorization;
+- branch `analytics` and `view_payments` authorization for the entire response;
 - the `AI_ACCESS` entitlement;
 - a writable branch/workspace;
 - the route's process-local request limit.

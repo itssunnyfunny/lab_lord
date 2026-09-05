@@ -49,6 +49,20 @@ describe("AI route subscription entitlements", () => {
     expect(mocks.runBranchAI).not.toHaveBeenCalled();
   });
 
+  it("denies the complete AI report before cache or generation when payments are hidden", async () => {
+    mocks.assertBranchEntitlement.mockResolvedValue({ entitlements: ["AI_ACCESS"] });
+    mocks.authorize.mockImplementation(async (_user, _branch, action) => {
+      if (action === "view_payments") throw new Error("Unauthorized");
+      return true;
+    });
+    const { GET } = await import("@/app/api/ai/branch/[branchId]/route");
+    const result = await GET(new Request("http://test.local/api/ai/branch/branch_1"),
+      { params: Promise.resolve({ branchId: "branch_1" }) });
+    expect(result.status).toBe(403);
+    expect(mocks.runBranchAI).not.toHaveBeenCalled();
+    expect(await result.json()).not.toHaveProperty("snapshot");
+  });
+
   it("returns 403 before reading Basic-plan AI message drafts", async () => {
     const { GET } = await import("@/app/api/ai/branch/[branchId]/messages/route");
     const response = await GET(

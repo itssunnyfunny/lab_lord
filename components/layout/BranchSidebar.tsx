@@ -82,7 +82,7 @@ export function BranchSidebar() {
     ];
 
     const intelligenceItems: BranchNavItem[] = [
-        { icon: FileText, label: "AI Reports", href: `${basePath}/ai/reports`, permission: "analytics", feature: "AI_REPORTS", active: current => current === `${basePath}/ai/reports` },
+        { icon: FileText, label: "AI Reports", href: `${basePath}/ai/reports`, permission: ["analytics", "view_payments"], feature: "AI_REPORTS", active: current => current === `${basePath}/ai/reports` },
         { icon: MessageSquare, label: "AI Messages", href: `${basePath}/ai/messages`, permission: ["analytics", "view_payments"], feature: "AI_MESSAGES", active: current => current === `${basePath}/ai/messages` },
     ];
 

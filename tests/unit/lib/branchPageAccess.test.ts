@@ -26,7 +26,7 @@ describe("branch page access mapping", () => {
         expect(BRANCH_PAGE_ACCESS.students).toBe("students");
         expect(BRANCH_PAGE_ACCESS.allocations).toBe("seat_allocation");
         expect(BRANCH_PAGE_ACCESS).not.toHaveProperty("aiInsights");
-        expect(BRANCH_PAGE_ACCESS.aiReports).toBe("analytics");
+        expect(BRANCH_PAGE_ACCESS.aiReports).toEqual(["analytics", "view_payments"]);
         expect(BRANCH_PAGE_ACCESS.aiMessages).toEqual(["analytics", "view_payments"]);
     });
 

@@ -505,6 +505,14 @@ authentication boundaries, not open application routes.
 
 ### Cron, imports, and AI
 
+- Complete branch AI reports, including cached narratives, aggregates and
+  snapshots, require both `analytics` and `view_payments`; no partial redaction
+  substitutes for authorization. Branch detail GET and settings responses expose
+  staff identities/counts only with `manage_branch` and `STAFF_MANAGEMENT`.
+- Trend routes and each trend helper reject invalid, reversed or over-31-point
+  daily ranges before entering their snapshot-query loops. This bounds work;
+  it does not replace tenant authorization.
+
 - Cron routes must fail closed when `CRON_SECRET` is absent or incorrect. The
   bearer value must never appear in a URL, log, screenshot, report, or error.
 - Scheduled and retryable operations must tolerate duplicate or overlapping
