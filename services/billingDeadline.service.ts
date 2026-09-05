@@ -258,7 +258,7 @@ export class BillingDeadlineService {
             { paymentId: change.providerPaymentId, now }
           );
           reconciledReplacements += 1;
-          const providerTerminal = ["CANCELLED", "COMPLETED", "EXPIRED", "HALTED"]
+          const providerTerminal = ["CANCELLED", "COMPLETED", "EXPIRED"]
             .includes(reconciliation.subscription.status);
           if (providerTerminal) {
             await BillingReplacementService.failReplacementCheckout(

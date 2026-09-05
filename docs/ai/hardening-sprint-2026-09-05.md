@@ -152,6 +152,27 @@ $env:ACCELERATE_URL=''
 pnpm test
 ```
 
+## Slice B completion
+
+Continuation after local commit `0feebe5` completes #5–8. Source recovery reuses
+an exact terminal provider source or a persisted confirmed cancellation response
+plus its matching schedule. It cannot replay cancellation or use candidate
+authorization to clear the source action. Since the provider API has no proven
+conditional cancel-if-unauthorized operation, initial checkout retirement now
+waits for provider-confirmed terminality, including when a fresh read is CREATED.
+Negative candidate lifecycle is projected without granting paid entitlement;
+source cancellation independently requires fresh exact candidate authorization.
+HALTED does not trigger terminal deadline cleanup. Legacy cancellation preserves
+the supplied client key, durable intent, and customer history without reversal.
+
+Read-only candidate review found a CREATED authorization regression and HALTED
+deadline classification; both were corrected. Regression controls cover CREATED
+and AUTHENTICATED with exact authorized payments and HALTED through deadline
+reconciliation. `pnpm test billing generation-migration` passed 34 files / 409
+tests; `pnpm test generation-callers billing-mutation` then passed 2 files / 65
+tests, including the additional CREATED control and real AI caller races.
+No new billing schema or environment requirements.
+
 ## Findings checkpoint
 
 | Finding | Status | Continuation |
@@ -160,10 +181,10 @@ pnpm test
 | #2 Foreign bulk target | Fixed | Same-branch validation and database constraints. |
 | #3 Arbitrary/incomplete manual set | Fixed | Exact transactional set, bundle release, serializable concurrency. |
 | #4 Replacement create replay | Fixed | Durable admission, frozen intent, fenced read-only recovery. |
-| #5 Source cancellation ambiguity | Open / partial | Replay fenced; add source-specific read-only confirmed-result recovery. |
-| #6 Checkout retirement | Open, confirmed | Local CREATED retirement can race provider authorization. |
-| #7 Replacement viability | Open, confirmed | Separate current negative lifecycle projection from paid entitlement; validate fresh candidate evidence before source cancellation. |
-| #8 Legacy cancellation | Open, confirmed | Preserve client key through durable handling; remove unfenced compensation. |
+| #5 Source cancellation ambiguity | Fixed | Read-only recovery from exact terminal source or retained confirmed cancellation plus matching schedule; no replay. |
+| #6 Checkout retirement | Fixed | Live provider checkouts remain held until provider-confirmed terminal state. |
+| #7 Replacement viability | Fixed | Current negative lifecycle independent of settlement; fresh viable candidate required before source cancellation; HALTED recoverable. |
+| #8 Legacy cancellation | Fixed | Client key, cancellation intent and history use durable operations; no compensation. |
 | #9 Full-day overlap | Open | Not implemented in this run. |
 | #10 Allocated MultiShift edits | Open | Not implemented in this run. |
 | #11 Staff projection entitlement | Open | Not implemented in this run. |

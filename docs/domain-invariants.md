@@ -351,7 +351,11 @@ Every statement uses one of these labels:
   authorized/charged matches stay in manual review. Source cancellation uses
   its own processing attempt and immutable admission audit; neither candidate
   evidence nor overwritten lifecycle fields permits replay. A failed source
-  action currently requires source-specific manual recovery.
+  action is recovered by source-specific provider reads: terminal source truth
+  or the retained confirmed cancellation response and exact scheduled boundary.
+  Ambiguous scheduled-change flags remain held. Checkout replacement waits for
+  provider-confirmed terminality, and legacy cancellation preserves the supplied
+  idempotency key without compensating reversal.
   (`services/billingReplacement.service.ts`, billing-mutation fault tests)
 - **Must preserve—enforced:** A webhook is only a signed reconciliation trigger,
   not proof of quantity or entitlement. The public body is bounded to 512 KiB;

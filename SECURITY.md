@@ -237,7 +237,11 @@ authentication boundaries, not open application routes.
 - Source cancellation records an immutable admission audit under the exact
   organization lease and processing attempt. Candidate authorization or
   settlement cannot resolve that source action or erase its replay fence.
-  Uncertain source cancellation remains held for source-specific review.
+  Source recovery uses read-only terminal truth or a durably confirmed
+  cancellation response plus matching current scheduled state. A scheduled-change
+  flag alone cannot prove cancellation. Checkout retirement never cancels a live
+  mandate, even when local or fetched state says CREATED. Legacy cancellation
+  uses the same durable operation and retains the client's key and history.
 - Authorized replacement access must remain provisional and fail closed when
   lineage, plan, quantity, authorization, or grace-period checks fail.
 - Billing feature switches and Live canaries must default to held behavior.

@@ -147,6 +147,7 @@ function createFakeRazorpayClient() {
       plan_id: "plan_basic",
       customer_id: "cust_test",
       status: input.cancel_at_cycle_end ? "active" : "cancelled",
+      quantity: 1,
       total_count: 120,
       current_end: input.cancel_at_cycle_end ? 1769904000 : null,
       ended_at: input.cancel_at_cycle_end ? null : 1767225600,
@@ -1011,7 +1012,7 @@ describe("BillingService SaaS subscriptions", () => {
     expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(1);
   });
 
-  it("replaces a CREATED checkout when the projected branch quantity changes", async () => {
+  it("waits for provider terminality before replacing a stale CREATED checkout", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     const createSubscription = vi.mocked(fakeRazorpay.createSubscription);
     const originalCreate = createSubscription.getMockImplementation();
@@ -1052,13 +1053,13 @@ describe("BillingService SaaS subscriptions", () => {
 
     const first = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
     await createBranch({ organizationId: org.id, name: "Second branch" });
+    await expect(BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" })).rejects.toThrow("still live");
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValueOnce({ id: first.subscriptionId, entity: "subscription", plan_id: "plan_basic", status: "cancelled", total_count: 120, quantity: 1 });
     const replacement = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
 
     expect(first).toMatchObject({ subscriptionId: "sub_basic_quantity_1", summary: { quantity: 1 } });
     expect(replacement).toMatchObject({ subscriptionId: "sub_basic_quantity_2", summary: { quantity: 2 } });
-    expect(fakeRazorpay.cancelSubscription).toHaveBeenCalledWith("sub_basic_quantity_1", {
-      cancel_at_cycle_end: false,
-    });
+    expect(fakeRazorpay.cancelSubscription).not.toHaveBeenCalled();
     expect(createSubscription).toHaveBeenCalledTimes(2);
     expect(createSubscription).toHaveBeenNthCalledWith(1, expect.objectContaining({
       offer_id: "offer_basic_quantity",
@@ -1141,6 +1142,7 @@ describe("BillingService SaaS subscriptions", () => {
     await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
     await createBranch({ organizationId: org.id, name: "Second branch" });
 
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValueOnce({ id: "sub_basic_offer_retry_1", entity: "subscription", plan_id: "plan_basic", status: "cancelled", total_count: 120, quantity: 1 });
     await expect(BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" }))
       .rejects.toThrow("Razorpay replacement unavailable");
     await expect(testPrisma.organizationSubscription.findUniqueOrThrow({
@@ -1184,7 +1186,7 @@ describe("BillingService SaaS subscriptions", () => {
     });
   });
 
-  it("reuses a dismissed checkout and lets the owner switch plans before payment", async () => {
+  it("reuses a dismissed checkout and permits plan switching after provider expiry", async () => {
     const fakeRazorpay = createFakeRazorpayClient();
     setRazorpayClientForTests(fakeRazorpay);
     const user = await createUser();
@@ -1192,6 +1194,8 @@ describe("BillingService SaaS subscriptions", () => {
 
     const first = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
     const retried = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
+    await expect(BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "PRO" })).rejects.toThrow("still live");
+    vi.mocked(fakeRazorpay.fetchSubscription).mockResolvedValueOnce({ id: first.subscriptionId, entity: "subscription", plan_id: "plan_basic", status: "cancelled", total_count: 120, quantity: 1 });
     const switched = await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "PRO" });
 
     expect(retried.subscriptionId).toBe(first.subscriptionId);
@@ -1200,9 +1204,7 @@ describe("BillingService SaaS subscriptions", () => {
       amount: 49900,
       plan: { id: "PRO", shortName: "Standard" },
     });
-    expect(fakeRazorpay.cancelSubscription).toHaveBeenCalledWith("sub_basic", {
-      cancel_at_cycle_end: false,
-    });
+    expect(fakeRazorpay.cancelSubscription).not.toHaveBeenCalled();
     expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(2);
     const currentSubscription = await testPrisma.organizationSubscription.findUniqueOrThrow({
       where: { currentOrganizationId: org.id },
@@ -1276,12 +1278,10 @@ describe("BillingService SaaS subscriptions", () => {
     );
 
     await expect(BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "PRO" }))
-      .rejects.toThrow("provider cancellation unavailable");
+      .rejects.toThrow("still live");
 
     expect(fakeRazorpay.createSubscription).toHaveBeenCalledTimes(1);
-    expect(fakeRazorpay.cancelSubscription).toHaveBeenCalledWith(first.subscriptionId, {
-      cancel_at_cycle_end: false,
-    });
+    expect(fakeRazorpay.cancelSubscription).not.toHaveBeenCalled();
     await expect(testPrisma.organizationSubscription.findMany({
       where: { organizationId: org.id },
     })).resolves.toEqual([

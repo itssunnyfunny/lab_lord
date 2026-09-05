@@ -611,6 +611,60 @@ async function quarantineCandidateCancellationAttempt(
 }
 
 export class BillingReplacementService {
+  static async reconcileSourceCancellation(changeId: string, now = new Date()) {
+    const snapshot = await prisma.organizationBillingChange.findUniqueOrThrow({
+      where: { id: changeId }, include: { organizationSubscription: true },
+    });
+    const source = snapshot.organizationSubscription;
+    if (!source || source.providerMode !== resolveRazorpayMode()
+      || source.razorpaySubscriptionId !== snapshot.authorizedSourceRazorpaySubscriptionId) {
+      throw new BillingManualReviewRequiredError(changeId);
+    }
+    const provider = await getRazorpayClient().fetchSubscription(source.razorpaySubscriptionId);
+    return prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "Organization" WHERE "id" = ${snapshot.organizationId} FOR UPDATE`;
+      const organization = await tx.organization.findUniqueOrThrow({ where: { id: snapshot.organizationId } });
+      const change = await tx.organizationBillingChange.findUniqueOrThrow({ where: { id: changeId } });
+      const current = await tx.organizationSubscription.findUniqueOrThrow({ where: { id: source.id } });
+      if (organization.billingMutationLeaseToken || change.status !== "FAILED"
+        || change.updatedAt.getTime() !== snapshot.updatedAt.getTime()
+        || current.updatedAt.getTime() !== source.updatedAt.getTime()
+        || current.currentOrganizationId !== change.organizationId) {
+        throw new BillingManualReviewRequiredError(changeId);
+      }
+      const admitted = await tx.organizationBillingChangeAudit.findFirst({ where: {
+        changeId, outcome: "PROVIDER_MUTATION_ADMITTED", failureCode: SOURCE_CANCELLATION_PROCESSING_CODE,
+      } });
+      const confirmed = await tx.organizationBillingChangeAudit.findFirst({ where: {
+        changeId, outcome: "PROVIDER_STATE_ADOPTED", failureCode: "SOURCE_CANCELLATION_CONFIRMED",
+        providerSubscriptionId: source.razorpaySubscriptionId,
+      } });
+      const ended = TERMINAL_PROVIDER_STATUSES.has(provider.status.toLowerCase());
+      const scheduledAt = dateFromTimestamp(provider.change_scheduled_at);
+      // A scheduled-change flag alone does not identify cancellation. Reuse
+      // the confirmed cancellation response, or require terminal source truth.
+      if (!admitted || provider.id !== source.razorpaySubscriptionId
+        || provider.plan_id !== source.razorpayPlanId || provider.quantity !== source.quantity
+        || (!ended && (!confirmed || provider.has_scheduled_changes !== true
+          || scheduledAt?.getTime() !== change.effectiveAt?.getTime()))) {
+        throw new BillingManualReviewRequiredError(changeId);
+      }
+      await tx.organizationSubscription.update({ where: { id: source.id }, data: {
+        cancelAtCycleEnd: true, cancellationRequestedAt: source.cancellationRequestedAt ?? admitted.createdAt,
+        cancellationScheduledAt: change.effectiveAt, lastReconciledAt: now,
+        ...(ended ? { status: mapProviderStatus(provider.status), endedAt: dateFromTimestamp(provider.ended_at) ?? now } : {}),
+      } });
+      const recovered = await tx.organizationBillingChange.update({ where: { id: changeId }, data: {
+        status: "SCHEDULED", operationStatus: "SCHEDULED", failureCategory: null, failureCode: null,
+        lastError: null, failedAt: null, processingStartedAt: null, providerConfirmedAt: now,
+      } });
+      await recordBillingMutationAudit(tx, { changeId, organizationId: change.organizationId,
+        organizationSubscriptionId: source.id, attemptCount: change.attemptCount,
+        outcome: "PROVIDER_STATE_ADOPTED", failureCode: "SOURCE_CANCELLATION_RECOVERED" });
+      return recovered;
+    });
+  }
+
   static async reconcileProvisioning(changeId: string, now = new Date()) {
     const leaseToken = crypto.randomUUID();
     const claimed = await prisma.$transaction(async tx => {
@@ -1544,7 +1598,7 @@ export class BillingReplacementService {
   static async scheduleSourceCancellation(changeId: string, now = new Date()) {
     const snapshot = await prisma.organizationBillingChange.findUnique({
       where: { id: changeId },
-      include: { organizationSubscription: true },
+      include: { organizationSubscription: true, replacementSubscription: true },
     });
     if (!snapshot?.organizationSubscription) {
       throw new Error("Replacement source subscription not found");
@@ -1555,6 +1609,11 @@ export class BillingReplacementService {
     await BillingReconciliationService.reconcileProviderSubscription(
       snapshot.organizationSubscription.razorpaySubscriptionId,
       { now }
+    );
+    if (!snapshot.replacementSubscription) throw new BillingReplacementNotReadyError();
+    const candidateEvidence = await BillingReconciliationService.reconcileProviderSubscription(
+      snapshot.replacementSubscription.razorpaySubscriptionId,
+      { now, commercialIntentChangeId: snapshot.id, paymentId: snapshot.providerPaymentId }
     );
 
     const leaseToken = crypto.randomUUID();
@@ -1636,12 +1695,19 @@ export class BillingReplacementService {
       }
       const targetPlan = change.toPlan ?? source.plan;
       const targetQuantity = change.toQuantity ?? source.quantity;
-      if (candidate.plan !== targetPlan || !isReplacementAuthorizationReady({
+      const frozen = readCommercialIntentSnapshot(change, { requireBoundSubscription: true });
+      if (!["AUTHORIZATION_ONLY", "EXACT_SETTLEMENT"].includes(candidateEvidence.evidenceKind)
+        || candidateEvidence.subscription.id !== candidate.id
+        || candidateEvidence.subscription.updatedAt.getTime() !== candidate.updatedAt.getTime()
+        || frozen.authorizedProviderMode !== candidate.providerMode
+        || frozen.authorizedSourceRazorpaySubscriptionId !== source.razorpaySubscriptionId
+        || frozen.authorizedRazorpaySubscriptionId !== candidate.razorpaySubscriptionId
+        || candidate.plan !== targetPlan || !isReplacementAuthorizationReady({
         providerStatus: candidate.status,
         paymentMethod: candidate.providerPaymentMethod,
         providerPlanId: candidate.razorpayPlanId,
         providerQuantity: candidate.quantity,
-        targetPlanId: candidate.razorpayPlanId,
+        targetPlanId: frozen.authorizedRazorpayPlanId,
         targetQuantity,
       })) throw new BillingReplacementNotReadyError();
       if (!source.currentEnd || source.currentEnd.getTime() !== change.effectiveAt.getTime()) {
@@ -1692,6 +1758,21 @@ export class BillingReplacementService {
       )) {
         throw new Error("Razorpay did not confirm the expected cycle-end source cancellation");
       }
+      await prisma.$transaction(async tx => {
+        await tx.$queryRaw`SELECT "id" FROM "Organization" WHERE "id" = ${claim.change.organizationId} FOR UPDATE`;
+        const owner = await tx.organization.findFirst({ where: {
+          id: claim.change.organizationId, billingMutationLeaseToken: leaseToken,
+        } });
+        const attempt = await tx.organizationBillingChange.findFirst({ where: {
+          id: changeId, status: "PROCESSING", attemptCount: claim.change.attemptCount,
+          processingStartedAt: claim.change.processingStartedAt, failureCode: SOURCE_CANCELLATION_PROCESSING_CODE,
+        } });
+        if (!owner || !attempt) throw new Error("Source cancellation attempt changed before confirmation");
+        await recordBillingMutationAudit(tx, { changeId, organizationId: claim.change.organizationId,
+          organizationSubscriptionId: claim.source.id, attemptCount: claim.change.attemptCount,
+          outcome: "PROVIDER_STATE_ADOPTED", failureCode: "SOURCE_CANCELLATION_CONFIRMED",
+          providerSubscriptionId: provider.id });
+      });
       await prisma.$transaction(async tx => {
         await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "Organization" WHERE "id" = ${claim.change.organizationId} FOR UPDATE

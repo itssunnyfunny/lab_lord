@@ -427,7 +427,10 @@ describe("serialized workspace billing mutations", () => {
       } });
       // Source commercial reconciliation has separate integration coverage;
       // this fixture isolates the real durable cancellation transaction.
-      vi.spyOn(BillingReconciliationService, "reconcileProviderSubscription").mockResolvedValue({ subscription } as never);
+      vi.spyOn(BillingReconciliationService, "reconcileProviderSubscription").mockImplementation(async id => ({
+        subscription: await testPrisma.organizationSubscription.findUniqueOrThrow({ where: { razorpaySubscriptionId: id } }),
+        evidenceKind: "AUTHORIZATION_ONLY",
+      }) as never);
       vi.mocked(razorpay.cancelSubscription).mockImplementation(async id => {
         await testPrisma.organizationBillingChange.update({ where: { id: change.id }, data: {
           operationStatus: "VERIFYING",
@@ -478,7 +481,10 @@ describe("serialized workspace billing mutations", () => {
     await testPrisma.organizationSubscription.update({ where: { id: subscription.id }, data: {
       currentEnd: change.effectiveAt,
     } });
-    vi.spyOn(BillingReconciliationService, "reconcileProviderSubscription").mockResolvedValue({ subscription } as never);
+    vi.spyOn(BillingReconciliationService, "reconcileProviderSubscription").mockImplementation(async id => ({
+        subscription: await testPrisma.organizationSubscription.findUniqueOrThrow({ where: { razorpaySubscriptionId: id } }),
+        evidenceKind: "AUTHORIZATION_ONLY",
+      }) as never);
     vi.mocked(razorpay.cancelSubscription).mockResolvedValue({
       id: subscription.razorpaySubscriptionId, entity: "subscription", plan_id: subscription.razorpayPlanId,
       status: "active", quantity: subscription.quantity, total_count: 120,
@@ -490,6 +496,72 @@ describe("serialized workspace billing mutations", () => {
     expect(await testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }))
       .toMatchObject({ cancelAtCycleEnd: true, cancellationScheduledAt: change.effectiveAt });
     expect(razorpay.cancelSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["terminal", "confirmed"])("recovers a %s source after response loss using reads only", async evidence => {
+    const { razorpay, owner, organization, change, subscription } = await setupPendingUpiReplacement("source-terminal-recovery");
+    await testPrisma.organizationBillingChangeAudit.create({ data: {
+      changeId: change.id, organizationId: organization.id, attemptCount: 2, dedupeKey: "source-admission",
+      outcome: "PROVIDER_MUTATION_ADMITTED", failureCode: "SOURCE_CANCELLATION_PROCESSING",
+    } });
+    if (evidence === "confirmed") await testPrisma.organizationBillingChangeAudit.create({ data: {
+      changeId: change.id, organizationId: organization.id, attemptCount: 2, dedupeKey: "source-confirmed",
+      outcome: "PROVIDER_STATE_ADOPTED", failureCode: "SOURCE_CANCELLATION_CONFIRMED",
+      providerSubscriptionId: subscription.razorpaySubscriptionId,
+    } });
+    await testPrisma.organizationBillingChange.update({ where: { id: change.id }, data: {
+      status: "FAILED", operationStatus: "FAILED", failureCategory: "MANUAL_REVIEW_REQUIRED",
+      failureCode: "SOURCE_CANCELLATION_OUTCOME_UNKNOWN",
+    } });
+    vi.mocked(razorpay.fetchSubscription).mockResolvedValue({ id: subscription.razorpaySubscriptionId,
+      entity: "subscription", plan_id: subscription.razorpayPlanId, quantity: subscription.quantity,
+      total_count: 120, status: evidence === "terminal" ? "cancelled" : "active",
+      has_scheduled_changes: true, change_scheduled_at: Math.floor(change.effectiveAt!.getTime() / 1000) });
+    const result = await BillingService.retryBillingOperation(owner.id, organization.id, change.id);
+    expect(result.operation?.queueStatus).toBe("SCHEDULED");
+    expect(razorpay.cancelSubscription).not.toHaveBeenCalled();
+    expect(razorpay.cancelScheduledChanges).not.toHaveBeenCalled();
+  });
+
+  it.each(["halted", "pending", "paused", "cancelled", "expired"])(
+    "projects current %s replacement state even without paid evidence", async status => {
+      const { razorpay, change, candidate } = await setupPendingUpiReplacement(`negative-${status}`);
+      await testPrisma.organizationSubscription.update({ where: { id: candidate.id }, data: { status: "AUTHENTICATED" } });
+      vi.mocked(razorpay.fetchSubscription).mockResolvedValue({ id: candidate.razorpaySubscriptionId,
+        entity: "subscription", plan_id: candidate.razorpayPlanId, quantity: candidate.quantity,
+        total_count: candidate.totalCount, status, offer_id: null,
+        start_at: Math.floor(candidate.providerStartAt!.getTime() / 1000),
+        expire_by: Math.floor(candidate.authorizationExpiresAt!.getTime() / 1000) });
+      vi.mocked(razorpay.fetchSubscriptionInvoices).mockResolvedValue({ entity: "collection", count: 0, items: [] });
+      const result = await BillingReconciliationService.reconcileProviderSubscription(candidate.razorpaySubscriptionId,
+        { commercialIntentChangeId: change.id });
+      expect(result.subscription.status).toBe(status.toUpperCase());
+      expect(result.confirmedPaidPeriod).toBe(false);
+      expect(result.subscription.paidThrough).toEqual(candidate.paidThrough);
+      if (status === "halted") {
+        await BillingDeadlineService.run(new Date());
+        expect(await testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: candidate.id } }))
+          .toMatchObject({ status: "HALTED", pendingReplacementOrganizationId: candidate.organizationId });
+      }
+      expect(razorpay.cancelSubscription).not.toHaveBeenCalled();
+    }
+  );
+
+  it("preserves the legacy cancellation key and never compensates an uncertain cancellation", async () => {
+    const { owner, organization, subscription } = await setup({ paymentMethod: "CARD" });
+    await testPrisma.organization.update({ where: { id: organization.id }, data: { billingModelVersion: "LEGACY" } });
+    const razorpay = fakeRazorpay({ providerQuantity: 1 });
+    setRazorpayClientForTests(razorpay);
+    vi.mocked(razorpay.cancelSubscription).mockRejectedValueOnce(new Error("accepted but response lost"));
+    await expect(BillingService.scheduleWorkspaceCancellation(owner.id, organization.id, "legacy-key"))
+      .rejects.toThrow("response lost");
+    expect(await testPrisma.organizationBillingChange.findUnique({ where: { idempotencyKey: "legacy-key" } }))
+      .toMatchObject({ status: "FAILED", failureCategory: "MANUAL_REVIEW_REQUIRED" });
+    vi.mocked(razorpay.fetchSubscription).mockResolvedValue({ id: subscription.razorpaySubscriptionId,
+      entity: "subscription", plan_id: subscription.razorpayPlanId, quantity: 1, total_count: 120, status: "cancelled" });
+    await BillingService.scheduleWorkspaceCancellation(owner.id, organization.id, "legacy-key");
+    expect(razorpay.cancelSubscription).toHaveBeenCalledTimes(1);
+    expect(razorpay.cancelScheduledChanges).not.toHaveBeenCalled();
   });
 
   it("provisions one checkout-backed candidate for a UPI quantity increase", async () => {
@@ -540,7 +612,7 @@ describe("serialized workspace billing mutations", () => {
     expect(razorpay.updateSubscription).not.toHaveBeenCalled();
   });
 
-  it("adopts exact replacement authorization from manual review without another provider mutation", async () => {
+  it.each(["created", "authenticated"])("adopts exact replacement payment authorization with provider status %s without another mutation", async providerStatus => {
     const { owner, organization, subscription, branch, change, candidate, razorpay }
       = await setupPendingUpiReplacement("manual-replacement-exact-authorization");
     const paymentId = "pay_replacement_authorized";
@@ -560,7 +632,7 @@ describe("serialized workspace billing mutations", () => {
       id: candidate.razorpaySubscriptionId,
       entity: "subscription",
       plan_id: candidate.razorpayPlanId,
-      status: "authenticated",
+      status: providerStatus,
       total_count: candidate.totalCount,
       quantity: candidate.quantity,
       offer_id: null,

@@ -1796,9 +1796,11 @@ identify and reconcile those operations before restarting deadline work.
 Preserve provider IDs, attempts, frozen intent, and audit history. Do not clear
 the lease or failure state to force retry. New replacement recovery may adopt
 one matching uncharged CREATED object by read only. Source cancellation has no
-automatic recovery from ambiguity in this checkpoint; resolve it from source
-provider evidence through a separately reviewed recovery procedure. Candidate
-authorization is insufficient. A rollback must retain this fence and history;
+automatic replay from ambiguity. Owner retry fetches the source and can adopt
+terminal truth, or reuse a durable confirmed cancellation response with matching
+current scheduled state. A scheduled-change flag alone and candidate
+authorization are insufficient. Checkout replacement waits for terminal provider
+state, including when local authorization expiry elapsed. A rollback must retain this fence and history;
 use a compatible forward repair rather than restoring unfenced workers.
 
 Migration `20260831160000_add_subscription_provisioning_intent` adds the

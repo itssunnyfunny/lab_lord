@@ -633,6 +633,7 @@ export class BillingMutationService {
               organizationId: true,
               currentOrganizationId: true,
               razorpaySubscriptionId: true,
+              status: true,
             },
           })
         : null;
@@ -690,7 +691,7 @@ export class BillingMutationService {
             },
           })
         : null;
-      await tx.organizationSubscription.update({
+      const storedSubscription = await tx.organizationSubscription.update({
         where: { id: sourceSubscription.id },
         data: {
           plan: providerPlan?.plan,
@@ -718,6 +719,18 @@ export class BillingMutationService {
           cancelledAt: cancellationType && !cancellationScheduled ? finalizedAt : undefined,
         },
       });
+      if (change.type === "CANCELLATION") {
+        const dedupeKey = `customer-cancellation:${change.id}`;
+        await tx.organizationSubscriptionHistory.upsert({ where: { dedupeKey }, update: {}, create: {
+          dedupeKey, organizationId: change.organizationId, organizationSubscriptionId: storedSubscription.id,
+          razorpaySubscriptionId: storedSubscription.razorpaySubscriptionId, plan: storedSubscription.plan,
+          fromStatus: sourceSubscription.status, toStatus: storedSubscription.status,
+          source: "CUSTOMER_CANCELLATION", event: "cancel_at_cycle_end",
+          amountSubunits: storedSubscription.amountSubunits, currency: storedSubscription.currency,
+          quantity: storedSubscription.quantity, unitAmountSubunits: storedSubscription.amountSubunits,
+          totalAmountSubunits: storedSubscription.amountSubunits * storedSubscription.quantity,
+        } });
+      }
       if (auditOutcome) {
         await recordBillingMutationAudit(tx, {
           changeId: change.id,
@@ -739,8 +752,7 @@ export class BillingMutationService {
     });
     if (!change || change.status !== "FAILED") throw new Error("Failed billing change not found");
     if (change.failureCode?.startsWith("SOURCE_CANCELLATION_")) {
-      throw new BillingManualReviewRequiredError(change.id,
-        "Source cancellation requires read-only reconciliation; no cancellation was resubmitted");
+      return BillingReplacementService.reconcileSourceCancellation(change.id);
     }
     if (change.type !== "UNSUPPORTED_METHOD_CANCELLATION") {
       assertRazorpayBillingWritesEnabled(change.organizationId);

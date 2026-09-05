@@ -15,9 +15,12 @@ existing billing-change fields and audit history. Provider intent and dispatch
 are durable; uncertain creation recovery reads provider state without creating
 or cancelling again. Source cancellation has a separate processing attempt and
 immutable admission fence. Candidate reconciliation cannot resolve that action;
-uncertain source outcomes require manual source recovery. Checkout retirement,
-replacement lifecycle projection, and legacy cancellation still have confirmed
-open findings. See [the execution checkpoint](hardening-sprint-2026-09-05.md).
+uncertain source outcomes use source-specific read-only recovery. Live checkout
+retirement is held until provider terminality. Negative candidate lifecycle is
+projected independently of paid evidence; HALTED remains recoverable, and source
+cancellation requires fresh exact candidate evidence. Legacy cancellation now
+uses durable operations and preserves client keys and customer history.
+See [the execution checkpoint](hardening-sprint-2026-09-05.md).
 
 ## Refresh contract
 
