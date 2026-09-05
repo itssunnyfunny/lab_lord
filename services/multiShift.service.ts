@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { runAllocationTransaction } from "@/lib/allocationTransaction";
 import { FORM_LIMITS, parseIntegerField, validateRequiredText } from "@/lib/formValidation";
 import { StaffService } from "@/services/staff.service";
 import type { StaffAction } from "@/types";
@@ -48,10 +49,11 @@ type MultiShiftWithComponents = {
 };
 
 export class MultiShiftService {
-    private static async assertBranchAccess(userId: string, branchId: string, action: StaffAction) {
-        await StaffService.authorize(userId, branchId, action);
+    private static async assertBranchAccess(userId: string, branchId: string, action: StaffAction,
+        client: Prisma.TransactionClient | typeof prisma = prisma) {
+        await StaffService.authorize(userId, branchId, action, client);
 
-        const branch = await prisma.branch.findUnique({ where: { id: branchId } });
+        const branch = await client.branch.findUnique({ where: { id: branchId } });
         if (!branch) throw new Error("Branch not found");
         return branch;
     }
@@ -169,28 +171,35 @@ export class MultiShiftService {
         multiShiftId: string,
         data: UpdateMultiShiftDto
     ): Promise<MultiShiftItem> {
-        const ms = await prisma.multiShift.findUnique({ where: { id: multiShiftId } });
-        if (!ms) throw new Error("Multi-shift not found");
-        await this.assertBranchAccess(userId, ms.branchId, "manage_branch");
-        await EntitlementService.assertBranchWritable(ms.branchId);
-        const nameResult = data.name !== undefined
-            ? validateRequiredText(data.name, "Multi-shift name", 50)
-            : null;
-        if (nameResult && !nameResult.ok) throw new Error(nameResult.error);
-        const priceResult = data.price !== undefined
-            ? parseIntegerField(data.price, "Bundle monthly price", { min: 0, max: FORM_LIMITS.moneyMax })
-            : null;
-        if (priceResult && !priceResult.ok) throw new Error(priceResult.error);
+        return runAllocationTransaction(async tx => {
+            const ms = await tx.multiShift.findUnique({ where: { id: multiShiftId }, include: { components: { orderBy: { order: "asc" } } } });
+            if (!ms) throw new Error("Multi-shift not found");
+            await this.assertBranchAccess(userId, ms.branchId, "manage_branch", tx);
+            await EntitlementService.assertBranchWritable(ms.branchId, tx);
+            const nameResult = data.name !== undefined
+                ? validateRequiredText(data.name, "Multi-shift name", 50)
+                : null;
+            if (nameResult && !nameResult.ok) throw new Error(nameResult.error);
+            const priceResult = data.price !== undefined
+                ? parseIntegerField(data.price, "Bundle monthly price", { min: 0, max: FORM_LIMITS.moneyMax })
+                : null;
+            if (priceResult && !priceResult.ok) throw new Error(priceResult.error);
 
-        let uniqueIds: string[] | undefined;
-        if (data.shiftIds) {
-            uniqueIds = await this.validateComponents(ms.branchId, data.shiftIds, multiShiftId);
-        }
+            let uniqueIds: string[] | undefined;
+            if (data.shiftIds) {
+                uniqueIds = await this.validateComponents(ms.branchId, data.shiftIds, multiShiftId, tx);
+            }
 
-        const normalizedPrice = priceResult?.ok ? priceResult.value : undefined;
-        const priceChanged = normalizedPrice !== undefined && normalizedPrice !== ms.price;
+            if (uniqueIds && (uniqueIds.some(id => !ms.components.some(component => component.shiftId === id))
+                || uniqueIds.length !== ms.components.length)) {
+                if (await tx.seatAllocation.count({ where: { multiShiftId, branchId: ms.branchId, endDate: null } })) {
+                    throw new Error("End active bundle allocations before changing component shifts");
+                }
+            }
+            const normalizedPrice = priceResult?.ok ? priceResult.value : undefined;
+            const priceChanged = normalizedPrice !== undefined && normalizedPrice !== ms.price;
 
-        const updated = await prisma.$transaction(async (tx) => {
+
             const saved = await tx.multiShift.update({
                 where: { id: multiShiftId },
                 data: {
@@ -230,10 +239,8 @@ export class MultiShiftService {
                 data: { lastDataChange: new Date() },
             });
 
-            return saved;
+            return this.toDto(saved);
         });
-
-        return this.toDto(updated);
     }
 
     static async deleteMultiShift(userId: string, multiShiftId: string) {

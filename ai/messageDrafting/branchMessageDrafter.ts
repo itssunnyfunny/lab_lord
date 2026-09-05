@@ -1,3 +1,4 @@
+import { claimGeneration, publishGeneration, releaseGeneration } from "@/ai/generationLease";
 import { getOverduePayments } from "@/analytics/payment.analytics";
 import {
     buildMessageDraftAction,
@@ -332,7 +333,7 @@ export async function draftOverdueMessages(
         };
     }
 
-    const [existingDrafts, studentRows, lastGeneratedAt] = await Promise.all([
+    const [existingDrafts, studentRows, lastGeneratedAt, generationLease] = await Promise.all([
         prisma.messageDraft.findMany({
             where: {
                 branchId,
@@ -353,6 +354,7 @@ export async function draftOverdueMessages(
             },
         }),
         getLastMessageGeneratedAt(branchId),
+        prisma.branchGenerationLease.findUnique({ where: { branchId_kind: { branchId, kind: "DRAFTS" } } }),
     ]);
 
     const latestDraftByStudentId = new Map<string, (typeof existingDrafts)[number]>();
@@ -409,64 +411,59 @@ export async function draftOverdueMessages(
         }
     }
 
-    const cooldownUntil = lastGeneratedAt
-        ? new Date(lastGeneratedAt.getTime() + MESSAGE_REGENERATION_COOLDOWN_MS)
-        : now;
+    // GET and POST both expose admission cooldown, including failed publications.
+    const cooldownUntil = new Date(Math.max(now.getTime(),
+        lastGeneratedAt ? lastGeneratedAt.getTime() + MESSAGE_REGENERATION_COOLDOWN_MS : 0,
+        generationLease ? generationLease.lastStartedAt.getTime() + MESSAGE_REGENERATION_COOLDOWN_MS : 0,
+        generationLease?.token ? generationLease.leaseUntil?.getTime() ?? 0 : 0));
     const regenerationCoolingDown = cooldownUntil.getTime() > now.getTime();
-    const rateLimited = generationTargets.length > 0 && regenerationCoolingDown;
+    let rateLimited = generationTargets.length > 0 && regenerationCoolingDown;
     let generatedCount = 0;
+    let admissionRetryAt: Date | null = null;
 
     if (!rateLimited && generationTargets.length > 0) {
-        const generatedByStudentId = new Map<string, string>();
-
-        try {
-            const aiResponse = await callGemini(buildPrompt(generationTargets, language, tone, include));
-            for (const item of parseGeneratedMessages(aiResponse)) {
-                generatedByStudentId.set(item.studentId, item.message.trim());
+        const token = await claimGeneration(branchId, "DRAFTS", MESSAGE_REGENERATION_COOLDOWN_MS, now);
+        if (!token) {
+            rateLimited = true;
+            const lease = await prisma.branchGenerationLease.findUnique({ where: { branchId_kind: { branchId, kind: "DRAFTS" } } });
+            admissionRetryAt = new Date(Math.max(now.getTime(),
+                lease ? lease.lastStartedAt.getTime() + MESSAGE_REGENERATION_COOLDOWN_MS : 0,
+                lease?.token ? lease.leaseUntil?.getTime() ?? 0 : 0));
+        } else try {
+            const generatedByStudentId = new Map<string, string>();
+            try {
+                const aiResponse = await callGemini(buildPrompt(generationTargets, language, tone, include));
+                for (const item of parseGeneratedMessages(aiResponse)) generatedByStudentId.set(item.studentId, item.message.trim());
+            } catch (error) {
+                console.error("[Messages] Gemini response could not be parsed, using fallback", error);
             }
-        } catch (error) {
-            console.error("[Messages] Gemini response could not be parsed, using fallback", error);
-        }
-
-        for (const target of generationTargets) {
-            const message = generatedByStudentId.get(target.studentId) || buildFallbackMessage(target, language, tone, include);
-
-            await prisma.messageDraft.deleteMany({
-                where: {
-                    branchId,
-                    studentId: target.studentId,
-                    action,
-                    language,
-                },
+            const created = await publishGeneration(branchId, "DRAFTS", token, async tx => {
+                const records = [];
+                for (const target of generationTargets) {
+                    const message = generatedByStudentId.get(target.studentId) || buildFallbackMessage(target, language, tone, include);
+                    await tx.messageDraft.deleteMany({ where: { branchId, studentId: target.studentId, action, language } });
+                    records.push(await tx.messageDraft.create({ data: { branchId, studentId: target.studentId, action, language, message } }));
+                }
+                return records;
             });
-
-            const created = await prisma.messageDraft.create({
-                data: {
-                    branchId,
-                    studentId: target.studentId,
-                    action,
-                    language,
-                    message,
-                },
-            });
-
-            resultsByStudentId.set(
-                target.studentId,
-                draftFromRecord(target, message, language, tone, include, created.createdAt, false)
-            );
+            for (let i = 0; i < generationTargets.length; i++) {
+                const target = generationTargets[i], record = created[i];
+                resultsByStudentId.set(target.studentId, draftFromRecord(target, record.message, language, tone, include, record.createdAt, false));
+            }
+            generatedCount = generationTargets.length;
+        } finally {
+            await releaseGeneration(branchId, "DRAFTS", token);
         }
-
-        generatedCount = generationTargets.length;
     }
 
     const items = targets
         .map(target => resultsByStudentId.get(target.studentId))
         .filter((draft): draft is OverdueMessageDraft => Boolean(draft));
-    const nextAllowedCallAt = generatedCount > 0
+    const nextAllowedCallAt = admissionRetryAt ?? (generatedCount > 0
         ? new Date(now.getTime() + MESSAGE_REGENERATION_COOLDOWN_MS)
         : regenerationCoolingDown
             ? cooldownUntil
-            : now;
+            : now);
 
     return {
         language,

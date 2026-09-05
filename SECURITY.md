@@ -505,6 +505,18 @@ authentication boundaries, not open application routes.
 
 ### Cron, imports, and AI
 
+- Report and draft generation use independent branch-scoped durable tokens.
+  Claim and cooldown reservation precede Gemini; only an unexpired matching
+  owner may publish, and release cannot clear a successor. No provider call
+  occurs inside the publication transaction. Draft replacement is one atomic
+  batch with a unique branch/student/action/language key.
+- Signed inbound report confirmation and report-stop commands are deduplicated
+  by sender plus provider message ID inside the same transaction as challenge
+  mutation. A different batch envelope cannot spend another confirmation attempt.
+  Receipts contain identifiers only, never message text or confirmation codes.
+- Nonempty unsupported import payment methods produce visible row errors;
+  substring matching and silent fallback are forbidden.
+
 - Complete branch AI reports, including cached narratives, aggregates and
   snapshots, require both `analytics` and `view_payments`; no partial redaction
   substitutes for authorization. Branch detail GET and settings responses expose

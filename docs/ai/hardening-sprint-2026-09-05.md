@@ -107,10 +107,9 @@ exact finalization fence, and immutable admission audit. Response loss, failed
 local finalization, and expired workers do not resubmit cancellation. Candidate
 reconciliation cannot clear that action; the immutable audit also prevents replay
 after unrelated lifecycle/error fields change. Confirmed successful scheduling
-is retained and repeated calls return that result. Ambiguous source outcomes
-remain held: a dedicated source-evidence recovery/finalization path is still
-unfinished, so #5 is recorded as open/partial rather than fully closed against
-the sprint's confirmed-result recovery requirement.
+is retained and repeated calls return that result. At commit `0feebe5`, ambiguous
+source recovery remained unfinished. The Slice B completion below closes that
+checkpoint with source-specific read-only confirmed-result recovery.
 
 No billing schema, pricing, trial, environment, or provider configuration change.
 No provider network calls were made by these tests. Existing fake Razorpay
@@ -187,6 +186,35 @@ defect in these paths. `pnpm test trend-range ai-entitlement
 branch-details-projection branchPageAccess`: 5 files / 29 tests passed, including
 route 400-before-query and each helper's pre-query rejection.
 
+## Slice D completed
+
+#9 confirmed creation draft validation skipped null-time shifts; it now shares
+canonical full-day overlap semantics. #10 confirmed live component edits could
+invalidate bundle allocations; serializable updates reject component-set changes
+while active allocations exist and preserve name/price/order edits. #17 confirmed
+substring aliases and missing row issues; exact aliases and runtime validation
+now report unsupported explicit methods, including cheque.
+
+#12 confirmed batch-level receipt identity allowed repeated report challenge
+attempts. Sender/message identity is now claimed in the challenge transaction.
+#13 and #15 confirmed unfenced AI takeover and non-atomic draft publication;
+branch/kind tokens, expiry checks, owned cleanup, admission cooldown and atomic
+draft batches now share a small AI-specific helper. The unique draft index blocks
+ambiguous historical duplicates. Gemini remains outside database transactions.
+
+Read-only review found draft retry metadata and report takeover still followed
+older timestamps. Both callers now use durable ownership/cooldown, with real
+PostgreSQL caller tests proving six-minute expired report takeover, rejected
+late completion, single concurrent draft generation, and GET/POST cooldown after
+failed publication. The runbook requires drained old writers; mixed unfenced
+old/new generation and confirmation workers are unsupported.
+
+The additive migration applied to the isolated existing test database and all
+41 migrations applied successfully to empty
+`lab_lords_hardening_final_fresh_test`. Representative pre-change SQL fixtures
+prove draft preservation and duplicate-blocker rollback. No environment, pricing,
+trial, student dues, provider configuration or Production changes.
+
 ## Findings checkpoint
 
 | Finding | Status | Continuation |
@@ -199,26 +227,25 @@ route 400-before-query and each helper's pre-query rejection.
 | #6 Checkout retirement | Fixed | Live provider checkouts remain held until provider-confirmed terminal state. |
 | #7 Replacement viability | Fixed | Current negative lifecycle independent of settlement; fresh viable candidate required before source cancellation; HALTED recoverable. |
 | #8 Legacy cancellation | Fixed | Client key, cancellation intent and history use durable operations; no compensation. |
-| #9 Full-day overlap | Open | Not implemented in this run. |
-| #10 Allocated MultiShift edits | Open | Not implemented in this run. |
+| #9 Full-day overlap | Fixed | Creation drafts use canonical full-day overlap semantics. |
+| #10 Allocated MultiShift edits | Fixed | Serializable component-set guard; non-component edits preserved. |
 | #11 Staff projection entitlement | Fixed | Shared entitled detail/settings projection. |
-| #12 WhatsApp message deduplication | Open | Not implemented in this run. |
-| #13 AI ownership fencing | Open | Not implemented in this run. |
+| #12 WhatsApp message deduplication | Fixed | Sender/message identity and challenge mutation commit atomically. |
+| #13 AI ownership fencing | Fixed | Durable token, expiry, fenced publication and owned release. |
 | #14 AI payment-derived response | Fixed | Whole report requires payment-view permission; UI aligned. |
-| #15 Draft generation ownership | Open | Not implemented in this run. |
+| #15 Draft generation ownership | Fixed | Atomic cooldown admission, batch publication and logical uniqueness. |
 | #16 Bounded analytics dates | Fixed | Real dates, ordered range, 31 daily points, before queries. |
-| #17 Import payment aliases | Open | Not implemented in this run. |
+| #17 Import payment aliases | Fixed | Explicit aliases; unsupported nonempty values create row errors. |
 
-No finding is classified as already fixed at baseline. Items #9–17 retain the
-user's audit status and have not received the same focused confirmation as A/B.
+All 17 findings were confirmed and fixed; none is classified as already fixed
+at baseline. No local implementation finding remains open.
 
-Next work: finish #5 recovery without trusting candidate authorization or an
-absent provider match, then #6–8. Razorpay HALTED is recoverable and must not be
-treated as universally terminal. Provider docs consulted:
+Razorpay HALTED is recoverable and is not treated as universally terminal.
+Provider docs consulted:
 [subscription states](https://razorpay.com/docs/payments/subscriptions/states/)
 and [cancellation API](https://razorpay.com/docs/api/payments/subscriptions/cancel-subscription/).
 No documented conditional cancellation guarantee was established. Keep the
-subsequent C/D ordering from the opening sequence.
+conservative live-checkout hold until provider-confirmed terminality.
 
 The allocation migration and application require coordinated writer drain,
 preflight counts, verified backfill, constraints, and deployment as documented
@@ -226,4 +253,6 @@ in the runbook. Billing protocol rollout also requires draining old mutators
 and inventorying their unresolved source actions. Production inventory,
 migration, operational recovery, provider mutations, and deployment all remain
 approval-dependent and were not performed. No Production readiness claim is
-made while these findings and rollout gates remain open.
+made from local checks alone. The next highest-value work is an explicitly
+approved read-only Production inventory and rollout rehearsal using the runbook;
+no destructive data cleanup or legacy removal is implied.

@@ -259,6 +259,24 @@ describe("MultiShiftService Integration", () => {
   // ─── deleteMultiShift ─────────────────────────────────────────────────────
 
   describe("deleteMultiShift", () => {
+    it("rejects component edits with active allocations but allows name and price edits", async () => {
+      const { user, branch, morning, evening } = await setupTwoShifts();
+      const bundle = await MultiShiftService.createMultiShift(user.id, branch.id, { name: "Bundle", shiftIds: [morning.id, evening.id] });
+      const extra = await createShift({ branchId: branch.id, name: "Afternoon", startTime: "12:00", endTime: "16:00" });
+      const student = await createStudent({ branchId: branch.id });
+      const seat = await createSeat({ branchId: branch.id });
+      const allocation = await testPrisma.seatAllocation.create({ data: { branchId: branch.id,
+        seatId: seat.id, studentId: student.id, shiftId: morning.id, multiShiftId: bundle.id } });
+      await expect(MultiShiftService.updateMultiShift(user.id, bundle.id, { shiftIds: [morning.id, extra.id], name: "Should rollback" }))
+        .rejects.toThrow("active bundle");
+      expect(await testPrisma.multiShift.findUniqueOrThrow({ where: { id: bundle.id } })).toMatchObject({ name: "Bundle" });
+      await expect(MultiShiftService.updateMultiShift(user.id, bundle.id, { name: "Renamed", price: 700,
+        shiftIds: [morning.id, evening.id] })).resolves.toMatchObject({ name: "Renamed", price: 700 });
+      await expect(MultiShiftService.updateMultiShift(user.id, bundle.id, { shiftIds: [evening.id, morning.id] }))
+        .resolves.toMatchObject({ components: [{ shiftId: evening.id }, { shiftId: morning.id }] });
+      await testPrisma.seatAllocation.update({ where: { id: allocation.id }, data: { endDate: new Date() } });
+      await expect(MultiShiftService.updateMultiShift(user.id, bundle.id, { shiftIds: [morning.id, extra.id] })).resolves.toBeTruthy();
+    });
     it("soft-nulls multiShiftId on existing allocations — history preserved", async () => {
       const { user, branch, morning, evening } = await setupTwoShifts();
       const ms = await MultiShiftService.createMultiShift(user.id, branch.id, {

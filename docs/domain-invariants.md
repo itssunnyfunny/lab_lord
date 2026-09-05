@@ -186,6 +186,7 @@ Every statement uses one of these labels:
   neither. Missing times and equal endpoints represent a full-day interval.
   Overnight intervals are supported, and intervals that only touch at a
   boundary do not overlap. Active shifts in a branch must not overlap.
+  Onboarding and branch draft validation use those same full-day semantics.
   (`utils/shiftTime.ts`, `services/shift.service.ts`, shift-time and shift tests)
 - **Must preserve—enforced:** A branch retains at least one active shift.
   Removing a shift is a soft inactivation, closes or reallocates its direct
@@ -203,6 +204,10 @@ Every statement uses one of these labels:
   two distinct, active, same-branch shifts. Component order does not define
   identity; another bundle with the same unordered shift set is rejected. Its
   name is unique in the branch by the database's exact-value comparison.
+- **Must preserve—enforced:** MultiShift component-set changes are rejected while
+  the bundle has active allocations. The check and update share the serializable
+  allocation transaction protocol. Name, price and component-order-only edits
+  remain supported; linked monthly fees retain their existing update behavior.
 - **Known discrepancy—do not rely on:** Soft-deleting a component Shift does
   not remove or rewrite `MultiShiftComponent` rows and does not clear students'
   `feeLinkedMultiShiftId`. An existing MultiShift can therefore retain an
@@ -887,6 +892,20 @@ Every statement uses one of these labels:
   (`prisma/schema.prisma`, `utils/studentBillingCycles.ts`)
 
 ## Analytics
+
+- **Must preserve—enforced:** Report/draft admission is serialized per branch
+  and generation kind. Only the current unexpired token publishes; stale cleanup
+  cannot clear a successor. Draft admission reserves the five-minute cooldown
+  before Gemini, including failed publication, and GET/POST expose that deadline.
+  Draft replacement is transactional with one non-null-student logical draft per
+  branch/student/action/language. Reports keep existing cache/staleness rules.
+- **Must preserve—enforced:** Report confirmation/stop redelivery is deduplicated
+  by sender and provider message ID, atomically with challenge mutation, even
+  across different webhook batches. Full STOP and outbox delivery rules remain
+  unchanged. (`services/whatsappWebhook.service.ts`)
+- **Must preserve—enforced:** Import payment aliases are explicit normalized
+  values. Unsupported nonempty methods, including cheque, create
+  `INVALID_PAYMENT_METHOD` row errors; empty optional methods remain optional.
 
 - **Must preserve—enforced:** Daily trend ranges contain at most 31 points,
   preserve existing month-to-date and 30-day presets, and require real dates in

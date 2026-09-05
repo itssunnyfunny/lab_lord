@@ -4,7 +4,75 @@ This runbook covers the repository-owned procedures for operating Lab Lords. It
 does not grant access to Production and does not replace provider dashboards,
 database recovery documentation, or an approved incident-response policy.
 
-Last reconciled with the repository: 2026-08-26.
+Last reconciled with the repository: 2026-09-05 (hardening additions; older operational evidence remains dated).
+
+## AI ownership and inbound identity migration handoff
+
+`20260905143000_fence_ai_and_inbound_messages` follows the allocation migration.
+It adds `BranchGenerationLease` (branch FK, unique branch/kind),
+`WhatsAppInboundMessageReceipt` (sender FK, unique sender/providerMessageId), and
+the unique `MessageDraft(branchId,studentId,action,language)` index. Null student
+drafts retain PostgreSQL's nullable uniqueness semantics. There is no guessed
+backfill, history deletion, new environment variable, or provider operation.
+
+Before an explicitly approved deployment, verify the target, backup/restore
+evidence and current migrations. Record aggregate preflight results privately:
+
+```sql
+SELECT COUNT(*) AS drafts, COUNT(*) FILTER (WHERE "studentId" IS NULL) AS null_student_drafts FROM "MessageDraft";
+SELECT COUNT(*) AS duplicate_groups, COALESCE(SUM(n - 1), 0) AS duplicate_excess
+FROM (SELECT COUNT(*) AS n FROM "MessageDraft" WHERE "studentId" IS NOT NULL
+  GROUP BY "branchId", "studentId", "action", "language" HAVING COUNT(*) > 1) d;
+SELECT COUNT(*) AS running_reports FROM "Branch" WHERE "aiStatus" = 'RUNNING';
+```
+
+Any duplicate group blocks migration pending an owner-reviewed preservation or
+resolution plan. Do not choose the newest draft, delete older drafts, or reset
+the database automatically. The migration holds an exclusive MessageDraft lock,
+rechecks duplicates, creates the index then both tables in one transaction; a
+blocker rolls everything back. Resolve Prisma's failed-migration record only
+through the established approved repair procedure after proving rollback.
+
+Stop admissions and drain all old report/draft generation and inbound webhook
+workers before applying the migration and promoting the matching application.
+Hold inbound delivery with retryable responses at the approved ingress boundary;
+do not acknowledge and discard messages. Empty RUNNING status is insufficient
+proof of drain: verify in-flight function execution has ended. Old code does not
+honor tokens and can overwrite a new draft/report or spend confirmation attempts,
+so rolling old/new worker overlap is unsupported. Keep old deployments from
+receiving direct traffic. Existing envelope receipts cannot reconstruct every
+historical message identity; let outstanding confirmation challenges expire
+during the approved hold before re-enabling confirmation admission. Retain
+sender identities and existing webhook history. Rebatched old report-stop events
+remain monotonic stop operations; no new confirmation may reuse an old challenge.
+
+After migration, compare MessageDraft totals and null-student totals to preflight
+while writers remain held; duplicate groups must be zero. Both new tables should
+be empty before new traffic. Verify installed keys without exposing row contents:
+
+```sql
+SELECT indexname FROM pg_indexes WHERE tablename IN
+  ('MessageDraft', 'BranchGenerationLease', 'WhatsAppInboundMessageReceipt');
+SELECT conname, convalidated FROM pg_constraint WHERE conrelid IN
+  ('"BranchGenerationLease"'::regclass, '"WhatsAppInboundMessageReceipt"'::regclass);
+SELECT COUNT(*) AS leases FROM "BranchGenerationLease";
+SELECT COUNT(*) AS inbound_identities FROM "WhatsAppInboundMessageReceipt";
+```
+
+Resume only the new writers and verify one accepted generation per branch/kind,
+stale-token rejection, atomic batch publication and same-ID webhook replay using
+approved synthetic Test traffic. Observe aggregate failures/lease expiry without
+logging prompts, message text, codes or tokens. The local integration suite
+proves those properties with fake providers and PostgreSQL, including migration
+blocker rollback and preserved pre-change drafts.
+
+Rollback is an admission hold and forward repair preserving the additive tables,
+unique index, receipts and current tokens. Do not drop the fence or resume an old
+unfenced binary over active work. If an older application must be restored, drain
+new workers first and keep affected generation/confirmation paths held until a
+compatible patch is deployed. No Production preflight, migration, drain,
+challenge expiry operation, provider call or deployment was performed in this
+sprint; each dependent Production action still requires explicit approval.
 
 ## Stop conditions and operator-owned preconditions
 

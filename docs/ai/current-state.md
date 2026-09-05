@@ -28,6 +28,13 @@ permission, and navigation gates match the route. Daily analytics ranges are
 validated in the route and all three helpers with a 31-point maximum matching
 the existing UI presets.
 
+The sprint also adds branch/kind AI ownership and sender/message receipt keys,
+atomic draft replacement, full-day-aware creation validation, allocated-bundle
+component protection and explicit import payment-method issues. The schema now
+has 41 migrations; the new draft uniqueness preflight blocks historical
+duplicates without deleting them. See the runbook for required writer drain and
+rollout/rollback compatibility.
+
 ## Refresh contract
 
 Refresh this snapshot whenever a change materially alters architecture, route or
@@ -673,16 +680,16 @@ All Gemini calls originate on the server through `ai/llm/gemini.client.ts`. The 
 `runBranchAI()` then:
 
 1. Reads branch AI state and the newest persisted report.
-2. Applies a five-minute cache, same-day/current-rule checks, and a branch-level `IDLE -> RUNNING` optimistic lock.
+2. Applies the five-minute cache and same-day/current-rule checks; claims a unique branch/REPORT token under a short branch row lock. Durable five-minute expiry controls takeover (the old ten-minute status timeout only covers pre-migration rows without a lease).
 3. Reads a deterministic branch snapshot.
 4. Calculates risks, health score, and suggested actions in code.
 5. Sends aggregate branch metrics and deterministic risk descriptions to Gemini for owner-facing narrative only.
 6. Validates the parsed narrative and substitutes deterministic text for absent/invalid fields.
-7. Persists the full response in `BranchAIReport` and releases the lock.
+7. Publishes `BranchAIReport` and completion atomically only for the current unexpired token. Cleanup releases only its own token; Gemini runs outside transactions.
 
 The reports page calls this GET route automatically when mounted. A page view can therefore cause a Gemini call when the cache/staleness rules permit it; refresh is not the only trigger.
 
-Known failure semantic: the orchestrator writes `aiLastCalledAt` while acquiring the lock, before Gemini completes. The `finally` block returns `aiStatus` to `IDLE` but does not restore `aiLastCalledAt` after failure. A failed run can therefore impose the normal cooldown even though older documentation says otherwise.
+Known failure semantic: admission advances `aiLastCalledAt` before Gemini. Owned cleanup clears RUNNING without restoring that timestamp, preserving existing failure cooldown behavior. A stale owner cannot clear or publish over a successor.
 
 ### Overdue message drafts
 
@@ -691,10 +698,10 @@ Message generation is human-triggered and does not send messages.
 - GET reads current overdue students and returns matching cached drafts with `allowGeneration: false`.
 - POST regenerates only explicitly selected student IDs and requires analytics plus payment-view permission, AI entitlement, writability, and a process-local route limit.
 - Overdue payments are grouped into one target per student.
-- A single Gemini request covers the selected targets.
+- A branch/DRAFTS token reserves the five-minute cooldown before a single Gemini request covers the selected targets. Cached GET and POST metadata include the durable cooldown even after failed publication.
 - The prompt includes student name, oldest due date, total due, payment count, and days overdue; it does not include the stored phone number.
 - Invalid/missing Gemini output is replaced with deterministic English or Hinglish text.
-- Drafts are persisted by branch, student, language, and action configuration.
+- The selected draft batch is replaced in one transaction, fenced by the current token and a unique branch/student/language/action key. Ambiguous historical duplicates block migration rather than being deleted.
 - This AI draft UI remains review/copy only and has no provider integration. The
   separate PR3 official reminder flow rebuilds content from trusted typed values
   and managed Utility templates; it never reads `MessageDraft.message`.
@@ -726,7 +733,7 @@ The following modules exist but are not referenced by current application routes
 
 | Integration | Repository truth | Deployment state |
 | --- | --- | --- |
-| PostgreSQL / Prisma | Required; schema and 39 timestamped migrations exist, including the three additive WhatsApp expansions, exact billing commercial evidence, the additive Razorpay webhook claim, and durable initial-subscription provisioning intent/audit state | Database target, applied migration set, backups, and health are unknown |
+| PostgreSQL / Prisma | Required; schema and 41 timestamped migrations exist, including the three additive WhatsApp expansions, exact billing commercial evidence, the additive Razorpay webhook claim, and durable initial-subscription provisioning intent/audit state | Database target, applied migration set, backups, and health are unknown |
 | Clerk | Real auth and local-user linking are implemented | Active instance, keys, redirect/origin configuration, and account health are unknown |
 | Gemini | Reports, message drafts, and import mapping are wired with fallbacks | API key, selected model availability, quota, and data-processing configuration are unknown |
 | Razorpay | Server API client, Checkout, exact-byte bounded webhook signatures, token-fenced webhook receipts, provider-authoritative reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
@@ -742,7 +749,7 @@ Never infer a deployed state from local `.env` files, ignored Vercel metadata, s
 
 At this anchor the repository contains focused WhatsApp unit, component,
 provider-contract, service, route, webhook, and migration-contract coverage in
-addition to the existing Vitest/Playwright suites, plus 39 timestamped migration directories. These
+addition to the existing Vitest/Playwright suites, plus 41 timestamped migration directories. These
 counts are orientation data, not invariants.
 
 ### Automated coverage by area
@@ -775,7 +782,7 @@ Production migrations have a separate manually dispatched workflow requiring the
 
 ### Known verification gaps
 
-- No direct Vitest suite exercises the complete `runBranchAI()` cache/lock/failure lifecycle.
+- Real PostgreSQL generation ownership and caller suites exercise report takeover/stale completion, draft concurrency, cooldown metadata and failed batch rollback. They do not exhaust every report cache/narrative combination.
 - No direct Vitest suite exercises the complete `draftOverdueMessages()` persistence/cooldown lifecycle; route tests mock it.
 - AI verification scripts exist, but scripts are not equivalent to repeatable CI coverage.
 - Browser tests exist but are not run by the main CI workflow.
