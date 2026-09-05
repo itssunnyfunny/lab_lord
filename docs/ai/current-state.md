@@ -901,3 +901,11 @@ writers, including atomic item completion after payload redaction. Domain
 services still re-resolve target ownership and interactive authorization before
 mutation; stored JSON is never authorization. The overall consolidation remains
 in progress; see the outcome matrix.
+
+SaaS mutations now share `billingProviderAction.service.ts` and migration 46's
+immutable BillingProviderAction rows. CONFIRMED responses are independent of
+local finalization and never establish entitlement. Read-only reconcilers resolve
+only the matching purpose. The canonical cancellation entry point is
+BillingService.requestCancellation; historical access/cancellation policy is in
+legacyCommercialCompatibility. See `commercial-consolidation-contracts.md` for
+all ten call sites and evidence-gated legacy retirement.

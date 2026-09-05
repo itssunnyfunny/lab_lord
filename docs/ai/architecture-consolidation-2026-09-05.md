@@ -57,3 +57,15 @@ With target ledger installed, the same affected services passed (39 files), whil
 one new test needed to update the snapshot ID together with its live ID to reach
 the FK rather than the stronger snapshot-identity CHECK. TypeScript passed.
 The complete relationship matrix and final combined validation remain due.
+
+Commercial consolidation: every subscription mutation now uses one durable
+per-action executor (migration 46), with an enforceable adapter boundary and
+separate create/source/candidate outcomes. Recovery acknowledges only its own
+action. Cancellation has one service entry point; historical entitlement and
+cancellation policies are isolated. The unused commercial-version flag dispatcher
+is removed. Exact inventory/protocol/retirement conditions are in
+`commercial-consolidation-contracts.md`. `pnpm test billing entitlement onboarding`
+passed: 46 files / 486 tests. TypeScript and diff checks passed. Prior focused
+failures corrected a unit mock of the replaced boundary, recognized application
+methods with similar names, and retained provider discovery before fallback to a
+confirmed identity. No provider evidence or rejection protection was weakened.

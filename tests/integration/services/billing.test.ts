@@ -2106,7 +2106,7 @@ describe("BillingService SaaS subscriptions", () => {
       razorpay_signature: hmacSha256Hex("pay_auth|sub_basic", "secret"),
     });
 
-    const result = await BillingService.cancelSubscription(user.id, org.id);
+    const result = await BillingService.requestCancellation(user.id, org.id);
 
     expect(result).toMatchObject({ cancelled: false, scheduled: true });
     expect(result.subscription).toMatchObject({
@@ -2135,7 +2135,7 @@ describe("BillingService SaaS subscriptions", () => {
     const org = await createOrg({ ownerId: user.id });
     await BillingService.createSubscriptionCheckout(user.id, org.id, { plan: "BASIC" });
 
-    await expect(BillingService.cancelSubscription(user.id, org.id)).rejects.toThrow(
+    await expect(BillingService.requestCancellation(user.id, org.id)).rejects.toThrow(
       "Only an active subscription"
     );
     expect(fakeRazorpay.cancelSubscription).not.toHaveBeenCalled();
@@ -2262,7 +2262,7 @@ describe("BillingService SaaS subscriptions", () => {
       paidThrough,
     });
 
-    const scheduled = await BillingService.scheduleWorkspaceCancellation(user.id, org.id, "cancel-early", now);
+    const scheduled = await BillingService.requestCancellation(user.id, org.id, "cancel-early", now);
     expect(scheduled).toMatchObject({ scheduled: true, undoable: true });
     await expect(BillingService.undoWorkspaceCancellation(user.id, org.id, now))
       .resolves.toEqual({ undone: true });

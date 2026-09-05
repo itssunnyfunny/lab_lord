@@ -1,3 +1,5 @@
+import { isHistoricalCommercialModel, historicalCancellationPolicy } from "@/services/legacyCommercialCompatibility";
+import { executeBillingProviderAction, confirmReconciledBillingProviderAction, getConfirmedBillingProviderResponse } from "@/services/billingProviderAction.service";
 import { prisma } from "@/lib/prisma";
 import crypto from "node:crypto";
 import { BILLING_PLANS, getActiveBillingPlan, getBillingPlan, publicBillingPlans, type BillingPlan } from "@/lib/billingPlans";
@@ -1196,6 +1198,8 @@ async function finalizeInitialProvisioning(input: {
       providerSubscriptionId: subscription.razorpaySubscriptionId,
       recordSubscriptionHistory: false,
     });
+    await confirmReconciledBillingProviderAction(tx, { organizationId: change.organizationId,
+      identity: change.id, purpose: "CREATE", provider: input.providerSubscription });
     return { change, subscription };
   });
 }
@@ -1220,7 +1224,10 @@ async function reconcileInitialProvisioning(input: {
   const razorpay = getRazorpayClient();
   let discovery;
   try {
-    discovery = await discoverInitialProvisioning(razorpay, intent);
+    const confirmed = await getConfirmedBillingProviderResponse(input.change.organizationId, input.change.id, "CREATE");
+    discovery = confirmed && !razorpay.listSubscriptions
+      ? classifyInitialProvisioningMatches([await razorpay.fetchSubscription(confirmed.id)], intent)
+      : await discoverInitialProvisioning(razorpay, intent);
     if (discovery.kind === "UNAVAILABLE" && input.change.authorizedRazorpaySubscriptionId) {
       const known = await razorpay.fetchSubscription(input.change.authorizedRazorpaySubscriptionId);
       discovery = classifyInitialProvisioningMatches([known], intent);
@@ -1794,9 +1801,9 @@ export async function cancelLapsedInitialAuthorization(
       "checking a lapsed authorization"
     );
     if (!TERMINAL_STATUSES.has(mapSubscriptionStatus(providerSubscription.status))) {
-      providerSubscription = await razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
+      providerSubscription = await executeBillingProviderAction({ organizationId: initial.organizationId, subscriptionId: subscription.id, leaseToken, purpose: "EXPIRE_INITIAL", command: { method: "cancelSubscription", args: [subscription.razorpaySubscriptionId, {
         cancel_at_cycle_end: false,
-      });
+      }] } });
     }
     assertMatchingProviderSubscription(
       subscription.razorpaySubscriptionId,
@@ -1815,6 +1822,10 @@ export async function cancelLapsedInitialAuthorization(
       const latest = await tx.organizationSubscription.findUnique({
         where: { id: subscription.id },
       });
+      const owner = await tx.organization.findFirst({ where: {
+        id: initial.organizationId, billingMutationLeaseToken: leaseToken,
+      }, select: { id: true } });
+      if (!owner) throw new BillingChangeInProgressError(null, "Authorization-expiry ownership was lost before finalization");
       if (!latest || latest.razorpaySubscriptionId !== subscription.razorpaySubscriptionId) {
         throw new Error("Subscription identity changed while expiring authorization");
       }
@@ -1841,6 +1852,8 @@ export async function cancelLapsedInitialAuthorization(
         fromStatus: latest.status,
         event: "authorization_lapsed_provider_terminal",
       });
+      await confirmReconciledBillingProviderAction(tx, { organizationId: initial.organizationId,
+        identity: subscription.id, purpose: "EXPIRE_INITIAL", provider: providerSubscription });
       return stored;
     });
   } finally {
@@ -2251,7 +2264,7 @@ export class BillingService {
       });
       const providerIntent = readInitialProvisioningTuple(admittedProvisioning);
       providerCreateStarted = true;
-      const gatewaySubscription = await razorpay.createSubscription({
+      const gatewaySubscription = await executeBillingProviderAction({ organizationId, change: admittedProvisioning, leaseToken, purpose: "CREATE", command: { method: "createSubscription", args: [{
         plan_id: providerIntent.providerPlanId,
         total_count: providerIntent.totalCount,
         quantity: providerIntent.quantity,
@@ -2260,7 +2273,7 @@ export class BillingService {
         expire_by: providerIntent.expireAt,
         offer_id: providerIntent.providerOfferId ?? undefined,
         notes: initialProvisioningNotes(providerIntent),
-      });
+      }] } });
       providerResponseReceived = true;
 
       if (!isSameInitialProvisioningIntent(gatewaySubscription, providerIntent)) {
@@ -2838,27 +2851,6 @@ export class BillingService {
     };
   }
 
-  static async cancelSubscription(userId: string, organizationId: string, idempotencyKey?: string) {
-    await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
-    assertRazorpayBillingWritesEnabled(organizationId);
-    const subscription = await prisma.organizationSubscription.findUnique({ where: { currentOrganizationId: organizationId } });
-    if (!subscription) throw new BillingResourceNotFoundError("Subscription not found");
-    assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
-    if (!subscription.cancelAtCycleEnd && subscription.status !== "ACTIVE") {
-      throw new BillingValidationError("Only an active subscription can be cancelled at the end of its billing cycle");
-    }
-    if (subscription.cancelAtCycleEnd) return { cancelled: TERMINAL_STATUSES.has(subscription.status),
-      scheduled: true, subscription: serializeSubscription(subscription) };
-    const change = await BillingMutationService.enqueue({ organizationId, subscriptionId: subscription.id,
-      idempotencyKey: idempotencyKey ?? `legacy-cancellation:${subscription.id}`, type: "CANCELLATION",
-      effectiveAt: subscription.currentEnd, createdByUserId: userId });
-    if (change.status === "QUEUED") await BillingMutationService.processNext(organizationId);
-    if (change.status === "FAILED") await BillingMutationService.retry(change.id);
-    const updated = await prisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } });
-    return { cancelled: TERMINAL_STATUSES.has(updated.status), scheduled: updated.cancelAtCycleEnd,
-      subscription: serializeSubscription(updated) };
-  }
-
   static async changeWorkspacePlan(
     userId: string,
     organizationId: string,
@@ -3041,49 +3033,45 @@ export class BillingService {
     );
   }
 
-  static async scheduleWorkspaceCancellation(
+  static async requestCancellation(
     userId: string,
     organizationId: string,
-    idempotencyKey: string,
+    idempotencyKey?: string,
     now = new Date()
   ) {
     const organization = await OrganizationService.getOrganizationForOwnerAccess(organizationId, userId);
-    if (organization.billingModelVersion !== "WORKSPACE_V2") {
-      return this.cancelSubscription(userId, organizationId, idempotencyKey);
-    }
     assertRazorpayBillingWritesEnabled(organizationId);
     const subscription = organization.subscription;
     if (!subscription) throw new BillingResourceNotFoundError("Subscription not found");
     assertSubscriptionProviderMode(subscription, resolveRazorpayMode());
+    const historical = isHistoricalCommercialModel(organization.billingModelVersion)
+      ? historicalCancellationPolicy(subscription, idempotencyKey) : null;
+    if (historical?.alreadyScheduled) return { cancelled: TERMINAL_STATUSES.has(subscription.status),
+      scheduled: true, subscription: serializeSubscription(subscription) };
     const trialActive = organization.ownerTrialGrant?.status === "ACTIVE"
       && organization.ownerTrialGrant.trialEndsAt != null
       && organization.ownerTrialGrant.trialEndsAt > now;
-    const boundary = trialActive
-      ? organization.ownerTrialGrant!.trialEndsAt!
-      : subscription.paidThrough ?? subscription.currentEnd;
-    if (!boundary) throw new BillingValidationError("Cancellation boundary is unavailable");
-    const undoCutoffAt = new Date(boundary.getTime() - 24 * 60 * 60 * 1000);
+    const boundary = historical ? historical.effectiveAt : trialActive
+      ? organization.ownerTrialGrant!.trialEndsAt! : subscription.paidThrough ?? subscription.currentEnd;
+    if (!historical && !boundary) throw new BillingValidationError("Cancellation boundary is unavailable");
+    const undoCutoffAt = historical ? null : new Date(boundary!.getTime() - 24 * 60 * 60 * 1000);
     const change = await BillingMutationService.enqueue({
-      organizationId,
-      subscriptionId: subscription.id,
-      idempotencyKey,
-      type: "CANCELLATION",
-      operationStatus: "SCHEDULED",
-      effectiveAt: boundary,
-      undoCutoffAt,
-      createdByUserId: userId,
+      organizationId, subscriptionId: subscription.id,
+      idempotencyKey: historical?.key ?? idempotencyKey ?? `workspace-cancellation:${subscription.id}`,
+      type: "CANCELLATION", operationStatus: historical ? undefined : "SCHEDULED",
+      effectiveAt: boundary, undoCutoffAt, createdByUserId: userId,
     });
-    const late = now >= undoCutoffAt;
-    const processed = late ? await BillingMutationService.processNext(organizationId, now) : null;
-    return {
-      cancelled: false,
-      scheduled: true,
-      undoable: !late,
-      undoCutoffAt,
-      effectiveAt: boundary,
-      change: processed ?? change,
-      subscription: serializeSubscription(subscription),
-    };
+    const dispatchNow = historical != null || now >= undoCutoffAt!;
+    const processed = dispatchNow && change.status === "QUEUED"
+      ? await BillingMutationService.processNext(organizationId, now)
+      : historical && change.status === "FAILED" ? await BillingMutationService.retry(change.id) : null;
+    if (historical) {
+      const updated = await prisma.organizationSubscription.findUniqueOrThrow({where:{id:subscription.id}});
+      return {cancelled:TERMINAL_STATUSES.has(updated.status),scheduled:updated.cancelAtCycleEnd,
+        subscription:serializeSubscription(updated)};
+    }
+    return {cancelled:false,scheduled:true,undoable:!dispatchNow,undoCutoffAt,effectiveAt:boundary,
+      change:processed ?? change,subscription:serializeSubscription(subscription)};
   }
 
   static async undoWorkspaceCancellation(userId: string, organizationId: string, now = new Date()) {

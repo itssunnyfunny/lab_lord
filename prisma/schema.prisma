@@ -94,6 +94,7 @@ model Organization {
   whatsAppServiceNotices         WhatsAppServiceNotice[]
   whatsAppOperationalIncidents   WhatsAppOperationalIncident[]
   owner                          User                                @relation(fields: [ownerId], references: [id])
+  providerActions BillingProviderAction[]
 }
 
 model Branch {
@@ -2258,6 +2259,7 @@ model OrganizationBillingChange {
 
   @@unique([id, organizationId], map: "TI_U_OrganizationBillingChange_id_organizationId")
   @@unique([replacementSubscriptionId, organizationId], map: "TI_U_OrganizationBillingChange_replacementSubscription_d0865a8d")
+  providerActions BillingProviderAction[]
 }
 
 model OrganizationBillingChangeAudit {
@@ -2403,4 +2405,27 @@ model ImportTargetReference {
   @@unique([importRowId, usage, entityType, targetId])
   @@unique([importRunItemId, usage, entityType, targetId])
   @@index([branchId])
+}
+
+/// One durable admission per distinct SaaS provider action, independent of local finalization.
+model BillingProviderAction {
+  id String @id @default(cuid())
+  organizationId String
+  changeId String?
+  actionKey String
+  providerMode RazorpayMode
+  purpose String
+  requestHash String
+  request Json
+  status String
+  dispatchToken String @unique
+  admittedAt DateTime @default(now())
+  respondedAt DateTime?
+  response Json?
+  failureKind String?
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  change OrganizationBillingChange? @relation(fields: [changeId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  @@unique([organizationId, actionKey])
+  @@index([organizationId, status])
+  @@index([changeId])
 }

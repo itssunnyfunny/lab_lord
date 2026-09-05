@@ -2386,3 +2386,19 @@ Deploy compatible application/worker code before resuming writers. Reverting
 application code requires keeping branch-aware writers; the target ledger is
 compatible with existing JSON writers. Repair constraints/triggers with a new
 forward migration. Never remove history or rewrite applied migration files.
+
+### Durable SaaS action cutover (20260905190000)
+
+Run `prisma/preflight/billing-action-cutover.sql` before migration, excluding its
+clearly labelled post-migration query. Retain counts and separately inventory
+exact operation/subscription/provider identities in a restricted report. Drain
+interactive billing, deadline/reconciliation workers and old Workflow code;
+wait for admitted requests to finish. Unknown operations require read-only
+reconciliation/manual review, never token clearing as permission to replay.
+Apply 46 and deploy the executor callers together. The new action table starts
+empty; existing operation/audit history remains the authoritative pre-cutover
+fence and is not guessed into completed action rows. Verify operation/history/
+subscription counts unchanged, then the new action catalog/immutable-trigger
+checks. Resume one controlled worker population. Old dispatch code must not run
+alongside the new protocol. Rollback to unfenced dispatch is unsafe; keep the
+writer gate closed and forward-repair. Never erase action receipts to retry.

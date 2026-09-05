@@ -1,3 +1,4 @@
+import { executeBillingProviderAction, confirmReconciledBillingProviderAction, getConfirmedBillingProviderResponse } from "@/services/billingProviderAction.service";
 import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import {
@@ -501,6 +502,8 @@ async function finalizeCandidateCancellation(
   if (finalized.count !== 1) {
     throw new Error("Replacement cancellation attempt changed before finalization");
   }
+  await confirmReconciledBillingProviderAction(tx, { organizationId: change.organizationId,
+    identity: change.id, purpose: "CANCEL_CANDIDATE", provider: input.provider });
   if (change.failureCategory === "MANUAL_REVIEW_REQUIRED"
     || isCandidateCancellationReconciliationCode(change.failureCode)) {
     await recordBillingMutationAudit(tx, {
@@ -621,6 +624,7 @@ export class BillingReplacementService {
       throw new BillingManualReviewRequiredError(changeId);
     }
     const provider = await getRazorpayClient().fetchSubscription(source.razorpaySubscriptionId);
+    const actionResponse = await getConfirmedBillingProviderResponse(snapshot.organizationId, changeId, "CANCEL_SOURCE");
     return prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT "id" FROM "Organization" WHERE "id" = ${snapshot.organizationId} FOR UPDATE`;
       const organization = await tx.organization.findUniqueOrThrow({ where: { id: snapshot.organizationId } });
@@ -645,7 +649,9 @@ export class BillingReplacementService {
       // the confirmed cancellation response, or require terminal source truth.
       if (!admitted || provider.id !== source.razorpaySubscriptionId
         || provider.plan_id !== source.razorpayPlanId || provider.quantity !== source.quantity
-        || (!ended && (!confirmed || provider.has_scheduled_changes !== true
+        || (!ended && (!(confirmed || (actionResponse?.id === source.razorpaySubscriptionId
+          && actionResponse.has_scheduled_changes === true
+          && dateFromTimestamp(actionResponse.change_scheduled_at)?.getTime() === change.effectiveAt?.getTime())) || provider.has_scheduled_changes !== true
           || scheduledAt?.getTime() !== change.effectiveAt?.getTime()))) {
         throw new BillingManualReviewRequiredError(changeId);
       }
@@ -658,6 +664,8 @@ export class BillingReplacementService {
         status: "SCHEDULED", operationStatus: "SCHEDULED", failureCategory: null, failureCode: null,
         lastError: null, failedAt: null, processingStartedAt: null, providerConfirmedAt: now,
       } });
+      await confirmReconciledBillingProviderAction(tx, { organizationId: change.organizationId,
+        identity: changeId, purpose: "CANCEL_SOURCE", provider });
       await recordBillingMutationAudit(tx, { changeId, organizationId: change.organizationId,
         organizationSubscriptionId: source.id, attemptCount: change.attemptCount,
         outcome: "PROVIDER_STATE_ADOPTED", failureCode: "SOURCE_CANCELLATION_RECOVERED" });
@@ -947,8 +955,12 @@ export class BillingReplacementService {
 
     let providerCandidate: RazorpaySubscription | null = null;
     let adopted = false;
+    const confirmedCreate = await getConfirmedBillingProviderResponse(organizationId, change.id, "CREATE");
     if (change.authorizedRazorpaySubscriptionId) {
       providerCandidate = await razorpay.fetchSubscription(change.authorizedRazorpaySubscriptionId);
+      adopted = true;
+    } else if (confirmedCreate && !razorpay.listSubscriptions) {
+      providerCandidate = await razorpay.fetchSubscription(confirmedCreate.id);
       adopted = true;
     } else if (razorpay.listSubscriptions) {
       const matches: RazorpaySubscription[] = [];
@@ -996,7 +1008,7 @@ export class BillingReplacementService {
           organizationSubscriptionId: source.id, attemptCount: change!.attemptCount,
           outcome: "PROVIDER_MUTATION_ADMITTED" });
       });
-      providerCandidate = await razorpay.createSubscription({
+      providerCandidate = await executeBillingProviderAction({ organizationId, change, leaseToken, purpose: "CREATE", command: { method: "createSubscription", args: [{
         plan_id: targetProviderPlanId,
         total_count: totalCount,
         quantity: targetQuantity,
@@ -1012,7 +1024,7 @@ export class BillingReplacementService {
           replacement_source_subscription_id: source.razorpaySubscriptionId,
           plan: targetPlanId,
         },
-      });
+      }] } });
     }
     if (!isSameProvisioningIntent(providerCandidate, providerIntent)) {
       throw new Error("Razorpay replacement does not match the expected plan and branch quantity");
@@ -1135,6 +1147,8 @@ export class BillingReplacementService {
             providerSubscriptionId: providerCandidate!.id });
         }
         await releaseLease(tx, change.organizationId, leaseToken);
+        await confirmReconciledBillingProviderAction(tx, { organizationId, identity: change.id,
+          purpose: "CREATE", provider: providerCandidate! });
         return { change: updatedChange, subscription: candidate };
     });
     return { ...stored, adopted };
@@ -1529,10 +1543,7 @@ export class BillingReplacementService {
     if (!claimed.cancelCandidate) return claimed.change;
     const processingCode = CANDIDATE_CANCELLATION_PROCESSING_CODE;
     try {
-      const cancelled = await razorpay.cancelSubscription(
-        claimed.candidate.razorpaySubscriptionId,
-        { cancel_at_cycle_end: false }
-      );
+      const cancelled = await executeBillingProviderAction({ organizationId: claimed.change.organizationId, change: claimed.change, leaseToken, purpose: "CANCEL_CANDIDATE", command: { method: "cancelSubscription", args: [claimed.candidate.razorpaySubscriptionId, { cancel_at_cycle_end: false }] } });
       assertTerminalCandidateCancellationResponse(cancelled, claimed.candidate);
       return await prisma.$transaction(async tx => {
         await tx.$queryRaw<Array<{ id: string }>>`
@@ -1741,10 +1752,7 @@ export class BillingReplacementService {
     }
 
     try {
-      const provider = await getRazorpayClient().cancelSubscription(
-        claim.source.razorpaySubscriptionId,
-        { cancel_at_cycle_end: true }
-      );
+      const provider = await executeBillingProviderAction({ organizationId: claim.change.organizationId, change: claim.change, leaseToken, purpose: "CANCEL_SOURCE", command: { method: "cancelSubscription", args: [claim.source.razorpaySubscriptionId, { cancel_at_cycle_end: true }] } });
       if (provider.id !== claim.source.razorpaySubscriptionId) {
         throw new Error("Razorpay source mismatch while scheduling replacement cutover");
       }
@@ -2324,10 +2332,7 @@ export class BillingReplacementService {
       return { change: processingChange, candidate };
     });
     try {
-      const cancelled = await razorpay.cancelSubscription(
-        claim.candidate.razorpaySubscriptionId,
-        { cancel_at_cycle_end: false }
-      );
+      const cancelled = await executeBillingProviderAction({ organizationId: claim.change.organizationId, change: claim.change, leaseToken, purpose: "CANCEL_CANDIDATE", command: { method: "cancelSubscription", args: [claim.candidate.razorpaySubscriptionId, { cancel_at_cycle_end: false }] } });
       assertTerminalCandidateCancellationResponse(cancelled, claim.candidate);
       return await prisma.$transaction(async tx => {
         await tx.$queryRaw<Array<{ id: string }>>`

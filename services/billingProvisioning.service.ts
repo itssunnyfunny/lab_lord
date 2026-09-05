@@ -117,7 +117,7 @@ export function isUnchargedCreatedInitialProvisioning(
 }
 
 export async function discoverInitialProvisioning(
-  razorpay: RazorpayApiClient,
+  razorpay: Pick<RazorpayApiClient, "listSubscriptions">,
   intent: InitialProvisioningTuple
 ): Promise<InitialProvisioningDiscovery> {
   if (!razorpay.listSubscriptions) return { kind: "UNAVAILABLE" };

@@ -733,3 +733,10 @@ Treat these as review context and remediation candidates, not accepted risks:
   sink, concrete impact, existing controls, and a minimal remediation direction.
 - Keep proof material private and redact secrets, raw personal data, and
   provider payloads.
+
+SaaS subscription mutation access is restricted to the durable per-action
+executor and adapter, enforced by the billing-dispatch-boundary test. Action
+receipts preserve immutable intent, mode, independent dispatch ownership and
+uncertain outcomes. A stored provider response is not domain authorization or
+paid entitlement. Reconcilers may resolve only the action whose exact evidence
+they validated; candidate evidence cannot resolve a source cancellation.

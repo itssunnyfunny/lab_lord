@@ -571,13 +571,13 @@ describe("serialized workspace billing mutations", () => {
     const razorpay = fakeRazorpay({ providerQuantity: 1 });
     setRazorpayClientForTests(razorpay);
     vi.mocked(razorpay.cancelSubscription).mockRejectedValueOnce(new Error("accepted but response lost"));
-    await expect(BillingService.scheduleWorkspaceCancellation(owner.id, organization.id, "legacy-key"))
+    await expect(BillingService.requestCancellation(owner.id, organization.id, "legacy-key"))
       .rejects.toThrow("response lost");
     expect(await testPrisma.organizationBillingChange.findUnique({ where: { idempotencyKey: "legacy-key" } }))
       .toMatchObject({ status: "FAILED", failureCategory: "MANUAL_REVIEW_REQUIRED" });
     vi.mocked(razorpay.fetchSubscription).mockResolvedValue({ id: subscription.razorpaySubscriptionId,
       entity: "subscription", plan_id: subscription.razorpayPlanId, quantity: 1, total_count: 120, status: "cancelled" });
-    await BillingService.scheduleWorkspaceCancellation(owner.id, organization.id, "legacy-key");
+    await BillingService.requestCancellation(owner.id, organization.id, "legacy-key");
     expect(razorpay.cancelSubscription).toHaveBeenCalledTimes(1);
     expect(razorpay.cancelScheduledChanges).not.toHaveBeenCalled();
   });

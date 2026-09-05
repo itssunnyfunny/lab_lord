@@ -18,6 +18,15 @@ vi.mock("@/lib/billingFeature", () => ({
   assertRazorpayBillingWritesEnabled: vi.fn(),
 }));
 
+// The durable executor is exercised with real PostgreSQL in billing-provider-action.
+// This unit suite owns only candidate access/slot finalization behavior.
+vi.mock("@/services/billingProviderAction.service", () => ({
+  executeBillingProviderAction: vi.fn(({ command }: { command: { args: unknown[] } }) => mocks.cancelSubscription(...command.args)),
+  confirmReconciledBillingProviderAction: vi.fn(),
+  getConfirmedBillingProviderResponse: vi.fn().mockResolvedValue(null),
+  isDefinitelyRejectedBillingProviderError: vi.fn().mockReturnValue(false),
+}));
+
 vi.mock("@/lib/razorpay", () => ({
   RazorpayApiError: class RazorpayApiError extends Error {},
   resolveRazorpayMode: () => "TEST",

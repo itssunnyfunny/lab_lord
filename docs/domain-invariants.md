@@ -962,3 +962,9 @@ Before changing any rule above:
   transaction; live student, seat, shift, bundle, allocation and payment targets
   have branch-scoped foreign keys. Deleted target snapshots remain historical
   evidence, not writable targets. Staging retention removes its owned ledger.
+
+- **Must preserve—enforced:** Every SaaS subscription-changing provider action
+  goes through the durable billing executor. Distinct source/candidate/create
+  actions have distinct immutable identities and outcomes. ADMITTED or UNKNOWN
+  cannot be replayed by lease expiry or a new client key. CONFIRMED responses
+  are reusable evidence; paid entitlement still requires exact settlement.

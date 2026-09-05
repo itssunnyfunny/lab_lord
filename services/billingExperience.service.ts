@@ -1,3 +1,4 @@
+import { historicalBillingState } from "@/services/legacyCommercialCompatibility";
 import { prisma } from "@/lib/prisma";
 import { getBillingPlan } from "@/lib/billingPlans";
 import { deriveWorkspaceBillingState } from "@/lib/billingState";
@@ -216,15 +217,7 @@ export class BillingExperienceService {
             : null,
           authorizedReplacement,
         })
-      : {
-          accessMode: "FULL" as const,
-          canWrite: true,
-          effectivePlan: trustedPaidThrough ? subscription?.plan ?? "BASIC" : "BASIC" as const,
-          source: trustedPaidThrough ? "PAID" as const : "NONE" as const,
-          reason: trustedPaidThrough
-            ? "Provider-confirmed legacy paid period is active"
-            : "Legacy Basic fallback; paid settlement evidence is unavailable",
-        };
+      : historicalBillingState(subscription?.plan ?? null, trustedPaidThrough);
 
     const effectivePlan = trialActive
       ? "STANDARD_TRIAL" as const
