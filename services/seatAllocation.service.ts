@@ -18,7 +18,7 @@ export type SeatAllocationListOptions = {
     all?: boolean;
 };
 
-const SERIALIZABLE_TRANSACTION_RETRIES = 3;
+import { runAllocationTransaction } from "@/lib/allocationTransaction";
 
 const MINIMAL_STUDENT_IDENTITY_SELECT = {
     id: true,
@@ -39,29 +39,6 @@ const ALLOCATION_STUDENT_DETAIL_SELECT = {
     createdAt: true,
     updatedAt: true,
 } as const satisfies Prisma.StudentSelect;
-
-function isRetryableTransactionConflict(error: unknown) {
-    return typeof error === "object"
-        && error !== null
-        && "code" in error
-        && error.code === "P2034";
-}
-
-async function runSerializableTransaction<T>(
-    operation: (tx: Prisma.TransactionClient) => Promise<T>
-): Promise<T> {
-    for (let attempt = 1; attempt <= SERIALIZABLE_TRANSACTION_RETRIES; attempt++) {
-        try {
-            return await prisma.$transaction(operation, { isolationLevel: "Serializable" });
-        } catch (error) {
-            if (!isRetryableTransactionConflict(error) || attempt === SERIALIZABLE_TRANSACTION_RETRIES) {
-                throw error;
-            }
-        }
-    }
-
-    throw new Error("Allocation transaction could not be completed.");
-}
 
 export class SeatAllocationService {
     private static async getAllocationWithBranch(allocationId: string) {
@@ -95,7 +72,7 @@ export class SeatAllocationService {
         shiftIds: string[],
         multiShiftId?: string
     ) {
-        return runSerializableTransaction(tx =>
+        return runAllocationTransaction(tx =>
             this.assignSeatToShiftsInTransaction(
                 userId,
                 seatId,
@@ -240,6 +217,7 @@ export class SeatAllocationService {
                 // 8. Create allocation for this shift (with optional multiShiftId)
                 const allocation = await tx.seatAllocation.create({
                     data: {
+                        branchId,
                         seatId,
                         studentId,
                         shiftId: requestedShift.id,
@@ -290,7 +268,7 @@ export class SeatAllocationService {
         await StaffService.authorize(userId, allocation.seat.branchId, "seat_allocation");
         await EntitlementService.assertBranchWritable(allocation.seat.branchId);
 
-        return runSerializableTransaction(async (tx) => {
+        return runAllocationTransaction(async (tx) => {
             const scopedAllocation = await tx.seatAllocation.findUnique({
                 where: { id: allocationId },
                 include: { seat: true },
@@ -394,7 +372,7 @@ export class SeatAllocationService {
         const uniqueNewShiftIds = [...new Set(newShiftIds)];
 
         // Validate the complete replacement before ending any existing row.
-        return runSerializableTransaction(async (tx) => {
+        return runAllocationTransaction(async (tx) => {
             let replacementAllocationIds = uniqueAllocationIds;
             let activeOldAllocations = await tx.seatAllocation.findMany({
                 where: { id: { in: uniqueAllocationIds }, endDate: null },
@@ -577,6 +555,7 @@ export class SeatAllocationService {
             });
 
             const payload = uniqueNewShiftIds.map((shiftId) => ({
+                branchId,
                 seatId: newSeatId,
                 studentId,
                 shiftId,

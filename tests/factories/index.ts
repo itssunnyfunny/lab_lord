@@ -152,8 +152,10 @@ export async function createAllocation(overrides: {
   endDate?: Date | null;
   id?: string;
 }) {
+  const seat = await testPrisma.seat.findUniqueOrThrow({ where: { id: overrides.seatId } });
   return testPrisma.seatAllocation.create({
     data: {
+      branchId: seat.branchId,
       id: overrides.id ?? uid(),
       seatId: overrides.seatId,
       studentId: overrides.studentId,

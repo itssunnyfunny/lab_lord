@@ -167,6 +167,7 @@ model Student {
   branch                Branch                     @relation(fields: [branchId], references: [id])
 
   @@index([branchId])
+  @@unique([id, branchId])
   @@index([branchId, billingStartAt])
   @@index([feeLinkedShiftId])
   @@index([feeLinkedMultiShiftId])
@@ -180,6 +181,7 @@ model Seat {
   branch          Branch           @relation(fields: [branchId], references: [id])
   seatAllocations SeatAllocation[]
 
+  @@unique([id, branchId])
   @@unique([branchId, label])
   @@index([branchId])
 }
@@ -200,6 +202,7 @@ model Shift {
   branch               Branch                @relation(fields: [branchId], references: [id])
 
   @@index([branchId])
+  @@unique([id, branchId])
   @@index([branchId, status])
 }
 
@@ -213,6 +216,7 @@ model MultiShift {
   components  MultiShiftComponent[]
   allocations SeatAllocation[]
 
+  @@unique([id, branchId])
   @@unique([branchId, name])
   @@index([branchId])
 }
@@ -230,17 +234,19 @@ model MultiShiftComponent {
 
 model SeatAllocation {
   id           String      @id @default(cuid())
+  branchId     String
   seatId       String
   studentId    String
   shiftId      String
   multiShiftId String?
   startDate    DateTime    @default(now())
   endDate      DateTime?
-  seat         Seat        @relation(fields: [seatId], references: [id])
-  shift        Shift       @relation(fields: [shiftId], references: [id])
-  student      Student     @relation(fields: [studentId], references: [id])
-  multiShift   MultiShift? @relation(fields: [multiShiftId], references: [id])
+  seat         Seat        @relation(fields: [seatId, branchId], references: [id, branchId])
+  shift        Shift       @relation(fields: [shiftId, branchId], references: [id, branchId])
+  student      Student     @relation(fields: [studentId, branchId], references: [id, branchId])
+  multiShift   MultiShift? @relation(fields: [multiShiftId, branchId], references: [id, branchId], onDelete: Restrict)
 
+  @@index([branchId, shiftId, endDate])
   @@index([seatId, shiftId])
   @@index([studentId])
   @@index([multiShiftId])

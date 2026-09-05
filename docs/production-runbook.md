@@ -195,6 +195,65 @@ and release sequence. Follow the
 [Workspace billing V2 rollout](./workspace-billing-rollout.md) rather than
 reconstructing that order here.
 
+### Allocation tenant relationship migration (2026-09-05)
+
+`20260905090000_scope_allocation_relationships` adds required
+`SeatAllocation.branchId`, composite unique keys on `(id, branchId)` for
+`Student`, `Seat`, `Shift`, and `MultiShift`, four composite allocation foreign
+keys, and the `(branchId, shiftId, endDate)` allocation index. No owner,
+subscription, payment, or provider record is changed.
+
+Before separately approving Production application, retain read-only counts:
+
+```sql
+SELECT COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE a."endDate" IS NULL) AS active,
+       COUNT(*) FILTER (WHERE a."multiShiftId" IS NOT NULL) AS bundled,
+       COUNT(*) FILTER (WHERE se.id IS NULL OR st.id IS NULL OR sh.id IS NULL
+         OR se."branchId" IS DISTINCT FROM st."branchId"
+         OR se."branchId" IS DISTINCT FROM sh."branchId"
+         OR (a."multiShiftId" IS NOT NULL AND
+           (ms.id IS NULL OR se."branchId" IS DISTINCT FROM ms."branchId"))) AS inconsistent
+FROM "SeatAllocation" a
+LEFT JOIN "Seat" se ON se.id = a."seatId"
+LEFT JOIN "Student" st ON st.id = a."studentId"
+LEFT JOIN "Shift" sh ON sh.id = a."shiftId"
+LEFT JOIN "MultiShift" ms ON ms.id = a."multiShiftId";
+```
+
+Require `inconsistent = 0`; privately review any offending rows with the owner.
+Do not guess a branch or delete data to pass. The migration repeats this check
+under write-excluding table locks, adds the nullable column, backfills only
+confirmed same-branch relationships, makes it required, and installs validated
+constraints in one transaction. Failure rolls back all schema/data changes.
+
+This is a coordinated release, not compatible with rolling old/new writers:
+old inserts omit `branchId`, while new code requires the migrated schema. Under
+separate approval, take the verified backup, drain interactive/import allocation
+writers, apply the migration, deploy matching code, verify, then resume writers.
+No environment variable, provider mutation, or commercial-policy change is
+required. The onboarding flag requirement in Normal release also applies.
+
+After migration, rerun the preflight and require unchanged total/active/bundled
+counts and zero inconsistent rows. Additionally verify:
+
+```sql
+SELECT COUNT(*) AS invalid_branch FROM "SeatAllocation" a
+JOIN "Seat" s ON s.id = a."seatId"
+WHERE a."branchId" IS DISTINCT FROM s."branchId";
+SELECT conname, convalidated FROM pg_constraint
+WHERE conrelid = '"SeatAllocation"'::regclass AND contype = 'f';
+```
+
+Require zero invalid branches and all four new `*_branchId_fkey` constraints
+validated. Smoke-test same-branch allocation/reallocation, foreign-reference
+rejection, historical release, and concurrent allocation/deactivation. The
+new-code application must not start before the migration. An old-code rollback
+cannot resume allocation writes against this schema; keep writers held and
+forward-repair or deploy a compatible application. Do not drop the new tenant
+constraints as an automatic rollback, rewrite applied migration history, or
+discard allocation history.
+
 ### Exact commercial-evidence migration
 
 Migration `20260829120000_add_exact_commercial_evidence` is an additive billing
@@ -924,6 +983,12 @@ Vercel Git or CLI path before release. See Vercel's official
 [deployment overview](https://vercel.com/docs/deployments/overview).
 
 ### Normal release
+
+The 2026-09-05 onboarding hardening retires organization-only POST creation and
+requires `WORKSPACE_BRANCH_BILLING_V2_ENABLED` for new onboarding. With the flag
+held, new creation is unavailable; existing legacy access remains supported.
+Before releasing, verify the intended flag state through the approved operator
+process. No flag or deployment change was performed by the local sprint.
 
 1. Identify the approved commit and classify schema, environment, cron,
    webhook, billing, and external-provider impact.

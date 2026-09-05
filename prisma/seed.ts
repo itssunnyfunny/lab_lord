@@ -177,7 +177,7 @@ async function main() {
     const s01 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Aarav Sharma", phone: "9800000001", status: StudentStatus.ACTIVE, monthlyFee: 1200, joinedAt: s01At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[0].id, studentId: s01.id, shiftId: shiftMorning.id, startDate: s01At } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[0].id, studentId: s01.id, shiftId: shiftMorning.id, startDate: s01At } });
     // Admission fee — paid on day of joining
     await prisma.payment.create({ data: { branchId: uptown.id, studentId: s01.id, amount: 500, status: PaymentStatus.PAID, type: PaymentType.ADMISSION, dueDate: s01At, periodStart: s01At, periodEnd: s01At, paidAt: s01At } });
     // Months: 0,1,2,3 = PAID, month 4 = DUE (current)
@@ -191,8 +191,8 @@ async function main() {
     const s02 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Priya Verma", phone: "9800000002", status: StudentStatus.ACTIVE, monthlyFee: 2000, joinedAt: s02At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[1].id, studentId: s02.id, shiftId: shiftMorning.id, startDate: s02At } });
-    await prisma.seatAllocation.create({ data: { seatId: seats[1].id, studentId: s02.id, shiftId: shiftAfternoon.id, startDate: s02At } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[1].id, studentId: s02.id, shiftId: shiftMorning.id, startDate: s02At } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[1].id, studentId: s02.id, shiftId: shiftAfternoon.id, startDate: s02At } });
     await generateMonthlyPayments(uptown.id, s02.id, s02At, 2000, {
         0: PaymentStatus.PAID, 1: PaymentStatus.PAID, 2: PaymentStatus.PAID, 3: PaymentStatus.PAID,
     });
@@ -203,7 +203,7 @@ async function main() {
     const s03 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Rahul Patel", phone: "9800000003", status: StudentStatus.ACTIVE, monthlyFee: 1200, joinedAt: s03At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[2].id, studentId: s03.id, shiftId: shiftEvening.id, startDate: s03At } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[2].id, studentId: s03.id, shiftId: shiftEvening.id, startDate: s03At } });
     // Only first month paid, rest DUE
     await generateMonthlyPayments(uptown.id, s03.id, s03At, 1200, {
         0: PaymentStatus.PAID,
@@ -215,7 +215,7 @@ async function main() {
     const s04 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Sneha Joshi", phone: "9800000004", status: StudentStatus.ACTIVE, monthlyFee: 2000, joinedAt: s04At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[3].id, studentId: s04.id, shiftId: shiftFullDay.id, startDate: s04At } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[3].id, studentId: s04.id, shiftId: shiftFullDay.id, startDate: s04At } });
     await generateMonthlyPayments(uptown.id, s04.id, s04At, 2000, {
         0: PaymentStatus.PAID, 1: PaymentStatus.PAID,
     });
@@ -237,7 +237,7 @@ async function main() {
     const s06 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Kavita Singh", phone: "9800000006", status: StudentStatus.ACTIVE, monthlyFee: 1200, joinedAt: s06At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[4].id, studentId: s06.id, shiftId: shiftAfternoon.id, startDate: s06At } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[4].id, studentId: s06.id, shiftId: shiftAfternoon.id, startDate: s06At } });
     // 0=PAID, 1=DUE (skipped), 2=PAID, 3=PAID, 4=DUE
     await generateMonthlyPayments(uptown.id, s06.id, s06At, 1200, {
         0: PaymentStatus.PAID, 2: PaymentStatus.PAID, 3: PaymentStatus.PAID,
@@ -248,7 +248,7 @@ async function main() {
     const s07 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Manish Gupta", phone: "9800000007", status: StudentStatus.ACTIVE, monthlyFee: 1000, joinedAt: s07At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[5].id, studentId: s07.id, shiftId: shiftMorning.id, startDate: s07At } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[5].id, studentId: s07.id, shiftId: shiftMorning.id, startDate: s07At } });
     // Only first month, DUE
     await generateMonthlyPayments(uptown.id, s07.id, s07At, 1000, {});
 
@@ -257,7 +257,7 @@ async function main() {
     const s08 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Deepa Nair", phone: "9800000008", status: StudentStatus.ACTIVE, monthlyFee: 1200, joinedAt: s08At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[6].id, studentId: s08.id, shiftId: shiftEvening.id, startDate: s08At } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[6].id, studentId: s08.id, shiftId: shiftEvening.id, startDate: s08At } });
     await generateMonthlyPayments(uptown.id, s08.id, s08At, 1200, {
         0: PaymentStatus.PAID, 1: PaymentStatus.PAID,
     });
@@ -273,7 +273,7 @@ async function main() {
     const s09 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Naina Roy", phone: "9800000009", status: StudentStatus.INACTIVE, monthlyFee: 1200, joinedAt: s09At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[7].id, studentId: s09.id, shiftId: shiftMorning.id, startDate: s09At, endDate: s09EndDate } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[7].id, studentId: s09.id, shiftId: shiftMorning.id, startDate: s09At, endDate: s09EndDate } });
     // 2 PAID, then inactivated and remaining 2 months WAIVED
     await prisma.payment.createMany({
         data: [
@@ -291,7 +291,7 @@ async function main() {
     const s10 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Arjun Mehta", phone: "9800000010", status: StudentStatus.INACTIVE, monthlyFee: 1200, joinedAt: s10At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[8].id, studentId: s10.id, shiftId: shiftAfternoon.id, startDate: s10At, endDate: s10EndDate } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[8].id, studentId: s10.id, shiftId: shiftAfternoon.id, startDate: s10At, endDate: s10EndDate } });
     await generateMonthlyPayments(uptown.id, s10.id, s10At, 1200, {
         0: PaymentStatus.PAID, 1: PaymentStatus.PAID, 2: PaymentStatus.PAID, 3: PaymentStatus.PAID,
     });
@@ -303,7 +303,7 @@ async function main() {
     const s11 = await prisma.student.create({
         data: { branchId: uptown.id, name: "Meena Shah", phone: "9800000011", status: StudentStatus.INACTIVE, monthlyFee: 1200, joinedAt: s11At },
     });
-    await prisma.seatAllocation.create({ data: { seatId: seats[9].id, studentId: s11.id, shiftId: shiftEvening.id, startDate: s11At, endDate: s11EndDate } });
+    await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[9].id, studentId: s11.id, shiftId: shiftEvening.id, startDate: s11At, endDate: s11EndDate } });
     // Only first 2 months PAID, left with 3 months DUE
     await generateMonthlyPayments(uptown.id, s11.id, s11At, 1200, {
         0: PaymentStatus.PAID, 1: PaymentStatus.PAID,
@@ -324,7 +324,7 @@ async function main() {
         const s = await prisma.student.create({
             data: { branchId: uptown.id, name: cfg.name, phone: cfg.phone, status: StudentStatus.ACTIVE, monthlyFee: cfg.fee, joinedAt },
         });
-        await prisma.seatAllocation.create({ data: { seatId: seats[cfg.seatIdx].id, studentId: s.id, shiftId: cfg.shift.id, startDate: joinedAt } });
+        await prisma.seatAllocation.create({ data: { branchId: uptown.id, seatId: seats[cfg.seatIdx].id, studentId: s.id, shiftId: cfg.shift.id, startDate: joinedAt } });
         const overrides: Record<number, PaymentStatus> = {};
         cfg.paid.forEach((i) => { overrides[i] = PaymentStatus.PAID; });
         await generateMonthlyPayments(uptown.id, s.id, joinedAt, cfg.fee, overrides);
@@ -414,7 +414,7 @@ async function main() {
         const s = await prisma.student.create({
             data: { branchId: downtown.id, name: cfg.name, phone: cfg.phone, status: StudentStatus.ACTIVE, monthlyFee: cfg.fee, joinedAt },
         });
-        await prisma.seatAllocation.create({ data: { seatId: dtSeats[cfg.seatIdx].id, studentId: s.id, shiftId: cfg.shift.id, startDate: joinedAt } });
+        await prisma.seatAllocation.create({ data: { branchId: downtown.id, seatId: dtSeats[cfg.seatIdx].id, studentId: s.id, shiftId: cfg.shift.id, startDate: joinedAt } });
         const overrides: Record<number, PaymentStatus> = {};
         cfg.paid.forEach((i) => { overrides[i] = PaymentStatus.PAID; });
         await generateMonthlyPayments(downtown.id, s.id, joinedAt, cfg.fee, overrides);

@@ -82,6 +82,11 @@ Every statement uses one of these labels:
 
 ## Organizations, branches, trials, and entitlements
 
+- **Must preserve—enforced:** New workspaces use canonical onboarding with an
+  explicit V2 commercial state and selected plan. Holding the V2 release flag
+  blocks new creation; it must never create new LEGACY writable workspaces.
+  Existing legacy compatibility and the once-per-owner trial policy remain intact.
+
 - **Must preserve—enforced:** User-initiated operational mutations require both
   the role/action permission and a writable branch entitlement. `ARCHIVED`,
   `PENDING_ACTIVATION`, and `REMOVAL_SCHEDULED` branches reject those mutations.
@@ -186,6 +191,11 @@ Every statement uses one of these labels:
   Removing a shift is a soft inactivation, closes or reallocates its direct
   active allocations, and clears students' direct `feeLinkedShiftId` references
   to that shift.
+- **Must preserve—enforced:** Shift deactivation and allocation creation share
+  serializable transactions with bounded whole-operation retry. Manual resolution
+  requires every current active source allocation exactly once; all targets must
+  be active in that branch. Affected bundle siblings are closed together by
+  student, seat, and bundle identity. Validation failure rolls back all changes.
 - **Service-layer contract—not DB-enforced:** Shift overlap and the minimum-one-
   active-shift rule are service checks, not schema constraints. Writes that
   bypass `ShiftService` can violate them.
@@ -215,9 +225,13 @@ Every statement uses one of these labels:
   component of a bundle ends the whole bundle allocation.
 - **Service-layer contract—not DB-enforced:** Active-allocation uniqueness and
   overlap exclusion are protected by a serializable service transaction with
-  bounded retry, not by a partial unique or composite tenant constraint. All
+  bounded retry, not by a partial unique or overlap constraint. All
   competing allocation writes must use this path.
   (`services/seatAllocation.service.ts`, seat-allocation integration tests)
+- **Must preserve—enforced:** `SeatAllocation.branchId` participates in composite
+  foreign keys to its student, seat, shift, and optional MultiShift. PostgreSQL
+  rejects cross-branch links, including historical rows. These constraints do
+  not authorize actors or enforce active-state, overlap, or bundle completeness.
 
 ## Attendance
 

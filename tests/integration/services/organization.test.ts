@@ -9,7 +9,7 @@ import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
  *
  * Uses REAL test database.
  * Covers:
- * 1. createOrganization — creates org linked to owner
+ * Organization creation is covered by canonical onboarding tests.
  * 2. getOrganizationsByUserId — scoped per user
  * 3. getOrganizationById — includes branches
  * 4. updateOrganization — name change, non-owner throws
@@ -19,34 +19,6 @@ import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 describe("OrganizationService Integration", () => {
   afterAll(async () => { await disconnectDatabase(); });
   beforeEach(async () => { await resetDatabase(); });
-
-  // ─── createOrganization ───────────────────────────────────────────────────
-
-  describe("createOrganization", () => {
-    it("creates org linked to the correct owner", async () => {
-      const user = await createUser();
-      const org = await OrganizationService.createOrganization({
-        name: "Test Academy",
-        ownerId: user.id,
-        contactPhone: "9876543210",
-      });
-
-      expect(org.ownerId).toBe(user.id);
-      expect(org.name).toBe("Test Academy");
-      expect(org.contactPhone).toBe("+91 98765 43210");
-    });
-
-    it("requires owner contact phone on create", async () => {
-      const user = await createUser();
-      await expect(
-        OrganizationService.createOrganization({
-          name: "Missing Phone Academy",
-          ownerId: user.id,
-          contactPhone: "",
-        })
-      ).rejects.toThrow(/contact phone is required/i);
-    });
-  });
 
   describe("getOrganizationForOwnerAccess", () => {
     it("returns the complete organization view to its owner", async () => {

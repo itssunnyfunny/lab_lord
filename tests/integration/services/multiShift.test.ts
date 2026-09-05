@@ -275,6 +275,7 @@ describe("MultiShiftService Integration", () => {
           studentId: student.id,
           shiftId: morning.id,
           multiShiftId: ms.id,
+          branchId: branch.id,
         },
       });
 

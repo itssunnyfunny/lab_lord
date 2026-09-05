@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/prisma";
-import { validateRequiredPhone, validateRequiredText } from "@/lib/formValidation";
 import {
     assertKnownFields,
     assertPlainObject,
@@ -9,7 +8,7 @@ import {
     optionalText,
     requiredPhone,
 } from "@/lib/settingsValidation";
-import { CreateOrganizationDto, UpdateOrganizationSettingsDto, WEEK_STARTS_ON } from "@/types";
+import { UpdateOrganizationSettingsDto, WEEK_STARTS_ON } from "@/types";
 import { EntitlementService } from "@/services/entitlement.service";
 import type { Prisma } from "@/app/generated/prisma/client";
 import {
@@ -44,21 +43,6 @@ const ORGANIZATION_OWNER_VIEW = {
 } satisfies Prisma.OrganizationInclude;
 
 export class OrganizationService {
-    static async createOrganization(data: CreateOrganizationDto) {
-        const nameResult = validateRequiredText(data.name, "Organization name", 120);
-        if (!nameResult.ok) throw new Error(nameResult.error);
-        const contactPhoneResult = validateRequiredPhone(data.contactPhone, "Contact phone");
-        if (!contactPhoneResult.ok) throw new Error(contactPhoneResult.error);
-
-        return await prisma.organization.create({
-            data: {
-                name: nameResult.value,
-                ownerId: data.ownerId,
-                contactPhone: contactPhoneResult.value,
-            },
-        });
-    }
-
     static async getOrganizationsByUserId(userId: string) {
         return await prisma.organization.findMany({
             where: { ownerId: userId },

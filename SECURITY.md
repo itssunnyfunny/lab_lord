@@ -113,6 +113,16 @@ operator workstation or CI runner that can access credentials.
 - Permission-shaped responses must not expose unrelated counts, settings,
   students, seats, payments, staff, or other branch data.
 - User-initiated mutations must enforce entitlement and writable state.
+- New organizations must be created through canonical V2 onboarding, with
+  explicit commercial state and the existing once-per-owner trial contract.
+  A disabled release flag must not select legacy writable access for new records.
+- Shift deactivation must transactionally authorize its source, scope every
+  target to the same branch, and validate exact active allocation membership.
+  It shares the serializable allocation-writer protocol so concurrent inserts
+  cannot escape source-set validation or leave partial active bundles.
+- Allocation student, seat, shift, and optional MultiShift relationships must
+  satisfy database-enforced branch-scoped foreign keys in addition to service
+  authorization. A migration must stop on inconsistent historical relationships.
 - Payment-resolution events are append-only domain evidence. They must be
   created only inside the authorized payment transaction, derive `branchId`
   and snapshot fields from the payment being changed, and must not be exposed

@@ -200,7 +200,10 @@ Two payment domains must not be confused:
 - Clerk-backed sign-in and sign-up are wired.
 - Workspace routing chooses between onboarding, an organization workspace, or the most relevant staff branch.
 - Onboarding creates the owner profile update, organization, first branch, shifts, optional multi-shifts, seats, and owner staff membership in one Prisma transaction.
-- When Workspace Billing V2 is enabled, onboarding also starts the single-owner 30-day trial and records the selected post-trial plan.
+- New workspace creation requires the Workspace Billing V2 release flag, explicitly
+  persists V2 and the selected post-trial plan, and starts the existing single-owner
+  30-day trial. The old organization-only POST returns `410 ONBOARDING_REQUIRED`.
+  Existing legacy organizations retain their compatibility entitlement behavior.
 - The transaction has no request-idempotency guard. Retrying the same completed
   onboarding submission can create another independent organization/network.
 
@@ -212,8 +215,14 @@ Authoritative code: `lib/auth.ts`, `lib/workspaceRouting.ts`, `services/user.ser
 - Seats can be created individually or generated from a numbering configuration.
 - Branches have primary shifts and composed multi-shifts.
 - Shift deletion is soft deletion and requires an explicit resolution for affected allocations.
+- Shift deletion shares the allocation writer's serializable/retry protocol.
+  Targets must be active in the source branch; manual assignments must exactly
+  cover the current active source rows. Ending/reallocating a bundle component
+  ends its active siblings for that student and seat before any replacement.
 - Seat allocations preserve history through `startDate` and nullable `endDate`.
 - Allocation writes use serializable transactions with retry handling and validate branch ownership, active student/shift state, exact conflicts, and time overlaps for both the seat and student.
+- Allocation student/seat/shift/MultiShift links additionally use branch-scoped
+  composite foreign keys, backed by the explicit allocation `branchId`.
 - Releasing one allocation belonging to a multi-shift releases the complete related bundle.
 - Student creation and its optional admission payment are atomic, but an
   optional initial seat allocation runs afterward. Allocation failure leaves

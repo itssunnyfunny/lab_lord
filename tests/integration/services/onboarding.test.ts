@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { OnboardingService } from "@/services/onboarding.service";
 import { resetDatabase, disconnectDatabase, testPrisma } from "@/tests/setup/db";
 import { createUser } from "@/tests/factories";
@@ -17,7 +17,11 @@ import { createUser } from "@/tests/factories";
 
 describe("OnboardingService Integration", () => {
   afterAll(async () => { await disconnectDatabase(); });
-  beforeEach(async () => { await resetDatabase(); });
+  beforeEach(async () => {
+    vi.stubEnv("WORKSPACE_BRANCH_BILLING_V2_ENABLED", "true");
+    await resetDatabase();
+  });
+  afterEach(() => vi.unstubAllEnvs());
 
   const baseParams = (userId: string) => ({
     userId,
@@ -30,6 +34,14 @@ describe("OnboardingService Integration", () => {
   // ─── createNetwork ────────────────────────────────────────────────────────
 
   describe("createNetwork", () => {
+    it("rejects creation while V2 onboarding is held without writing a legacy workspace", async () => {
+      const user = await createUser();
+      vi.stubEnv("WORKSPACE_BRANCH_BILLING_V2_ENABLED", "false");
+      await expect(OnboardingService.createNetwork(baseParams(user.id))).rejects.toThrow(/temporarily unavailable/i);
+      expect(await testPrisma.organization.count()).toBe(0);
+      expect(await testPrisma.branch.count()).toBe(0);
+    });
+
     it("creates org and branch atomically — correct ownership chain", async () => {
       const user = await createUser();
       const { org, branch } = await OnboardingService.createNetwork(baseParams(user.id));
@@ -38,6 +50,10 @@ describe("OnboardingService Integration", () => {
       expect(branch.organizationId).toBe(org.id);
       expect(org.name).toBe("Bright Academy");
       expect(org.selectedPostTrialPlan).toBe("BASIC");
+      expect(org.billingModelVersion).toBe("WORKSPACE_V2");
+      const trial = await testPrisma.ownerTrialGrant.findUnique({ where: { ownerId: user.id } });
+      expect(trial?.organizationId).toBe(org.id);
+      expect(trial?.status).toBe("ACTIVE");
       expect(branch.name).toBe("Main Hall");
       expect(org.contactPhone).toBe("+91 98765 43210");
       expect(branch.contactPhone).toBe("+91 98765 43210");

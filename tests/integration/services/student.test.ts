@@ -719,9 +719,9 @@ describe("StudentService Integration", () => {
 
       await testPrisma.seatAllocation.createMany({
         data: [
-          { seatId: seat.id, studentId: bundleStudent.id, shiftId: morning.id, multiShiftId: fullDay.id },
-          { seatId: seat.id, studentId: bundleStudent.id, shiftId: evening.id, multiShiftId: fullDay.id },
-          { seatId: morningOnlySeat.id, studentId: morningOnlyStudent.id, shiftId: morning.id },
+          { branchId: branch.id, seatId: seat.id, studentId: bundleStudent.id, shiftId: morning.id, multiShiftId: fullDay.id },
+          { branchId: branch.id, seatId: seat.id, studentId: bundleStudent.id, shiftId: evening.id, multiShiftId: fullDay.id },
+          { branchId: branch.id, seatId: morningOnlySeat.id, studentId: morningOnlyStudent.id, shiftId: morning.id },
         ],
       });
 

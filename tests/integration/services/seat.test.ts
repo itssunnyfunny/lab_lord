@@ -231,9 +231,9 @@ describe("SeatService Integration", () => {
 
       await testPrisma.seatAllocation.createMany({
         data: [
-          { seatId: seats[0].id, studentId: students[0].id, shiftId: morningShift!.id },
-          { seatId: seats[1].id, studentId: students[1].id, shiftId: morningShift!.id },
-          { seatId: seats[2].id, studentId: students[2].id, shiftId: evening.id },
+          { branchId: branch.id, seatId: seats[0].id, studentId: students[0].id, shiftId: morningShift!.id },
+          { branchId: branch.id, seatId: seats[1].id, studentId: students[1].id, shiftId: morningShift!.id },
+          { branchId: branch.id, seatId: seats[2].id, studentId: students[2].id, shiftId: evening.id },
         ],
       });
 
@@ -260,6 +260,7 @@ describe("SeatService Integration", () => {
 
       await testPrisma.seatAllocation.createMany({
         data: extraStudents.map(s => ({
+          branchId: branch.id,
           seatId: seat!.id,
           studentId: s.id,
           shiftId: morningShift!.id,

@@ -94,6 +94,7 @@ async function assignSeat(
         // 7. Create Allocation
         return tx.seatAllocation.create({
             data: {
+                branchId,
                 seatId,
                 studentId,
                 shiftId,
