@@ -215,6 +215,62 @@ The additive migration applied to the isolated existing test database and all
 prove draft preservation and duplicate-blocker rollback. No environment, pricing,
 trial, student dues, provider configuration or Production changes.
 
+## Completion validation and handoff
+
+Implementation commits after baseline `ca5e9b5`: `e5c211b` (A), `0feebe5`
+(initial B fences), `9c9858b` (B completion), `6f4356b` (C), `370a13b` (D).
+The final validation commit also adds the healthy-source/non-viable-candidate
+control and corrects the sidebar test to require hiding the whole protected
+report. All changes are local; no branch switch, push or deployment occurred.
+
+Commands and observed results for the completed continuation:
+
+- `pnpm test billing generation-migration`: 34 files / 409 passed.
+- `pnpm test generation-callers billing-mutation`: 2 files / 65 passed.
+- `pnpm test trend-range ai-entitlement branch-details-projection branchPageAccess`:
+  5 files / 29 passed.
+- `pnpm test billing-mutation multiShift hardening-inputs BranchSidebar`:
+  4 files / 94 passed, including the final regression controls.
+- First full `pnpm test`: 255 files / 1,966 tests passed; one sidebar expectation
+  failed because it still expected the now-protected AI report to be visible.
+  The corrected expectation passed in the targeted run above. No implementation
+  protection or positive permission control was removed to satisfy the test.
+- Final `pnpm test`: 255 files / 1,966 passed with no assertion failures, but
+  exit 1 because Vitest timed out starting the worker for
+  `generation-migration.test.ts`. `pnpm test generation-migration` then passed
+  that file's two tests (exit 0). Thus all 256 files / 1,968 distinct final tests
+  passed across the full attempt and isolated retry. The final full invocation
+  itself was not green; its remaining failure was worker startup, not a migration
+  or application assertion. A clean single-invocation CI run remains a release
+  verification gate; no tests were skipped, weakened or disabled.
+- `pnpm lint`: passed, zero errors and two existing unused-disable warnings in
+  generated Workflow/coverage assets.
+- `pnpm exec tsc --noEmit --pretty false`: passed after final code/test edits.
+- `pnpm build`: passed, including TypeScript, static generation and both import
+  Workflow manifests. The initial sandbox build failed on Workflow parent-folder
+  access; the permissions rerun passed with the isolated database override.
+- `pnpm test:workflow`: 1 passed.
+- `pnpm exec node node_modules/prisma/build/index.js validate` and `generate`:
+  passed using the installed CLI through Node because of the Windows shim issue.
+- `pnpm exec node node_modules/prisma/build/index.js migrate deploy`: all 41
+  migrations applied to the newly created empty local database named above.
+  The new migration also applied over the existing isolated test database.
+  The real SQL fixture tests preserve pre-change rows and reject duplicate
+  logical drafts without deleting history.
+- Local Markdown link validation: all 25 targets in the five updated canonical
+  guidance/execution documents exist. `git diff --check`: passed.
+
+Tests cover real PostgreSQL tenant constraints, transactional rollback and
+concurrency, fake-provider response loss/finalization faults, report/draft stale
+owners, scoped inbound identities and unchanged anniversary/later-unpaid dues.
+No live Razorpay/Meta/Gemini validation, browser E2E, coverage run, Production
+inventory, data cleanup, provider mutation or operational deployment was done.
+The runbook contains exact schema preflights, ordering, writer compatibility,
+verification and forward-repair requirements. Legacy compatibility, pricing,
+trial policy, student payment generation and provider-authoritative access stay
+intact. Live-checkout holds and unresolved billing manual-review states are
+intentional conservative behavior, not permission to mutate provider objects.
+
 ## Findings checkpoint
 
 | Finding | Status | Continuation |

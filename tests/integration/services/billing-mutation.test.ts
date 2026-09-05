@@ -498,6 +498,24 @@ describe("serialized workspace billing mutations", () => {
     expect(razorpay.cancelSubscription).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves the healthy source when a cached authorized candidate is no longer viable", async () => {
+    const { razorpay, change, candidate, subscription } = await setupPendingUpiReplacement("fresh-negative-candidate");
+    const now = new Date(change.undoCutoffAt!.getTime() + 1);
+    await testPrisma.organizationBillingChange.update({ where: { id: change.id }, data: { status: "SCHEDULED", operationStatus: "SCHEDULED" } });
+    await testPrisma.organizationSubscription.update({ where: { id: candidate.id }, data: { status: "AUTHENTICATED", providerPaymentMethod: "UPI" } });
+    await testPrisma.organizationSubscription.update({ where: { id: subscription.id }, data: { currentEnd: change.effectiveAt } });
+    vi.spyOn(BillingReconciliationService, "reconcileProviderSubscription").mockImplementation(async id => ({
+      subscription: id === candidate.razorpaySubscriptionId
+        ? await testPrisma.organizationSubscription.update({ where: { id: candidate.id }, data: { status: "HALTED" } })
+        : await testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }),
+      evidenceKind: "AUTHORIZATION_ONLY",
+    }) as never);
+    await expect(BillingReplacementService.scheduleSourceCancellation(change.id, now)).rejects.toThrow();
+    expect(razorpay.cancelSubscription).not.toHaveBeenCalled();
+    expect(await testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }))
+      .toMatchObject({ status: "ACTIVE", cancelAtCycleEnd: false, currentOrganizationId: subscription.organizationId });
+  });
+
   it.each(["terminal", "confirmed"])("recovers a %s source after response loss using reads only", async evidence => {
     const { razorpay, owner, organization, change, subscription } = await setupPendingUpiReplacement("source-terminal-recovery");
     await testPrisma.organizationBillingChangeAudit.create({ data: {
