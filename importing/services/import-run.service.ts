@@ -380,6 +380,7 @@ export class ImportRunService {
                     await tx.importRunItem.createMany({
                         data: items.map((item, ordinal) => ({
                             importRunId: run.id,
+                            branchId: run.branchId,
                             importRowId: item.rowId ?? null,
                             evaluationId: item.evaluationId ?? null,
                             ordinal,

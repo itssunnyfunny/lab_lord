@@ -359,6 +359,7 @@ export class ImportPlanService {
             return tx.importPlan.create({
                 data: {
                     importSessionId: session.id,
+                    branchId: input.branchId,
                     revision: input.targetRevision,
                     engineVersion: IMPORT_ENGINE_VERSION,
                     goal: session.goal,

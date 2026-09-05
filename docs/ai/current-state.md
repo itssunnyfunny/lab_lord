@@ -893,3 +893,11 @@ and preflight counts live in `prisma/tenant-relationship-contracts.json` and
 `prisma/preflight/billing-and-whatsapp-tenants.sql`. Import run links and the
 WhatsApp grouped-payment join remain under consolidation; this is not a claim
 of complete tenant coverage.
+
+Migrations 44/45 complete scoped import staging/run links and grouped WhatsApp
+payment links. ImportTargetReference provides typed live references for persisted
+import IDs while preserving detached history. Database triggers cover existing
+writers, including atomic item completion after payload redaction. Domain
+services still re-resolve target ownership and interactive authorization before
+mutation; stored JSON is never authorization. The overall consolidation remains
+in progress; see the outcome matrix.

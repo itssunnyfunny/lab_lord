@@ -99,6 +99,7 @@ export class ImportEvaluationService {
                     const evaluation = suppliedRows.get(row.id)!;
                     return {
                         importRowId: row.id,
+                        branchId: input.branchId,
                         revision: input.targetRevision,
                         engineVersion: IMPORT_ENGINE_VERSION,
                         status: evaluation.status,

@@ -517,6 +517,7 @@ export class ImportSessionService {
                 await tx.importRow.createMany({
                     data: parsed.rows.slice(index, index + chunkSize).map((row, offset) => ({
                         importSessionId: created.id,
+                        branchId,
                         rowNumber: parsed.rowNumbers[index + offset],
                         rawData: asJson(row),
                     })),
@@ -1558,6 +1559,7 @@ export class ImportSessionService {
                 await tx.importRowEvaluation.createMany({
                     data: rows.map(row => ({
                         importRowId: row.id,
+                        branchId: session.branchId,
                         revision: session.draftRevision,
                         engineVersion: 2,
                         status: row.status,

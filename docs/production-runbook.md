@@ -2359,3 +2359,30 @@ that SQL despite Prisma's required-scope-column warning. Never use db push to
 replace the maintained migration chain. Rollback application code is possible
 only for writers respecting these constraints; use forward repair for data or
 constraint defects rather than rewriting this applied migration.
+
+### Import and grouped-payment scopes (20260905180000 / 20260905183000)
+
+Drain imports (including Workflow steps), WhatsApp planning/reconciliation and
+staging retention before migration 44; old direct bulk writers omit newly
+required branchId and cannot overlap new code. Run
+`prisma/preflight/import-and-collection-tenants.sql`; all six blocker counts
+must be zero. The migration locks parents and children, validates agreement,
+backfills five new branch columns, then installs keys. Compare all ten table
+counts before/after; no rows are deleted. Nullable session/plan/evaluation/row
+history detaches only its foreign ID.
+
+After 44, run `prisma/preflight/import-targets.sql`. Retain per-kind reference,
+detached-history and foreign-blocker counts. Every foreign blocker must be zero;
+missing historical targets are retained as explicitly detached snapshots. 45
+locks import sources and six target tables, installs the typed ledger and
+backfills it before installing maintenance triggers, all atomically. Supported
+JSON is unchanged; malformed/unknown target kinds block rather than invent a
+type. References survive payload redaction until staging retention deletes the
+owner. Compare source row counts, expected distinct ledger references and live
+versus detached counts after migration. Runtime new references require existing
+same-branch targets; no caller bypasses the trigger with bulk SQL.
+
+Deploy compatible application/worker code before resuming writers. Reverting
+application code requires keeping branch-aware writers; the target ledger is
+compatible with existing JSON writers. Repair constraints/triggers with a new
+forward migration. Never remove history or rewrite applied migration files.

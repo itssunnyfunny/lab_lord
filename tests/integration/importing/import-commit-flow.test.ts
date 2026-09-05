@@ -135,6 +135,7 @@ describe("Import V2 commit flow integration", () => {
         const row = await testPrisma.importRow.create({
             data: {
                 importSessionId: session.id,
+                branchId: session.branchId,
                 rowNumber: 2,
                 rawData: {
                     "Student Name": "Aarav Sharma",
@@ -154,6 +155,7 @@ describe("Import V2 commit flow integration", () => {
         await testPrisma.importRowEvaluation.create({
             data: {
                 importRowId: row.id,
+                branchId: row.branchId,
                 revision: 1,
                 engineVersion: 2,
                 status: "READY",

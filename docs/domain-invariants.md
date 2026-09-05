@@ -954,3 +954,11 @@ Before changing any rule above:
   or sender dimension declared in `prisma/tenant-relationship-contracts.json`.
   Optional references may detach only their foreign ID; ownership is retained.
   Database constraints do not authorize actors or establish provider truth.
+
+- **Must preserve—enforced:** Import rows, evaluations, plans, runs and items
+  agree with linked parents on branch. Questions reference rows in their own
+  session. Grouped WhatsApp payment sources agree with the message branch.
+  Persisted import target IDs populate a typed reference ledger in the same
+  transaction; live student, seat, shift, bundle, allocation and payment targets
+  have branch-scoped foreign keys. Deleted target snapshots remain historical
+  evidence, not writable targets. Staging retention removes its owned ledger.

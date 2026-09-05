@@ -55,6 +55,7 @@ async function cancelLockedMessage(input: {
 async function refreshLockedCollectionMessage(input: {
   tx: Prisma.TransactionClient;
   messageId: string;
+  branchId: string;
   trigger: "MANUAL" | "AUTOMATION";
   refresh: CollectionRefresh;
 }) {
@@ -64,6 +65,7 @@ async function refreshLockedCollectionMessage(input: {
   await input.tx.whatsAppMessagePayment.createMany({
     data: input.refresh.paymentIds.map(paymentId => ({
       messageId: input.messageId,
+      branchId: input.branchId,
       paymentId,
     })),
   });
@@ -211,6 +213,7 @@ export class WhatsAppPaymentReconciliationService {
         await refreshLockedCollectionMessage({
           tx: input.tx,
           messageId: message.id,
+          branchId: input.branchId,
           trigger: message.trigger,
           refresh: refreshResult.refresh,
         });

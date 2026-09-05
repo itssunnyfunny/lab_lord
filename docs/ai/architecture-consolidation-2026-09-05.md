@@ -44,3 +44,16 @@ now-invalid corrupt fixture, one setup timeout). After correcting assertions,
 `pnpm test billing-whatsapp-tenant-migration whatsapp-delivery`: 3 files / 27 tests
 passed. Prisma validate/generate, migration deploy and TypeScript passed. The
 broader complete invocation remains due at the final milestone.
+
+Import/grouped-payment scope is implemented in migrations 44 and 45: ten more
+branch-scoped keys, a question/row/session key and typed ImportTargetReference
+rows maintained atomically by PostgreSQL triggers for staged-row output and
+run-item input/output IDs. Six target kinds have live scoped foreign keys;
+deleted historical targets retain detached snapshots. Bad historical foreign
+references block the migration. Grouped WhatsApp payment writers now supply
+branchId; import direct bulk writers supply their proven parent branch.
+`pnpm test import-tenant importing whatsapp-payment`: 40 files / 269 tests passed.
+With target ledger installed, the same affected services passed (39 files), while
+one new test needed to update the snapshot ID together with its live ID to reach
+the FK rather than the stronger snapshot-identity CHECK. TypeScript passed.
+The complete relationship matrix and final combined validation remain due.
