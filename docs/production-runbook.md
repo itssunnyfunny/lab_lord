@@ -1785,6 +1785,22 @@ compatible forward fix.
 
 ### Initial subscription-provisioning migration
 
+The September 5 replacement-provisioning and source-cancellation changes reuse
+these existing columns and the audit ledger; they add no billing migration.
+For a later approved rollout, hold interactive billing writes and deadline work,
+drain old provider-mutating invocations, and inventory unresolved replacement
+changes and source cancellations. An old attempt with no dispatch evidence is
+unknown, not safe to retry. The new code sends such replacement retries to
+manual review. Source calls made by the old code have no admission ledger;
+identify and reconcile those operations before restarting deadline work.
+Preserve provider IDs, attempts, frozen intent, and audit history. Do not clear
+the lease or failure state to force retry. New replacement recovery may adopt
+one matching uncharged CREATED object by read only. Source cancellation has no
+automatic recovery from ambiguity in this checkpoint; resolve it from source
+provider evidence through a separately reviewed recovery procedure. Candidate
+authorization is insufficient. A rollback must retain this fence and history;
+use a compatible forward repair rather than restoring unfenced workers.
+
 Migration `20260831160000_add_subscription_provisioning_intent` adds the
 `PROVISIONING` billing-operation state, nullable immutable provisioning fields
 to `OrganizationBillingChange`, and the tenant-scoped,

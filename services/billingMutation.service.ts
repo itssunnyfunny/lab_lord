@@ -560,7 +560,11 @@ export class BillingMutationService {
         if (current?.billingMutationLeaseToken !== leaseToken) return;
         const sourceChanged = !providerCallStarted
           && error instanceof BillingMutationSourceChangedError;
-        const ambiguousProviderOutcome = providerResponseReceived
+        const durable = await tx.organizationBillingChange.findUnique({ where: { id: claimed.id } });
+        const ambiguousProviderOutcome = Boolean(durable?.providerMutationAdmittedAt)
+          || durable?.failureCategory === MANUAL_REVIEW_CATEGORY
+          || error instanceof BillingManualReviewRequiredError
+          || providerResponseReceived
           || (providerCallStarted && !isDefinitelyRejectedProviderError(error));
         const failedAt = new Date();
         const persisted = await tx.organizationBillingChange.updateMany({
@@ -734,8 +738,16 @@ export class BillingMutationService {
       include: { organizationSubscription: true },
     });
     if (!change || change.status !== "FAILED") throw new Error("Failed billing change not found");
+    if (change.failureCode?.startsWith("SOURCE_CANCELLATION_")) {
+      throw new BillingManualReviewRequiredError(change.id,
+        "Source cancellation requires read-only reconciliation; no cancellation was resubmitted");
+    }
     if (change.type !== "UNSUPPORTED_METHOD_CANCELLATION") {
       assertRazorpayBillingWritesEnabled(change.organizationId);
+    }
+    if (change.provisioningIntentVersion === 2 && !change.replacementSubscriptionId
+      && (change.providerMutationAdmittedAt || change.failureCategory === MANUAL_REVIEW_CATEGORY)) {
+      return BillingReplacementService.reconcileProvisioning(change.id);
     }
     const subscription = change.organizationSubscription;
     if (!subscription

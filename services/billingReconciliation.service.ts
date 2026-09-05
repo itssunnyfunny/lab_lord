@@ -1040,7 +1040,8 @@ export class BillingReconciliationService {
 
         const replacement = lockedIntent.replacementSubscriptionId === local.id;
         if (replacement) {
-          const retainsManualReview = lockedIntent.failureCategory === "MANUAL_REVIEW_REQUIRED";
+          const retainsManualReview = lockedIntent.failureCategory === "MANUAL_REVIEW_REQUIRED"
+            || lockedIntent.failureCode?.startsWith("SOURCE_CANCELLATION_");
           const recorded = await tx.organizationBillingChange.updateMany({
             where: {
               id: lockedIntent.id,

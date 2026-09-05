@@ -1,10 +1,11 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { prisma } from "@/lib/prisma";
 import { BillingMutationService } from "@/services/billingMutation.service";
 import { BillingReconciliationService } from "@/services/billingReconciliation.service";
 import { BillingExperienceService } from "@/services/billingExperience.service";
 import { BranchService } from "@/services/branch.service";
 import { BillingReplacementService } from "@/services/billingReplacement.service";
-import { BillingDeadlineService } from "@/services/billingDeadline.service";
+import { BillingDeadlineService, recoverExpiredBillingMutationLease } from "@/services/billingDeadline.service";
 import { BillingService } from "@/services/billing.service";
 import {
   getReplacementUndoCutoffAt,
@@ -188,6 +189,7 @@ describe("serialized workspace billing mutations", () => {
   afterEach(() => {
     setRazorpayClientForTests(null);
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
   afterAll(async () => { await disconnectDatabase(); });
 
@@ -297,6 +299,198 @@ describe("serialized workspace billing mutations", () => {
     if (!change.replacementSubscription) throw new Error("Replacement candidate was not provisioned");
     return { ...context, branch, change, candidate: change.replacementSubscription, razorpay };
   }
+
+  async function queuedReplacement(key: string) {
+    vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");
+    const razorpay = fakeRazorpay({ providerMethod: "upi" });
+    setRazorpayClientForTests(razorpay);
+    const context = await setup({ paymentMethod: "UPI" });
+    const change = await BillingMutationService.enqueue({
+      organizationId: context.organization.id, subscriptionId: context.subscription.id,
+      type: "QUANTITY_INCREASE", idempotencyKey: key, fromQuantity: 1, toQuantity: 2,
+      createdByUserId: context.owner.id,
+    });
+    return { ...context, razorpay, change };
+  }
+
+  it("never recreates a response-lost replacement during delayed discovery or a later cycle", async () => {
+    const { razorpay, organization, subscription, change } = await queuedReplacement("replacement-response-loss");
+    const create = vi.mocked(razorpay.createSubscription).getMockImplementation()!;
+    let accepted: Awaited<ReturnType<typeof create>> | undefined;
+    vi.mocked(razorpay.createSubscription).mockImplementation(async input => {
+      accepted = await create(input);
+      throw new Error("response lost after provider acceptance");
+    });
+    await expect(BillingMutationService.processNext(organization.id)).rejects.toThrow(/response lost/);
+    const failed = await testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } });
+    expect(failed).toMatchObject({ status: "FAILED", failureCategory: "MANUAL_REVIEW_REQUIRED", resolvedAt: null });
+    expect(failed.providerMutationAdmittedAt).not.toBeNull();
+    await expect(BillingMutationService.retry(change.id)).rejects.toThrow(/no new create/);
+    await expect(BillingMutationService.enqueue({ organizationId: organization.id, subscriptionId: subscription.id,
+      type: "QUANTITY_INCREASE", idempotencyKey: "different-key", fromQuantity: 1, toQuantity: 3 }))
+      .rejects.toBeInstanceOf(BillingChangeInProgressError);
+    vi.mocked(razorpay.listSubscriptions!).mockResolvedValue({ entity: "collection", count: 1, items: [accepted!] });
+    const fetch = vi.mocked(razorpay.fetchSubscription).getMockImplementation()!;
+    vi.mocked(razorpay.fetchSubscription).mockImplementation(async id => ({
+      ...await fetch(id), current_end: Math.floor(Date.now() / 1000) + 90 * 86400,
+    }));
+    const recovered = await BillingMutationService.retry(change.id);
+    expect(recovered?.status).toBe("AWAITING_PAYMENT");
+    expect(recovered?.authorizedProviderStartAt).toEqual(failed.authorizedProviderStartAt);
+    expect(recovered?.authorizedProviderExpireAt).toEqual(failed.authorizedProviderExpireAt);
+    expect(razorpay.createSubscription).toHaveBeenCalledTimes(1);
+    expect(razorpay.cancelSubscription).not.toHaveBeenCalled();
+  });
+
+  it("retains the confirmed replacement ID across local-finalization failure", async () => {
+    const { razorpay, owner, organization, change } = await queuedReplacement("replacement-local-failure");
+    const finalization = vi.spyOn(BillingReplacementService, "assertNoOpenReplacement")
+      .mockRejectedValueOnce(new Error("local finalization unavailable"));
+    await expect(BillingMutationService.processNext(organization.id)).rejects.toThrow(/local finalization/);
+    finalization.mockRestore();
+    const failed = await testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } });
+    expect(failed.authorizedRazorpaySubscriptionId).toBe("sub_candidate");
+    expect(failed.failureCategory).toBe("MANUAL_REVIEW_REQUIRED");
+    const accepted = await vi.mocked(razorpay.createSubscription).mock.results[0].value;
+    const fetch = vi.mocked(razorpay.fetchSubscription).getMockImplementation()!;
+    vi.mocked(razorpay.fetchSubscription).mockImplementation(id => id === "sub_candidate" ? Promise.resolve(accepted) : fetch(id));
+    const recovered = await BillingService.retryBillingOperation(owner.id, organization.id, change.id);
+    expect(recovered.operation?.queueStatus).toBe("AWAITING_PAYMENT");
+    expect(await testPrisma.organizationBillingChangeAudit.findFirst({ where: {
+      changeId: change.id, outcome: "PROVIDER_STATE_ADOPTED", providerSubscriptionId: "sub_candidate",
+    } })).not.toBeNull();
+    expect(razorpay.createSubscription).toHaveBeenCalledTimes(1);
+    expect(razorpay.cancelSubscription).not.toHaveBeenCalled();
+  });
+
+  it("retries a known pre-dispatch replacement read failure", async () => {
+    const { razorpay, organization, change } = await queuedReplacement("replacement-read-failure");
+    const fetch = vi.mocked(razorpay.fetchSubscription).getMockImplementation()!;
+    vi.mocked(razorpay.fetchSubscription).mockImplementation(async id => ({
+      ...await fetch(id), quantity: 1, has_scheduled_changes: false,
+    }));
+    vi.mocked(razorpay.fetchSubscription).mockRejectedValueOnce(new Error("source read unavailable"));
+    await expect(BillingMutationService.processNext(organization.id)).rejects.toThrow(/source read/);
+    expect(await testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+      .toMatchObject({ failureCategory: "PRE_PROVIDER_FAILURE", providerMutationAdmittedAt: null });
+    const retried = await BillingMutationService.retry(change.id);
+    expect(retried?.status).toBe("AWAITING_PAYMENT");
+    expect(razorpay.createSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("quarantines multiple replacement matches without cancelling any provider object", async () => {
+    const { razorpay, organization, change } = await queuedReplacement("replacement-duplicates");
+    const create = vi.mocked(razorpay.createSubscription).getMockImplementation()!;
+    let accepted: Awaited<ReturnType<typeof create>> | undefined;
+    vi.mocked(razorpay.createSubscription).mockImplementation(async input => {
+      accepted = await create(input);
+      throw new Error("response lost");
+    });
+    await expect(BillingMutationService.processNext(organization.id)).rejects.toThrow(/response lost/);
+    vi.mocked(razorpay.listSubscriptions!).mockResolvedValue({ entity: "collection", count: 2,
+      items: [accepted!, { ...accepted!, id: "sub_duplicate" }] });
+    await expect(BillingMutationService.retry(change.id)).rejects.toThrow(/manual review/);
+    expect(razorpay.createSubscription).toHaveBeenCalledTimes(1);
+    expect(razorpay.cancelSubscription).not.toHaveBeenCalled();
+  });
+
+  it("fences an expired replacement worker after dispatch and recovers only by provider reads", async () => {
+    const { razorpay, organization, change } = await queuedReplacement("replacement-expired-worker");
+    const create = vi.mocked(razorpay.createSubscription).getMockImplementation()!;
+    let accepted: Awaited<ReturnType<typeof create>> | undefined;
+    vi.mocked(razorpay.createSubscription).mockImplementation(async input => {
+      accepted = await create(input);
+      const leased = await testPrisma.organization.findUniqueOrThrow({ where: { id: organization.id } });
+      await recoverExpiredBillingMutationLease(leased, new Date(leased.billingMutationLeaseUntil!.getTime() + 1));
+      return accepted;
+    });
+    await expect(BillingMutationService.processNext(organization.id)).rejects.toThrow(/lease was lost/);
+    expect(await testPrisma.organizationBillingChange.findUnique({ where: { id: change.id } }))
+      .toMatchObject({ status: "FAILED", failureCategory: "MANUAL_REVIEW_REQUIRED", replacementSubscriptionId: null });
+    vi.mocked(razorpay.listSubscriptions!).mockResolvedValue({ entity: "collection", count: 1, items: [accepted!] });
+    expect((await BillingMutationService.retry(change.id))?.status).toBe("AWAITING_PAYMENT");
+    expect(razorpay.createSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["response-loss", "local-finalization", "lease-expiry"] as const)(
+    "never repeats source cancellation after %s", async fault => {
+      const { razorpay, owner, organization, change, candidate, subscription } = await setupPendingUpiReplacement(`source-${fault}`);
+      const now = new Date(change.undoCutoffAt!.getTime() + 1);
+      await testPrisma.organizationBillingChange.update({ where: { id: change.id }, data: {
+        status: "SCHEDULED", operationStatus: "SCHEDULED", providerConfirmedAt: new Date(),
+      } });
+      await testPrisma.organizationSubscription.update({ where: { id: candidate.id }, data: {
+        status: "AUTHENTICATED", providerPaymentMethod: "UPI",
+      } });
+      await testPrisma.organizationSubscription.update({ where: { id: subscription.id }, data: {
+        currentEnd: change.effectiveAt,
+      } });
+      // Source commercial reconciliation has separate integration coverage;
+      // this fixture isolates the real durable cancellation transaction.
+      vi.spyOn(BillingReconciliationService, "reconcileProviderSubscription").mockResolvedValue({ subscription } as never);
+      vi.mocked(razorpay.cancelSubscription).mockImplementation(async id => {
+        await testPrisma.organizationBillingChange.update({ where: { id: change.id }, data: {
+          operationStatus: "VERIFYING",
+        } });
+        await BillingReplacementService.syncAuthorizedAccess(change.id, now, { resolveManualReview: true });
+        expect(await testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } }))
+          .toMatchObject({ status: "PROCESSING", failureCode: "SOURCE_CANCELLATION_PROCESSING" });
+        if (fault === "response-loss") throw new Error("accepted cancellation response lost");
+        if (fault === "local-finalization") {
+          vi.spyOn(prisma, "$transaction").mockRejectedValueOnce(new Error("local finalization unavailable"));
+        } else {
+          const leased = await testPrisma.organization.findUniqueOrThrow({ where: { id: organization.id } });
+          await recoverExpiredBillingMutationLease(leased, new Date(leased.billingMutationLeaseUntil!.getTime() + 1));
+        }
+        return { id, entity: "subscription", plan_id: subscription.razorpayPlanId,
+          status: "active", quantity: subscription.quantity, total_count: 120,
+          has_scheduled_changes: true, change_scheduled_at: Math.floor(change.effectiveAt!.getTime() / 1000) };
+      });
+      await expect(BillingReplacementService.scheduleSourceCancellation(change.id, now)).rejects.toThrow();
+      const failed = await testPrisma.organizationBillingChange.findUniqueOrThrow({ where: { id: change.id } });
+      expect(failed).toMatchObject({ status: "FAILED", failureCategory: "MANUAL_REVIEW_REQUIRED", resolvedAt: null });
+      expect(failed.failureCode).toMatch(/^SOURCE_CANCELLATION_/);
+      await BillingReplacementService.scheduleSourceCancellation(change.id, now);
+      await expect(BillingMutationService.retry(change.id)).rejects.toBeInstanceOf(BillingManualReviewRequiredError);
+      await expect(BillingService.retryBillingOperation(owner.id, organization.id, change.id))
+        .rejects.toBeInstanceOf(BillingManualReviewRequiredError);
+      await BillingReplacementService.syncAuthorizedAccess(change.id, now, { resolveManualReview: true });
+      // An unrelated projection/error must not erase the immutable dispatch fence.
+      await testPrisma.organizationBillingChange.update({ where: { id: change.id }, data: {
+        status: "SCHEDULED", operationStatus: "SCHEDULED", failureCode: null, failureCategory: null,
+      } });
+      expect(await BillingReplacementService.scheduleSourceCancellation(change.id, now))
+        .toMatchObject({ scheduled: false, reason: "MANUAL_REVIEW_REQUIRED" });
+      expect(razorpay.cancelSubscription).toHaveBeenCalledTimes(1);
+      expect(razorpay.cancelScheduledChanges).not.toHaveBeenCalled();
+    }
+  );
+
+  it("finalizes one confirmed source cancellation and preserves its scheduled result", async () => {
+    const { razorpay, change, candidate, subscription } = await setupPendingUpiReplacement("source-success");
+    const now = new Date(change.undoCutoffAt!.getTime() + 1);
+    await testPrisma.organizationBillingChange.update({ where: { id: change.id }, data: {
+      status: "SCHEDULED", operationStatus: "SCHEDULED",
+    } });
+    await testPrisma.organizationSubscription.update({ where: { id: candidate.id }, data: {
+      status: "AUTHENTICATED", providerPaymentMethod: "UPI",
+    } });
+    await testPrisma.organizationSubscription.update({ where: { id: subscription.id }, data: {
+      currentEnd: change.effectiveAt,
+    } });
+    vi.spyOn(BillingReconciliationService, "reconcileProviderSubscription").mockResolvedValue({ subscription } as never);
+    vi.mocked(razorpay.cancelSubscription).mockResolvedValue({
+      id: subscription.razorpaySubscriptionId, entity: "subscription", plan_id: subscription.razorpayPlanId,
+      status: "active", quantity: subscription.quantity, total_count: 120,
+      has_scheduled_changes: true, change_scheduled_at: Math.floor(change.effectiveAt!.getTime() / 1000),
+    });
+    expect(await BillingReplacementService.scheduleSourceCancellation(change.id, now)).toMatchObject({ scheduled: true });
+    expect(await BillingReplacementService.scheduleSourceCancellation(change.id, now))
+      .toMatchObject({ scheduled: true, reason: "ALREADY_SCHEDULED" });
+    expect(await testPrisma.organizationSubscription.findUniqueOrThrow({ where: { id: subscription.id } }))
+      .toMatchObject({ cancelAtCycleEnd: true, cancellationScheduledAt: change.effectiveAt });
+    expect(razorpay.cancelSubscription).toHaveBeenCalledTimes(1);
+  });
 
   it("provisions one checkout-backed candidate for a UPI quantity increase", async () => {
     vi.stubEnv("RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_ENABLED", "true");

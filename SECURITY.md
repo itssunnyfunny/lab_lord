@@ -230,6 +230,14 @@ authentication boundaries, not open application routes.
 - Billing mutation idempotency keys, payload matching, per-organization FIFO
   ordering, locks, leases, stale-worker protection, and replacement lineage must
   remain durable.
+- Replacement provisioning records its protocol before provider reads, freezes
+  scheduling intent before dispatch, and admits creation once. Unknown creation
+  outcomes and unresolved old attempts cannot create again. Discovery absence
+  is not proof of rejection; duplicates require review without cancellation.
+- Source cancellation records an immutable admission audit under the exact
+  organization lease and processing attempt. Candidate authorization or
+  settlement cannot resolve that source action or erase its replay fence.
+  Uncertain source cancellation remains held for source-specific review.
 - Authorized replacement access must remain provisional and fail closed when
   lineage, plan, quantity, authorization, or grace-period checks fail.
 - Billing feature switches and Live canaries must default to held behavior.

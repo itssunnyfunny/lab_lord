@@ -209,6 +209,7 @@ describe("replacement access orchestration", () => {
         upsert: vi.fn().mockResolvedValue({}),
       },
       organizationBillingChangeAudit: {
+        findFirst: vi.fn(async () => null),
         upsert: vi.fn().mockResolvedValue({}),
       },
       organizationSubscriptionInvoice: {

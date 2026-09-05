@@ -1,14 +1,23 @@
 # Lab Lords: Current Architecture and Implementation State
 
-> Last verified: 2026-09-01
+> Last verified: 2026-09-05 (hardening additions; older sections retain their original evidence)
 >
-> Repository anchor: PR4 WhatsApp reports, service notices, and hardening plus completed Razorpay billing remediation and tenant-safe organization owner access
+> Repository anchor: pre-customer hardening from ca5e9b5; canonical V2 creation, allocation tenant constraints, replacement dispatch and source-cancellation fences
 >
 > Scope: repository implementation only
 
 This document is a durable orientation map for engineers and AI agents. It records what the repository implements at the anchor above, which surfaces are gated or incomplete, and where the authoritative evidence lives.
 
 It is **not** a deployment record. The repository cannot prove which migrations have been applied to Preview or Production, which feature flags are enabled, whether provider accounts are ready, or whether scheduled jobs and webhooks are currently healthy. Verify those facts in the target environment before operational work.
+
+The September 5 sprint adds replacement provisioning protocol version 2 using
+existing billing-change fields and audit history. Provider intent and dispatch
+are durable; uncertain creation recovery reads provider state without creating
+or cancelling again. Source cancellation has a separate processing attempt and
+immutable admission fence. Candidate reconciliation cannot resolve that action;
+uncertain source outcomes require manual source recovery. Checkout retirement,
+replacement lifecycle projection, and legacy cancellation still have confirmed
+open findings. See [the execution checkpoint](hardening-sprint-2026-09-05.md).
 
 ## Refresh contract
 

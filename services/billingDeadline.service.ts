@@ -75,7 +75,9 @@ export async function recoverExpiredBillingMutationLease(
           ? "CANDIDATE_CANCELLATION_LEASE_EXPIRED"
           : replacementUndoCancellation
             ? processing.failureCode!.replace("_PROCESSING_", "_LEASE_EXPIRED_")
-            : "PROVIDER_MUTATION_LEASE_EXPIRED";
+            : processing.failureCode === "SOURCE_CANCELLATION_PROCESSING"
+              ? "SOURCE_CANCELLATION_LEASE_EXPIRED"
+              : "PROVIDER_MUTATION_LEASE_EXPIRED";
       const quarantined = await tx.organizationBillingChange.updateMany({
         where: {
           id: processing.id,

@@ -3668,6 +3668,21 @@ export class BillingService {
       include: { organizationSubscription: true, replacementSubscription: true },
     });
     if (!change) throw new BillingResourceNotFoundError("Billing change not found");
+    if (change.failureCode?.startsWith("SOURCE_CANCELLATION_")) {
+      throw new BillingManualReviewRequiredError(change.id,
+        "Source cancellation requires read-only source reconciliation; candidate authorization cannot resolve it");
+    }
+    if (change.status === "FAILED" && change.provisioningIntentVersion === 2
+      && !change.replacementSubscriptionId
+      && (change.providerMutationAdmittedAt || change.failureCategory === "MANUAL_REVIEW_REQUIRED")) {
+      const recovered = await BillingReplacementService.reconcileProvisioning(change.id);
+      return {
+        reconciliation: null,
+        pending: true,
+        operation: serializeBillingOperation(recovered),
+        resolutionOutcome: "PROVIDER_STATE_ADOPTED" as const,
+      };
+    }
     if (isInitialProvisioningChange(change)) {
       const leaseToken = await claimCheckoutMutationLease(organizationId);
       try {

@@ -344,6 +344,15 @@ Every statement uses one of these labels:
   retrieves provider-side objects, and matches expected organization intent,
   subscription, payment, plan, quantity, and payment state before trusting the
   result.
+- **Must preserve—enforced:** Replacement creation freezes its provider start,
+  expiry and total count and records dispatch before creation. Recovery fetches
+  the retained provider ID or discovers one exact uncharged candidate, without
+  another create or duplicate cleanup. No match, multiple live matches, and
+  authorized/charged matches stay in manual review. Source cancellation uses
+  its own processing attempt and immutable admission audit; neither candidate
+  evidence nor overwritten lifecycle fields permits replay. A failed source
+  action currently requires source-specific manual recovery.
+  (`services/billingReplacement.service.ts`, billing-mutation fault tests)
 - **Must preserve—enforced:** A webhook is only a signed reconciliation trigger,
   not proof of quantity or entitlement. The public body is bounded to 512 KiB;
   its signature and payload hash are verified over the same untouched bytes
