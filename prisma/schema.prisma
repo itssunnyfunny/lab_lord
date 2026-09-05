@@ -144,6 +144,8 @@ model Branch {
   whatsAppDailyReportSnapshots WhatsAppDailyReportSnapshot[]
   whatsAppServiceNotices       WhatsAppServiceNotice[]
   whatsAppOperationalIncidents WhatsAppOperationalIncident[]
+
+  @@unique([id, organizationId], map: "TI_U_Branch_id_organizationId")
 }
 
 model Student {
@@ -309,6 +311,8 @@ model PaymentResolutionEvent {
 
   @@index([paymentId, occurredAt, id])
   @@index([branchId, occurredAt, id])
+
+  @@unique([id, branchId], map: "TI_U_PaymentResolutionEvent_id_branchId")
 }
 
 model Staff {
@@ -451,6 +455,8 @@ model WhatsAppSender {
   @@index([organizationId, status])
   @@index([provider, providerMode, wabaId])
   @@index([status, healthLeaseUntil, lastHealthCheckAt])
+
+  @@unique([id, organizationId], map: "TI_U_WhatsAppSender_id_organizationId")
 }
 
 model WhatsAppConnectionIntent {
@@ -503,12 +509,13 @@ model BranchWhatsAppSettings {
   lastPlannerErrorCode                   String?
   createdAt                              DateTime        @default(now())
   updatedAt                              DateTime        @updatedAt
-  branch                                 Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: Cascade, map: "TI_BranchWhatsAppSettings_branch_organizationId")
   organization                           Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  sender                                 WhatsAppSender? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  sender WhatsAppSender? @relation(fields: [senderId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_BranchWhatsAppSettings_sender_organizationId")
   automationEnabledBy                    User?           @relation("BranchWhatsAppAutomationEnabledBy", fields: [automationEnabledByUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
+  @@unique([branchId, organizationId], map: "TI_U_BranchWhatsAppSettings_branchId_organizationId")
   @@index([senderId])
   @@index([enabled, automationEnabledAt, plannerLeaseUntil])
 }
@@ -535,6 +542,8 @@ model WhatsAppTemplate {
   @@unique([senderId, providerTemplateId])
   @@unique([senderId, name, language])
   @@index([senderId, category, providerStatus])
+
+  @@unique([id, senderId], map: "TI_U_WhatsAppTemplate_id_senderId")
 }
 
 model WhatsAppConsent {
@@ -557,6 +566,8 @@ model WhatsAppConsent {
   reportSubscriptions WhatsAppReportSubscription[]
 
   @@unique([senderId, phoneE164, consentType])
+
+  @@unique([id, senderId], map: "TI_U_WhatsAppConsent_id_senderId")
 }
 
 model WhatsAppConsentEvent {
@@ -572,7 +583,7 @@ model WhatsAppConsentEvent {
   policyVersion  String?
   details        Json?
   occurredAt     DateTime              @default(now())
-  consent        WhatsAppConsent       @relation(fields: [consentId], references: [id], onDelete: Restrict)
+  consent WhatsAppConsent @relation(fields: [consentId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppConsentEvent_consent_senderId")
   sender         WhatsAppSender        @relation(fields: [senderId], references: [id], onDelete: Restrict)
   actor          User?                 @relation("WhatsAppConsentEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
 
@@ -597,10 +608,10 @@ model WhatsAppStudentRecipient {
   createdAt       DateTime                       @default(now())
   updatedAt       DateTime                       @updatedAt
   organization    Organization                   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch          Branch                         @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  student         Student                        @relation(fields: [studentId], references: [id], onDelete: Restrict)
-  sender          WhatsAppSender                 @relation(fields: [senderId], references: [id], onDelete: Restrict)
-  consent         WhatsAppConsent                @relation(fields: [consentId], references: [id], onDelete: Restrict)
+  branch Branch @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppStudentRecipient_branch_organizationId")
+  student Student @relation(fields: [studentId, branchId], references: [id, branchId], onDelete: Restrict, map: "TI_WhatsAppStudentRecipient_student_branchId")
+  sender WhatsAppSender @relation(fields: [senderId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppStudentRecipient_sender_organizationId")
+  consent WhatsAppConsent @relation(fields: [consentId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppStudentRecipient_consent_senderId")
   createdBy       User?                          @relation("WhatsAppStudentRecipientCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@unique([studentId, senderId])
@@ -632,6 +643,8 @@ model WhatsAppManagedTemplateProvisioning {
   @@unique([senderId, managedKey, language, catalogVersion])
   @@unique([senderId, providerTemplateName])
   @@index([senderId, status])
+
+  @@unique([id, senderId], map: "TI_U_WhatsAppManagedTemplateProvisioning_id_senderId")
 }
 
 model WhatsAppTemplateBinding {
@@ -647,12 +660,16 @@ model WhatsAppTemplateBinding {
   createdAt      DateTime                            @default(now())
   updatedAt      DateTime                            @updatedAt
   sender         WhatsAppSender                      @relation(fields: [senderId], references: [id], onDelete: Restrict)
-  template       WhatsAppTemplate                    @relation(fields: [templateId], references: [id], onDelete: Restrict)
-  provisioning   WhatsAppManagedTemplateProvisioning @relation(fields: [provisioningId], references: [id], onDelete: Restrict)
+  template WhatsAppTemplate @relation(fields: [templateId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppTemplateBinding_template_senderId")
+  provisioning WhatsAppManagedTemplateProvisioning @relation(fields: [provisioningId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppTemplateBinding_provisioning_senderId")
   messages       WhatsAppMessage[]
 
   @@unique([senderId, managedKey, language])
   @@index([senderId, active])
+
+  @@unique([templateId, senderId], map: "TI_U_WhatsAppTemplateBinding_templateId_senderId")
+  @@unique([provisioningId, senderId], map: "TI_U_WhatsAppTemplateBinding_provisioningId_senderId")
+  @@unique([id, senderId], map: "TI_U_WhatsAppTemplateBinding_id_senderId")
 }
 
 model WhatsAppAutomationRule {
@@ -664,7 +681,7 @@ model WhatsAppAutomationRule {
   createdAt      DateTime                @default(now())
   updatedAt      DateTime                @updatedAt
   organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch         Branch                  @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch Branch @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppAutomationRule_branch_organizationId")
 
   @@unique([branchId, stage])
   @@index([organizationId, enabled])
@@ -687,13 +704,17 @@ model WhatsAppManualSendRequest {
   createdAt              DateTime                        @default(now())
   completedAt            DateTime?
   organization           Organization                    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch                 Branch                          @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch Branch @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppManualSendRequest_branch_organizationId")
   actor                  User                            @relation("WhatsAppManualSendRequestActor", fields: [actorUserId], references: [id], onDelete: Restrict)
   messages               WhatsAppMessage[]
 
   @@unique([branchId, idempotencyKey])
   @@index([branchId, createdAt])
   @@index([actorUserId, createdAt])
+
+  @@unique([id, organizationId], map: "TI_U_WhatsAppManualSendRequest_id_organizationId")
+  @@unique([id, branchId], map: "TI_U_WhatsAppManualSendRequest_id_branchId")
+  tenantWhatsAppMessagemanualSendRequestbranchId WhatsAppMessage[] @relation("Tenant_WhatsAppMessage_manualSendRequest_branchId")
 }
 
 model WhatsAppReportSubscription {
@@ -725,10 +746,10 @@ model WhatsAppReportSubscription {
   createdAt                DateTime                         @default(now())
   updatedAt                DateTime                         @updatedAt
   organization             Organization                     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch                   Branch?                          @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  sender                   WhatsAppSender                   @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  branch Branch? @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppReportSubscription_branch_organizationId")
+  sender WhatsAppSender @relation(fields: [senderId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppReportSubscription_sender_organizationId")
   user                     User                             @relation("WhatsAppReportSubscriptionUser", fields: [userId], references: [id], onDelete: Restrict)
-  consent                  WhatsAppConsent?                 @relation(fields: [consentId], references: [id], onDelete: SetNull)
+  consent WhatsAppConsent? @relation(fields: [consentId, senderId], references: [id, senderId], onDelete: SetNull, map: "TI_WhatsAppReportSubscription_consent_senderId")
   messages                 WhatsAppMessage[]
 
   @@unique([senderId, userId, scope, scopeKey])
@@ -737,6 +758,12 @@ model WhatsAppReportSubscription {
   @@index([branchId, status])
   @@index([senderId, phoneE164, status])
   @@index([userId, status])
+
+  @@unique([id, organizationId], map: "TI_U_WhatsAppReportSubscription_id_organizationId")
+  @@unique([id, branchId], map: "TI_U_WhatsAppReportSubscription_id_branchId")
+  tenantWhatsAppMessagereportSubscriptionbranchId WhatsAppMessage[] @relation("Tenant_WhatsAppMessage_reportSubscription_branchId")
+  @@unique([id, senderId], map: "TI_U_WhatsAppReportSubscription_id_senderId")
+  tenantWhatsAppMessagereportSubscriptionsenderId WhatsAppMessage[] @relation("Tenant_WhatsAppMessage_reportSubscription_senderId")
 }
 
 model OrganizationWhatsAppReportSettings {
@@ -748,7 +775,7 @@ model OrganizationWhatsAppReportSettings {
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
   organization          Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  sender                WhatsAppSender? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  sender WhatsAppSender? @relation(fields: [senderId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_OrganizationWhatsAppReportSettings_sender_organizationId")
 
   @@index([senderId])
   @@index([enabled, senderId])
@@ -771,13 +798,17 @@ model WhatsAppDailyReportSnapshot {
   sourceFingerprint String
   createdAt         DateTime            @default(now())
   organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch            Branch?             @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch Branch? @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppDailyReportSnapshot_branch_organizationId")
   messages          WhatsAppMessage[]
 
   @@unique([scope, scopeKey, localReportDate, scheduledCutoffAt, metricsVersion], map: "WhatsAppReportSnapshot_scope_date_cutoff_version_key")
   @@index([organizationId, localReportDate])
   @@index([branchId, localReportDate])
   @@index([generatedAt])
+
+  @@unique([id, organizationId], map: "TI_U_WhatsAppDailyReportSnapshot_id_organizationId")
+  @@unique([id, branchId], map: "TI_U_WhatsAppDailyReportSnapshot_id_branchId")
+  tenantWhatsAppMessagedailyReportSnapshotbranchId WhatsAppMessage[] @relation("Tenant_WhatsAppMessage_dailyReportSnapshot_branchId")
 }
 
 model WhatsAppServiceNotice {
@@ -807,8 +838,8 @@ model WhatsAppServiceNotice {
   createdAt              DateTime                    @default(now())
   updatedAt              DateTime                    @updatedAt
   organization           Organization                @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch                 Branch                      @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  sender                 WhatsAppSender              @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  branch Branch @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppServiceNotice_branch_organizationId")
+  sender WhatsAppSender @relation(fields: [senderId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppServiceNotice_sender_organizationId")
   actor                  User                        @relation("WhatsAppServiceNoticeActor", fields: [actorUserId], references: [id], onDelete: Restrict)
   messages               WhatsAppMessage[]
 
@@ -816,6 +847,12 @@ model WhatsAppServiceNotice {
   @@index([branchId, createdAt])
   @@index([branchId, status, scheduledFor])
   @@index([senderId, status])
+
+  @@unique([id, organizationId], map: "TI_U_WhatsAppServiceNotice_id_organizationId")
+  @@unique([id, branchId], map: "TI_U_WhatsAppServiceNotice_id_branchId")
+  tenantWhatsAppMessageserviceNoticebranchId WhatsAppMessage[] @relation("Tenant_WhatsAppMessage_serviceNotice_branchId")
+  @@unique([id, senderId], map: "TI_U_WhatsAppServiceNotice_id_senderId")
+  tenantWhatsAppMessageserviceNoticesenderId WhatsAppMessage[] @relation("Tenant_WhatsAppMessage_serviceNotice_senderId")
 }
 
 model WhatsAppSenderSafetyState {
@@ -861,9 +898,9 @@ model WhatsAppOperationalIncident {
   createdAt            DateTime                            @default(now())
   updatedAt            DateTime                            @updatedAt
   organization         Organization                        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch               Branch?                             @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  sender               WhatsAppSender?                     @relation(fields: [senderId], references: [id], onDelete: Restrict)
-  message              WhatsAppMessage?                    @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  branch Branch? @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppOperationalIncident_branch_organizationId")
+  sender WhatsAppSender? @relation(fields: [senderId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppOperationalIncident_sender_organizationId")
+  message WhatsAppMessage? @relation(fields: [messageId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppOperationalIncident_message_organizationId")
   acknowledgedBy       User?                               @relation("WhatsAppOperationalIncidentAcknowledgedBy", fields: [acknowledgedByUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, status, severity])
@@ -871,6 +908,9 @@ model WhatsAppOperationalIncident {
   @@index([senderId, status])
   @@index([messageId])
   @@index([lastSeenAt])
+
+  messageBybranchId WhatsAppMessage? @relation("Tenant_WhatsAppOperationalIncident_message_branchId", fields: [messageId, branchId], references: [id, branchId], onDelete: Restrict, map: "TI_WhatsAppOperationalIncident_message_branchId")
+  messageBysenderId WhatsAppMessage? @relation("Tenant_WhatsAppOperationalIncident_message_senderId", fields: [messageId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppOperationalIncident_message_senderId")
 }
 
 model WhatsAppJobRun {
@@ -953,17 +993,17 @@ model WhatsAppMessage {
   createdAt                DateTime                      @default(now())
   updatedAt                DateTime                      @updatedAt
   organization             Organization                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch                   Branch?                       @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  sender                   WhatsAppSender                @relation(fields: [senderId], references: [id], onDelete: Restrict)
-  student                  Student?                      @relation(fields: [studentId], references: [id], onDelete: SetNull)
-  payment                  Payment?                      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  paymentResolutionEvent   PaymentResolutionEvent?       @relation(fields: [paymentResolutionEventId], references: [id], onDelete: Restrict)
-  template                 WhatsAppTemplate?             @relation(fields: [templateId], references: [id], onDelete: Restrict)
-  templateBinding          WhatsAppTemplateBinding?      @relation(fields: [templateBindingId], references: [id], onDelete: Restrict)
-  manualSendRequest        WhatsAppManualSendRequest?    @relation(fields: [manualSendRequestId], references: [id], onDelete: Restrict)
-  reportSubscription       WhatsAppReportSubscription?   @relation(fields: [reportSubscriptionId], references: [id], onDelete: Restrict)
-  dailyReportSnapshot      WhatsAppDailyReportSnapshot?  @relation(fields: [dailyReportSnapshotId], references: [id], onDelete: Restrict)
-  serviceNotice            WhatsAppServiceNotice?        @relation(fields: [serviceNoticeId], references: [id], onDelete: Restrict)
+  branch Branch? @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_WhatsAppMessage_branch_organizationId")
+  sender WhatsAppSender @relation(fields: [senderId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppMessage_sender_organizationId")
+  student Student? @relation(fields: [studentId, branchId], references: [id, branchId], onDelete: SetNull, map: "TI_WhatsAppMessage_student_branchId")
+  payment Payment? @relation(fields: [paymentId, branchId], references: [id, branchId], onDelete: Restrict, map: "TI_WhatsAppMessage_payment_branchId")
+  paymentResolutionEvent PaymentResolutionEvent? @relation(fields: [paymentResolutionEventId, branchId], references: [id, branchId], onDelete: Restrict, map: "TI_WhatsAppMessage_paymentResolutionEvent_branchId")
+  template WhatsAppTemplate? @relation(fields: [templateId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppMessage_template_senderId")
+  templateBinding WhatsAppTemplateBinding? @relation(fields: [templateBindingId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppMessage_templateBinding_senderId")
+  manualSendRequest WhatsAppManualSendRequest? @relation(fields: [manualSendRequestId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppMessage_manualSendRequest_organizationId")
+  reportSubscription WhatsAppReportSubscription? @relation(fields: [reportSubscriptionId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppMessage_reportSubscription_organizationId")
+  dailyReportSnapshot WhatsAppDailyReportSnapshot? @relation(fields: [dailyReportSnapshotId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppMessage_dailyReportSnapshot_organizationId")
+  serviceNotice WhatsAppServiceNotice? @relation(fields: [serviceNoticeId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppMessage_serviceNotice_organizationId")
   createdBy                User?                         @relation("WhatsAppMessageCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   events                   WhatsAppMessageEvent[]
   paymentSources           WhatsAppMessagePayment[]
@@ -985,6 +1025,18 @@ model WhatsAppMessage {
   @@index([dailyReportSnapshotId])
   @@index([serviceNoticeId, createdAt])
   @@index([organizationId, branchId, purpose, budgetMonth, budgetState])
+
+  @@unique([id, organizationId], map: "TI_U_WhatsAppMessage_id_organizationId")
+  @@unique([id, branchId], map: "TI_U_WhatsAppMessage_id_branchId")
+  tenantWhatsAppOperationalIncidentmessagebranchId WhatsAppOperationalIncident[] @relation("Tenant_WhatsAppOperationalIncident_message_branchId")
+  @@unique([id, senderId], map: "TI_U_WhatsAppMessage_id_senderId")
+  tenantWhatsAppOperationalIncidentmessagesenderId WhatsAppOperationalIncident[] @relation("Tenant_WhatsAppOperationalIncident_message_senderId")
+  manualSendRequestBybranchId WhatsAppManualSendRequest? @relation("Tenant_WhatsAppMessage_manualSendRequest_branchId", fields: [manualSendRequestId, branchId], references: [id, branchId], onDelete: Restrict, map: "TI_WhatsAppMessage_manualSendRequest_branchId")
+  reportSubscriptionBybranchId WhatsAppReportSubscription? @relation("Tenant_WhatsAppMessage_reportSubscription_branchId", fields: [reportSubscriptionId, branchId], references: [id, branchId], onDelete: Restrict, map: "TI_WhatsAppMessage_reportSubscription_branchId")
+  reportSubscriptionBysenderId WhatsAppReportSubscription? @relation("Tenant_WhatsAppMessage_reportSubscription_senderId", fields: [reportSubscriptionId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppMessage_reportSubscription_senderId")
+  dailyReportSnapshotBybranchId WhatsAppDailyReportSnapshot? @relation("Tenant_WhatsAppMessage_dailyReportSnapshot_branchId", fields: [dailyReportSnapshotId, branchId], references: [id, branchId], onDelete: Restrict, map: "TI_WhatsAppMessage_dailyReportSnapshot_branchId")
+  serviceNoticeBybranchId WhatsAppServiceNotice? @relation("Tenant_WhatsAppMessage_serviceNotice_branchId", fields: [serviceNoticeId, branchId], references: [id, branchId], onDelete: Restrict, map: "TI_WhatsAppMessage_serviceNotice_branchId")
+  serviceNoticeBysenderId WhatsAppServiceNotice? @relation("Tenant_WhatsAppMessage_serviceNotice_senderId", fields: [serviceNoticeId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppMessage_serviceNotice_senderId")
 }
 
 model WhatsAppMessagePayment {
@@ -1014,7 +1066,7 @@ model WhatsAppMessageEvent {
   providerPricingCategory String?
   safeErrorCode           String?
   expiresAt               DateTime?
-  message                 WhatsAppMessage?           @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  message WhatsAppMessage? @relation(fields: [messageId, senderId], references: [id, senderId], onDelete: Restrict, map: "TI_WhatsAppMessageEvent_message_senderId")
   sender                  WhatsAppSender             @relation(fields: [senderId], references: [id], onDelete: Restrict)
 
   @@index([providerMessageId, providerTimestamp, id])
@@ -1042,7 +1094,7 @@ model WhatsAppWebhookReceipt {
   processedAt      DateTime?
   failureCode      String?
   organization     Organization?                @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  sender           WhatsAppSender?              @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  sender WhatsAppSender? @relation(fields: [senderId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppWebhookReceipt_sender_organizationId")
 
   @@index([providerMode, receivedAt])
   @@index([senderId, receivedAt])
@@ -1061,8 +1113,8 @@ model WhatsAppAuditEvent {
   details        Json?
   createdAt      DateTime            @default(now())
   organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  branch         Branch?             @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  sender         WhatsAppSender?     @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  branch Branch? @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_WhatsAppAuditEvent_branch_organizationId")
+  sender WhatsAppSender? @relation(fields: [senderId, organizationId], references: [id, organizationId], onDelete: Restrict, map: "TI_WhatsAppAuditEvent_sender_organizationId")
   actor          User?               @relation("WhatsAppAuditEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt, id])
@@ -1308,7 +1360,7 @@ model ImportRecipe {
   updatedAt                 DateTime         @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  branch       Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  branch Branch? @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_ImportRecipe_branch_organizationId")
   createdBy    User         @relation("ImportRecipeCreatedBy", fields: [createdByUserId], references: [id])
 
   @@unique([organizationId, name, revision])
@@ -2079,10 +2131,10 @@ model OrganizationSubscription {
   organization                      Organization                      @relation("OrganizationSubscriptionOwner", fields: [organizationId], references: [id])
   currentForOrganization            Organization?                     @relation("OrganizationCurrentSubscription", fields: [currentOrganizationId], references: [id], onDelete: SetNull)
   pendingReplacementForOrganization Organization?                     @relation("OrganizationPendingSubscriptionReplacement", fields: [pendingReplacementOrganizationId], references: [id], onDelete: SetNull)
-  replacesSubscription              OrganizationSubscription?         @relation("OrganizationSubscriptionReplacementLineage", fields: [replacesSubscriptionId], references: [id], onDelete: SetNull)
+  replacesSubscription OrganizationSubscription? @relation("OrganizationSubscriptionReplacementLineage", fields: [replacesSubscriptionId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_OrganizationSubscription_replacesSubscription_organizationId")
   replacementSubscriptions          OrganizationSubscription[]        @relation("OrganizationSubscriptionReplacementLineage")
   billingOffer                      BillingOffer?                     @relation(fields: [billingOfferId], references: [id])
-  confirmedCommercialIntentChange   OrganizationBillingChange?        @relation("ConfirmedCommercialIntent", fields: [confirmedCommercialIntentChangeId], references: [id], onDelete: SetNull)
+  confirmedCommercialIntentChange OrganizationBillingChange? @relation("ConfirmedCommercialIntent", fields: [confirmedCommercialIntentChangeId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_OrganizationSubscription_confirmedCommercialIntentC_4eaeac3f")
   webhookEvents                     RazorpayWebhookEvent[]
   history                           OrganizationSubscriptionHistory[]
   billingChanges                    OrganizationBillingChange[]       @relation("BillingChangeSourceSubscription")
@@ -2094,6 +2146,9 @@ model OrganizationSubscription {
   @@index([providerMode, razorpaySubscriptionId])
   @@index([organizationId, createdAt])
   @@index([replacesSubscriptionId])
+
+  @@unique([id, organizationId], map: "TI_U_OrganizationSubscription_id_organizationId")
+  @@unique([confirmedCommercialIntentChangeId, organizationId], map: "TI_U_OrganizationSubscription_confirmedCommercialInten_5ff9dc96")
 }
 
 model OrganizationBillingChange {
@@ -2162,12 +2217,12 @@ model OrganizationBillingChange {
   createdAt                              DateTime                          @default(now())
   updatedAt                              DateTime                          @updatedAt
   organization                           Organization                      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  organizationSubscription               OrganizationSubscription?         @relation("BillingChangeSourceSubscription", fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
-  replacementSubscription                OrganizationSubscription?         @relation("BillingChangeReplacementSubscription", fields: [replacementSubscriptionId], references: [id], onDelete: SetNull)
+  organizationSubscription OrganizationSubscription? @relation("BillingChangeSourceSubscription", fields: [organizationSubscriptionId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_OrganizationBillingChange_organizationSubscription__553adedd")
+  replacementSubscription OrganizationSubscription? @relation("BillingChangeReplacementSubscription", fields: [replacementSubscriptionId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_OrganizationBillingChange_replacementSubscription_o_1f579ce7")
   confirmedCommercialSubscription        OrganizationSubscription?         @relation("ConfirmedCommercialIntent")
   commercialEvidenceInvoices             OrganizationSubscriptionInvoice[] @relation("InvoiceCommercialIntent")
   auditEvents                            OrganizationBillingChangeAudit[]
-  branch                                 Branch?                           @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  branch Branch? @relation(fields: [branchId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_OrganizationBillingChange_branch_organizationId")
 
   @@unique([organizationId, sequence])
   @@index([organizationId, status, sequence])
@@ -2176,6 +2231,9 @@ model OrganizationBillingChange {
   @@index([authorizedProviderMode, authorizedRazorpaySubscriptionId, sequence], map: "BillingChange_authorized_subscription_idx")
   @@index([authorizedProviderMode, authorizedSourceRazorpaySubscriptionId, sequence], map: "BillingChange_authorized_source_subscription_idx")
   @@index([undoCutoffAt, status])
+
+  @@unique([id, organizationId], map: "TI_U_OrganizationBillingChange_id_organizationId")
+  @@unique([replacementSubscriptionId, organizationId], map: "TI_U_OrganizationBillingChange_replacementSubscription_d0865a8d")
 }
 
 model OrganizationBillingChangeAudit {
@@ -2189,7 +2247,7 @@ model OrganizationBillingChangeAudit {
   providerSubscriptionId String?
   createdAt              DateTime                  @default(now())
   organization           Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  change                 OrganizationBillingChange @relation(fields: [changeId], references: [id], onDelete: Cascade)
+  change OrganizationBillingChange @relation(fields: [changeId, organizationId], references: [id, organizationId], onDelete: Cascade, map: "TI_OrganizationBillingChangeAudit_change_organizationId")
 
   @@index([organizationId, createdAt])
   @@index([changeId, createdAt])
@@ -2227,8 +2285,8 @@ model OrganizationSubscriptionInvoice {
   createdAt                  DateTime                   @default(now())
   updatedAt                  DateTime                   @updatedAt
   organization               Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  organizationSubscription   OrganizationSubscription?  @relation(fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
-  commercialIntentChange     OrganizationBillingChange? @relation("InvoiceCommercialIntent", fields: [commercialIntentChangeId], references: [id], onDelete: SetNull)
+  organizationSubscription OrganizationSubscription? @relation(fields: [organizationSubscriptionId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_OrganizationSubscriptionInvoice_organizationSubscri_ad094872")
+  commercialIntentChange OrganizationBillingChange? @relation("InvoiceCommercialIntent", fields: [commercialIntentChangeId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_OrganizationSubscriptionInvoice_commercialIntentCha_a48c26ff")
 
   @@index([organizationId, createdAt])
   @@index([organizationSubscriptionId, createdAt])
@@ -2256,7 +2314,7 @@ model OrganizationSubscriptionHistory {
   currency                   String
   createdAt                  DateTime                      @default(now())
   organization               Organization                  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  organizationSubscription   OrganizationSubscription?     @relation(fields: [organizationSubscriptionId], references: [id], onDelete: SetNull)
+  organizationSubscription OrganizationSubscription? @relation(fields: [organizationSubscriptionId, organizationId], references: [id, organizationId], onDelete: SetNull, map: "TI_OrganizationSubscriptionHistory_organizationSubscri_a1d99aa0")
 
   @@index([organizationId, createdAt])
   @@index([organizationSubscriptionId, createdAt])
@@ -2280,7 +2338,7 @@ model RazorpayWebhookEvent {
   processingLeaseUntil       DateTime?
   attemptCount               Int                       @default(0)
   organization               Organization?             @relation(fields: [organizationId], references: [id])
-  organizationSubscription   OrganizationSubscription? @relation(fields: [organizationSubscriptionId], references: [id])
+  organizationSubscription OrganizationSubscription? @relation(fields: [organizationSubscriptionId, organizationId], references: [id, organizationId], map: "TI_RazorpayWebhookEvent_organizationSubscription_organizationId")
 
   @@index([organizationId])
   @@index([organizationSubscriptionId])

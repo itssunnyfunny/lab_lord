@@ -2343,3 +2343,19 @@ Remaining risks and owners:
 - [CI workflow](../.github/workflows/ci.yml)
 - [Production migration workflow](../.github/workflows/production-migrate.yml)
 - [Vercel cron configuration](../vercel.json)
+
+### Billing and WhatsApp tenant constraints (20260905173000)
+
+Run `prisma/preflight/billing-and-whatsapp-tenants.sql` read-only against the
+explicitly approved target and retain each named count; all must be zero before
+migration. Snapshot counts of all tables named in that script before and after;
+this migration must not change row counts. The migration locks all affected
+parents/children, repeats preflight and adds keys/checks atomically. Drain these
+writers while applying it. It adds no tenant fields or guessed backfills.
+Previous writers producing coherent references remain compatible. Corrupt data
+requires a separately reviewed repair preserving billing/provider history.
+Nullable composite relations use PostgreSQL column-specific SET NULL; preserve
+that SQL despite Prisma's required-scope-column warning. Never use db push to
+replace the maintained migration chain. Rollback application code is possible
+only for writers respecting these constraints; use forward repair for data or
+constraint defects rather than rewriting this applied migration.

@@ -32,3 +32,15 @@ fixture families and unchanged service flows. `pnpm exec tsc --noEmit --pretty
 false` passed. Initial test corrections concerned Prisma adapter error shape,
 the newly rejected corrupt-payment fixture and exact preflight reference count;
 no integrity constraint or service protection was weakened.
+
+Billing/WhatsApp tenant slice: migration 43 enforces 55 additional scoped foreign
+keys and five scope-presence/identity checks. The frozen relationship contract
+is `prisma/tenant-relationship-contracts.json`; matching read-only counts are in
+`prisma/preflight/billing-and-whatsapp-tenants.sql`. Valid fixtures retain every
+row; seven corrupt-history families block atomically. Catalog tests verify all
+55 installed keys, validated checks and column-specific nullable deletion.
+`pnpm test billing whatsapp`: 90 files passed, two failed (catalog qualification,
+now-invalid corrupt fixture, one setup timeout). After correcting assertions,
+`pnpm test billing-whatsapp-tenant-migration whatsapp-delivery`: 3 files / 27 tests
+passed. Prisma validate/generate, migration deploy and TypeScript passed. The
+broader complete invocation remains due at the final milestone.

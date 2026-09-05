@@ -946,3 +946,11 @@ Before changing any rule above:
    idempotency behavior, and failure rollback where applicable.
 4. Update this document when an enforced rule, service-only contract, or known
    discrepancy changes.
+
+- **Must preserve—enforced:** Subscription replacements, commercial intents,
+  invoices, billing audit/history and attached Razorpay webhook subscriptions
+  agree on organization. WhatsApp branch, sender, consent, template, message,
+  report, receipt and incident links agree on each shared organization, branch
+  or sender dimension declared in `prisma/tenant-relationship-contracts.json`.
+  Optional references may detach only their foreign ID; ownership is retained.
+  Database constraints do not authorize actors or establish provider truth.

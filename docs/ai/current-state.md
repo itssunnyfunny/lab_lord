@@ -886,3 +886,10 @@ This file supersedes architecture/status claims in older phase-oriented or gener
   provider, security, legal/privacy, and operations approval.
 
 When this document and the implementation disagree, inspect the current schema, migrations, services, API routes, and tests, then update this document in the same change.
+
+Billing and WhatsApp ownership now additionally use 55 composite foreign keys
+and five presence/identity checks (migration 20260905173000). Exact relationships
+and preflight counts live in `prisma/tenant-relationship-contracts.json` and
+`prisma/preflight/billing-and-whatsapp-tenants.sql`. Import run links and the
+WhatsApp grouped-payment join remain under consolidation; this is not a claim
+of complete tenant coverage.
