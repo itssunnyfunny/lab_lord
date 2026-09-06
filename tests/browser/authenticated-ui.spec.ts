@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import { refreshDevelopmentSession } from "./helpers/development-session";
 
 const EMPTY_STATE = { cookies: [], origins: [] };
 
@@ -77,8 +78,9 @@ for (const session of roleSessions) {
     const available = Boolean(statePath && fs.existsSync(statePath) && branchId);
 
     test.use({ storageState: available ? statePath : EMPTY_STATE });
-    test.beforeEach(() => {
+    test.beforeEach(async ({ page }) => {
       test.skip(!available, `Set ${session.stateEnv} and ${session.branchEnv} to run ${session.label} coverage.`);
+      await refreshDevelopmentSession(page);
     });
 
     test("dashboard loads without creating payments and passes an axe smoke check", async ({ page }) => {
@@ -376,8 +378,9 @@ test.describe("Read-only authenticated UI", () => {
   const available = Boolean(statePath && fs.existsSync(statePath) && branchId);
 
   test.use({ storageState: available ? statePath : EMPTY_STATE });
-  test.beforeEach(() => {
+  test.beforeEach(async ({ page }) => {
     test.skip(!available, "Set PLAYWRIGHT_READ_ONLY_AUTH_STATE and PLAYWRIGHT_READ_ONLY_BRANCH_ID.");
+    await refreshDevelopmentSession(page);
   });
 
   test("mutation controls expose their blocker before submission", async ({ page }) => {
@@ -394,9 +397,10 @@ test.describe("Clerk account dark theme", () => {
   const available = Boolean(statePath && fs.existsSync(statePath) && branchId);
 
   test.use({ storageState: available ? statePath : EMPTY_STATE });
-  test.beforeEach(({}, testInfo) => {
+  test.beforeEach(async ({ page }, testInfo) => {
     test.skip(!available, "Set PLAYWRIGHT_OWNER_AUTH_STATE and PLAYWRIGHT_OWNER_BRANCH_ID.");
     test.skip(testInfo.project.name !== "chromium", "Clerk profile contrast is exercised once in desktop Chromium.");
+    await refreshDevelopmentSession(page);
   });
 
   test("profile and security surfaces retain readable dark-theme contrast", async ({ page }) => {

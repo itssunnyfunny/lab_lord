@@ -2502,3 +2502,122 @@ both evidence sets and forward-repair with a new migration. Do not roll back
 to the old dispatch, branch-omitting import writers or unfenced analysis code.
 Never rewrite applied migrations or delete receipts to recover. Record the
 operator's chosen option, exact counts, approval and reconciliation evidence.
+
+### Release candidate operation card — 2026-09-06
+
+This card makes the preceding 48-migration sequence reviewable; it does not
+authorize an operation. See the [release evidence](ai/release-candidate-verification-2026-09-06.md).
+Current recommendation is migrate-existing **only after** clean inventory and
+preflights. Production counts and database identity remain unavailable in that
+pass. A fresh target is not approved merely because empty bootstrap succeeds.
+
+1. **Bind the operation.** Record the approved release SHA, Vercel project/team,
+   Production deployment and aliases, exact direct database and database-resident
+   billing fingerprint, operator, incident owner, evidence location and maximum
+   hold window. Independently match these to the protected Production secret
+   source. Do not infer a database identity from the URL or Vercel project alone.
+   The current deployed SHA was ca5e9b5; determine installed migrations by query,
+   not by counting migrations at that commit. The operator must supply the
+   database-native backup/restore command; this repository cannot invent one.
+2. **Read-only snapshot.** Use an approved read-only role, statement/lock limits
+   and a repeatable-read transaction. In psql with the approved connection already
+   bound privately, run `\set ON_ERROR_STOP on`, then
+   `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;`,
+   `SET LOCAL statement_timeout = '30s';`,
+   `SET LOCAL lock_timeout = '3s';`, and `SHOW transaction_read_only;`.
+   Verify current_database/current_user privately and match the recorded billing
+   identity. List public columns and installed migration names first. Roll back
+   the read-only transaction if any query times out; do not increase limits
+   silently. Run schema-compatible SELECTs from cutover-inventory.sql and the
+   existing preflight files. That inventory file manages its own read-only
+   transaction: execute it separately, not nested inside another transaction.
+   Keep all-table counts (one row per table), grouped enum/status counts and
+   blocker totals in the release report. Bound identity lists to 100 rows per
+   page ordered by stable ID; retain IDs only in restricted evidence, hash them
+   for a shared report, and record the total versus inspected count. Never emit
+   email/name/phone, tokens, raw webhook or provider response bodies.
+3. **Preserve and rehearse.** Obtain a recoverable database-native snapshot and
+   immutable backup ID. Restore to a newly created isolated target, prove row
+   counts and required identities, and rehearse all pending maintained migrations.
+   Retain provider/local IDs, source/replacement lineage, commercial intents,
+   action/audit receipts, webhook event/hash evidence and active Workflow IDs.
+   Reconcile bounded known-provider reads in the verified mode; inspect scoped
+   unrepresented objects separately and record discovery limits. UNKNOWN is not
+   permission to erase or replay an action. Stop if preservation or restore
+   cannot be demonstrated.
+4. **Hold admissions.** Through the operator's established traffic/deployment
+   controls, stop interactive onboarding, operational/billing/AI/import writes
+   and old maintenance admissions. Hold RAZORPAY_BILLING_WRITES_ENABLED and
+   IMPORT_V2_ENABLED in the held deployment; this is insufficient by itself.
+   Stop all eight scheduled writer populations declared in vercel.json, including
+   import retention and daily dues during the schema window. Apply existing
+   WhatsApp delivery/planner controls and separately prove already-admitted
+   deliveries have settled. An environment edit affects only newly started
+   deployments; verify every old deployment/cron/Workflow population separately.
+5. **Drain and retain ingress.** Record the final invocation/run IDs and prove
+   completion or separately approved cancellation at the runtime. Inspect active
+   database transactions and row leases, but do not treat zero leases, elapsed
+   expiry, a stopped cron schedule, or one quiet query as proof of process exit.
+   Hold Razorpay/Meta ingress through the existing approved ingress mechanism:
+   preserve durable receipt/signature/hash evidence for accepted events; otherwise
+   return a retryable non-2xx and monitor provider retry deadlines. Never return
+   2xx for discarded events. Razorpay documents a 24-hour retry window and
+   possible webhook disablement after repeated failure; choose a much shorter
+   operator-approved window and verify redelivery before reopening. Meta retry
+   behavior and ingress retention must be verified separately. If the existing
+   mechanism cannot retain/retry safely, stop the cutover instead of inventing
+   a new queue or dropping callbacks.
+6. **Record drained counts and run final blockers.** Use the exact predicates
+   below immediately before migration. A second read after the hold must show no
+   unexplained writer movement. Historical unresolved rows may remain only with
+   retained fences and an explicit reviewed disposition; they are not cleared
+   to manufacture zero active work. Nonzero tenant/backfill blockers stop the
+   operation. Pre-44 schemas cannot execute import-target preflights requiring
+   new branch columns; rehearse those gates in dependency order on the restored
+   copy. The maintained migration chain also checks historical blockers before
+   its backfills/constraints. The current workflow applies all pending migrations;
+   it does not offer an interactive pause between them. A rehearsal failure blocks
+   that workflow until separately reviewed repair is complete. Do not edit applied migrations.
+7. **Apply matching release.** After separate push/migration/deployment approval,
+   use the protected production-migrate workflow pinned to the approved release
+   ref, or the approved direct procedure:
+   `pnpm exec node node_modules/prisma/build/index.js migrate deploy`.
+   Bind DIRECT_URL/DATABASE_URL from the approved Production secret source;
+   never use the local bootstrap or seed command. The workflow's normal branch
+   checkout must resolve to the approved SHA; stop if it does not. Generate the
+   matching Prisma client with
+   `pnpm exec node node_modules/prisma/build/index.js generate`, build and verify
+   both Workflow manifest entries, and promote only that compatible code while
+   admissions remain held. Old branch-omitting or unfenced writers must not overlap.
+8. **Compare before reopening.** Require 48 finished, non-rolled-back maintained
+   migrations with matching checksums, zero failed/unvalidated constraints,
+   installed scoped FKs/checks/triggers and unchanged retained identities. Apply
+   the count rules below; explain every allowed backfill delta. Verify a read-only
+   owner/staff/foreign smoke first. After separate canary approval, admit one
+   controlled worker population and one allowed workspace, test normal operations,
+   dues boundaries, import replay/results and callback/redelivery. Observe the
+   existing runtime/ledger alerts for the agreed window before staged reopening.
+9. **Stop / recover.** Identity mismatch, unexpected count movement, nonzero
+   blocker, unknown running process, lost receipt, wrong provider mode, schema /
+   client mismatch, repeated provider dispatch or failed authorization smoke
+   keeps admissions closed. Before new external effects, use only the approved,
+   rehearsed restore/compatible-code procedure. After new provider or domain
+   effects, preserve both evidence sets and forward-repair under a new reviewed
+   change. Old code rollback, blind restore, lease clearing and receipt deletion
+   are not recovery procedures.
+
+| Pre/post count or integrity contract | Required comparison |
+| --- | --- |
+| User, Organization, Branch, Student, Seat, Shift, MultiShift/Component, SeatAllocation, Payment/ResolutionEvent, Staff/overrides/invites | Exact retained table counts before/after migration; operational mutations remain held; zero cross-scope blockers |
+| OwnerTrialGrant, LEGACY/V2 classification, subscriptions/invoices/history, billing changes/audits, offers/grants/catalog bindings | Counts and stable identity sets unchanged; no trial reset, promotion or deletion inferred from inactivity |
+| BillingDatabaseIdentity | Existing singleton identity unchanged on migrate-existing; a fresh DB gets a new identity and requires renewed target-bound approvals |
+| ImportSession/Row/Evaluation/Plan/Run/RunItem | Existing counts and successful item markers unchanged; preserve waiting/partial/failed history and pinned Workflow IDs |
+| ImportTargetReference | If newly installed: equal the migration-defined distinct live row/run/retained-plan targets; account separately for preserved detached historical JSON references; zero FOREIGN_BLOCKER |
+| BillingProviderAction | Newly installed ledger starts empty; old uncertain change/audit fences retained. Existing action rows immutable; any new row only after approved admission |
+| RazorpayWebhookEvent, WhatsAppWebhookReceipt/inbound receipts, outbox/messages/consent/audits | Counts do not decrease; explain only durably accepted ingress growth. Exact event/hash/mode identity retained; no raw payload reporting |
+| Import ANALYZING/active runs, AI generation leases, billing leases/actions, WhatsApp CLAIMED/SUBMITTING/UNKNOWN | Grouped status and lease counts plus runtime invocation evidence. Unresolved external obligations retained; zero provably running incompatible writers, not necessarily zero historical unresolved rows |
+| Required WhatsApp configuration and provider identities | Sender/template/rate-card mappings retained and mode verified before enabling; absent/expired configuration keeps capability held |
+
+Actual pre/post Production counts must be filled by the authorized operator;
+they were **not measured** in this release pass. Failure to obtain them is a
+release gate, not a reason to recommend discarding the database.

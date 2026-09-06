@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { refreshDevelopmentSession } from "./helpers/development-session";
 
 const authStatePath = process.env.PLAYWRIGHT_OWNER_AUTH_STATE;
 const branchId = process.env.PLAYWRIGHT_OWNER_BRANCH_ID;
@@ -9,8 +10,9 @@ const storageState = hasAuthenticatedBranch ? authStatePath! : { cookies: [], or
 const now = "2026-08-18T10:00:00.000Z";
 
 test.use({ storageState });
-test.beforeEach(() => {
+test.beforeEach(async ({ page }) => {
     test.skip(!hasAuthenticatedBranch, "Set PLAYWRIGHT_OWNER_AUTH_STATE and PLAYWRIGHT_OWNER_BRANCH_ID to run import onboarding coverage.");
+    await refreshDevelopmentSession(page);
 });
 
 function fulfillJson(route: Route, body: unknown, status = 200) {
@@ -249,7 +251,7 @@ test("goal chooser stays short and workbook review accepts any header row", asyn
         element.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await page.getByRole("button", { name: /Upload and review full import/i }).click();
-    await expect(page.getByRole("alert")).toContainText("exceed the 4.25 MiB request limit");
+    await expect(page.getByRole("alert").filter({ hasText: "exceed the 4.25 MiB request limit" })).toBeVisible();
     expect(postCount).toBe(2);
 });
 

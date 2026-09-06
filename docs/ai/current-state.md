@@ -1,8 +1,8 @@
 # Lab Lords: Current Architecture and Implementation State
 
-> Last verified: 2026-09-05 (hardening additions; older sections retain their original evidence)
+> Last verified: 2026-09-06 (release verification; older sections retain their original evidence)
 >
-> Repository anchor: pre-customer hardening from ca5e9b5; canonical V2 creation, allocation tenant constraints, replacement dispatch and source-cancellation fences
+> Repository anchor: consolidation through ac639e9; subsequent release verification is linked in the final dated update
 >
 > Scope: repository implementation only
 
@@ -929,3 +929,21 @@ bootstrap applies all maintained migrations and required billing identity;
 Production migration versus fresh cutover remains an evidence-dependent choice
 in the production runbook. Historical LEGACY access and the unresolved daily
 dues cron writability policy are unchanged.
+
+## Release verification update — 2026-09-06
+
+The focused [release-candidate evidence](release-candidate-verification-2026-09-06.md)
+adds real development Clerk sign-in, canonical V2 onboarding, owner/staff/foreign
+browser checks and a real local Workflow import with persisted results. Narrow
+browser-harness corrections refresh real saved sessions, use an owner-scoped
+billing fixture and repair stale/ambiguous selectors. Four dashboard collection
+labels use the existing accessible muted-text color after a demonstrated desktop
+contrast failure; authorization/calculations and schema are unchanged.
+The former empty `lab_lords_final_fresh_test` now contains
+synthetic browser fixtures and must not be treated as an empty bootstrap target.
+
+Read-only Vercel metadata identifies Production at ca5e9b5; database/provider
+inventory is still unavailable. Migrate-existing is the conditional recommendation
+after clean preflights and proven drain; no fresh-cutover preservation evidence
+or Production execution approval has been established. The two stale public
+visual baselines need owner disposition; actual fonts load successfully.

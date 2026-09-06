@@ -1,5 +1,9 @@
 # Architecture consolidation handoff — 2026-09-06
 
+Subsequent authenticated/visual checks, scoped release fixes and rollout gates
+are recorded in the [release-candidate verification](release-candidate-verification-2026-09-06.md).
+The command results below remain the original consolidation evidence.
+
 Local implementation is complete against A–F, with the explicitly permitted
 Production evidence gates below. No Production migration, data/configuration
 change, push, deployment, provider mutation or external-account deletion occurred.
@@ -56,8 +60,11 @@ Final command evidence:
 The browser's accessibility, responsive layout, navigation, public pricing and
 trust-link checks passed. Both visual failures compare stored serif baselines
 against current configured sans-serif rendering. Inspected actual/expected/diff
-images; `git diff 6ee00d0` shows no change to page/layout/styles or stored visual
-baselines. No baselines were regenerated to hide the difference. Authenticated
+images; `git diff 6ee00d0` shows no change to the public landing page, root layout,
+global stylesheet, `styles/` or stored public visual baselines. The subsequent
+release verification separately changed four dashboard label colors; that fix
+does not alter this public typography diagnosis. No baselines were regenerated
+to hide the difference. Authenticated
 role/import/billing/WhatsApp/browser fixtures and the Clerk redirect prerequisites
 were unavailable, so their existing conditional skips remain. Live provider
 behavior was not exercised; mocked provider and database/service tests do not

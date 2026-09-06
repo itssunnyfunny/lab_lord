@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { refreshDevelopmentSession } from "./helpers/development-session";
 import type {
   BillingCheckoutPayload,
   BillingOperationDto,
@@ -19,14 +20,15 @@ test.use({
   storageState: reviewerStorageState,
 });
 
-test.beforeEach(() => {
+test.beforeEach(async ({ page }) => {
   test.skip(
     !hasAuthState,
     "Set PLAYWRIGHT_AUTH_STATE to a restricted Clerk reviewer storage state."
   );
+  await refreshDevelopmentSession(page);
 });
 
-const ORG_ID = "playwright-billing-org";
+const ORG_ID = process.env.PLAYWRIGHT_OWNER_ORG_ID ?? "playwright-billing-org";
 const SETTINGS_PATH = `/org/${ORG_ID}/settings`;
 const CHANGE_ID = "change-playwright-1";
 const TRIAL_END = "2026-09-05T12:00:00.000Z";
@@ -692,7 +694,8 @@ test("labels future authorization separately from a provider-confirmed current p
   await expect(page.getByRole("button", { name: "Authorized for after trial" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Change to Standard after trial" })).toBeEnabled();
   await expect(page.getByText("Authorized after trial", { exact: true })).toBeVisible();
-  await expect(page.getByText("5 September 2026", { exact: true })).toBeVisible();
+  const firstCharge = page.locator("div").filter({ has: page.getByText("First plan charge", { exact: true }) });
+  await expect(firstCharge.last().getByText("5 September 2026", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Current plan" })).toHaveCount(0);
 
   const paidStandard = makeSubscription({
@@ -839,7 +842,7 @@ test("critical payment warnings cannot be dismissed", async ({ page }) => {
   await expect(warning.getByRole("button", {
     name: "Dismiss trial reminder for this session",
   })).toHaveCount(0);
-  await expect(warning.getByText("Manage billing", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Update payment method and retry", exact: true })).toBeVisible();
 });
 
 test("dismissed Checkout is recorded as abandoned with a retryable result", async ({ page }) => {
@@ -1091,7 +1094,7 @@ test("shows pending eMandate cutover and complimentary access without replacing 
   await gotoBilling(page);
   const replacement = page.getByRole("region", { name: "Pending subscription replacement" });
   await expect(replacement.getByText("Standard replacement mandate")).toBeVisible();
-  await expect(replacement.getByText(/eMandate.*planned for 12 September 2026/)).toBeVisible();
+  await expect(replacement.getByText(/eMandate.*planned for Sep 12, 2026/)).toBeVisible();
   await expect(replacement.getByText(/Complimentary upgrade access is active/)).toBeVisible();
   await expect(replacement.getByRole("button", { name: "Undo" })).toBeVisible();
   await expect(page.getByText(/Current billing, invoices, and paid-through dates remain/)).toBeVisible();
