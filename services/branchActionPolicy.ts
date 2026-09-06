@@ -80,4 +80,3 @@ export function buildStaffPermissions(
         return permissions;
     }, {} as Record<StaffAction, boolean>);
 }
-
