@@ -185,7 +185,7 @@ const ACTIONS: ActionDefinition[] = [
         title: "AI Reports",
         subtitle: "Review generated branch reports",
         path: "ai/reports",
-        permissions: ["analytics"],
+        permissions: ["analytics", "view_payments"],
         keywords: ["ai", "reports", "insights", "analysis"],
     },
     {

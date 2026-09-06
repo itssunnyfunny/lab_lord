@@ -1,6 +1,5 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { prisma } from "@/lib/prisma";
-import { EntitlementService } from "@/services/entitlement.service";
-import { StaffService } from "@/services/staff.service";
 import type { Prisma } from "@/app/generated/prisma/client";
 import {
     IMPORT_ENGINE_VERSION,
@@ -21,8 +20,7 @@ function assertValidRevision(revision: number) {
 
 export class ImportEvaluationService {
     static async publishRevision(input: PublishImportEvaluationsInput) {
-        await StaffService.authorize(input.userId, input.branchId, "students");
-        await EntitlementService.assertBranchWritable(input.branchId);
+        await AccessPolicy.authorizeAction(input.userId, input.branchId, "students", undefined, true);
         assertValidRevision(input.targetRevision);
 
         const suppliedRows = new Map(input.evaluations.map(evaluation => [evaluation.rowId, evaluation]));
@@ -99,6 +97,7 @@ export class ImportEvaluationService {
                     const evaluation = suppliedRows.get(row.id)!;
                     return {
                         importRowId: row.id,
+                        branchId: input.branchId,
                         revision: input.targetRevision,
                         engineVersion: IMPORT_ENGINE_VERSION,
                         status: evaluation.status,

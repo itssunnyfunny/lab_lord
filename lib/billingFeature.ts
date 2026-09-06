@@ -46,11 +46,6 @@ export function getRazorpayCheckoutMethodAvailability(): RazorpayCheckoutMethodA
   };
 }
 
-export function isWorkspaceBillingEnabledFor(
-  billingModelVersion: "LEGACY" | "WORKSPACE_V2"
-) {
-  return isWorkspaceBillingEnabled() && billingModelVersion === "WORKSPACE_V2";
-}
 
 function configuredCanaryOrganizations() {
   return new Set(

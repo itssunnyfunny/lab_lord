@@ -1,8 +1,8 @@
+import { executeBillingProviderAction, confirmReconciledBillingProviderAction, isDefinitelyRejectedBillingProviderError } from "@/services/billingProviderAction.service";
 import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import {
   getRazorpayClient,
-  RazorpayApiError,
   resolveRazorpayMode,
   type RazorpaySubscription,
 } from "@/lib/razorpay";
@@ -77,11 +77,7 @@ class ScheduledUndoReconciliationError extends Error {
   }
 }
 
-function isDefinitelyRejectedProviderError(error: unknown) {
-  return error instanceof RazorpayApiError
-    && error.status !== 408
-    && ["AUTHENTICATION", "NOT_FOUND", "RATE_LIMIT", "REQUEST"].includes(error.kind);
-}
+const isDefinitelyRejectedProviderError = isDefinitelyRejectedBillingProviderError;
 
 function assertProviderMutationResponse(value: unknown): asserts value is RazorpaySubscription {
   if (!value || typeof value !== "object") {
@@ -560,7 +556,11 @@ export class BillingMutationService {
         if (current?.billingMutationLeaseToken !== leaseToken) return;
         const sourceChanged = !providerCallStarted
           && error instanceof BillingMutationSourceChangedError;
-        const ambiguousProviderOutcome = providerResponseReceived
+        const durable = await tx.organizationBillingChange.findUnique({ where: { id: claimed.id } });
+        const ambiguousProviderOutcome = Boolean(durable?.providerMutationAdmittedAt)
+          || durable?.failureCategory === MANUAL_REVIEW_CATEGORY
+          || error instanceof BillingManualReviewRequiredError
+          || providerResponseReceived
           || (providerCallStarted && !isDefinitelyRejectedProviderError(error));
         const failedAt = new Date();
         const persisted = await tx.organizationBillingChange.updateMany({
@@ -629,6 +629,7 @@ export class BillingMutationService {
               organizationId: true,
               currentOrganizationId: true,
               razorpaySubscriptionId: true,
+              status: true,
             },
           })
         : null;
@@ -678,6 +679,8 @@ export class BillingMutationService {
       if (finalized.count !== 1) {
         throw new Error("Billing mutation attempt was superseded before finalization");
       }
+      await confirmReconciledBillingProviderAction(tx, { organizationId: change.organizationId,
+        identity: change.id, purpose: "MUTATE", provider: result });
       const providerPlan = change.type === "TRIAL_SUBSCRIPTION_UPDATE"
         ? await tx.saasRazorpayPlan.findFirst({
             where: {
@@ -686,7 +689,7 @@ export class BillingMutationService {
             },
           })
         : null;
-      await tx.organizationSubscription.update({
+      const storedSubscription = await tx.organizationSubscription.update({
         where: { id: sourceSubscription.id },
         data: {
           plan: providerPlan?.plan,
@@ -714,6 +717,18 @@ export class BillingMutationService {
           cancelledAt: cancellationType && !cancellationScheduled ? finalizedAt : undefined,
         },
       });
+      if (change.type === "CANCELLATION") {
+        const dedupeKey = `customer-cancellation:${change.id}`;
+        await tx.organizationSubscriptionHistory.upsert({ where: { dedupeKey }, update: {}, create: {
+          dedupeKey, organizationId: change.organizationId, organizationSubscriptionId: storedSubscription.id,
+          razorpaySubscriptionId: storedSubscription.razorpaySubscriptionId, plan: storedSubscription.plan,
+          fromStatus: sourceSubscription.status, toStatus: storedSubscription.status,
+          source: "CUSTOMER_CANCELLATION", event: "cancel_at_cycle_end",
+          amountSubunits: storedSubscription.amountSubunits, currency: storedSubscription.currency,
+          quantity: storedSubscription.quantity, unitAmountSubunits: storedSubscription.amountSubunits,
+          totalAmountSubunits: storedSubscription.amountSubunits * storedSubscription.quantity,
+        } });
+      }
       if (auditOutcome) {
         await recordBillingMutationAudit(tx, {
           changeId: change.id,
@@ -734,8 +749,15 @@ export class BillingMutationService {
       include: { organizationSubscription: true },
     });
     if (!change || change.status !== "FAILED") throw new Error("Failed billing change not found");
+    if (change.failureCode?.startsWith("SOURCE_CANCELLATION_")) {
+      return BillingReplacementService.reconcileSourceCancellation(change.id);
+    }
     if (change.type !== "UNSUPPORTED_METHOD_CANCELLATION") {
       assertRazorpayBillingWritesEnabled(change.organizationId);
+    }
+    if (change.provisioningIntentVersion === 2 && !change.replacementSubscriptionId
+      && (change.providerMutationAdmittedAt || change.failureCategory === MANUAL_REVIEW_CATEGORY)) {
+      return BillingReplacementService.reconcileProvisioning(change.id);
     }
     const subscription = change.organizationSubscription;
     if (!subscription
@@ -1225,9 +1247,7 @@ export class BillingMutationService {
         await this.renewLeaseForProviderMutation(snapshot.organizationId, leaseToken);
       }
       providerCallStarted = true;
-      const providerSubscription = await getRazorpayClient().cancelScheduledChanges(
-        subscription.razorpaySubscriptionId
-      );
+      const providerSubscription = await executeBillingProviderAction({ organizationId: claimed.organizationId, change: claimed, leaseToken, purpose: "UNDO_SCHEDULE", command: { method: "cancelScheduledChanges", args: [subscription.razorpaySubscriptionId] } });
       providerResponseReceived = true;
       assertProviderMutationResponse(providerSubscription);
       if (!providerConfirmsScheduledUndoComplete(subscription, providerSubscription)) {
@@ -1371,6 +1391,8 @@ export class BillingMutationService {
         },
       });
       await releaseLease(tx, claimed.organizationId, leaseToken);
+      await confirmReconciledBillingProviderAction(tx, { organizationId: claimed.organizationId,
+        identity: claimed.id, purpose: "UNDO_SCHEDULE", provider: providerSubscription });
       return tx.organizationBillingChange.findUniqueOrThrow({ where: { id: claimed.id } });
     });
   }
@@ -1438,7 +1460,6 @@ export class BillingMutationService {
     if (change.type !== "UNSUPPORTED_METHOD_CANCELLATION") {
       assertRazorpayBillingWritesEnabled(change.organizationId);
     }
-    const razorpay = getRazorpayClient();
     const intendedQuantity = change.toQuantity ?? subscription.quantity;
     let target = {
       providerPlanId: subscription.razorpayPlanId,
@@ -1517,9 +1538,9 @@ export class BillingMutationService {
     if (change.type === "UNSUPPORTED_METHOD_CANCELLATION") {
       await this.renewLeaseForProviderMutation(change.organizationId, leaseToken);
       onProviderCallStarted();
-      const provider = await razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
+      const provider = await executeBillingProviderAction({ organizationId: change.organizationId, change, leaseToken, purpose: "MUTATE", command: { method: "cancelSubscription", args: [subscription.razorpaySubscriptionId, {
         cancel_at_cycle_end: false,
-      });
+      }] } });
       return {
         provider,
         subscriptionId: subscription.razorpaySubscriptionId,
@@ -1535,9 +1556,9 @@ export class BillingMutationService {
       const immediate = subscription.status === "CREATED" || subscription.status === "AUTHENTICATED";
       await this.renewLeaseForProviderMutation(change.organizationId, leaseToken);
       onProviderCallStarted();
-      const provider = await razorpay.cancelSubscription(subscription.razorpaySubscriptionId, {
+      const provider = await executeBillingProviderAction({ organizationId: change.organizationId, change, leaseToken, purpose: "MUTATE", command: { method: "cancelSubscription", args: [subscription.razorpaySubscriptionId, {
         cancel_at_cycle_end: !immediate,
-      });
+      }] } });
       return {
         provider,
         subscriptionId: subscription.razorpaySubscriptionId,
@@ -1560,7 +1581,7 @@ export class BillingMutationService {
 
     onProviderCallStarted();
     const scheduleChangeAt = IMMEDIATE_TYPES.has(change.type) ? "now" as const : "cycle_end" as const;
-    const provider = await razorpay.updateSubscription(subscription.razorpaySubscriptionId, {
+    const provider = await executeBillingProviderAction({ organizationId: change.organizationId, change, leaseToken, purpose: "MUTATE", command: { method: "updateSubscription", args: [subscription.razorpaySubscriptionId, {
       plan_id: change.toPlan ? target.providerPlanId : undefined,
       quantity: change.toQuantity != null ? targetQuantity : undefined,
       start_at: change.type === "TRIAL_SUBSCRIPTION_UPDATE"
@@ -1568,7 +1589,7 @@ export class BillingMutationService {
         : undefined,
       schedule_change_at: scheduleChangeAt,
       customer_notify: true,
-    });
+    }] } });
     return {
       provider,
       subscriptionId: subscription.razorpaySubscriptionId,

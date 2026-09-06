@@ -1,0 +1,314 @@
+# Pre-customer hardening execution note
+
+Baseline: `ca5e9b50b05bff49d81becafe27417a1c343801c`, branch `main`, clean worktree.
+No complete pre-change baseline suite was run. Production inventory, customer data, and provider
+mandates are unknown; no Production/provider operation is authorized or needed
+for local engineering.
+
+Sequence: A (#1–3 creation and allocation boundaries), B (#4–8 durable billing),
+C (#11,14,16 authorization and bounded analytics), D (#12,13,15,9,10,17).
+Each coherent slice gets targeted tests, documentation, diff review, and a local
+commit. Full gates run at milestones. No push or deployment.
+
+## Slice A evidence and contract
+
+- #1 confirmed: organization POST/service omits commercial state and defaults to
+  LEGACY. Its client helper has no runtime caller. Canonical onboarding also
+  selects LEGACY when the V2 release flag is disabled. Retire the alternate
+  creation path; require enabled V2 onboarding and explicitly persist V2 plus
+  the selected plan and existing once-per-owner trial. Existing legacy records
+  and their deliberate Basic writable fallback stay supported.
+- #2 confirmed: bulk shift deletion resolves the target by bare ID.
+- #3 confirmed: manual deletion trusts arbitrary allocation IDs, permits an
+  incomplete/empty set, and reads source/count outside the mutation transaction.
+  Allocation creation already uses serializable transactions, including import
+  execution. Deletion must participate in the same concurrency protocol.
+- Preserve same-branch ownership, exact active source membership, allocation
+  history, bundle representation, capacity/overlap, and at least one active shift.
+- Planned tests: disabled creation, canonical V2/trial, foreign targets, invalid
+  exact sets, rollback, bundles, and real concurrent allocation/deactivation.
+- Evaluate branch-scoped allocation foreign keys separately from authorization;
+  never guess a backfill for inconsistent historical rows.
+
+## Approval-dependent operations
+
+Production deployment, migrations, preflight inventory, provider actions, and
+legacy data removal require separate approval. None has been performed.
+
+## Slice A implemented and validated
+
+#1–3 implemented, including branch-scoped allocation foreign keys. Consolidated
+bulk/manual resolution and the serializable allocation transaction boundary.
+Deletion preview accounts for released bundle siblings. The independent review
+identified a seed caller branch mismatch and the stale capacity preview; both
+were corrected and the preview has a regression test. Seed callers were updated
+for the new required column; seed data was not executed or redesigned.
+
+Validation on a newly created Docker PostgreSQL container, bound only to
+`127.0.0.1:55439`, with database identity and empty initial tables verified:
+
+- `pnpm test tests/unit/api/organization-creation.route.test.ts`: reproducer
+  failed before the fix and passes (2 tests) afterward.
+- `pnpm test` with the ten affected integration files: 140 tests passed,
+  including raw database foreign-key and pre-change migration fixture checks.
+- `pnpm test tests/integration/services/shift-hardening.test.ts
+  tests/integration/services/shift.test.ts`: 27 passed after review corrections,
+  including controlled post-source-read inserts and concurrent last-shift removal.
+- Payment, admission flow, billing-cycle, migration and endpoint checks: 54
+  passed on their combined run; the two initially failing synchronization tests
+  were corrected to clear PostgreSQL's cached statistics snapshot and then passed.
+- `pnpm exec tsc --noEmit --pretty false`: passed.
+- `pnpm lint`: passed, with two warnings in generated Workflow/coverage assets.
+- `pnpm build`: passed with Workflow manifest verification after sandbox rerun.
+  The initial sandbox attempt was blocked by parent-directory filesystem access.
+- `pnpm test:workflow`: 1 passed.
+- `pnpm exec node node_modules/prisma/build/index.js validate` and `generate`:
+  passed. Both `pnpm prisma` and `pnpm exec prisma` failed to resolve the local
+  Windows shim, so the same installed CLI was invoked through Node via pnpm.
+- `pnpm exec node node_modules/prisma/build/index.js migrate deploy`: all 40
+  migrations passed from empty `lab_lords_hardening_fresh_test`; the new migration
+  also applied over pre-change application data in `lab_lords_hardening_test`.
+  SQL fixture tests separately prove history preservation and blocker rollback.
+- `git diff --check`: passed. Broader `pnpm test`: 249 files, 1,913 tests passed.
+
+The documented `pnpm test -- <file>` form unexpectedly ran all files with this
+pnpm/Vitest combination against the deliberately unreachable new loopback target.
+It was stopped; those connection failures are setup failures, not a baseline
+regression result. All subsequent filtering uses `pnpm test <file>`.
+
+## Continuation evidence
+
+The next slice is #4–8. Read-only investigation confirms replacement provisioning
+does not update the outer dispatch flag; source cancellation has no durable
+processing fence; checkout retirement trusts local CREATED; reconciliation can
+return stale candidate lifecycle when commercial evidence is pending; and legacy
+cancellation drops the client key and reverses on local-finalization failure.
+Current Razorpay lifecycle documentation distinguishes recoverable HALTED from
+terminal CANCELLED/COMPLETED/EXPIRED; cancellation has no observed conditional
+status precondition. Verify assumptions before modifying those paths.
+
+Slice A was committed locally as `e5c211b`.
+
+## Slice B dispatch hardening
+
+#4 now records the replacement protocol before fallible provider reads, freezes
+the provider scheduling tuple before dispatch, and records one-time admission
+under the organization lease and exact attempt. An accepted response binds its
+provider ID before local candidate finalization. Recovery through both the
+service and owner API is read-only: it adopts one exact uncharged CREATED
+candidate and records an immutable adopted-resolution audit. Empty discovery,
+duplicates, authorized/charged objects, and old attempts without dispatch proof
+remain manual review. No duplicate is automatically cancelled. New client keys
+cannot bypass unresolved replacement work. A known pre-dispatch read failure
+remains retryable after the existing source-state checks.
+
+#5 has a separate source-cancellation processing attempt, expiry classification,
+exact finalization fence, and immutable admission audit. Response loss, failed
+local finalization, and expired workers do not resubmit cancellation. Candidate
+reconciliation cannot clear that action; the immutable audit also prevents replay
+after unrelated lifecycle/error fields change. Confirmed successful scheduling
+is retained and repeated calls return that result. At commit `0feebe5`, ambiguous
+source recovery remained unfinished. The Slice B completion below closes that
+checkpoint with source-specific read-only confirmed-result recovery.
+
+No billing schema, pricing, trial, environment, or provider configuration change.
+No provider network calls were made by these tests. Existing fake Razorpay
+interfaces drive real PostgreSQL fault-injection and ownership checks.
+
+Review corrections addressed a pre-dispatch retry regression, candidate
+reconciliation clearing the source fence, and a missing successful-recovery
+audit. Test cleanup was fixed after a leaked method spy affected subsequent
+tests; a unit transaction mock was extended for the new audit read. No test
+expectation was weakened.
+
+Validation:
+
+- `pnpm test tests/integration/services/billing-mutation.test.ts`: 52 passed
+  before adding the final successful source-cancellation control.
+- `pnpm test billing`: 33 files, 398 tests passed before that final control.
+- `pnpm lint`: passed, two generated Workflow/coverage warnings.
+- `pnpm exec tsc --noEmit --pretty false`: passed after correcting a nullable
+  result assertion in the new test.
+- `pnpm build`: passed, including TypeScript and both import Workflow manifests;
+  initial sandbox build failed on Workflow parent-directory access and the
+  approved rerun succeeded with the isolated database override.
+- Final `pnpm test`: **249 files, 1,922 tests passed**, including the new
+  successful source-cancellation control (272.80 seconds).
+- Final `pnpm test:workflow`: 1 passed.
+- Final `pnpm exec tsc --noEmit --pretty false` and `git diff --check`: passed.
+
+The disposable container `lab-lords-hardening-20260905` remains available on
+loopback port `55439`; the user's original `lab_lords` container was not used or
+changed. Test databases created here are `lab_lords_hardening_test`,
+`lab_lords_hardening_fixture_test`, and `lab_lords_hardening_fresh_test`.
+Reconfirm the container and database identity before reusing them. The test
+invocation used process overrides, without editing environment files:
+
+```powershell
+$env:TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:55439/lab_lords_hardening_test'
+$env:TEST_DATABASE_RESET_CONFIRM='lab_lords_hardening_test'
+$env:ACCELERATE_URL=''
+pnpm test
+```
+
+## Slice B completion
+
+Continuation after local commit `0feebe5` completes #5–8. Source recovery reuses
+an exact terminal provider source or a persisted confirmed cancellation response
+plus its matching schedule. It cannot replay cancellation or use candidate
+authorization to clear the source action. Since the provider API has no proven
+conditional cancel-if-unauthorized operation, initial checkout retirement now
+waits for provider-confirmed terminality, including when a fresh read is CREATED.
+Negative candidate lifecycle is projected without granting paid entitlement;
+source cancellation independently requires fresh exact candidate authorization.
+HALTED does not trigger terminal deadline cleanup. Legacy cancellation preserves
+the supplied client key, durable intent, and customer history without reversal.
+
+Read-only candidate review found a CREATED authorization regression and HALTED
+deadline classification; both were corrected. Regression controls cover CREATED
+and AUTHENTICATED with exact authorized payments and HALTED through deadline
+reconciliation. `pnpm test billing generation-migration` passed 34 files / 409
+tests; `pnpm test generation-callers billing-mutation` then passed 2 files / 65
+tests, including the additional CREATED control and real AI caller races.
+No new billing schema or environment requirements.
+
+## Slice C completed
+
+#11 confirmed staff projections checked permission but not entitlement. A shared
+projection now protects identities and counts on detail and settings responses.
+#14 confirmed the complete AI report (including cached narrative) was reachable
+without payment-view permission; the route and UI gates now require it.
+#16 confirmed unbounded daily loops; real calendar-date/order validation and a
+31-point limit run before all three helper loops and before route dispatch.
+The limit preserves current month-to-date and 30-day UI presets. No schema,
+environment or commercial policy change. Read-only review found no remaining
+defect in these paths. `pnpm test trend-range ai-entitlement
+branch-details-projection branchPageAccess`: 5 files / 29 tests passed, including
+route 400-before-query and each helper's pre-query rejection.
+
+## Slice D completed
+
+#9 confirmed creation draft validation skipped null-time shifts; it now shares
+canonical full-day overlap semantics. #10 confirmed live component edits could
+invalidate bundle allocations; serializable updates reject component-set changes
+while active allocations exist and preserve name/price/order edits. #17 confirmed
+substring aliases and missing row issues; exact aliases and runtime validation
+now report unsupported explicit methods, including cheque.
+
+#12 confirmed batch-level receipt identity allowed repeated report challenge
+attempts. Sender/message identity is now claimed in the challenge transaction.
+#13 and #15 confirmed unfenced AI takeover and non-atomic draft publication;
+branch/kind tokens, expiry checks, owned cleanup, admission cooldown and atomic
+draft batches now share a small AI-specific helper. The unique draft index blocks
+ambiguous historical duplicates. Gemini remains outside database transactions.
+
+Read-only review found draft retry metadata and report takeover still followed
+older timestamps. Both callers now use durable ownership/cooldown, with real
+PostgreSQL caller tests proving six-minute expired report takeover, rejected
+late completion, single concurrent draft generation, and GET/POST cooldown after
+failed publication. The runbook requires drained old writers; mixed unfenced
+old/new generation and confirmation workers are unsupported.
+
+The additive migration applied to the isolated existing test database and all
+41 migrations applied successfully to empty
+`lab_lords_hardening_final_fresh_test`. Representative pre-change SQL fixtures
+prove draft preservation and duplicate-blocker rollback. No environment, pricing,
+trial, student dues, provider configuration or Production changes.
+
+## Completion validation and handoff
+
+Implementation commits after baseline `ca5e9b5`: `e5c211b` (A), `0feebe5`
+(initial B fences), `9c9858b` (B completion), `6f4356b` (C), `370a13b` (D).
+The final validation commit also adds the healthy-source/non-viable-candidate
+control and corrects the sidebar test to require hiding the whole protected
+report. All changes are local; no branch switch, push or deployment occurred.
+
+Commands and observed results for the completed continuation:
+
+- `pnpm test billing generation-migration`: 34 files / 409 passed.
+- `pnpm test generation-callers billing-mutation`: 2 files / 65 passed.
+- `pnpm test trend-range ai-entitlement branch-details-projection branchPageAccess`:
+  5 files / 29 passed.
+- `pnpm test billing-mutation multiShift hardening-inputs BranchSidebar`:
+  4 files / 94 passed, including the final regression controls.
+- First full `pnpm test`: 255 files / 1,966 tests passed; one sidebar expectation
+  failed because it still expected the now-protected AI report to be visible.
+  The corrected expectation passed in the targeted run above. No implementation
+  protection or positive permission control was removed to satisfy the test.
+- Final `pnpm test`: 255 files / 1,966 passed with no assertion failures, but
+  exit 1 because Vitest timed out starting the worker for
+  `generation-migration.test.ts`. `pnpm test generation-migration` then passed
+  that file's two tests (exit 0). Thus all 256 files / 1,968 distinct final tests
+  passed across the full attempt and isolated retry. The final full invocation
+  itself was not green; its remaining failure was worker startup, not a migration
+  or application assertion. A clean single-invocation CI run remains a release
+  verification gate; no tests were skipped, weakened or disabled.
+- `pnpm lint`: passed, zero errors and two existing unused-disable warnings in
+  generated Workflow/coverage assets.
+- `pnpm exec tsc --noEmit --pretty false`: passed after final code/test edits.
+- `pnpm build`: passed, including TypeScript, static generation and both import
+  Workflow manifests. The initial sandbox build failed on Workflow parent-folder
+  access; the permissions rerun passed with the isolated database override.
+- `pnpm test:workflow`: 1 passed.
+- `pnpm exec node node_modules/prisma/build/index.js validate` and `generate`:
+  passed using the installed CLI through Node because of the Windows shim issue.
+- `pnpm exec node node_modules/prisma/build/index.js migrate deploy`: all 41
+  migrations applied to the newly created empty local database named above.
+  The new migration also applied over the existing isolated test database.
+  The real SQL fixture tests preserve pre-change rows and reject duplicate
+  logical drafts without deleting history.
+- Local Markdown link validation: all 25 targets in the five updated canonical
+  guidance/execution documents exist. `git diff --check`: passed.
+
+Tests cover real PostgreSQL tenant constraints, transactional rollback and
+concurrency, fake-provider response loss/finalization faults, report/draft stale
+owners, scoped inbound identities and unchanged anniversary/later-unpaid dues.
+No live Razorpay/Meta/Gemini validation, browser E2E, coverage run, Production
+inventory, data cleanup, provider mutation or operational deployment was done.
+The runbook contains exact schema preflights, ordering, writer compatibility,
+verification and forward-repair requirements. Legacy compatibility, pricing,
+trial policy, student payment generation and provider-authoritative access stay
+intact. Live-checkout holds and unresolved billing manual-review states are
+intentional conservative behavior, not permission to mutate provider objects.
+
+## Findings checkpoint
+
+| Finding | Status | Continuation |
+| --- | --- | --- |
+| #1 Legacy creation | Fixed | Canonical V2 onboarding; retired alternate creator. |
+| #2 Foreign bulk target | Fixed | Same-branch validation and database constraints. |
+| #3 Arbitrary/incomplete manual set | Fixed | Exact transactional set, bundle release, serializable concurrency. |
+| #4 Replacement create replay | Fixed | Durable admission, frozen intent, fenced read-only recovery. |
+| #5 Source cancellation ambiguity | Fixed | Read-only recovery from exact terminal source or retained confirmed cancellation plus matching schedule; no replay. |
+| #6 Checkout retirement | Fixed | Live provider checkouts remain held until provider-confirmed terminal state. |
+| #7 Replacement viability | Fixed | Current negative lifecycle independent of settlement; fresh viable candidate required before source cancellation; HALTED recoverable. |
+| #8 Legacy cancellation | Fixed | Client key, cancellation intent and history use durable operations; no compensation. |
+| #9 Full-day overlap | Fixed | Creation drafts use canonical full-day overlap semantics. |
+| #10 Allocated MultiShift edits | Fixed | Serializable component-set guard; non-component edits preserved. |
+| #11 Staff projection entitlement | Fixed | Shared entitled detail/settings projection. |
+| #12 WhatsApp message deduplication | Fixed | Sender/message identity and challenge mutation commit atomically. |
+| #13 AI ownership fencing | Fixed | Durable token, expiry, fenced publication and owned release. |
+| #14 AI payment-derived response | Fixed | Whole report requires payment-view permission; UI aligned. |
+| #15 Draft generation ownership | Fixed | Atomic cooldown admission, batch publication and logical uniqueness. |
+| #16 Bounded analytics dates | Fixed | Real dates, ordered range, 31 daily points, before queries. |
+| #17 Import payment aliases | Fixed | Explicit aliases; unsupported nonempty values create row errors. |
+
+All 17 findings were confirmed and fixed; none is classified as already fixed
+at baseline. No local implementation finding remains open.
+
+Razorpay HALTED is recoverable and is not treated as universally terminal.
+Provider docs consulted:
+[subscription states](https://razorpay.com/docs/payments/subscriptions/states/)
+and [cancellation API](https://razorpay.com/docs/api/payments/subscriptions/cancel-subscription/).
+No documented conditional cancellation guarantee was established. Keep the
+conservative live-checkout hold until provider-confirmed terminality.
+
+The allocation migration and application require coordinated writer drain,
+preflight counts, verified backfill, constraints, and deployment as documented
+in the runbook. Billing protocol rollout also requires draining old mutators
+and inventorying their unresolved source actions. Production inventory,
+migration, operational recovery, provider mutations, and deployment all remain
+approval-dependent and were not performed. No Production readiness claim is
+made from local checks alone. The next highest-value work is an explicitly
+approved read-only Production inventory and rollout rehearsal using the runbook;
+no destructive data cleanup or legacy removal is implied.

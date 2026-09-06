@@ -1,3 +1,5 @@
+import { AccessPolicy, type BranchAccessContext } from "@/services/accessPolicy.service";
+import { claimGeneration, publishGeneration, releaseGeneration } from "@/ai/generationLease";
 import { readBranchSnapshotForAI } from "../readers/branch.reader"
 import { detectBranchRisks } from "../riskDetection/branchRiskDetector"
 import { suggestActionsForBranch } from "../actionSuggestions/branchActionSuggester"
@@ -72,8 +74,9 @@ function buildReportSnapshot(snapshot: Awaited<ReturnType<typeof readBranchSnaps
 }
 
 export async function runBranchAI(
-    branchId: string
+    access: BranchAccessContext
 ): Promise<BranchAIResponse> {
+    const { branchId } = await AccessPolicy.recheckCapability(access, "aiGenerate");
     const now = new Date();
 
     // 0️⃣ Check Caching & Rate Limiting & Concurrency
@@ -103,16 +106,23 @@ export async function runBranchAI(
         ? startOfDay(lastReport.createdAt).getTime() === startOfDay(now).getTime()
         : false;
 
-    // Check if currently running (and not stuck)
+    const lease = await prisma.branchGenerationLease.findUnique({
+        where: { branchId_kind: { branchId, kind: "REPORT" } }
+    });
+    // Durable ownership controls takeover; the timeout only covers pre-migration status.
     const isRunning = branch.aiStatus === "RUNNING";
-    const runsForTooLong = isRunning && timeSinceLastCall > STUCK_TIMEOUT_MS;
-    const actuallyRunning = isRunning && !runsForTooLong;
+    const actuallyRunning = lease
+        ? Boolean(lease.token && lease.leaseUntil && lease.leaseUntil > now)
+        : isRunning && timeSinceLastCall <= STUCK_TIMEOUT_MS;
+    const runsForTooLong = isRunning && !actuallyRunning;
 
     // Derived fields for response
     const nextAllowedCallAt = new Date(lastCalledAt + CACHE_TTL_MS).toISOString();
     const responseExtras = {
         hasPendingChanges: hasDataChanged,
-        nextAllowedCallAt: isRateLimited ? nextAllowedCallAt : now.toISOString()
+        nextAllowedCallAt: actuallyRunning && lease?.leaseUntil
+            ? new Date(Math.max(lease.leaseUntil.getTime(), isRateLimited ? lastCalledAt + CACHE_TTL_MS : 0)).toISOString()
+            : isRateLimited ? nextAllowedCallAt : now.toISOString()
     };
 
     let shouldRun = true;
@@ -138,28 +148,10 @@ export async function runBranchAI(
         shouldRun = false;
     }
 
-    // 🛑 CONCURRENCY LOCK ACQUISITION
-    // If we decided to run, we must transition IDLE -> RUNNING atomically
-    if (shouldRun) {
-        // If it was "stuck" (runsForTooLong), we reset it. 
-        // Or if it was IDLE, we set it to RUNNING.
-        const updateResult = await prisma.branch.updateMany({
-            where: {
-                id: branchId,
-                // Optimistic lock: ensure it matches what we read (unless we are forcing a reset of a stuck job)
-                aiStatus: runsForTooLong ? "RUNNING" : "IDLE"
-            },
-            data: {
-                aiStatus: "RUNNING",
-                aiLastCalledAt: now // Update timestamp to mark start of this run
-            }
-        });
-
-        if (updateResult.count === 0 && !runsForTooLong) {
-            console.log(`[AI CONCURRENCY] Blocked for ${branchId} (Race condition: IDLE check failed)`);
-            shouldRun = false;
-        }
-    }
+    const token = shouldRun
+        ? await claimGeneration(branchId, "REPORT", 0, now, branch.aiLastCalledAt)
+        : null;
+    if (shouldRun && !token) shouldRun = false;
 
     if (!shouldRun && lastReport) {
         return {
@@ -167,6 +159,8 @@ export async function runBranchAI(
             ...responseExtras
         };
     }
+
+    if (!token) throw new Error("AI is currently generating. Please wait.");
 
     console.log(`[AI RUNNING] Generating new AI result for ${branchId}`);
 
@@ -212,23 +206,16 @@ export async function runBranchAI(
         }
 
         // Save report to DB
-        await prisma.branchAIReport.create({
+        await publishGeneration(branchId, "REPORT", token, tx => tx.branchAIReport.create({
             data: {
                 branchId,
                 data: result as unknown as Prisma.InputJsonValue
             }
-        });
+        }));
 
         return result;
 
     } finally {
-        // 🏁 RELEASE LOCK -> IDLE
-        // Only release if WE were the ones running it (which we know because we got past the lock check)
-        if (shouldRun) {
-            await prisma.branch.update({
-                where: { id: branchId },
-                data: { aiStatus: "IDLE" }
-            });
-        }
+        await releaseGeneration(branchId, "REPORT", token);
     }
 }

@@ -113,6 +113,16 @@ operator workstation or CI runner that can access credentials.
 - Permission-shaped responses must not expose unrelated counts, settings,
   students, seats, payments, staff, or other branch data.
 - User-initiated mutations must enforce entitlement and writable state.
+- New organizations must be created through canonical V2 onboarding, with
+  explicit commercial state and the existing once-per-owner trial contract.
+  A disabled release flag must not select legacy writable access for new records.
+- Shift deactivation must transactionally authorize its source, scope every
+  target to the same branch, and validate exact active allocation membership.
+  It shares the serializable allocation-writer protocol so concurrent inserts
+  cannot escape source-set validation or leave partial active bundles.
+- Allocation student, seat, shift, and optional MultiShift relationships must
+  satisfy database-enforced branch-scoped foreign keys in addition to service
+  authorization. A migration must stop on inconsistent historical relationships.
 - Payment-resolution events are append-only domain evidence. They must be
   created only inside the authorized payment transaction, derive `branchId`
   and snapshot fields from the payment being changed, and must not be exposed
@@ -220,6 +230,18 @@ authentication boundaries, not open application routes.
 - Billing mutation idempotency keys, payload matching, per-organization FIFO
   ordering, locks, leases, stale-worker protection, and replacement lineage must
   remain durable.
+- Replacement provisioning records its protocol before provider reads, freezes
+  scheduling intent before dispatch, and admits creation once. Unknown creation
+  outcomes and unresolved old attempts cannot create again. Discovery absence
+  is not proof of rejection; duplicates require review without cancellation.
+- Source cancellation records an immutable admission audit under the exact
+  organization lease and processing attempt. Candidate authorization or
+  settlement cannot resolve that source action or erase its replay fence.
+  Source recovery uses read-only terminal truth or a durably confirmed
+  cancellation response plus matching current scheduled state. A scheduled-change
+  flag alone cannot prove cancellation. Checkout retirement never cancels a live
+  mandate, even when local or fetched state says CREATED. Legacy cancellation
+  uses the same durable operation and retains the client's key and history.
 - Authorized replacement access must remain provisional and fail closed when
   lineage, plan, quantity, authorization, or grace-period checks fail.
 - Billing feature switches and Live canaries must default to held behavior.
@@ -483,6 +505,26 @@ authentication boundaries, not open application routes.
 
 ### Cron, imports, and AI
 
+- Report and draft generation use independent branch-scoped durable tokens.
+  Claim and cooldown reservation precede Gemini; only an unexpired matching
+  owner may publish, and release cannot clear a successor. No provider call
+  occurs inside the publication transaction. Draft replacement is one atomic
+  batch with a unique branch/student/action/language key.
+- Signed inbound report confirmation and report-stop commands are deduplicated
+  by sender plus provider message ID inside the same transaction as challenge
+  mutation. A different batch envelope cannot spend another confirmation attempt.
+  Receipts contain identifiers only, never message text or confirmation codes.
+- Nonempty unsupported import payment methods produce visible row errors;
+  substring matching and silent fallback are forbidden.
+
+- Complete branch AI reports, including cached narratives, aggregates and
+  snapshots, require both `analytics` and `view_payments`; no partial redaction
+  substitutes for authorization. Branch detail GET and settings responses expose
+  staff identities/counts only with `manage_branch` and `STAFF_MANAGEMENT`.
+- Trend routes and each trend helper reject invalid, reversed or over-31-point
+  daily ranges before entering their snapshot-query loops. This bounds work;
+  it does not replace tenant authorization.
+
 - Cron routes must fail closed when `CRON_SECRET` is absent or incorrect. The
   bearer value must never appear in a URL, log, screenshot, report, or error.
 - Scheduled and retryable operations must tolerate duplicate or overlapping
@@ -671,6 +713,12 @@ Treat these as review context and remediation candidates, not accepted risks:
 
 ## Review conduct
 
+- Operational payment/history, fee-source, draft/student and bundle-component
+  relationships now have composite branch foreign keys, alongside allocations.
+  Direct database writes must satisfy them; inconsistent historical references
+  block migration. This adds integrity, not user authorization or permission to
+  reassign historical ownership.
+
 - Trace findings from an attacker-controlled source through authorization,
   tenant scoping, data access, mutation, external action, and observable impact.
 - Review route and service layers together; a safe UI or route wrapper does not
@@ -685,3 +733,27 @@ Treat these as review context and remediation candidates, not accepted risks:
   sink, concrete impact, existing controls, and a minimal remediation direction.
 - Keep proof material private and redact secrets, raw personal data, and
   provider payloads.
+
+SaaS subscription mutation access is restricted to the durable per-action
+executor and adapter, enforced by the billing-dispatch-boundary test. Action
+receipts preserve immutable intent, mode, independent dispatch ownership and
+uncertain outcomes. A stored provider response is not domain authorization or
+paid entitlement. Reconcilers may resolve only the action whose exact evidence
+they validated; candidate evidence cannot resolve a source cancellation.
+# Shared access and analysis ownership consolidation — 2026-09-06
+
+Interactive policy is centralized in `services/accessPolicy.service.ts` with
+pure role/override definitions and shared capability requirements. Facades
+delegate; client DTOs cannot issue contexts. Direct AI services reject copied
+or fabricated contexts and recheck mutable policy. Analytics route imports
+must use the protected service rather than the internal raw read layer.
+Billing recovery requires ownership but does not require currently paid access;
+provider-authoritative billing checks remain separate. Machine entry points
+retain their documented authenticated, scoped, idempotent protocols; they do
+not fabricate interactive contexts or acquire a generic entitlement bypass.
+
+Import analysis now admits a session-scoped token and expiry atomically.
+Publication and failure cleanup require that token and the original revision;
+duplicate or superseded attempts cannot publish run failure. The old uncalled
+V1 executor and its unfenced retry/compensation path have been removed. Drain
+old analysis/Workflow workers before installing migration 47 and compatible code.

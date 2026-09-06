@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const tx = {
+    whatsAppInboundMessageReceipt: { createMany: vi.fn() },
     $queryRaw: vi.fn(),
     whatsAppSender: {
       updateMany: vi.fn(),
@@ -152,6 +153,7 @@ function templateEnvelope(field: string, value: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  mocks.tx.whatsAppInboundMessageReceipt.createMany.mockResolvedValue({ count: 1 });
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
   vi.stubEnv("NODE_ENV", "test");

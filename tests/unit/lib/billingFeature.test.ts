@@ -6,7 +6,6 @@ import {
   BillingWritesDisabledError,
   getRazorpayCheckoutMethodAvailability,
   isWorkspaceBillingEnabled,
-  isWorkspaceBillingEnabledFor,
   RAZORPAY_BILLING_WRITES_FLAG,
   RAZORPAY_MULTI_METHOD_SUBSCRIPTIONS_FLAG,
   WORKSPACE_BILLING_FLAG,
@@ -77,11 +76,6 @@ describe("workspace billing feature flag", () => {
     expect(isWorkspaceBillingEnabled()).toBe(false);
   });
 
-  it("requires both the server flag and an upgraded organization", () => {
-    process.env[WORKSPACE_BILLING_FLAG] = "true";
-    expect(isWorkspaceBillingEnabledFor("LEGACY")).toBe(false);
-    expect(isWorkspaceBillingEnabledFor("WORKSPACE_V2")).toBe(true);
-  });
 });
 
 describe("Razorpay multi-method subscriptions feature flag", () => {

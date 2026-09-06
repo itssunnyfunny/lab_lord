@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { validateRequiredPhone, validateRequiredText } from "@/lib/formValidation";
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import {
     assertKnownFields,
     assertPlainObject,
@@ -9,7 +9,7 @@ import {
     optionalText,
     requiredPhone,
 } from "@/lib/settingsValidation";
-import { CreateOrganizationDto, UpdateOrganizationSettingsDto, WEEK_STARTS_ON } from "@/types";
+import { UpdateOrganizationSettingsDto, WEEK_STARTS_ON } from "@/types";
 import { EntitlementService } from "@/services/entitlement.service";
 import type { Prisma } from "@/app/generated/prisma/client";
 import {
@@ -44,33 +44,11 @@ const ORGANIZATION_OWNER_VIEW = {
 } satisfies Prisma.OrganizationInclude;
 
 export class OrganizationService {
-    static async createOrganization(data: CreateOrganizationDto) {
-        const nameResult = validateRequiredText(data.name, "Organization name", 120);
-        if (!nameResult.ok) throw new Error(nameResult.error);
-        const contactPhoneResult = validateRequiredPhone(data.contactPhone, "Contact phone");
-        if (!contactPhoneResult.ok) throw new Error(contactPhoneResult.error);
-
-        return await prisma.organization.create({
-            data: {
-                name: nameResult.value,
-                ownerId: data.ownerId,
-                contactPhone: contactPhoneResult.value,
-            },
-        });
-    }
-
     static async getOrganizationsByUserId(userId: string) {
         return await prisma.organization.findMany({
             where: { ownerId: userId },
             include: { _count: { select: { branches: true } } },
             orderBy: { createdAt: "desc" },
-        });
-    }
-
-    static async getOrganizationById(id: string) {
-        return await prisma.organization.findUnique({
-            where: { id },
-            include: ORGANIZATION_OWNER_VIEW,
         });
     }
 
@@ -81,12 +59,7 @@ export class OrganizationService {
     }
 
     static async getOrganizationForOwnerAccess(id: string, userId: string) {
-        const org = await prisma.organization.findFirst({
-            where: { id, ownerId: userId },
-            include: ORGANIZATION_OWNER_VIEW,
-        });
-        if (!org) throw new OrganizationAccessNotFoundError();
-        return org;
+        return AccessPolicy.readOwnerOrganization(userId, id, ORGANIZATION_OWNER_VIEW);
     }
 
     static parseSettingsPayload(body: unknown): UpdateOrganizationSettingsDto {
@@ -148,20 +121,12 @@ export class OrganizationService {
     }
 
     private static async assertOwnerCanWrite(id: string, userId: string) {
-        const org = await prisma.organization.findFirst({
-            where: { id, ownerId: userId },
-            select: { id: true },
-        });
-        if (!org) throw new OrganizationAccessNotFoundError();
-        await EntitlementService.assertOrganizationWritable(id);
+        await AccessPolicy.authorizeOrganization(userId, id, { write: true });
     }
 
     static async isOwner(organizationId: string, userId: string): Promise<boolean> {
-        const org = await prisma.organization.findFirst({
-            where: { id: organizationId, ownerId: userId },
-            select: { id: true },
-        });
-        return org != null;
+        try { await AccessPolicy.authorizeOrganization(userId, organizationId); return true; }
+        catch (error) { if (error instanceof OrganizationAccessNotFoundError) return false; throw error; }
     }
 }
 

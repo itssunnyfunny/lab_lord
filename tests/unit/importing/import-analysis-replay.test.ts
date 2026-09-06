@@ -63,11 +63,12 @@ describe("import analysis replay", () => {
         mocks.assertBranchWritable.mockResolvedValue({});
         mocks.sessionUpdateMany.mockResolvedValue({ count: 1 });
         mocks.tx.$queryRaw.mockResolvedValue([{ id: "session_1" }]);
-        mocks.tx.importSession.findFirst.mockResolvedValue({
+        mocks.tx.importSession.findFirst.mockImplementation(async () => ({
             draftRevision: 0,
             archivedAt: null,
             status: "ANALYZING",
-        });
+            analysisLeaseToken: mocks.sessionUpdateMany.mock.calls[0]?.[0]?.data?.analysisLeaseToken,
+        }));
         mocks.tx.importSession.update.mockResolvedValue({});
         mocks.mapImportColumns.mockResolvedValue({
             entityTypesDetected: ["STUDENT"],
@@ -126,4 +127,12 @@ describe("import analysis replay", () => {
         expect(mocks.mapImportColumns).not.toHaveBeenCalled();
         expect(mocks.sessionUpdateMany).not.toHaveBeenCalled();
     });
+});
+
+vi.mock("@/services/accessPolicy.service", async importOriginal => {
+    const actual = await importOriginal<typeof import("@/services/accessPolicy.service")>();
+    const { callerPolicyMock } = await import("@/tests/helpers/accessPolicyCallerMock");
+    const { StaffService } = await import("@/services/staff.service");
+    const { EntitlementService } = await import("@/services/entitlement.service");
+    return { ...actual, AccessPolicy: callerPolicyMock(actual.AccessPolicy, StaffService, EntitlementService) };
 });

@@ -481,10 +481,11 @@ export class BillingReconciliationService {
     staleRetry = 0
   ): Promise<BillingReconciliationResult> {
     const now = options.now ?? new Date();
-    const localBeforeFetch = await prisma.organizationSubscription.findUnique({
+    const initialLocal = await prisma.organizationSubscription.findUnique({
       where: { razorpaySubscriptionId },
     });
-    if (!localBeforeFetch) throw new BillingResourceNotFoundError("Subscription not found");
+    if (!initialLocal) throw new BillingResourceNotFoundError("Subscription not found");
+    let localBeforeFetch = initialLocal;
     const providerMode = resolveRazorpayMode();
     if (localBeforeFetch.providerMode !== providerMode) {
       throw new RazorpayConfigurationError(
@@ -562,6 +563,30 @@ export class BillingReconciliationService {
         now,
         options,
       });
+    }
+    const negativeLifecycle = ["pending", "paused", "halted", "cancelled", "completed", "expired"]
+      .includes(providerSubscription.status.toLowerCase());
+    if (localBeforeFetch.pendingReplacementOrganizationId && negativeLifecycle) {
+      const stored = await prisma.$transaction(async tx => {
+        await tx.$queryRaw`SELECT "id" FROM "Organization" WHERE "id" = ${localBeforeFetch.organizationId} FOR UPDATE`;
+        const organization = await tx.organization.findUniqueOrThrow({ where: { id: localBeforeFetch.organizationId } });
+        const local = await tx.organizationSubscription.findUniqueOrThrow({ where: { id: localBeforeFetch.id } });
+        const lockedIntent = intent ? await tx.organizationBillingChange.findUnique({ where: { id: intent.id } }) : null;
+        if (organization.billingMutationSequence !== organizationSnapshot.billingMutationSequence
+          || local.updatedAt.getTime() !== localBeforeFetch.updatedAt.getTime()
+          || lockedIntent?.updatedAt.getTime() !== intent?.updatedAt.getTime()) return null;
+        return tx.organizationSubscription.update({ where: { id: local.id }, data: {
+          status: providerSubscription.status.toUpperCase() as SaasSubscriptionStatus,
+          lastReconciledAt: now,
+        } });
+      });
+      if (!stored) {
+        if (staleRetry >= 2) throw new StaleCommercialReconciliationError();
+        return this.reconcileProviderSubscription(razorpaySubscriptionId, options, staleRetry + 1);
+      }
+      // Lifecycle is independent from paid evidence. Continue validating any
+      // invoice/payment so a negative mandate state cannot conceal settlement.
+      localBeforeFetch = stored;
     }
     if (invoices.items.some(invoice =>
       normalizedProviderStatus(invoice.status) === "paid"
@@ -1040,7 +1065,8 @@ export class BillingReconciliationService {
 
         const replacement = lockedIntent.replacementSubscriptionId === local.id;
         if (replacement) {
-          const retainsManualReview = lockedIntent.failureCategory === "MANUAL_REVIEW_REQUIRED";
+          const retainsManualReview = lockedIntent.failureCategory === "MANUAL_REVIEW_REQUIRED"
+            || lockedIntent.failureCode?.startsWith("SOURCE_CANCELLATION_");
           const recorded = await tx.organizationBillingChange.updateMany({
             where: {
               id: lockedIntent.id,

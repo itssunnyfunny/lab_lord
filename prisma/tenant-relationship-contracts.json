@@ -1,0 +1,581 @@
+{
+  "contracts": [
+    {
+      "model": "BranchWhatsAppSettings",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_BranchWhatsAppSettings_branch_organizationId",
+      "deletion": "Cascade",
+      "replace": "BranchWhatsAppSettings_branchId_fkey"
+    },
+    {
+      "model": "BranchWhatsAppSettings",
+      "field": "sender",
+      "foreign": "senderId",
+      "parent": "WhatsAppSender",
+      "scope": "organizationId",
+      "constraint": "TI_BranchWhatsAppSettings_sender_organizationId",
+      "deletion": "SetNull",
+      "replace": "BranchWhatsAppSettings_senderId_fkey"
+    },
+    {
+      "model": "WhatsAppConsentEvent",
+      "field": "consent",
+      "foreign": "consentId",
+      "parent": "WhatsAppConsent",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppConsentEvent_consent_senderId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppConsentEvent_consentId_fkey"
+    },
+    {
+      "model": "WhatsAppStudentRecipient",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppStudentRecipient_branch_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppStudentRecipient_branchId_fkey"
+    },
+    {
+      "model": "WhatsAppStudentRecipient",
+      "field": "student",
+      "foreign": "studentId",
+      "parent": "Student",
+      "scope": "branchId",
+      "constraint": "TI_WhatsAppStudentRecipient_student_branchId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppStudentRecipient_studentId_fkey"
+    },
+    {
+      "model": "WhatsAppStudentRecipient",
+      "field": "sender",
+      "foreign": "senderId",
+      "parent": "WhatsAppSender",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppStudentRecipient_sender_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppStudentRecipient_senderId_fkey"
+    },
+    {
+      "model": "WhatsAppStudentRecipient",
+      "field": "consent",
+      "foreign": "consentId",
+      "parent": "WhatsAppConsent",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppStudentRecipient_consent_senderId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppStudentRecipient_consentId_fkey"
+    },
+    {
+      "model": "WhatsAppTemplateBinding",
+      "field": "template",
+      "foreign": "templateId",
+      "parent": "WhatsAppTemplate",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppTemplateBinding_template_senderId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppTemplateBinding_templateId_fkey"
+    },
+    {
+      "model": "WhatsAppTemplateBinding",
+      "field": "provisioning",
+      "foreign": "provisioningId",
+      "parent": "WhatsAppManagedTemplateProvisioning",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppTemplateBinding_provisioning_senderId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppTemplateBinding_provisioningId_fkey"
+    },
+    {
+      "model": "WhatsAppAutomationRule",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppAutomationRule_branch_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppAutomationRule_branchId_fkey"
+    },
+    {
+      "model": "WhatsAppManualSendRequest",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppManualSendRequest_branch_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppManualSendRequest_branchId_fkey"
+    },
+    {
+      "model": "WhatsAppReportSubscription",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppReportSubscription_branch_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppReportSubscription_branchId_fkey"
+    },
+    {
+      "model": "WhatsAppReportSubscription",
+      "field": "sender",
+      "foreign": "senderId",
+      "parent": "WhatsAppSender",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppReportSubscription_sender_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppReportSubscription_senderId_fkey"
+    },
+    {
+      "model": "WhatsAppReportSubscription",
+      "field": "consent",
+      "foreign": "consentId",
+      "parent": "WhatsAppConsent",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppReportSubscription_consent_senderId",
+      "deletion": "SetNull",
+      "replace": "WhatsAppReportSubscription_consentId_fkey"
+    },
+    {
+      "model": "OrganizationWhatsAppReportSettings",
+      "field": "sender",
+      "foreign": "senderId",
+      "parent": "WhatsAppSender",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationWhatsAppReportSettings_sender_organizationId",
+      "deletion": "SetNull",
+      "replace": "OrganizationWhatsAppReportSettings_senderId_fkey"
+    },
+    {
+      "model": "WhatsAppDailyReportSnapshot",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppDailyReportSnapshot_branch_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppDailyReportSnapshot_branchId_fkey"
+    },
+    {
+      "model": "WhatsAppServiceNotice",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppServiceNotice_branch_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppServiceNotice_branchId_fkey"
+    },
+    {
+      "model": "WhatsAppServiceNotice",
+      "field": "sender",
+      "foreign": "senderId",
+      "parent": "WhatsAppSender",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppServiceNotice_sender_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppServiceNotice_senderId_fkey"
+    },
+    {
+      "model": "WhatsAppOperationalIncident",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppOperationalIncident_branch_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppOperationalIncident_branchId_fkey"
+    },
+    {
+      "model": "WhatsAppOperationalIncident",
+      "field": "sender",
+      "foreign": "senderId",
+      "parent": "WhatsAppSender",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppOperationalIncident_sender_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppOperationalIncident_senderId_fkey"
+    },
+    {
+      "model": "WhatsAppOperationalIncident",
+      "field": "message",
+      "foreign": "messageId",
+      "parent": "WhatsAppMessage",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppOperationalIncident_message_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppOperationalIncident_messageId_fkey"
+    },
+    {
+      "model": "WhatsAppOperationalIncident",
+      "field": "message",
+      "foreign": "messageId",
+      "parent": "WhatsAppMessage",
+      "scope": "branchId",
+      "constraint": "TI_WhatsAppOperationalIncident_message_branchId",
+      "deletion": "Restrict",
+      "replace": null
+    },
+    {
+      "model": "WhatsAppOperationalIncident",
+      "field": "message",
+      "foreign": "messageId",
+      "parent": "WhatsAppMessage",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppOperationalIncident_message_senderId",
+      "deletion": "Restrict",
+      "replace": null
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppMessage_branch_organizationId",
+      "deletion": "SetNull",
+      "replace": "WhatsAppMessage_branchId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "sender",
+      "foreign": "senderId",
+      "parent": "WhatsAppSender",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppMessage_sender_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessage_senderId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "student",
+      "foreign": "studentId",
+      "parent": "Student",
+      "scope": "branchId",
+      "constraint": "TI_WhatsAppMessage_student_branchId",
+      "deletion": "SetNull",
+      "replace": "WhatsAppMessage_studentId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "payment",
+      "foreign": "paymentId",
+      "parent": "Payment",
+      "scope": "branchId",
+      "constraint": "TI_WhatsAppMessage_payment_branchId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessage_paymentId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "paymentResolutionEvent",
+      "foreign": "paymentResolutionEventId",
+      "parent": "PaymentResolutionEvent",
+      "scope": "branchId",
+      "constraint": "TI_WhatsAppMessage_paymentResolutionEvent_branchId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessage_paymentResolutionEventId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "template",
+      "foreign": "templateId",
+      "parent": "WhatsAppTemplate",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppMessage_template_senderId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessage_templateId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "templateBinding",
+      "foreign": "templateBindingId",
+      "parent": "WhatsAppTemplateBinding",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppMessage_templateBinding_senderId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessage_templateBindingId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "manualSendRequest",
+      "foreign": "manualSendRequestId",
+      "parent": "WhatsAppManualSendRequest",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppMessage_manualSendRequest_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessage_manualSendRequestId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "manualSendRequest",
+      "foreign": "manualSendRequestId",
+      "parent": "WhatsAppManualSendRequest",
+      "scope": "branchId",
+      "constraint": "TI_WhatsAppMessage_manualSendRequest_branchId",
+      "deletion": "Restrict",
+      "replace": null
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "reportSubscription",
+      "foreign": "reportSubscriptionId",
+      "parent": "WhatsAppReportSubscription",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppMessage_reportSubscription_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessage_reportSubscriptionId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "reportSubscription",
+      "foreign": "reportSubscriptionId",
+      "parent": "WhatsAppReportSubscription",
+      "scope": "branchId",
+      "constraint": "TI_WhatsAppMessage_reportSubscription_branchId",
+      "deletion": "Restrict",
+      "replace": null
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "reportSubscription",
+      "foreign": "reportSubscriptionId",
+      "parent": "WhatsAppReportSubscription",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppMessage_reportSubscription_senderId",
+      "deletion": "Restrict",
+      "replace": null
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "dailyReportSnapshot",
+      "foreign": "dailyReportSnapshotId",
+      "parent": "WhatsAppDailyReportSnapshot",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppMessage_dailyReportSnapshot_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessage_dailyReportSnapshotId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "dailyReportSnapshot",
+      "foreign": "dailyReportSnapshotId",
+      "parent": "WhatsAppDailyReportSnapshot",
+      "scope": "branchId",
+      "constraint": "TI_WhatsAppMessage_dailyReportSnapshot_branchId",
+      "deletion": "Restrict",
+      "replace": null
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "serviceNotice",
+      "foreign": "serviceNoticeId",
+      "parent": "WhatsAppServiceNotice",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppMessage_serviceNotice_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessage_serviceNoticeId_fkey"
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "serviceNotice",
+      "foreign": "serviceNoticeId",
+      "parent": "WhatsAppServiceNotice",
+      "scope": "branchId",
+      "constraint": "TI_WhatsAppMessage_serviceNotice_branchId",
+      "deletion": "Restrict",
+      "replace": null
+    },
+    {
+      "model": "WhatsAppMessage",
+      "field": "serviceNotice",
+      "foreign": "serviceNoticeId",
+      "parent": "WhatsAppServiceNotice",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppMessage_serviceNotice_senderId",
+      "deletion": "Restrict",
+      "replace": null
+    },
+    {
+      "model": "WhatsAppMessageEvent",
+      "field": "message",
+      "foreign": "messageId",
+      "parent": "WhatsAppMessage",
+      "scope": "senderId",
+      "constraint": "TI_WhatsAppMessageEvent_message_senderId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppMessageEvent_messageId_fkey"
+    },
+    {
+      "model": "WhatsAppWebhookReceipt",
+      "field": "sender",
+      "foreign": "senderId",
+      "parent": "WhatsAppSender",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppWebhookReceipt_sender_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppWebhookReceipt_senderId_fkey"
+    },
+    {
+      "model": "WhatsAppAuditEvent",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppAuditEvent_branch_organizationId",
+      "deletion": "SetNull",
+      "replace": "WhatsAppAuditEvent_branchId_fkey"
+    },
+    {
+      "model": "WhatsAppAuditEvent",
+      "field": "sender",
+      "foreign": "senderId",
+      "parent": "WhatsAppSender",
+      "scope": "organizationId",
+      "constraint": "TI_WhatsAppAuditEvent_sender_organizationId",
+      "deletion": "Restrict",
+      "replace": "WhatsAppAuditEvent_senderId_fkey"
+    },
+    {
+      "model": "ImportRecipe",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_ImportRecipe_branch_organizationId",
+      "deletion": "SetNull",
+      "replace": "ImportRecipe_branchId_fkey"
+    },
+    {
+      "model": "OrganizationSubscription",
+      "field": "replacesSubscription",
+      "foreign": "replacesSubscriptionId",
+      "parent": "OrganizationSubscription",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationSubscription_replacesSubscription_organizationId",
+      "deletion": "SetNull",
+      "replace": "OrganizationSubscription_replacesSubscriptionId_fkey"
+    },
+    {
+      "model": "OrganizationSubscription",
+      "field": "confirmedCommercialIntentChange",
+      "foreign": "confirmedCommercialIntentChangeId",
+      "parent": "OrganizationBillingChange",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationSubscription_confirmedCommercialIntentC_4eaeac3f",
+      "deletion": "SetNull",
+      "replace": "OrganizationSubscription_confirmedCommercialIntentChangeId_fkey"
+    },
+    {
+      "model": "OrganizationBillingChange",
+      "field": "organizationSubscription",
+      "foreign": "organizationSubscriptionId",
+      "parent": "OrganizationSubscription",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationBillingChange_organizationSubscription__553adedd",
+      "deletion": "SetNull",
+      "replace": "OrganizationBillingChange_organizationSubscriptionId_fkey"
+    },
+    {
+      "model": "OrganizationBillingChange",
+      "field": "replacementSubscription",
+      "foreign": "replacementSubscriptionId",
+      "parent": "OrganizationSubscription",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationBillingChange_replacementSubscription_o_1f579ce7",
+      "deletion": "SetNull",
+      "replace": "OrganizationBillingChange_replacementSubscriptionId_fkey"
+    },
+    {
+      "model": "OrganizationBillingChange",
+      "field": "branch",
+      "foreign": "branchId",
+      "parent": "Branch",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationBillingChange_branch_organizationId",
+      "deletion": "SetNull",
+      "replace": "OrganizationBillingChange_branchId_fkey"
+    },
+    {
+      "model": "OrganizationBillingChangeAudit",
+      "field": "change",
+      "foreign": "changeId",
+      "parent": "OrganizationBillingChange",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationBillingChangeAudit_change_organizationId",
+      "deletion": "Cascade",
+      "replace": "OrganizationBillingChangeAudit_changeId_fkey"
+    },
+    {
+      "model": "OrganizationSubscriptionInvoice",
+      "field": "organizationSubscription",
+      "foreign": "organizationSubscriptionId",
+      "parent": "OrganizationSubscription",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationSubscriptionInvoice_organizationSubscri_ad094872",
+      "deletion": "SetNull",
+      "replace": "OrganizationSubscriptionInvoice_organizationSubscriptionId_fkey"
+    },
+    {
+      "model": "OrganizationSubscriptionInvoice",
+      "field": "commercialIntentChange",
+      "foreign": "commercialIntentChangeId",
+      "parent": "OrganizationBillingChange",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationSubscriptionInvoice_commercialIntentCha_a48c26ff",
+      "deletion": "SetNull",
+      "replace": "OrganizationSubscriptionInvoice_commercialIntentChangeId_fkey"
+    },
+    {
+      "model": "OrganizationSubscriptionHistory",
+      "field": "organizationSubscription",
+      "foreign": "organizationSubscriptionId",
+      "parent": "OrganizationSubscription",
+      "scope": "organizationId",
+      "constraint": "TI_OrganizationSubscriptionHistory_organizationSubscri_a1d99aa0",
+      "deletion": "SetNull",
+      "replace": "OrganizationSubscriptionHistory_organizationSubscriptionId_fkey"
+    },
+    {
+      "model": "RazorpayWebhookEvent",
+      "field": "organizationSubscription",
+      "foreign": "organizationSubscriptionId",
+      "parent": "OrganizationSubscription",
+      "scope": "organizationId",
+      "constraint": "TI_RazorpayWebhookEvent_organizationSubscription_organizationId",
+      "deletion": "SetNull",
+      "replace": "RazorpayWebhookEvent_organizationSubscriptionId_fkey"
+    }
+  ],
+  "checks": [
+    [
+      "OrganizationSubscription",
+      "TI_subscription_current_owner",
+      "\"currentOrganizationId\" IS NULL OR \"currentOrganizationId\"=\"organizationId\""
+    ],
+    [
+      "OrganizationSubscription",
+      "TI_subscription_pending_owner",
+      "\"pendingReplacementOrganizationId\" IS NULL OR \"pendingReplacementOrganizationId\"=\"organizationId\""
+    ],
+    [
+      "RazorpayWebhookEvent",
+      "TI_webhook_subscription_scope",
+      "\"organizationSubscriptionId\" IS NULL OR \"organizationId\" IS NOT NULL"
+    ],
+    [
+      "WhatsAppWebhookReceipt",
+      "TI_inbound_sender_scope",
+      "\"senderId\" IS NULL OR \"organizationId\" IS NOT NULL"
+    ],
+    [
+      "WhatsAppMessage",
+      "TI_message_operational_scope",
+      "\"branchId\" IS NOT NULL OR (\"studentId\" IS NULL AND \"paymentId\" IS NULL AND \"paymentResolutionEventId\" IS NULL AND \"manualSendRequestId\" IS NULL AND \"serviceNoticeId\" IS NULL)"
+    ]
+  ]
+}

@@ -1,3 +1,4 @@
+import { assertTrendRange } from "./range"
 // analytics/trends/branch.trends.ts
 
 import { getBranchHealthSnapshot } from "../branch.analytics"
@@ -7,6 +8,8 @@ export async function getBranchHealthTrend(
   from: Date,
   to: Date
 ) {
+  assertTrendRange(from, to)
+
   const points: {
     asOf: Date
     snapshot: Awaited<ReturnType<typeof getBranchHealthSnapshot>>

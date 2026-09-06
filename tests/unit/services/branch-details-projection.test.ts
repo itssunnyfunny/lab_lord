@@ -118,11 +118,20 @@ function access(permissionOverrides: Partial<Record<StaffAction, boolean>>): Bra
     staffId: "staff_1",
     permissions: permissions(permissionOverrides),
     effectivePlan: "PRO",
-    entitlements: [],
+    entitlements: ["STAFF_MANAGEMENT"],
   };
 }
 
 describe("BranchService branch response projection", () => {
+  it.each([false, true])("omits staff identities and counts without entitlement (owner=%s)", async isOwner => {
+    mocks.getBranchAccess.mockResolvedValue({ ...access({ manage_branch: true }), isOwner, entitlements: [] });
+    const read = await BranchService.getBranchDetails("user_2", "branch_1");
+    const updated = await BranchService.updateSettings("user_2", "branch_1", { name: "Main Branch" });
+    for (const result of [read, updated]) {
+      expect(result).not.toHaveProperty("staff");
+      expect(result?._count).not.toHaveProperty("staff");
+    }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.branchFindUnique.mockResolvedValue(branchRecord);
@@ -206,4 +215,12 @@ describe("BranchService branch response projection", () => {
       data: expect.objectContaining({ name: "Updated Branch" }),
     }));
   });
+});
+
+vi.mock("@/services/accessPolicy.service", async importOriginal => {
+    const actual = await importOriginal<typeof import("@/services/accessPolicy.service")>();
+    const { callerPolicyMock } = await import("@/tests/helpers/accessPolicyCallerMock");
+    const { StaffService } = await import("@/services/staff.service");
+    const { EntitlementService } = await import("@/services/entitlement.service");
+    return { ...actual, AccessPolicy: callerPolicyMock(actual.AccessPolicy, StaffService, EntitlementService) };
 });

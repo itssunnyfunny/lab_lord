@@ -1,7 +1,6 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { prisma } from "@/lib/prisma";
 import { ImportSessionService } from "./import-session.service";
-import { EntitlementService } from "@/services/entitlement.service";
-import { StaffService } from "@/services/staff.service";
 import { inferConfirmedPaymentMapping } from "@/importing/utils/payment-mapping-inference";
 import type { ImportAIQuestion, ImportMappingState, ImportOptions } from "@/importing/contracts/import-session.contract";
 import type { Prisma } from "@/app/generated/prisma/client";
@@ -103,8 +102,7 @@ export class ImportQuestionService {
             applyToAffectedRows?: boolean;
         }
     ) {
-        await StaffService.authorize(userId, branchId, "students");
-        await EntitlementService.assertBranchWritable(branchId);
+        await AccessPolicy.authorizeAction(userId, branchId, "students", undefined, true);
         if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 0) {
             throw new ImportValidationError("Expected import revision must be a non-negative integer");
         }
@@ -186,8 +184,7 @@ export class ImportQuestionService {
             });
             if (!current) throw new Error("Import session not found");
             if (current.archivedAt) throw new Error("Import session is archived");
-            await StaffService.authorize(userId, branchId, "students", tx);
-            await EntitlementService.assertBranchWritable(branchId, tx);
+            await AccessPolicy.authorizeAction(userId, branchId, "students", tx, true);
             if (
                 (current.engineVersion === 1 && ["COMMITTING", "COMMITTED", "PARTIAL", "FAILED", "CANCELLED"].includes(current.status))
                 || ["COMMITTING", "COMMITTED", "CANCELLED"].includes(current.status)

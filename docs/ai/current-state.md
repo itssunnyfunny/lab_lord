@@ -1,8 +1,8 @@
 # Lab Lords: Current Architecture and Implementation State
 
-> Last verified: 2026-09-01
+> Last verified: 2026-09-06 (release verification; older sections retain their original evidence)
 >
-> Repository anchor: PR4 WhatsApp reports, service notices, and hardening plus completed Razorpay billing remediation and tenant-safe organization owner access
+> Repository anchor: consolidation through ac639e9; subsequent release verification is linked in the final dated update
 >
 > Scope: repository implementation only
 
@@ -10,7 +10,37 @@ This document is a durable orientation map for engineers and AI agents. It recor
 
 It is **not** a deployment record. The repository cannot prove which migrations have been applied to Preview or Production, which feature flags are enabled, whether provider accounts are ready, or whether scheduled jobs and webhooks are currently healthy. Verify those facts in the target environment before operational work.
 
+The September 5 sprint adds replacement provisioning protocol version 2 using
+existing billing-change fields and audit history. Provider intent and dispatch
+are durable; uncertain creation recovery reads provider state without creating
+or cancelling again. Source cancellation has a separate processing attempt and
+immutable admission fence. Candidate reconciliation cannot resolve that action;
+uncertain source outcomes use source-specific read-only recovery. Live checkout
+retirement is held until provider terminality. Negative candidate lifecycle is
+projected independently of paid evidence; HALTED remains recoverable, and source
+cancellation requires fresh exact candidate evidence. Legacy cancellation now
+uses durable operations and preserves client keys and customer history.
+See [the execution checkpoint](hardening-sprint-2026-09-05.md).
+
+Branch detail/settings staff projections now require the staff entitlement as
+well as branch management permission. Complete AI reports require payment-view
+permission, and navigation gates match the route. Daily analytics ranges are
+validated in the route and all three helpers with a 31-point maximum matching
+the existing UI presets.
+
+The sprint also adds branch/kind AI ownership and sender/message receipt keys,
+atomic draft replacement, full-day-aware creation validation, allocated-bundle
+component protection and explicit import payment-method issues. The schema now
+has 41 migrations; the new draft uniqueness preflight blocks historical
+duplicates without deleting them. See the runbook for required writer drain and
+rollout/rollback compatibility.
+
 ## Refresh contract
+
+Architecture consolidation continues from `6ee00d0`. The next additive migration
+extends branch FKs to payments, payment history, student fee sources, drafts and
+bundle components; see [the outcome matrix](architecture-consolidation-2026-09-05.md)
+for the broader A–F scope and incomplete outcomes. Prior hardening remains intact.
 
 Refresh this snapshot whenever a change materially alters architecture, route or
 service ownership, schema, external integrations, release gates, implemented
@@ -200,7 +230,10 @@ Two payment domains must not be confused:
 - Clerk-backed sign-in and sign-up are wired.
 - Workspace routing chooses between onboarding, an organization workspace, or the most relevant staff branch.
 - Onboarding creates the owner profile update, organization, first branch, shifts, optional multi-shifts, seats, and owner staff membership in one Prisma transaction.
-- When Workspace Billing V2 is enabled, onboarding also starts the single-owner 30-day trial and records the selected post-trial plan.
+- New workspace creation requires the Workspace Billing V2 release flag, explicitly
+  persists V2 and the selected post-trial plan, and starts the existing single-owner
+  30-day trial. The old organization-only POST returns `410 ONBOARDING_REQUIRED`.
+  Existing legacy organizations retain their compatibility entitlement behavior.
 - The transaction has no request-idempotency guard. Retrying the same completed
   onboarding submission can create another independent organization/network.
 
@@ -212,8 +245,14 @@ Authoritative code: `lib/auth.ts`, `lib/workspaceRouting.ts`, `services/user.ser
 - Seats can be created individually or generated from a numbering configuration.
 - Branches have primary shifts and composed multi-shifts.
 - Shift deletion is soft deletion and requires an explicit resolution for affected allocations.
+- Shift deletion shares the allocation writer's serializable/retry protocol.
+  Targets must be active in the source branch; manual assignments must exactly
+  cover the current active source rows. Ending/reallocating a bundle component
+  ends its active siblings for that student and seat before any replacement.
 - Seat allocations preserve history through `startDate` and nullable `endDate`.
 - Allocation writes use serializable transactions with retry handling and validate branch ownership, active student/shift state, exact conflicts, and time overlaps for both the seat and student.
+- Allocation student/seat/shift/MultiShift links additionally use branch-scoped
+  composite foreign keys, backed by the explicit allocation `branchId`.
 - Releasing one allocation belonging to a multi-shift releases the complete related bundle.
 - Student creation and its optional admission payment are atomic, but an
   optional initial seat allocation runs afterward. Allocation failure leaves
@@ -638,7 +677,7 @@ All Gemini calls originate on the server through `ai/llm/gemini.client.ts`. The 
 `GET /api/ai/branch/[branchId]` requires:
 
 - an authenticated local user;
-- branch `analytics` authorization;
+- branch `analytics` and `view_payments` authorization for the entire response;
 - the `AI_ACCESS` entitlement;
 - a writable branch/workspace;
 - the route's process-local request limit.
@@ -646,16 +685,16 @@ All Gemini calls originate on the server through `ai/llm/gemini.client.ts`. The 
 `runBranchAI()` then:
 
 1. Reads branch AI state and the newest persisted report.
-2. Applies a five-minute cache, same-day/current-rule checks, and a branch-level `IDLE -> RUNNING` optimistic lock.
+2. Applies the five-minute cache and same-day/current-rule checks; claims a unique branch/REPORT token under a short branch row lock. Durable five-minute expiry controls takeover (the old ten-minute status timeout only covers pre-migration rows without a lease).
 3. Reads a deterministic branch snapshot.
 4. Calculates risks, health score, and suggested actions in code.
 5. Sends aggregate branch metrics and deterministic risk descriptions to Gemini for owner-facing narrative only.
 6. Validates the parsed narrative and substitutes deterministic text for absent/invalid fields.
-7. Persists the full response in `BranchAIReport` and releases the lock.
+7. Publishes `BranchAIReport` and completion atomically only for the current unexpired token. Cleanup releases only its own token; Gemini runs outside transactions.
 
 The reports page calls this GET route automatically when mounted. A page view can therefore cause a Gemini call when the cache/staleness rules permit it; refresh is not the only trigger.
 
-Known failure semantic: the orchestrator writes `aiLastCalledAt` while acquiring the lock, before Gemini completes. The `finally` block returns `aiStatus` to `IDLE` but does not restore `aiLastCalledAt` after failure. A failed run can therefore impose the normal cooldown even though older documentation says otherwise.
+Known failure semantic: admission advances `aiLastCalledAt` before Gemini. Owned cleanup clears RUNNING without restoring that timestamp, preserving existing failure cooldown behavior. A stale owner cannot clear or publish over a successor.
 
 ### Overdue message drafts
 
@@ -664,10 +703,10 @@ Message generation is human-triggered and does not send messages.
 - GET reads current overdue students and returns matching cached drafts with `allowGeneration: false`.
 - POST regenerates only explicitly selected student IDs and requires analytics plus payment-view permission, AI entitlement, writability, and a process-local route limit.
 - Overdue payments are grouped into one target per student.
-- A single Gemini request covers the selected targets.
+- A branch/DRAFTS token reserves the five-minute cooldown before a single Gemini request covers the selected targets. Cached GET and POST metadata include the durable cooldown even after failed publication.
 - The prompt includes student name, oldest due date, total due, payment count, and days overdue; it does not include the stored phone number.
 - Invalid/missing Gemini output is replaced with deterministic English or Hinglish text.
-- Drafts are persisted by branch, student, language, and action configuration.
+- The selected draft batch is replaced in one transaction, fenced by the current token and a unique branch/student/language/action key. Ambiguous historical duplicates block migration rather than being deleted.
 - This AI draft UI remains review/copy only and has no provider integration. The
   separate PR3 official reminder flow rebuilds content from trusted typed values
   and managed Utility templates; it never reads `MessageDraft.message`.
@@ -699,7 +738,7 @@ The following modules exist but are not referenced by current application routes
 
 | Integration | Repository truth | Deployment state |
 | --- | --- | --- |
-| PostgreSQL / Prisma | Required; schema and 39 timestamped migrations exist, including the three additive WhatsApp expansions, exact billing commercial evidence, the additive Razorpay webhook claim, and durable initial-subscription provisioning intent/audit state | Database target, applied migration set, backups, and health are unknown |
+| PostgreSQL / Prisma | Required; schema and 41 timestamped migrations exist, including the three additive WhatsApp expansions, exact billing commercial evidence, the additive Razorpay webhook claim, and durable initial-subscription provisioning intent/audit state | Database target, applied migration set, backups, and health are unknown |
 | Clerk | Real auth and local-user linking are implemented | Active instance, keys, redirect/origin configuration, and account health are unknown |
 | Gemini | Reports, message drafts, and import mapping are wired with fallbacks | API key, selected model availability, quota, and data-processing configuration are unknown |
 | Razorpay | Server API client, Checkout, exact-byte bounded webhook signatures, token-fenced webhook receipts, provider-authoritative reconciliation, and plan catalog are implemented | Test/Live mode, account approvals, webhook configuration, flags, canary, and provider health are unknown |
@@ -715,7 +754,7 @@ Never infer a deployed state from local `.env` files, ignored Vercel metadata, s
 
 At this anchor the repository contains focused WhatsApp unit, component,
 provider-contract, service, route, webhook, and migration-contract coverage in
-addition to the existing Vitest/Playwright suites, plus 39 timestamped migration directories. These
+addition to the existing Vitest/Playwright suites, plus 41 timestamped migration directories. These
 counts are orientation data, not invariants.
 
 ### Automated coverage by area
@@ -748,7 +787,7 @@ Production migrations have a separate manually dispatched workflow requiring the
 
 ### Known verification gaps
 
-- No direct Vitest suite exercises the complete `runBranchAI()` cache/lock/failure lifecycle.
+- Real PostgreSQL generation ownership and caller suites exercise report takeover/stale completion, draft concurrency, cooldown metadata and failed batch rollback. They do not exhaust every report cache/narrative combination.
 - No direct Vitest suite exercises the complete `draftOverdueMessages()` persistence/cooldown lifecycle; route tests mock it.
 - AI verification scripts exist, but scripts are not equivalent to repeatable CI coverage.
 - Browser tests exist but are not run by the main CI workflow.
@@ -847,3 +886,64 @@ This file supersedes architecture/status claims in older phase-oriented or gener
   provider, security, legal/privacy, and operations approval.
 
 When this document and the implementation disagree, inspect the current schema, migrations, services, API routes, and tests, then update this document in the same change.
+
+Billing and WhatsApp ownership now additionally use 55 composite foreign keys
+and five presence/identity checks (migration 20260905173000). Exact relationships
+and preflight counts live in `prisma/tenant-relationship-contracts.json` and
+`prisma/preflight/billing-and-whatsapp-tenants.sql`. Import run links and the
+WhatsApp grouped-payment join remain under consolidation; this is not a claim
+of complete tenant coverage.
+
+Migrations 44/45 complete scoped import staging/run links and grouped WhatsApp
+payment links. ImportTargetReference provides typed live references for persisted
+import IDs while preserving detached history. Database triggers cover existing
+writers, including atomic item completion after payload redaction. Domain
+services still re-resolve target ownership and interactive authorization before
+mutation; stored JSON is never authorization. The overall consolidation remains
+in progress; see the outcome matrix.
+
+SaaS mutations now share `billingProviderAction.service.ts` and migration 46's
+immutable BillingProviderAction rows. CONFIRMED responses are independent of
+local finalization and never establish entitlement. Read-only reconcilers resolve
+only the matching purpose. The canonical cancellation entry point is
+BillingService.requestCancellation; historical access/cancellation policy is in
+legacyCommercialCompatibility. See `commercial-consolidation-contracts.md` for
+all ten call sites and evidence-gated legacy retirement.
+# Architecture consolidation update — 2026-09-06
+
+Migration 48 extends typed tenant integrity to retained retry-plan student
+inputs. Fresh bootstrap and repeat execution have passed with all 48 migrations
+on `lab_lords_final_fresh_test`; no sample/customer/provider rows were seeded.
+
+The modular monolith now has a shared server-derived AccessPolicy boundary,
+delegating StaffService/OrganizationService facades, protected interactive
+analytics service, direct AI context rechecks, and common billing recovery
+ownership reads. Role defaults and explicit overrides have one implementation.
+The uncalled V1 import executor and two obsolete unscoped AI scripts are removed.
+Active imports retain Workflow and atomic item/domain finalization. Analysis
+now adds session token/expiry fencing (migration 47) to existing revision CAS.
+See [access/worker contracts](access-and-worker-contracts.md), the complete
+[166-relationship catalog](tenant-relationship-coverage.md), and the
+[execution matrix](architecture-consolidation-2026-09-05.md). The isolated
+bootstrap applies all maintained migrations and required billing identity;
+Production migration versus fresh cutover remains an evidence-dependent choice
+in the production runbook. Historical LEGACY access and the unresolved daily
+dues cron writability policy are unchanged.
+
+## Release verification update — 2026-09-06
+
+The focused [release-candidate evidence](release-candidate-verification-2026-09-06.md)
+adds real development Clerk sign-in, canonical V2 onboarding, owner/staff/foreign
+browser checks and a real local Workflow import with persisted results. Narrow
+browser-harness corrections refresh real saved sessions, use an owner-scoped
+billing fixture and repair stale/ambiguous selectors. Four dashboard collection
+labels use the existing accessible muted-text color after a demonstrated desktop
+contrast failure; authorization/calculations and schema are unchanged.
+The former empty `lab_lords_final_fresh_test` now contains
+synthetic browser fixtures and must not be treated as an empty bootstrap target.
+
+Read-only Vercel metadata identifies Production at ca5e9b5; database/provider
+inventory is still unavailable. Migrate-existing is the conditional recommendation
+after clean preflights and proven drain; no fresh-cutover preservation evidence
+or Production execution approval has been established. The two stale public
+visual baselines need owner disposition; actual fonts load successfully.

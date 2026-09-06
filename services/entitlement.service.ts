@@ -1,3 +1,4 @@
+import { historicalEntitlementProfile } from "@/services/legacyCommercialCompatibility";
 import { prisma } from "@/lib/prisma";
 import {
   getBillingPlan,
@@ -174,45 +175,7 @@ export class EntitlementService {
       };
     }
 
-    if (!subscription) {
-      const basicPlan = getBillingPlan("BASIC");
-      if (!basicPlan) throw new Error("Basic subscription plan configuration is missing");
-      return {
-        organizationId,
-        plan: null,
-        effectivePlan: "BASIC",
-        subscriptionStatus: null,
-        fallbackAccess: true,
-        entitlements: [...basicPlan.entitlements],
-        limits: { ...basicPlan.limits },
-        usage: { branches: organization._count.branches },
-        accessMode: "FULL",
-        canWrite: true,
-        accessReason: "Legacy Basic fallback access",
-        trial: null,
-      };
-    }
-
-    const selectedPlan = getBillingPlan(subscription.plan);
-    const entitledPlan = trustedPaidThrough ? selectedPlan : getBillingPlan("BASIC");
-    if (!entitledPlan) throw new Error("Subscription plan configuration is missing");
-
-    return {
-      organizationId,
-      plan: subscription.plan as BillingPlanId,
-      effectivePlan: entitledPlan.id,
-      subscriptionStatus: subscription.status,
-      fallbackAccess: entitledPlan.id !== selectedPlan?.id,
-      entitlements: [...entitledPlan.entitlements],
-      limits: { ...entitledPlan.limits },
-      usage: { branches: organization._count.branches },
-      accessMode: "FULL",
-      canWrite: true,
-      accessReason: trustedPaidThrough
-        ? "Provider-confirmed legacy paid period is active"
-        : "Legacy Basic fallback; paid settlement evidence is unavailable",
-      trial: null,
-    };
+    return historicalEntitlementProfile({organizationId, subscription, trustedPaidThrough, branches: organization._count.branches});
   }
 
   static async assertOrganizationEntitlement(

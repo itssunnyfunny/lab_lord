@@ -49,6 +49,9 @@ interface CreateNetworkParams {
 
 export class OnboardingService {
     static async createNetwork(params: CreateNetworkParams) {
+        if (!isWorkspaceBillingEnabled()) {
+            throw new Error("Workspace creation is temporarily unavailable.");
+        }
         const { userId, orgData, branchData } = params;
         if (!isCheckoutBillingPlanId(params.selectedPostTrialPlan)) {
             throw new Error("Choose Basic or Standard as the post-trial plan.");
@@ -100,7 +103,7 @@ export class OnboardingService {
                     contactPhone: ownerPhoneResult.value,
                     ownerId: userId,
                     selectedPostTrialPlan: params.selectedPostTrialPlan,
-                    billingModelVersion: isWorkspaceBillingEnabled() ? "WORKSPACE_V2" : "LEGACY",
+                    billingModelVersion: "WORKSPACE_V2",
                 },
             });
 
@@ -199,9 +202,7 @@ export class OnboardingService {
                 },
             });
 
-            if (isWorkspaceBillingEnabled()) {
-                await OwnerTrialService.startOnboardingTrial(tx, userId, org.id, new Date());
-            }
+            await OwnerTrialService.startOnboardingTrial(tx, userId, org.id, new Date());
 
             return { org, branch };
         });

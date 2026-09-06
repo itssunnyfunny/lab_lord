@@ -1,0 +1,92 @@
+[
+  {
+    "model": "ImportRow",
+    "relation": "session",
+    "foreign": "importSessionId",
+    "parent": "ImportSession",
+    "deletion": "Cascade",
+    "scope": "branchId",
+    "constraint": "TI_ImportRow_session_branchId"
+  },
+  {
+    "model": "ImportRowEvaluation",
+    "relation": "row",
+    "foreign": "importRowId",
+    "parent": "ImportRow",
+    "deletion": "Cascade",
+    "scope": "branchId",
+    "constraint": "TI_ImportRowEvaluation_row_branchId"
+  },
+  {
+    "model": "ImportPlan",
+    "relation": "session",
+    "foreign": "importSessionId",
+    "parent": "ImportSession",
+    "deletion": "Cascade",
+    "scope": "branchId",
+    "constraint": "TI_ImportPlan_session_branchId"
+  },
+  {
+    "model": "ImportRun",
+    "relation": "session",
+    "foreign": "importSessionId",
+    "parent": "ImportSession",
+    "deletion": "SetNull",
+    "scope": "branchId",
+    "constraint": "TI_ImportRun_session_branchId"
+  },
+  {
+    "model": "ImportRun",
+    "relation": "plan",
+    "foreign": "importPlanId",
+    "parent": "ImportPlan",
+    "deletion": "SetNull",
+    "scope": "branchId",
+    "constraint": "TI_ImportRun_plan_branchId"
+  },
+  {
+    "model": "ImportRunItem",
+    "relation": "run",
+    "foreign": "importRunId",
+    "parent": "ImportRun",
+    "deletion": "Cascade",
+    "scope": "branchId",
+    "constraint": "TI_ImportRunItem_run_branchId"
+  },
+  {
+    "model": "ImportRunItem",
+    "relation": "row",
+    "foreign": "importRowId",
+    "parent": "ImportRow",
+    "deletion": "SetNull",
+    "scope": "branchId",
+    "constraint": "TI_ImportRunItem_row_branchId"
+  },
+  {
+    "model": "ImportRunItem",
+    "relation": "evaluation",
+    "foreign": "evaluationId",
+    "parent": "ImportRowEvaluation",
+    "deletion": "SetNull",
+    "scope": "branchId",
+    "constraint": "TI_ImportRunItem_evaluation_branchId"
+  },
+  {
+    "model": "WhatsAppMessagePayment",
+    "relation": "message",
+    "foreign": "messageId",
+    "parent": "WhatsAppMessage",
+    "deletion": "Restrict",
+    "scope": "branchId",
+    "constraint": "TI_WhatsAppMessagePayment_message_branchId"
+  },
+  {
+    "model": "WhatsAppMessagePayment",
+    "relation": "payment",
+    "foreign": "paymentId",
+    "parent": "Payment",
+    "deletion": "Restrict",
+    "scope": "branchId",
+    "constraint": "TI_WhatsAppMessagePayment_payment_branchId"
+  }
+]

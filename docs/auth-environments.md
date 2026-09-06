@@ -42,6 +42,50 @@ Tests use `.env.test` and a separate PostgreSQL database whose URL must include 
 
 Clerk keys are not needed for Vitest. Clerk/auth behavior is mocked in tests that need it.
 
+### Authenticated Playwright release checks
+
+Use an existing owner-approved Clerk development test identity. Sign in through
+`/sign-in`, select the email-code alternative where necessary, and enter the
+Clerk test code with keyboard events (segmented OTP controls may not accept a
+programmatic whole-field replacement). Wait for `/app` to resolve and a protected
+page to load before saving browser context storage state in ignored `.clerk/`.
+Never commit cookies or invent an application authentication bypass.
+
+The browser harness reads PLAYWRIGHT_OWNER_AUTH_STATE / PLAYWRIGHT_OWNER_BRANCH_ID,
+PLAYWRIGHT_MANAGER_AUTH_STATE / PLAYWRIGHT_MANAGER_BRANCH_ID,
+PLAYWRIGHT_STAFF_AUTH_STATE / PLAYWRIGHT_STAFF_BRANCH_ID and
+PLAYWRIGHT_READ_ONLY_AUTH_STATE / PLAYWRIGHT_READ_ONLY_BRANCH_ID.
+Billing UI fixtures additionally use PLAYWRIGHT_AUTH_STATE and
+PLAYWRIGHT_OWNER_ORG_ID. The organization must really belong to that session:
+browser API mocks do not override the server layout's ownership check.
+
+Clerk session tokens expire quickly. The shared browser helper first loads a
+public page and refreshes the real session using Clerk's normal getToken API;
+an absent/revoked session fails explicitly. Direct authenticated API requests in
+the RC smoke use current Clerk-issued bearer tokens, verified by the same server
+middleware. See Clerk's [testing token lifecycle](https://clerk.com/docs/guides/development/testing/overview).
+This provides real identity evidence; mocked billing/import UI responses remain
+mocks and must be described separately.
+
+The opt-in `tests/browser/release-candidate.spec.ts` mutates synthetic local data.
+It requires PLAYWRIGHT_RC_ISOLATED_CONFIRM=lab_lords_final_fresh_test and a
+localhost PLAYWRIGHT_BASE_URL, plus owner/staff sessions, owner branch/org and
+PLAYWRIGHT_FOREIGN_BRANCH_ID / PLAYWRIGHT_FOREIGN_ORG_ID. Independently verify
+the server's actual database before setting that confirmation. Prepare the owner
+through canonical V2 onboarding, a STAFF membership with VIEW_PAYMENTS explicitly
+denied, and a different owner's foreign V2 organization/branch. Never point the
+test at Production, shared Preview or a real customer's local database. The test
+does not reset or delete fixture data. Fixture creation authority is separate
+from permission to invite users, contact providers or enable Production flags.
+
+Public redirect tests need the existing development
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in the Playwright process,
+not just in the dev server's dotenv environment. Pass them in memory from the
+approved source without printing values. Test-local import processes require
+IMPORT_V2_ENABLED and a positive IMPORT_MAX_PLANNED_MUTATIONS; keep GEMINI_API_KEY
+empty for the deterministic local rehearsal. None of this authorizes external
+Razorpay/Meta/Gemini canaries.
+
 ## Production
 
 Production should use a separate Clerk production instance, live keys, and a production database.

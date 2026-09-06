@@ -364,7 +364,7 @@ const prismaCatalogStore: RazorpayPlanCatalogStore = {
 
 export type EnsureRazorpayPlanCatalogOptions = {
   environment?: Readonly<Record<string, string | undefined>>;
-  razorpay?: RazorpayPlanCatalogApiClient;
+  razorpay?: Pick<RazorpayPlanCatalogApiClient, "createPlan" | "fetchPlan" | "listPlans">;
   store?: RazorpayPlanCatalogStore;
   now?: () => Date;
   randomUUID?: () => string;
@@ -377,7 +377,7 @@ export type EnsureRazorpayPlanCatalogOptions = {
 async function verifyActiveMapping(
   mapping: RazorpayPlanCatalogEntry,
   expected: NormalizedCatalogDefinition,
-  razorpay: RazorpayPlanCatalogApiClient,
+  razorpay: Pick<RazorpayPlanCatalogApiClient, "createPlan" | "fetchPlan" | "listPlans">,
   store: RazorpayPlanCatalogStore,
   verifiedAt: Date
 ) {
@@ -398,7 +398,7 @@ async function verifyActiveMapping(
 async function waitForProvisioning(
   expected: NormalizedCatalogDefinition,
   input: {
-    razorpay: RazorpayPlanCatalogApiClient;
+    razorpay: Pick<RazorpayPlanCatalogApiClient, "createPlan" | "fetchPlan" | "listPlans">;
     store: RazorpayPlanCatalogStore;
     now: () => Date;
     sleep: (milliseconds: number) => Promise<void>;
@@ -432,7 +432,7 @@ async function waitForProvisioning(
 }
 
 async function findProviderPlanByCatalogKey(
-  razorpay: RazorpayPlanCatalogApiClient,
+  razorpay: Pick<RazorpayPlanCatalogApiClient, "createPlan" | "fetchPlan" | "listPlans">,
   expected: NormalizedCatalogDefinition
 ) {
   let skip = 0;

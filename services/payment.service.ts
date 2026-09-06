@@ -1,3 +1,4 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { prisma } from "@/lib/prisma";
 import { MESSAGE_DRAFT_ACTION_PREFIX } from "@/lib/messageDrafts";
 import { StaffService } from "@/services/staff.service";
@@ -81,25 +82,6 @@ export class PaymentService {
     /**
      * Helper to verify that the user owns the branch via its organization.
      */
-    static async assertBranchOwnership(userId: string, branchId: string) {
-        const branch = await prisma.branch.findUnique({
-            where: { id: branchId },
-            include: {
-                organization: true,
-            },
-        });
-
-        if (!branch) {
-            throw new Error("Branch not found");
-        }
-
-        if (branch.organization.ownerId !== userId) {
-            throw new Error("Unauthorized: User does not own this branch");
-        }
-
-        return branch;
-    }
-
     static async assertBranchAccess(userId: string, branchId: string, action: StaffAction) {
         await StaffService.authorize(userId, branchId, action);
 
@@ -150,7 +132,7 @@ export class PaymentService {
         tx: Prisma.TransactionClient
     ) {
         try {
-            await StaffService.authorize(userId, branchId, action, tx);
+            await AccessPolicy.authorizeRecord(userId, branchId, action, "Payment", tx);
         } catch (error) {
             if (
                 error instanceof Error
@@ -362,8 +344,7 @@ export class PaymentService {
         data: EnsureMonthlyPaymentInput,
         tx: Prisma.TransactionClient
     ) {
-        await StaffService.authorize(userId, branchId, "generate_payments", tx);
-        await EntitlementService.assertBranchWritable(branchId, tx);
+        await AccessPolicy.authorizeAction(userId, branchId, "generate_payments", tx, true);
 
         const periodStart = startOfDay(data.periodStart);
         const periodEnd = startOfDay(data.periodEnd);

@@ -212,7 +212,7 @@ describe("StaffService.authorize()", () => {
   it("REJECTS user with no staff record", async () => {
     mockBranch(OWNER_ID);
     mockStaff(null);
-    await expect(StaffService.authorize(OTHER_ID, "branch_1", "students")).rejects.toThrow("Not a staff member");
+    await expect(StaffService.authorize(OTHER_ID, "branch_1", "students")).rejects.toThrow("Branch not found");
   });
 
   it("throws Branch not found if branch doesn't exist", async () => {
@@ -280,7 +280,7 @@ describe("StaffService.getBranchAccess()", () => {
     mockBranch(OWNER_ID);
     mockStaff(null);
 
-    await expect(StaffService.getBranchAccess(OTHER_ID, "branch_1")).rejects.toThrow("Not a staff member");
+    await expect(StaffService.getBranchAccess(OTHER_ID, "branch_1")).rejects.toThrow("Branch not found");
   });
 });
 

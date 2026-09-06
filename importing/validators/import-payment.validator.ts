@@ -8,6 +8,10 @@ export function validateImportPayment(
 ): ImportValidatorResult {
     const result = emptyValidatorResult();
     const payment = normalized.payment;
+    if (payment?.method !== undefined && !["CASH", "UPI", "BANK_TRANSFER"].includes(payment.method)) {
+        result.issues.push({ code: "INVALID_PAYMENT_METHOD", field: "payment.method",
+            message: "Unsupported payment method. Use Cash, UPI, or Bank Transfer.", severity: "error" });
+    }
     const options = mapping.importOptions;
     const mappedPaymentColumn = mapping.columnMappings.some(mapping => mapping.targetField.startsWith("payment."));
     const hasPaymentData = Boolean(payment?.amount || payment?.rawStatus || payment?.status);

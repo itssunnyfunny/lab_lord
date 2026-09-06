@@ -1,6 +1,6 @@
 
 import { NextRequest, NextResponse } from "next/server"
-import { getOverduePaymentsPage } from "@/analytics/payment.analytics"
+import { AnalyticsAccessService } from "@/services/analyticsAccess.service"
 import { getSessionUser } from "@/lib/auth"
 import { PaymentService } from "@/services/payment.service"
 import {
@@ -36,7 +36,7 @@ export async function GET(
         const limit = all
             ? undefined
             : parsePageLimit(req.nextUrl.searchParams.get("limit"))
-        const result = await getOverduePaymentsPage(branchId, { cursor, limit, all })
+        const result = await AnalyticsAccessService.overduePayments(user.id, branchId, { cursor, limit, all })
 
         return NextResponse.json(result)
     } catch (error) {

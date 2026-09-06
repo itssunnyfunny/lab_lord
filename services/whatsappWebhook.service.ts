@@ -1257,7 +1257,7 @@ async function processTemplateEvent(input: {
   });
 }
 
-async function processWebhookEvents(input: {
+export async function processWebhookEvents(input: {
   tx: Prisma.TransactionClient;
   sender: ResolvedSender;
   events: NormalizedWebhookEvent[];
@@ -1265,6 +1265,12 @@ async function processWebhookEvents(input: {
   now: Date;
 }) {
   for (const event of input.events) {
+    if (event.kind === "STOP_REPORTS" || event.kind === "REPORT_CONFIRMATION") {
+      const receipt = await input.tx.whatsAppInboundMessageReceipt.createMany({ data: [{
+        senderId: input.sender.id, providerMessageId: event.providerMessageId,
+      }], skipDuplicates: true });
+      if (receipt.count === 0) continue;
+    }
     if (event.kind === "STATUS") {
       await processStatusEvent({ ...input, event });
     } else if (event.kind === "STOP") {

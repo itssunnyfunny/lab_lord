@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { OrganizationService } from "@/services/organization.service";
-import { validateRequiredPhone, validateRequiredText } from "@/lib/formValidation";
 
 export async function GET() {
     try {
@@ -18,23 +17,15 @@ export async function GET() {
     }
 }
 
-export async function POST(req: Request) {
+export async function POST(_req: Request) {
+    void _req;
     try {
         const user = await getSessionUser();
         if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        const body = await req.json();
-        const nameResult = validateRequiredText(body.name, "Organization name", 120);
-        if (!nameResult.ok) return NextResponse.json({ error: nameResult.error }, { status: 400 });
-        const contactPhoneResult = validateRequiredPhone(body.contactPhone, "Contact phone");
-        if (!contactPhoneResult.ok) return NextResponse.json({ error: contactPhoneResult.error }, { status: 400 });
-
-        const organization = await OrganizationService.createOrganization({
-            name: nameResult.value,
-            ownerId: user.id,
-            contactPhone: contactPhoneResult.value,
-        });
-
-        return NextResponse.json(organization, { status: 201 });
+        return NextResponse.json(
+            { error: "Create workspaces through onboarding.", code: "ONBOARDING_REQUIRED" },
+            { status: 410 }
+        );
     } catch {
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }

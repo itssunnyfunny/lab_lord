@@ -1,7 +1,7 @@
-import { getOrganizationHealthSnapshot } from "@/analytics/org.analytics"
+import { AnalyticsAccessService } from "@/services/analyticsAccess.service"
 import { getSessionUser } from "@/lib/auth"
 import { OrganizationService } from "@/services/organization.service"
-import { EntitlementService, SubscriptionEntitlementError } from "@/services/entitlement.service"
+import { SubscriptionEntitlementError } from "@/services/entitlement.service"
 import { NextResponse } from "next/server"
 
 export async function GET(
@@ -19,9 +19,9 @@ export async function GET(
         if (!isOwner) {
             return NextResponse.json({ error: "Forbidden" }, { status: 403 })
         }
-        await EntitlementService.assertOrganizationEntitlement(orgId, "ADVANCED_ANALYTICS")
 
-        const snapshot = await getOrganizationHealthSnapshot(orgId)
+
+        const snapshot = await AnalyticsAccessService.organizationSnapshot(user.id, orgId)
         return NextResponse.json(snapshot)
     } catch (error) {
         if (error instanceof SubscriptionEntitlementError) {

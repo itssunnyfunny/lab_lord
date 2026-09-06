@@ -1,3 +1,4 @@
+import { assertTrendRange } from "./range"
 // analytics/trends/payment.trends.ts
 
 import { AnalyticsPeriod, getPaymentPeriodStats } from "../payment.analytics"
@@ -18,6 +19,8 @@ export async function getPaymentTrend(
   period: AnalyticsPeriod = "all"
 ) {
   void interval
+
+  assertTrendRange(from, to)
 
   const points: {
     asOf: Date

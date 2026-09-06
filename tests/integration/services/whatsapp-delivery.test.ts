@@ -788,14 +788,14 @@ describe("WhatsApp durable delivery integration", () => {
     });
   });
 
-  it("suppresses tenant-mismatched and disabled rows without calling the provider", async () => {
+  it("rejects tenant-mismatched rows and suppresses disabled rows without calling the provider", async () => {
     const world = await createDeliveryWorld();
     await queueGroupedReminder(world, "manual-delivery-request-3");
     const foreignOrganization = await createOrg({
       id: "dispatch-foreign-org",
       ownerId: world.owner.id,
     });
-    const foreignMessage = await testPrisma.whatsAppMessage.create({
+    await expect(testPrisma.whatsAppMessage.create({
       data: {
         organizationId: foreignOrganization.id,
         branchId: world.branch.id,
@@ -813,7 +813,7 @@ describe("WhatsApp durable delivery integration", () => {
         rateCardVersion: "integration-rate-v1",
         estimatedCostMicros: BigInt(RATE_MICROS),
       },
-    });
+    })).rejects.toMatchObject({ code: "P2003" });
     await testPrisma.branchWhatsAppSettings.update({
       where: { branchId: world.branch.id },
       data: { enabled: false },
@@ -828,21 +828,16 @@ describe("WhatsApp durable delivery integration", () => {
     });
 
     expect(result).toMatchObject({
-      messagesClaimed: 2,
+      messagesClaimed: 1,
       messagesAccepted: 0,
-      messagesSuppressed: 2,
+      messagesSuppressed: 1,
     });
     expect(sendApprovedUtilityTemplate).not.toHaveBeenCalled();
     const messages = await testPrisma.whatsAppMessage.findMany({
       orderBy: { dedupeKey: "asc" },
     });
-    expect(messages).toHaveLength(2);
-    expect(messages.find(message => message.id === foreignMessage.id)).toMatchObject({
-      status: "SUPPRESSED",
-      failureCode: "TENANT_MISMATCH",
-      budgetState: "RELEASED",
-    });
-    expect(messages.find(message => message.id !== foreignMessage.id)).toMatchObject({
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
       status: "SUPPRESSED",
       failureCode: "BRANCH_DISABLED",
       budgetState: "RELEASED",
@@ -851,10 +846,9 @@ describe("WhatsApp durable delivery integration", () => {
       where: { source: "SYSTEM" },
       orderBy: { safeErrorCode: "asc" },
     });
-    expect(systemEvents).toHaveLength(2);
+    expect(systemEvents).toHaveLength(1);
     expect(systemEvents.map(event => event.safeErrorCode)).toEqual([
       "BRANCH_DISABLED",
-      "TENANT_MISMATCH",
     ]);
     expect(systemEvents.every(event => event.status === "SUPPRESSED")).toBe(true);
   });

@@ -118,7 +118,7 @@ describe("BranchSidebar", () => {
     expect(labels).toContain("AI Messages");
   });
 
-  it("hides AI messages when payment visibility is denied", () => {
+  it("hides AI reports and messages when payment visibility is denied", () => {
     mocks.access = {
       branchId: "branch_1",
       branchName: "Main Branch",
@@ -134,7 +134,7 @@ describe("BranchSidebar", () => {
     renderToStaticMarkup(<BranchSidebar />);
 
     const labels = mocks.sidebarItems.map(item => item.label);
-    expect(labels).toContain("AI Reports");
+    expect(labels).not.toContain("AI Reports");
     expect(labels).not.toContain("AI Messages");
   });
 

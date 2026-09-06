@@ -67,11 +67,11 @@ export function parseImportDate(value: unknown): string | undefined {
 }
 
 export function parsePaymentMethod(value: unknown): PaymentMethod | undefined {
-    const text = compactImportText(value).toLowerCase();
+    const text = compactImportText(value).toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
     if (!text) return undefined;
-    if (text.includes("upi") || text.includes("gpay") || text.includes("phonepe") || text.includes("paytm")) return "UPI";
-    if (text.includes("bank") || text.includes("neft") || text.includes("imps") || text.includes("transfer")) return "BANK_TRANSFER";
-    if (text.includes("cash")) return "CASH";
+    if (["upi", "gpay", "google pay", "phonepe", "phone pe", "paytm"].includes(text)) return "UPI";
+    if (["bank transfer", "bank", "neft", "imps", "rtgs", "transfer"].includes(text)) return "BANK_TRANSFER";
+    if (text === "cash") return "CASH";
     return undefined;
 }
 
@@ -169,6 +169,8 @@ function setNestedValue(row: ImportNormalizedRow, target: string, value: string,
         }
         case "payment.method":
             row.payment = { ...row.payment, method: parsePaymentMethod(value) };
+            if (value.trim() && !row.payment.method) issues.push({ code: "INVALID_PAYMENT_METHOD", field: target,
+                message: "Unsupported payment method. Use Cash, UPI, or Bank Transfer.", severity: "error" });
             break;
         case "payment.referenceId":
             row.payment = { ...row.payment, referenceId: value };

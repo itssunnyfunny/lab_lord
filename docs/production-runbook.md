@@ -4,7 +4,109 @@ This runbook covers the repository-owned procedures for operating Lab Lords. It
 does not grant access to Production and does not replace provider dashboards,
 database recovery documentation, or an approved incident-response policy.
 
-Last reconciled with the repository: 2026-08-26.
+Last reconciled with the repository: 2026-09-05 (hardening additions; older operational evidence remains dated).
+
+## AI ownership and inbound identity migration handoff
+
+### Subsequent operational tenant migration
+
+`20260905170000_scope_operational_relationships` adds scoped payment/student,
+resolution/payment, audit/payment, draft/student and fee-source keys, plus
+MultiShiftComponent.branchId and scoped bundle/shift keys. Before approved
+deployment, stop/drain affected writers and execute the seven count predicates
+from the migration's preflight as read-only SELECTs. Record counts separately
+for Payment, PaymentResolutionEvent, AuditLog, MessageDraft, each Student fee
+source and MultiShiftComponent. Every inconsistent-reference count must be zero;
+otherwise hold for reviewed repair. No row is deleted or guessed.
+
+Record each table's total row count, nullable draft-student count and component
+count before and after. The migration locks all affected tables, verifies both
+component parents agree, derives only component branch IDs, installs its keys
+and commits atomically. All row totals and historical values must remain equal;
+component branch/null/mismatch counts must be zero. Verify all seven scoped
+relationship families through pg_constraint.convalidated and direct synthetic
+mixed-parent rejection in an isolated target before promotion.
+
+New nested component writers inherit branchId via Prisma's composite relation;
+old writers do not provide it. No old/new writer overlap is supported. Apply the
+migration and matching generated client before resuming traffic. Preserve the
+previous MultiShift active-component edit guard and fee-update behavior.
+
+The draft FK uses PostgreSQL's `ON DELETE SET NULL (studentId)` column subset to
+preserve branchId. Prisma represents SetNull but cannot express the column list;
+its validation warning is expected. Never replace the maintained SQL with a
+generated all-column SET NULL constraint. See the official
+[PostgreSQL foreign-key documentation](https://www.postgresql.org/docs/17/ddl-constraints.html).
+Bootstrap must use migrations, not db push. Rollback requires holding affected
+writers and forward repair; retain history and keys. Reverting to an old binary
+without an explicit compatibility patch is unsupported. No Production operation
+is authorized or performed by this note.
+
+`20260905143000_fence_ai_and_inbound_messages` follows the allocation migration.
+It adds `BranchGenerationLease` (branch FK, unique branch/kind),
+`WhatsAppInboundMessageReceipt` (sender FK, unique sender/providerMessageId), and
+the unique `MessageDraft(branchId,studentId,action,language)` index. Null student
+drafts retain PostgreSQL's nullable uniqueness semantics. There is no guessed
+backfill, history deletion, new environment variable, or provider operation.
+
+Before an explicitly approved deployment, verify the target, backup/restore
+evidence and current migrations. Record aggregate preflight results privately:
+
+```sql
+SELECT COUNT(*) AS drafts, COUNT(*) FILTER (WHERE "studentId" IS NULL) AS null_student_drafts FROM "MessageDraft";
+SELECT COUNT(*) AS duplicate_groups, COALESCE(SUM(n - 1), 0) AS duplicate_excess
+FROM (SELECT COUNT(*) AS n FROM "MessageDraft" WHERE "studentId" IS NOT NULL
+  GROUP BY "branchId", "studentId", "action", "language" HAVING COUNT(*) > 1) d;
+SELECT COUNT(*) AS running_reports FROM "Branch" WHERE "aiStatus" = 'RUNNING';
+```
+
+Any duplicate group blocks migration pending an owner-reviewed preservation or
+resolution plan. Do not choose the newest draft, delete older drafts, or reset
+the database automatically. The migration holds an exclusive MessageDraft lock,
+rechecks duplicates, creates the index then both tables in one transaction; a
+blocker rolls everything back. Resolve Prisma's failed-migration record only
+through the established approved repair procedure after proving rollback.
+
+Stop admissions and drain all old report/draft generation and inbound webhook
+workers before applying the migration and promoting the matching application.
+Hold inbound delivery with retryable responses at the approved ingress boundary;
+do not acknowledge and discard messages. Empty RUNNING status is insufficient
+proof of drain: verify in-flight function execution has ended. Old code does not
+honor tokens and can overwrite a new draft/report or spend confirmation attempts,
+so rolling old/new worker overlap is unsupported. Keep old deployments from
+receiving direct traffic. Existing envelope receipts cannot reconstruct every
+historical message identity; let outstanding confirmation challenges expire
+during the approved hold before re-enabling confirmation admission. Retain
+sender identities and existing webhook history. Rebatched old report-stop events
+remain monotonic stop operations; no new confirmation may reuse an old challenge.
+
+After migration, compare MessageDraft totals and null-student totals to preflight
+while writers remain held; duplicate groups must be zero. Both new tables should
+be empty before new traffic. Verify installed keys without exposing row contents:
+
+```sql
+SELECT indexname FROM pg_indexes WHERE tablename IN
+  ('MessageDraft', 'BranchGenerationLease', 'WhatsAppInboundMessageReceipt');
+SELECT conname, convalidated FROM pg_constraint WHERE conrelid IN
+  ('"BranchGenerationLease"'::regclass, '"WhatsAppInboundMessageReceipt"'::regclass);
+SELECT COUNT(*) AS leases FROM "BranchGenerationLease";
+SELECT COUNT(*) AS inbound_identities FROM "WhatsAppInboundMessageReceipt";
+```
+
+Resume only the new writers and verify one accepted generation per branch/kind,
+stale-token rejection, atomic batch publication and same-ID webhook replay using
+approved synthetic Test traffic. Observe aggregate failures/lease expiry without
+logging prompts, message text, codes or tokens. The local integration suite
+proves those properties with fake providers and PostgreSQL, including migration
+blocker rollback and preserved pre-change drafts.
+
+Rollback is an admission hold and forward repair preserving the additive tables,
+unique index, receipts and current tokens. Do not drop the fence or resume an old
+unfenced binary over active work. If an older application must be restored, drain
+new workers first and keep affected generation/confirmation paths held until a
+compatible patch is deployed. No Production preflight, migration, drain,
+challenge expiry operation, provider call or deployment was performed in this
+sprint; each dependent Production action still requires explicit approval.
 
 ## Stop conditions and operator-owned preconditions
 
@@ -194,6 +296,65 @@ The workspace-billing migrations have a specific expansion, backfill, cutover,
 and release sequence. Follow the
 [Workspace billing V2 rollout](./workspace-billing-rollout.md) rather than
 reconstructing that order here.
+
+### Allocation tenant relationship migration (2026-09-05)
+
+`20260905090000_scope_allocation_relationships` adds required
+`SeatAllocation.branchId`, composite unique keys on `(id, branchId)` for
+`Student`, `Seat`, `Shift`, and `MultiShift`, four composite allocation foreign
+keys, and the `(branchId, shiftId, endDate)` allocation index. No owner,
+subscription, payment, or provider record is changed.
+
+Before separately approving Production application, retain read-only counts:
+
+```sql
+SELECT COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE a."endDate" IS NULL) AS active,
+       COUNT(*) FILTER (WHERE a."multiShiftId" IS NOT NULL) AS bundled,
+       COUNT(*) FILTER (WHERE se.id IS NULL OR st.id IS NULL OR sh.id IS NULL
+         OR se."branchId" IS DISTINCT FROM st."branchId"
+         OR se."branchId" IS DISTINCT FROM sh."branchId"
+         OR (a."multiShiftId" IS NOT NULL AND
+           (ms.id IS NULL OR se."branchId" IS DISTINCT FROM ms."branchId"))) AS inconsistent
+FROM "SeatAllocation" a
+LEFT JOIN "Seat" se ON se.id = a."seatId"
+LEFT JOIN "Student" st ON st.id = a."studentId"
+LEFT JOIN "Shift" sh ON sh.id = a."shiftId"
+LEFT JOIN "MultiShift" ms ON ms.id = a."multiShiftId";
+```
+
+Require `inconsistent = 0`; privately review any offending rows with the owner.
+Do not guess a branch or delete data to pass. The migration repeats this check
+under write-excluding table locks, adds the nullable column, backfills only
+confirmed same-branch relationships, makes it required, and installs validated
+constraints in one transaction. Failure rolls back all schema/data changes.
+
+This is a coordinated release, not compatible with rolling old/new writers:
+old inserts omit `branchId`, while new code requires the migrated schema. Under
+separate approval, take the verified backup, drain interactive/import allocation
+writers, apply the migration, deploy matching code, verify, then resume writers.
+No environment variable, provider mutation, or commercial-policy change is
+required. The onboarding flag requirement in Normal release also applies.
+
+After migration, rerun the preflight and require unchanged total/active/bundled
+counts and zero inconsistent rows. Additionally verify:
+
+```sql
+SELECT COUNT(*) AS invalid_branch FROM "SeatAllocation" a
+JOIN "Seat" s ON s.id = a."seatId"
+WHERE a."branchId" IS DISTINCT FROM s."branchId";
+SELECT conname, convalidated FROM pg_constraint
+WHERE conrelid = '"SeatAllocation"'::regclass AND contype = 'f';
+```
+
+Require zero invalid branches and all four new `*_branchId_fkey` constraints
+validated. Smoke-test same-branch allocation/reallocation, foreign-reference
+rejection, historical release, and concurrent allocation/deactivation. The
+new-code application must not start before the migration. An old-code rollback
+cannot resume allocation writes against this schema; keep writers held and
+forward-repair or deploy a compatible application. Do not drop the new tenant
+constraints as an automatic rollback, rewrite applied migration history, or
+discard allocation history.
 
 ### Exact commercial-evidence migration
 
@@ -924,6 +1085,12 @@ Vercel Git or CLI path before release. See Vercel's official
 [deployment overview](https://vercel.com/docs/deployments/overview).
 
 ### Normal release
+
+The 2026-09-05 onboarding hardening retires organization-only POST creation and
+requires `WORKSPACE_BRANCH_BILLING_V2_ENABLED` for new onboarding. With the flag
+held, new creation is unavailable; existing legacy access remains supported.
+Before releasing, verify the intended flag state through the approved operator
+process. No flag or deployment change was performed by the local sprint.
 
 1. Identify the approved commit and classify schema, environment, cron,
    webhook, billing, and external-provider impact.
@@ -1720,6 +1887,24 @@ compatible forward fix.
 
 ### Initial subscription-provisioning migration
 
+The September 5 replacement-provisioning and source-cancellation changes reuse
+these existing columns and the audit ledger; they add no billing migration.
+For a later approved rollout, hold interactive billing writes and deadline work,
+drain old provider-mutating invocations, and inventory unresolved replacement
+changes and source cancellations. An old attempt with no dispatch evidence is
+unknown, not safe to retry. The new code sends such replacement retries to
+manual review. Source calls made by the old code have no admission ledger;
+identify and reconcile those operations before restarting deadline work.
+Preserve provider IDs, attempts, frozen intent, and audit history. Do not clear
+the lease or failure state to force retry. New replacement recovery may adopt
+one matching uncharged CREATED object by read only. Source cancellation has no
+automatic replay from ambiguity. Owner retry fetches the source and can adopt
+terminal truth, or reuse a durable confirmed cancellation response with matching
+current scheduled state. A scheduled-change flag alone and candidate
+authorization are insufficient. Checkout replacement waits for terminal provider
+state, including when local authorization expiry elapsed. A rollback must retain this fence and history;
+use a compatible forward repair rather than restoring unfenced workers.
+
 Migration `20260831160000_add_subscription_provisioning_intent` adds the
 `PROVISIONING` billing-operation state, nullable immutable provisioning fields
 to `OrganizationBillingChange`, and the tenant-scoped,
@@ -2158,3 +2343,281 @@ Remaining risks and owners:
 - [CI workflow](../.github/workflows/ci.yml)
 - [Production migration workflow](../.github/workflows/production-migrate.yml)
 - [Vercel cron configuration](../vercel.json)
+
+### Billing and WhatsApp tenant constraints (20260905173000)
+
+Run `prisma/preflight/billing-and-whatsapp-tenants.sql` read-only against the
+explicitly approved target and retain each named count; all must be zero before
+migration. Snapshot counts of all tables named in that script before and after;
+this migration must not change row counts. The migration locks all affected
+parents/children, repeats preflight and adds keys/checks atomically. Drain these
+writers while applying it. It adds no tenant fields or guessed backfills.
+Previous writers producing coherent references remain compatible. Corrupt data
+requires a separately reviewed repair preserving billing/provider history.
+Nullable composite relations use PostgreSQL column-specific SET NULL; preserve
+that SQL despite Prisma's required-scope-column warning. Never use db push to
+replace the maintained migration chain. Rollback application code is possible
+only for writers respecting these constraints; use forward repair for data or
+constraint defects rather than rewriting this applied migration.
+
+### Import and grouped-payment scopes (20260905180000 / 20260905183000)
+
+Drain imports (including Workflow steps), WhatsApp planning/reconciliation and
+staging retention before migration 44; old direct bulk writers omit newly
+required branchId and cannot overlap new code. Run
+`prisma/preflight/import-and-collection-tenants.sql`; all six blocker counts
+must be zero. The migration locks parents and children, validates agreement,
+backfills five new branch columns, then installs keys. Compare all ten table
+counts before/after; no rows are deleted. Nullable session/plan/evaluation/row
+history detaches only its foreign ID.
+
+After 44, run `prisma/preflight/import-targets.sql`. Retain per-kind reference,
+detached-history and foreign-blocker counts. Every foreign blocker must be zero;
+missing historical targets are retained as explicitly detached snapshots. 45
+locks import sources and six target tables, installs the typed ledger and
+backfills it before installing maintenance triggers, all atomically. Supported
+JSON is unchanged; malformed/unknown target kinds block rather than invent a
+type. References survive payload redaction until staging retention deletes the
+owner. Compare source row counts, expected distinct ledger references and live
+versus detached counts after migration. Runtime new references require existing
+same-branch targets; no caller bypasses the trigger with bulk SQL.
+
+Deploy compatible application/worker code before resuming writers. Reverting
+application code requires keeping branch-aware writers; the target ledger is
+compatible with existing JSON writers. Repair constraints/triggers with a new
+forward migration. Never remove history or rewrite applied migration files.
+
+### Durable SaaS action cutover (20260905190000)
+
+Run `prisma/preflight/billing-action-cutover.sql` before migration, excluding its
+clearly labelled post-migration query. Retain counts and separately inventory
+exact operation/subscription/provider identities in a restricted report. Drain
+interactive billing, deadline/reconciliation workers and old Workflow code;
+wait for admitted requests to finish. Unknown operations require read-only
+reconciliation/manual review, never token clearing as permission to replay.
+Apply 46 and deploy the executor callers together. The new action table starts
+empty; existing operation/audit history remains the authoritative pre-cutover
+fence and is not guessed into completed action rows. Verify operation/history/
+subscription counts unchanged, then the new action catalog/immutable-trigger
+checks. Resume one controlled worker population. Old dispatch code must not run
+alongside the new protocol. Rollback to unfenced dispatch is unsafe; keep the
+writer gate closed and forward-repair. Never erase action receipts to retry.
+
+### Consolidation bootstrap and cutover (48 migrations, September 2026)
+
+Local bootstrap uses `pnpm exec node scripts/bootstrap-isolated-database.mjs`.
+Supply `BOOTSTRAP_DATABASE_URL` explicitly and `BOOTSTRAP_DATABASE_CONFIRM` as
+the exact disposable database name. The script permits loopback test targets
+only, verifies the connected name, refuses application records, applies the
+maintained chain, checks all constraints and required BillingDatabaseIdentity,
+and is repeatable on the resulting empty application database. It does not
+call `prisma/seed.ts` (that is destructive sample data), create users, grants,
+offers, provider plans, senders or subscriptions, or contact providers.
+
+Required non-secret configuration is versioned in code: billing plan/pricing
+and capability definitions, default shifts/seat numbering used by onboarding,
+import engine contracts, WhatsApp managed template definitions and rate-card
+validation rules. Enabling WhatsApp delivery additionally requires approved
+non-secret `WHATSAPP_UTILITY_RATE_MICROS_INR`, `WHATSAPP_RATE_CARD_VERSION`,
+`WHATSAPP_RATE_CARD_EFFECTIVE_AT` and `WHATSAPP_RATE_CARD_EXPIRES_AT` values;
+bootstrap does not invent provider prices or change those environment values.
+Provider plans/templates/senders are external identities,
+not fake seed records; provision them only through their existing approved
+environment/mode-bound workflows. The migration creates the one database
+billing identity. A fresh database receives a NEW identity: never copy that
+identity as a shortcut around target-bound operator approvals. Existing
+identity mappings and provider notes must be reviewed during a data cutover.
+
+Production choice is evidence-gated; neither alternative is selected here.
+
+| Evidence | Migrate existing database | Fresh database with controlled cutover |
+| --- | --- | --- |
+| Legitimate organizations, owner/trial grants, data and provider obligations exist | Preferred when blockers can be resolved with approved, history-preserving repair | Requires an explicit transfer/reconciliation inventory and validated preservation of every legitimate dependency; an empty schema is insufficient |
+| All tenant preflight counts zero; operations can drain | Apply maintained additive chain with writer drain | Still requires identity and event routing review, stable URLs/IDs and retained receipt/action evidence |
+| Inconsistent rows or UNKNOWN external actions | Stop, inventory exact IDs, repair/reconcile with separate approval | Also blocks discarding affected records; moving databases cannot erase uncertain effects |
+| No legitimate retained records or provider obligations, proven by authorized inventory | Still viable; no mandatory cleanup | May be chosen by the owner after approving external identity handling, rollback and cutover verification |
+
+Executable sequence for the authorized operator (not performed on Production):
+
+1. Verify selected project/environment, database identity and exact commit.
+   Take a restorable backup and prove restoration on an isolated database.
+   Use `psql -X -v ON_ERROR_STOP=1 -f prisma/preflight/cutover-inventory.sql`
+   with an explicitly bound connection, saving restricted output. It provides
+   exact table counts, operation IDs, provider mappings, active Workflow IDs
+   and unresolved delivery/event counts without bodies or credentials.
+2. Run existing allocation/operational migration preflight SQL and all files
+   under `prisma/preflight/` appropriate to the installed schema. Run
+   `billing-and-whatsapp-tenants.sql`, `import-and-collection-tenants.sql`,
+   `import-targets.sql` and the pre-46 section of `billing-action-cutover.sql`.
+   `tenant-blocker-identities.sql` emits exact child IDs for the 55 scoped
+   billing/WhatsApp parent pairs. For any other nonzero count, retain the same
+   WHERE predicate and select the child ID instead of COUNT in the restricted
+   investigation; never infer or overwrite ownership. All blocker counts must
+   be zero. Detached historical import-target counts may be nonzero and must
+   be preserved and reconciled, not deleted.
+3. Inventory legitimate data, Clerk owner identities, once-per-owner trial
+   consumption, historical LEGACY organizations, offer/provider IDs, pending
+   invoices, cancellation/source/replacement obligations, provider mode,
+   webhook/event/action receipts and database-bound plan provisioning records.
+   Reconcile unresolved external actions read-only or retain manual review.
+   No final legacy deletion or fresh cutover is authorized by this document.
+4. Drain interactive writes, billing and WhatsApp cron/dispatch, import
+   Workflow steps and staging retention. Stop old worker populations and
+   record their deployment/run IDs; do not clear leases to simulate a drain.
+   Keep inbound events durably queued/retriable at the provider; verify retry
+   windows and signature/mode routing before reopening ingestion. Capture
+   final counts after the drain. New required branch columns and durable
+   action/token protocols mean old and new writers cannot overlap.
+5. Apply `pnpm exec node node_modules/prisma/build/index.js migrate deploy`
+   with the approved target-bound environment. The bootstrap wrapper itself
+   intentionally cannot operate on Production. Migrations 42–45 validate
+   historical ownership before backfill/keys; 46 starts an empty action ledger;
+   47 adds nullable analysis token/expiry with a paired-null CHECK and unique
+   token. Old ANALYZING rows retain their status; new workers may recover them
+   after the verified drain. Migration 48 extends the typed target ledger to
+   retained retry-plan student IDs; run `import-plan-targets.sql` first and
+   require zero FOREIGN_BLOCKER rows. Detached historical IDs remain detached.
+   Plan/target/student writers must be drained during its atomic backfill and
+   trigger installation. Plan counts must be unchanged; new ledger rows equal
+   distinct retained plan/input/student IDs. No rows are deleted or reassigned.
+6. Deploy the compatible application and Workflow manifest together; validate
+   migration ledger/checks, rerun counts/integrity queries, compare every
+   existing table count and import ledger live/detached scope. New tables are
+   accounted for separately. The first action rows must correspond to newly
+   admitted actions; old uncertain operations still retain their old fences.
+7. Reopen one controlled worker population and verify owner/manager/restricted
+   access, read-only recovery, student dues, import replay, checkout/callback
+   and signed event redelivery in the approved environment. Provider canaries
+   require separate authorization; local mocks are not a Production canary.
+8. For a fresh cutover, preserve approved IDs and history, move connection and
+   event routing only after the transfer comparison and identity reconciliation
+   pass, and retain the old database read-only for the approved recovery window.
+   Avoid dual writers. A database change does not retire Clerk/Meta/Razorpay
+   accounts or their financial obligations.
+
+Rollback before new writes can restore the isolated rehearsal backup and
+redeploy compatible code. After new writes/provider actions, a blind database
+restore loses durable evidence and may replay effects: close writers, retain
+both evidence sets and forward-repair with a new migration. Do not roll back
+to the old dispatch, branch-omitting import writers or unfenced analysis code.
+Never rewrite applied migrations or delete receipts to recover. Record the
+operator's chosen option, exact counts, approval and reconciliation evidence.
+
+### Release candidate operation card — 2026-09-06
+
+This card makes the preceding 48-migration sequence reviewable; it does not
+authorize an operation. See the [release evidence](ai/release-candidate-verification-2026-09-06.md).
+Current recommendation is migrate-existing **only after** clean inventory and
+preflights. Production counts and database identity remain unavailable in that
+pass. A fresh target is not approved merely because empty bootstrap succeeds.
+
+1. **Bind the operation.** Record the approved release SHA, Vercel project/team,
+   Production deployment and aliases, exact direct database and database-resident
+   billing fingerprint, operator, incident owner, evidence location and maximum
+   hold window. Independently match these to the protected Production secret
+   source. Do not infer a database identity from the URL or Vercel project alone.
+   The current deployed SHA was ca5e9b5; determine installed migrations by query,
+   not by counting migrations at that commit. The operator must supply the
+   database-native backup/restore command; this repository cannot invent one.
+2. **Read-only snapshot.** Use an approved read-only role, statement/lock limits
+   and a repeatable-read transaction. In psql with the approved connection already
+   bound privately, run `\set ON_ERROR_STOP on`, then
+   `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;`,
+   `SET LOCAL statement_timeout = '30s';`,
+   `SET LOCAL lock_timeout = '3s';`, and `SHOW transaction_read_only;`.
+   Verify current_database/current_user privately and match the recorded billing
+   identity. List public columns and installed migration names first. Roll back
+   the read-only transaction if any query times out; do not increase limits
+   silently. Run schema-compatible SELECTs from cutover-inventory.sql and the
+   existing preflight files. That inventory file manages its own read-only
+   transaction: execute it separately, not nested inside another transaction.
+   Keep all-table counts (one row per table), grouped enum/status counts and
+   blocker totals in the release report. Bound identity lists to 100 rows per
+   page ordered by stable ID; retain IDs only in restricted evidence, hash them
+   for a shared report, and record the total versus inspected count. Never emit
+   email/name/phone, tokens, raw webhook or provider response bodies.
+3. **Preserve and rehearse.** Obtain a recoverable database-native snapshot and
+   immutable backup ID. Restore to a newly created isolated target, prove row
+   counts and required identities, and rehearse all pending maintained migrations.
+   Retain provider/local IDs, source/replacement lineage, commercial intents,
+   action/audit receipts, webhook event/hash evidence and active Workflow IDs.
+   Reconcile bounded known-provider reads in the verified mode; inspect scoped
+   unrepresented objects separately and record discovery limits. UNKNOWN is not
+   permission to erase or replay an action. Stop if preservation or restore
+   cannot be demonstrated.
+4. **Hold admissions.** Through the operator's established traffic/deployment
+   controls, stop interactive onboarding, operational/billing/AI/import writes
+   and old maintenance admissions. Hold RAZORPAY_BILLING_WRITES_ENABLED and
+   IMPORT_V2_ENABLED in the held deployment; this is insufficient by itself.
+   Stop all eight scheduled writer populations declared in vercel.json, including
+   import retention and daily dues during the schema window. Apply existing
+   WhatsApp delivery/planner controls and separately prove already-admitted
+   deliveries have settled. An environment edit affects only newly started
+   deployments; verify every old deployment/cron/Workflow population separately.
+5. **Drain and retain ingress.** Record the final invocation/run IDs and prove
+   completion or separately approved cancellation at the runtime. Inspect active
+   database transactions and row leases, but do not treat zero leases, elapsed
+   expiry, a stopped cron schedule, or one quiet query as proof of process exit.
+   Hold Razorpay/Meta ingress through the existing approved ingress mechanism:
+   preserve durable receipt/signature/hash evidence for accepted events; otherwise
+   return a retryable non-2xx and monitor provider retry deadlines. Never return
+   2xx for discarded events. Razorpay documents a 24-hour retry window and
+   possible webhook disablement after repeated failure; choose a much shorter
+   operator-approved window and verify redelivery before reopening. Meta retry
+   behavior and ingress retention must be verified separately. If the existing
+   mechanism cannot retain/retry safely, stop the cutover instead of inventing
+   a new queue or dropping callbacks.
+6. **Record drained counts and run final blockers.** Use the exact predicates
+   below immediately before migration. A second read after the hold must show no
+   unexplained writer movement. Historical unresolved rows may remain only with
+   retained fences and an explicit reviewed disposition; they are not cleared
+   to manufacture zero active work. Nonzero tenant/backfill blockers stop the
+   operation. Pre-44 schemas cannot execute import-target preflights requiring
+   new branch columns; rehearse those gates in dependency order on the restored
+   copy. The maintained migration chain also checks historical blockers before
+   its backfills/constraints. The current workflow applies all pending migrations;
+   it does not offer an interactive pause between them. A rehearsal failure blocks
+   that workflow until separately reviewed repair is complete. Do not edit applied migrations.
+7. **Apply matching release.** After separate push/migration/deployment approval,
+   use the protected production-migrate workflow pinned to the approved release
+   ref, or the approved direct procedure:
+   `pnpm exec node node_modules/prisma/build/index.js migrate deploy`.
+   Bind DIRECT_URL/DATABASE_URL from the approved Production secret source;
+   never use the local bootstrap or seed command. The workflow's normal branch
+   checkout must resolve to the approved SHA; stop if it does not. Generate the
+   matching Prisma client with
+   `pnpm exec node node_modules/prisma/build/index.js generate`, build and verify
+   both Workflow manifest entries, and promote only that compatible code while
+   admissions remain held. Old branch-omitting or unfenced writers must not overlap.
+8. **Compare before reopening.** Require 48 finished, non-rolled-back maintained
+   migrations with matching checksums, zero failed/unvalidated constraints,
+   installed scoped FKs/checks/triggers and unchanged retained identities. Apply
+   the count rules below; explain every allowed backfill delta. Verify a read-only
+   owner/staff/foreign smoke first. After separate canary approval, admit one
+   controlled worker population and one allowed workspace, test normal operations,
+   dues boundaries, import replay/results and callback/redelivery. Observe the
+   existing runtime/ledger alerts for the agreed window before staged reopening.
+9. **Stop / recover.** Identity mismatch, unexpected count movement, nonzero
+   blocker, unknown running process, lost receipt, wrong provider mode, schema /
+   client mismatch, repeated provider dispatch or failed authorization smoke
+   keeps admissions closed. Before new external effects, use only the approved,
+   rehearsed restore/compatible-code procedure. After new provider or domain
+   effects, preserve both evidence sets and forward-repair under a new reviewed
+   change. Old code rollback, blind restore, lease clearing and receipt deletion
+   are not recovery procedures.
+
+| Pre/post count or integrity contract | Required comparison |
+| --- | --- |
+| User, Organization, Branch, Student, Seat, Shift, MultiShift/Component, SeatAllocation, Payment/ResolutionEvent, Staff/overrides/invites | Exact retained table counts before/after migration; operational mutations remain held; zero cross-scope blockers |
+| OwnerTrialGrant, LEGACY/V2 classification, subscriptions/invoices/history, billing changes/audits, offers/grants/catalog bindings | Counts and stable identity sets unchanged; no trial reset, promotion or deletion inferred from inactivity |
+| BillingDatabaseIdentity | Existing singleton identity unchanged on migrate-existing; a fresh DB gets a new identity and requires renewed target-bound approvals |
+| ImportSession/Row/Evaluation/Plan/Run/RunItem | Existing counts and successful item markers unchanged; preserve waiting/partial/failed history and pinned Workflow IDs |
+| ImportTargetReference | If newly installed: equal the migration-defined distinct live row/run/retained-plan targets; account separately for preserved detached historical JSON references; zero FOREIGN_BLOCKER |
+| BillingProviderAction | Newly installed ledger starts empty; old uncertain change/audit fences retained. Existing action rows immutable; any new row only after approved admission |
+| RazorpayWebhookEvent, WhatsAppWebhookReceipt/inbound receipts, outbox/messages/consent/audits | Counts do not decrease; explain only durably accepted ingress growth. Exact event/hash/mode identity retained; no raw payload reporting |
+| Import ANALYZING/active runs, AI generation leases, billing leases/actions, WhatsApp CLAIMED/SUBMITTING/UNKNOWN | Grouped status and lease counts plus runtime invocation evidence. Unresolved external obligations retained; zero provably running incompatible writers, not necessarily zero historical unresolved rows |
+| Required WhatsApp configuration and provider identities | Sender/template/rate-card mappings retained and mode verified before enabling; absent/expired configuration keeps capability held |
+
+Actual pre/post Production counts must be filled by the authorized operator;
+they were **not measured** in this release pass. Failure to obtain them is a
+release gate, not a reason to recommend discarding the database.

@@ -97,7 +97,7 @@ describe("StaffService Integration", () => {
 
       await expect(
         StaffService.authorize(stranger.id, branch.id, "students")
-      ).rejects.toThrow(/Not a staff member/i);
+      ).rejects.toThrow("Branch not found");
     });
 
     it("allows a permission override to grant STAFF access beyond role defaults", async () => {
@@ -229,7 +229,7 @@ describe("StaffService Integration", () => {
 
       await expect(
         StaffService.addStaffByEmail(nonOwner.id, branch.id, targetUser.email, StaffRole.STAFF)
-      ).rejects.toThrow(/Unauthorized/i);
+      ).rejects.toThrow("Branch not found");
     });
   });
 
@@ -278,7 +278,7 @@ describe("StaffService Integration", () => {
 
       await expect(
         StaffService.removeStaff(nonOwner.id, branch.id, staffRecord.id)
-      ).rejects.toThrow(/Unauthorized/i);
+      ).rejects.toThrow("Branch not found");
     });
   });
 

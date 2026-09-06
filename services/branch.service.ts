@@ -1,3 +1,5 @@
+import { getBranchCapabilityDecision } from "@/lib/branchCapabilities";
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { prisma } from "@/lib/prisma";
 import {
     assertKnownFields,
@@ -181,7 +183,8 @@ export type BranchDetailsResponse = Pick<Branch, "id" | "organizationId" | "name
 
 function projectBranchDetails(
     branch: BranchDetailsRecord,
-    permissions: Record<StaffAction, boolean>
+    permissions: Record<StaffAction, boolean>,
+    canViewStaff: boolean
 ): BranchDetailsResponse {
     const canManageBranch = permissions.manage_branch;
     const canViewStudents = permissions.students;
@@ -235,11 +238,11 @@ function projectBranchDetails(
     }
     if (canViewStudents) counts.students = branch._count.students;
     if (canViewPayments) counts.payments = branch._count.payments;
-    if (canManageBranch) counts.staff = branch._count.staff;
+    if (canViewStaff) counts.staff = branch._count.staff;
     if (Object.keys(counts).length > 0) result._count = counts;
 
     if (canViewSeatData) result.shifts = branch.shifts;
-    if (canManageBranch) result.staff = branch.staff;
+    if (canViewStaff) result.staff = branch.staff;
 
     return result;
 }
@@ -453,14 +456,11 @@ export class BranchService {
             defaultFee: defaultFeeResult.value ?? 0,
         };
 
-        const org = await prisma.organization.findFirst({
-            where: { id: organizationId, ownerId: userId },
-            select: {
+        const org = await AccessPolicy.selectOwnerOrganization(userId, organizationId, {
                 billingModelVersion: true,
                 ownerTrialGrant: { select: { status: true, trialEndsAt: true } },
                 subscription: { select: { id: true, status: true, quantity: true, providerMode: true } },
-            },
-        });
+            });
         if (!org) throw new OrganizationAccessNotFoundError();
 
         const existingReplay = await findLockedBranchMutationReplay({
@@ -491,16 +491,13 @@ export class BranchService {
             if (replay) return replay;
             await assertNoActiveOrganizationBillingLease(tx, organizationId);
 
-            const lockedOrg = await tx.organization.findFirst({
-                where: { id: organizationId, ownerId: userId },
-                select: {
+            const lockedOrg = await AccessPolicy.selectOwnerOrganization(userId, organizationId, {
                     billingModelVersion: true,
                     ownerTrialGrant: { select: { status: true, trialEndsAt: true } },
                     subscription: {
                         select: { id: true, quantity: true, providerPaymentMethod: true },
                     },
-                },
-            });
+                }, tx);
             if (!lockedOrg) throw new OrganizationAccessNotFoundError();
             const trialActive = lockedOrg.ownerTrialGrant?.status === "ACTIVE"
                 && lockedOrg.ownerTrialGrant.trialEndsAt != null
@@ -641,7 +638,7 @@ export class BranchService {
             where: { id: branchId },
             select: BRANCH_DETAILS_SELECT,
         });
-        return branch ? projectBranchDetails(branch, access.permissions) : null;
+        return branch ? projectBranchDetails(branch, access.permissions, getBranchCapabilityDecision(access, "staffView").allowed) : null;
     }
 
     static parseSettingsPayload(body: unknown): UpdateBranchSettingsDto {
@@ -677,8 +674,7 @@ export class BranchService {
     }
 
     static async updateSettings(userId: string, branchId: string, body: unknown) {
-        await StaffService.authorize(userId, branchId, "manage_branch");
-        await EntitlementService.assertBranchWritable(branchId);
+        await AccessPolicy.authorizeAction(userId, branchId, "manage_branch", undefined, true);
         const data = this.parseSettingsPayload(body);
 
         await prisma.branch.update({
@@ -695,10 +691,7 @@ export class BranchService {
     }
 
     static async retryPendingActivation(userId: string, branchId: string) {
-        const branch = await prisma.branch.findFirst({
-            where: { id: branchId, organization: { ownerId: userId } },
-            include: { organization: true },
-        });
+        const branch = await AccessPolicy.readOwnerBranch(userId, branchId, { organization: true });
         if (!branch) throw new BillingResourceNotFoundError("Branch not found");
         if (branch.billingStatus !== "PENDING_ACTIVATION") throw new Error("Branch is not pending activation");
         assertRazorpayBillingWritesEnabled(branch.organizationId);
@@ -727,10 +720,7 @@ export class BranchService {
     }
 
     static async discardPendingActivation(userId: string, branchId: string) {
-        const branch = await prisma.branch.findFirst({
-            where: { id: branchId, organization: { ownerId: userId } },
-            include: { organization: { include: { subscription: true } } },
-        });
+        const branch = await AccessPolicy.readOwnerBranch(userId, branchId, { organization: { include: { subscription: true } } });
         if (!branch) throw new BillingResourceNotFoundError("Branch not found");
         if (branch.billingStatus !== "PENDING_ACTIVATION") throw new Error("Branch is not pending activation");
 
@@ -809,10 +799,7 @@ export class BranchService {
     static async reactivateArchivedBranch(userId: string, branchId: string, idempotencyKey: string) {
         const normalizedIdempotencyKey = idempotencyKey.trim();
         if (!normalizedIdempotencyKey) throw new Error("Idempotency-Key is required");
-        const branch = await prisma.branch.findFirst({
-            where: { id: branchId, organization: { ownerId: userId } },
-            include: { organization: { include: { subscription: true } } },
-        });
+        const branch = await AccessPolicy.readOwnerBranch(userId, branchId, { organization: { include: { subscription: true } } });
         if (!branch) throw new BillingResourceNotFoundError("Branch not found");
 
         const existingReplay = await findLockedBranchMutationReplay({
@@ -848,10 +835,7 @@ export class BranchService {
             if (replay) return replay;
             await assertNoActiveOrganizationBillingLease(tx, branch.organizationId);
 
-            const current = await tx.branch.findFirst({
-                where: { id: branchId, organization: { ownerId: userId } },
-                include: { organization: { include: { subscription: true } } },
-            });
+            const current = await AccessPolicy.readOwnerBranch(userId, branchId, { organization: { include: { subscription: true } } }, tx);
             if (!current) throw new BillingResourceNotFoundError("Branch not found");
             if (current.billingStatus !== "ARCHIVED") {
                 throw new Error("Only an archived branch can be reactivated");
@@ -895,10 +879,7 @@ export class BranchService {
     ) {
         const normalizedIdempotencyKey = idempotencyKey.trim();
         if (!normalizedIdempotencyKey) throw new Error("Idempotency-Key is required");
-        const branch = await prisma.branch.findFirst({
-            where: { id: branchId, organization: { ownerId: userId } },
-            include: { organization: { include: { subscription: true, ownerTrialGrant: true } } },
-        });
+        const branch = await AccessPolicy.readOwnerBranch(userId, branchId, { organization: { include: { subscription: true, ownerTrialGrant: true } } });
         if (!branch) throw new BillingResourceNotFoundError("Branch not found");
 
         const existingReplay = await findLockedBranchMutationReplay({
@@ -933,10 +914,7 @@ export class BranchService {
             if (replay) return replay;
             await assertNoActiveOrganizationBillingLease(tx, branch.organizationId);
 
-            const current = await tx.branch.findFirst({
-                where: { id: branchId, organization: { ownerId: userId } },
-                include: { organization: { include: { subscription: true, ownerTrialGrant: true } } },
-            });
+            const current = await AccessPolicy.readOwnerBranch(userId, branchId, { organization: { include: { subscription: true, ownerTrialGrant: true } } }, tx);
             if (!current) throw new BillingResourceNotFoundError("Branch not found");
             if (current.billingStatus !== "ACTIVE") throw new Error("Only an active branch can be removed");
             const remaining = await tx.branch.count({
@@ -994,10 +972,7 @@ export class BranchService {
     }
 
     static async undoBillingRemoval(userId: string, branchId: string) {
-        const branch = await prisma.branch.findFirst({
-            where: { id: branchId, organization: { ownerId: userId } },
-            include: { organization: { include: { subscription: true } } },
-        });
+        const branch = await AccessPolicy.readOwnerBranch(userId, branchId, { organization: { include: { subscription: true } } });
         if (!branch) throw new BillingResourceNotFoundError("Branch not found");
         const change = await prisma.organizationBillingChange.findFirst({
             where: {
@@ -1037,10 +1012,7 @@ export class BranchService {
         }
         await prisma.$transaction(async tx => {
             await lockOrganization(tx, branch.organizationId);
-            const currentOrganization = await tx.organization.findFirst({
-                where: { id: branch.organizationId, ownerId: userId },
-                select: { billingMutationLeaseToken: true },
-            });
+            const currentOrganization = await AccessPolicy.selectOwnerOrganization(userId, branch.organizationId, { billingMutationLeaseToken: true }, tx);
             if (!currentOrganization) throw new BillingResourceNotFoundError("Branch not found");
             if (currentOrganization.billingMutationLeaseToken) {
                 throw new BillingChangeInProgressError(

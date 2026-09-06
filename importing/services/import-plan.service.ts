@@ -1,5 +1,5 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { prisma } from "@/lib/prisma";
-import { EntitlementService } from "@/services/entitlement.service";
 import { StaffService } from "@/services/staff.service";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { STAFF_ACTIONS, type StaffAction } from "@/types";
@@ -162,8 +162,7 @@ export class ImportPlanService {
     }
 
     static async getPlanForCommit(userId: string, branchId: string, sessionId: string, planId: string) {
-        await StaffService.authorize(userId, branchId, "students");
-        await EntitlementService.assertBranchWritable(branchId);
+        await AccessPolicy.authorizeAction(userId, branchId, "students", undefined, true);
         const plan = await prisma.importPlan.findFirst({
             where: {
                 id: planId,
@@ -200,8 +199,7 @@ export class ImportPlanService {
     }
 
     static async compilePlan(input: CompileImportPlanInput) {
-        await StaffService.authorize(input.userId, input.branchId, "students");
-        await EntitlementService.assertBranchWritable(input.branchId);
+        await AccessPolicy.authorizeAction(input.userId, input.branchId, "students", undefined, true);
         if (!Number.isInteger(input.targetRevision) || input.targetRevision < 0) {
             throw new Error("Import plan revision is invalid");
         }
@@ -253,8 +251,7 @@ export class ImportPlanService {
             if (session.engineVersion !== IMPORT_ENGINE_VERSION || !session.goal) {
                 throw new Error("Import session does not use the V2 engine");
             }
-            await StaffService.authorize(input.userId, input.branchId, "students", tx);
-            await EntitlementService.assertBranchWritable(input.branchId, tx);
+            await AccessPolicy.authorizeAction(input.userId, input.branchId, "students", tx, true);
             if (
                 session.draftRevision !== input.targetRevision
                 || session.activeEvaluationRevision !== input.targetRevision
@@ -359,6 +356,7 @@ export class ImportPlanService {
             return tx.importPlan.create({
                 data: {
                     importSessionId: session.id,
+                    branchId: input.branchId,
                     revision: input.targetRevision,
                     engineVersion: IMPORT_ENGINE_VERSION,
                     goal: session.goal,

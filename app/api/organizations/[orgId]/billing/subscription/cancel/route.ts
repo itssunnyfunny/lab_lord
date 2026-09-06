@@ -16,7 +16,7 @@ export async function POST(
     if (!idempotencyKey) {
       return NextResponse.json({ error: "Idempotency-Key is required" }, { status: 400 });
     }
-    const result = await BillingService.scheduleWorkspaceCancellation(user.id, orgId, idempotencyKey);
+    const result = await BillingService.requestCancellation(user.id, orgId, idempotencyKey);
     return NextResponse.json(result, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal Server Error";

@@ -135,3 +135,5 @@ describe("staff and overdue pagination routes", () => {
         expect(mocks.getOverduePaymentsPage).not.toHaveBeenCalled();
     });
 });
+
+vi.mock("@/services/accessPolicy.service", () => ({ AccessPolicy: { authorizeCapability: async () => ({}) } }));

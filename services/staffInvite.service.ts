@@ -1,3 +1,4 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { prisma as db } from "@/lib/prisma";
 import { StaffRole } from "@/types";
 import { StaffService } from "@/services/staff.service";
@@ -44,8 +45,7 @@ export class StaffInviteService {
         invitedEmail: string,
         ttlDays = DEFAULT_INVITE_TTL_DAYS
     ) {
-        await StaffService.authorize(actorId, branchId, "staff_management");
-        await EntitlementService.assertBranchWritable(branchId);
+        await AccessPolicy.authorizeAction(actorId, branchId, "staff_management", undefined, true);
 
         if (ttlDays < 1 || ttlDays > 30) {
             throw new Error("Invite expiry must be between 1 and 30 days.");
@@ -68,8 +68,7 @@ export class StaffInviteService {
     }
 
     static async revokeInvite(actorId: string, branchId: string, inviteId: string) {
-        await StaffService.authorize(actorId, branchId, "staff_management");
-        await EntitlementService.assertBranchWritable(branchId);
+        await AccessPolicy.authorizeAction(actorId, branchId, "staff_management", undefined, true);
 
         return db.$transaction(async (tx) => {
             await lockStaffInviteBranch(tx, branchId);

@@ -9,7 +9,7 @@ import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
  *
  * Uses REAL test database.
  * Covers:
- * 1. createOrganization — creates org linked to owner
+ * Organization creation is covered by canonical onboarding tests.
  * 2. getOrganizationsByUserId — scoped per user
  * 3. getOrganizationById — includes branches
  * 4. updateOrganization — name change, non-owner throws
@@ -19,34 +19,6 @@ import { OrganizationAccessNotFoundError } from "@/lib/organizationErrors";
 describe("OrganizationService Integration", () => {
   afterAll(async () => { await disconnectDatabase(); });
   beforeEach(async () => { await resetDatabase(); });
-
-  // ─── createOrganization ───────────────────────────────────────────────────
-
-  describe("createOrganization", () => {
-    it("creates org linked to the correct owner", async () => {
-      const user = await createUser();
-      const org = await OrganizationService.createOrganization({
-        name: "Test Academy",
-        ownerId: user.id,
-        contactPhone: "9876543210",
-      });
-
-      expect(org.ownerId).toBe(user.id);
-      expect(org.name).toBe("Test Academy");
-      expect(org.contactPhone).toBe("+91 98765 43210");
-    });
-
-    it("requires owner contact phone on create", async () => {
-      const user = await createUser();
-      await expect(
-        OrganizationService.createOrganization({
-          name: "Missing Phone Academy",
-          ownerId: user.id,
-          contactPhone: "",
-        })
-      ).rejects.toThrow(/contact phone is required/i);
-    });
-  });
 
   describe("getOrganizationForOwnerAccess", () => {
     it("returns the complete organization view to its owner", async () => {
@@ -103,21 +75,26 @@ describe("OrganizationService Integration", () => {
 
   // ─── getOrganizationById ──────────────────────────────────────────────────
 
-  describe("getOrganizationById", () => {
+  describe("getOrganizationForOwnerAccess", () => {
     it("returns org with branches included", async () => {
       const user = await createUser();
       const org = await createOrg({ ownerId: user.id });
       await createBranch({ organizationId: org.id, name: "Branch One" });
 
-      const found = await OrganizationService.getOrganizationById(org.id);
+      const found = await OrganizationService.getOrganizationForOwnerAccess(org.id, user.id);
       expect(found).not.toBeNull();
       expect(found!.branches).toHaveLength(1);
       expect(found!.branches[0].name).toBe("Branch One");
     });
 
-    it("returns null for unknown org id", async () => {
-      const found = await OrganizationService.getOrganizationById("nonexistent");
-      expect(found).toBeNull();
+    it("returns the same safe error for unknown and foreign organizations", async () => {
+      const user = await createUser();
+      const foreignOwner = await createUser();
+      const foreign = await createOrg({ ownerId: foreignOwner.id });
+      for (const id of ["nonexistent", foreign.id]) {
+        await expect(OrganizationService.getOrganizationForOwnerAccess(id, user.id))
+          .rejects.toMatchObject({ code: "ORGANIZATION_NOT_FOUND" });
+      }
     });
   });
 

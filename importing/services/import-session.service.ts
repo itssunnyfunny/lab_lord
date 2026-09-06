@@ -1,3 +1,5 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { sortSeatsByLabel } from "@/lib/seatNumbering";
 import { EntitlementService } from "@/services/entitlement.service";
@@ -485,8 +487,7 @@ export class ImportSessionService {
         const now = new Date();
 
         const persisted = await prisma.$transaction(async tx => {
-            await StaffService.authorize(userId, branchId, "students", tx);
-            await EntitlementService.assertBranchWritable(branchId, tx);
+            await AccessPolicy.authorizeAction(userId, branchId, "students", tx, true);
             const created = await tx.importSession.create({
                 data: {
                     branchId,
@@ -517,6 +518,7 @@ export class ImportSessionService {
                 await tx.importRow.createMany({
                     data: parsed.rows.slice(index, index + chunkSize).map((row, offset) => ({
                         importSessionId: created.id,
+                        branchId,
                         rowNumber: parsed.rowNumbers[index + offset],
                         rawData: asJson(row),
                     })),
@@ -878,17 +880,21 @@ export class ImportSessionService {
                 : this.revalidateAuthorizedSession(userId, branchId, sessionId);
         }
 
+        const analysisLeaseToken = randomUUID();
+        const now = new Date();
         const claimed = await prisma.importSession.updateMany({
             where: {
                 id: sessionId,
                 branchId,
                 draftRevision: analysisBaseRevision,
                 archivedAt: null,
+                OR: [{ analysisLeaseToken: null }, { analysisLeaseUntil: { lte: now } }],
                 status: { notIn: ["COMMITTING", "COMMITTED", "PARTIAL", "FAILED", "CANCELLED"] },
             },
-            data: { status: "ANALYZING", purgeAfter: importStagingPurgeAfter() },
+            data: { status: "ANALYZING", analysisLeaseToken,
+                analysisLeaseUntil: new Date(now.getTime() + 5 * 60_000), purgeAfter: importStagingPurgeAfter() },
         });
-        if (claimed.count !== 1) throw new ImportRevisionConflictError();
+        if (claimed.count !== 1) throw Object.assign(new Error("Import analysis temporarily owned by another attempt or revision changed"), { code: "IMPORT_ANALYSIS_BUSY" });
 
         try {
             const columns = Object.keys((session.rows[0]?.rawData ?? {}) as Record<string, unknown>);
@@ -925,10 +931,12 @@ export class ImportSessionService {
                         draftRevision: true,
                         archivedAt: true,
                         status: true,
+                        analysisLeaseToken: true,
                     },
                 });
                 if (!current) throw new Error("Import session not found");
                 if (current.archivedAt) throw new Error("Import session is archived");
+                if (current.analysisLeaseToken !== analysisLeaseToken) throw new ImportRevisionConflictError();
                 if (current.draftRevision > analysisBaseRevision) return false;
                 if (current.draftRevision !== analysisBaseRevision) throw new ImportRevisionConflictError();
                 if (["COMMITTING", "COMMITTED", "PARTIAL", "FAILED", "CANCELLED"].includes(current.status)) {
@@ -939,6 +947,8 @@ export class ImportSessionService {
                     data: {
                         mapping: asJson(mapping),
                         draftRevision: { increment: 1 },
+                        analysisLeaseToken: null,
+                        analysisLeaseUntil: null,
                         purgeAfter: importStagingPurgeAfter(),
                     },
                 });
@@ -948,15 +958,18 @@ export class ImportSessionService {
             if (!publishedMapping) throw new ImportRevisionConflictError();
             return this.revalidateAuthorizedSession(userId, branchId, sessionId);
         } catch (error) {
-            await prisma.importSession.updateMany({
+            const released = await prisma.importSession.updateMany({
                 where: {
                     id: sessionId,
                     branchId,
                     draftRevision: analysisBaseRevision,
                     status: "ANALYZING",
+                    analysisLeaseToken,
                 },
                 data: {
                     status: "NEEDS_MAPPING",
+                    analysisLeaseToken: null,
+                    analysisLeaseUntil: null,
                     summary: asJson({
                         ...emptySummary(),
                         warnings: [getErrorMessage(error)],
@@ -964,6 +977,9 @@ export class ImportSessionService {
                     purgeAfter: importStagingPurgeAfter(),
                 },
             });
+            if (released.count !== 1) {
+                throw Object.assign(new Error("Import analysis ownership was superseded"), { code: "IMPORT_ANALYSIS_OWNERSHIP_LOST" });
+            }
             throw error;
         }
     }
@@ -1053,8 +1069,7 @@ export class ImportSessionService {
             });
             if (!current) throw new Error("Import session not found");
             if (current.archivedAt) throw new Error("Import session is archived");
-            await StaffService.authorize(userId, branchId, "students", tx);
-            await EntitlementService.assertBranchWritable(branchId, tx);
+            await AccessPolicy.authorizeAction(userId, branchId, "students", tx, true);
             if (!importSessionIsEditable(current.engineVersion, current.status)) {
                 throw new Error("Import session is not editable");
             }
@@ -1123,8 +1138,7 @@ export class ImportSessionService {
                 WHERE "id" = ${sessionId} AND "branchId" = ${branchId}
                 FOR UPDATE
             `;
-            await StaffService.authorize(userId, branchId, "students", tx);
-            await EntitlementService.assertBranchWritable(branchId, tx);
+            await AccessPolicy.authorizeAction(userId, branchId, "students", tx, true);
             const session = await tx.importSession.findFirst({
                 where: { id: sessionId, branchId },
                 select: {
@@ -1558,6 +1572,7 @@ export class ImportSessionService {
                 await tx.importRowEvaluation.createMany({
                     data: rows.map(row => ({
                         importRowId: row.id,
+                        branchId: session.branchId,
                         revision: session.draftRevision,
                         engineVersion: 2,
                         status: row.status,

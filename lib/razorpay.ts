@@ -624,11 +624,18 @@ class DefaultRazorpayClient implements RazorpayPlanCatalogApiClient {
 
 const defaultClient = new DefaultRazorpayClient();
 
-export function getRazorpayClient() {
+export type RazorpayReadClient = Omit<RazorpayApiClient, "createSubscription" | "updateSubscription" | "cancelSubscription" | "cancelScheduledChanges">;
+
+export function getRazorpayClient(): RazorpayReadClient {
   return testClient ?? defaultClient;
 }
 
-export function getRazorpayPlanCatalogClient(): RazorpayPlanCatalogApiClient {
+/** Restricted by the architecture test to the durable subscription executor. */
+export function getRazorpayMutationClient(): RazorpayApiClient {
+  return testClient ?? defaultClient;
+}
+
+export function getRazorpayPlanCatalogClient(): Pick<RazorpayPlanCatalogApiClient, "createPlan" | "fetchPlan" | "listPlans"> {
   const client = getRazorpayClient();
   if (!("fetchPlan" in client) || typeof client.fetchPlan !== "function"
     || !("listPlans" in client) || typeof client.listPlans !== "function") {

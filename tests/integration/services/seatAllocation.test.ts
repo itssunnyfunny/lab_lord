@@ -207,7 +207,7 @@ describe("SeatAllocationService Integration", () => {
 
       await expect(
         SeatAllocationService.unassignSeat(stranger.id, alloc.id)
-      ).rejects.toThrow(/Unauthorized|Not a staff member/i);
+      ).rejects.toThrow("Allocation not found");
     });
   });
 
@@ -240,8 +240,8 @@ describe("SeatAllocationService Integration", () => {
       const student = await createStudent({ branchId: branch.id });
       const allocations = await testPrisma.seatAllocation.createManyAndReturn({
         data: [
-          { seatId: seat.id, studentId: student.id, shiftId: morning.id, multiShiftId: fullDay.id },
-          { seatId: seat.id, studentId: student.id, shiftId: evening.id, multiShiftId: fullDay.id },
+          { branchId: branch.id, seatId: seat.id, studentId: student.id, shiftId: morning.id, multiShiftId: fullDay.id },
+          { branchId: branch.id, seatId: seat.id, studentId: student.id, shiftId: evening.id, multiShiftId: fullDay.id },
         ],
       });
 
@@ -391,8 +391,8 @@ describe("SeatAllocationService Integration", () => {
       const student = await createStudent({ branchId: branch.id });
       const oldRows = await testPrisma.seatAllocation.createManyAndReturn({
         data: [
-          { seatId: seat.id, studentId: student.id, shiftId: morning.id, multiShiftId: fullDay.id },
-          { seatId: seat.id, studentId: student.id, shiftId: evening.id, multiShiftId: fullDay.id },
+          { branchId: branch.id, seatId: seat.id, studentId: student.id, shiftId: morning.id, multiShiftId: fullDay.id },
+          { branchId: branch.id, seatId: seat.id, studentId: student.id, shiftId: evening.id, multiShiftId: fullDay.id },
         ],
       });
 
@@ -499,8 +499,8 @@ describe("SeatAllocationService Integration", () => {
       const startDate = new Date("2026-02-01T00:00:00.000Z");
       await testPrisma.seatAllocation.createMany({
         data: [
-          { id: "allocation_a", seatId: seat.id, studentId: student.id, shiftId: shift.id, startDate },
-          { id: "allocation_b", seatId: seat.id, studentId: student.id, shiftId: shift.id, startDate },
+          { branchId: branch.id, id: "allocation_a", seatId: seat.id, studentId: student.id, shiftId: shift.id, startDate },
+          { branchId: branch.id, id: "allocation_b", seatId: seat.id, studentId: student.id, shiftId: shift.id, startDate },
         ],
       });
 
@@ -547,10 +547,10 @@ describe("SeatAllocationService Integration", () => {
 
       await testPrisma.seatAllocation.createMany({
         data: [
-          { seatId: seat.id, studentId: bundleStudent.id, shiftId: morning.id, multiShiftId: fullDay.id },
-          { seatId: seat.id, studentId: bundleStudent.id, shiftId: evening.id, multiShiftId: fullDay.id },
-          { seatId: morningOnlySeat.id, studentId: morningOnlyStudent.id, shiftId: morning.id },
-          { seatId: endedSeat.id, studentId: endedStudent.id, shiftId: morning.id, multiShiftId: fullDay.id, endDate: new Date("2026-02-01") },
+          { branchId: branch.id, seatId: seat.id, studentId: bundleStudent.id, shiftId: morning.id, multiShiftId: fullDay.id },
+          { branchId: branch.id, seatId: seat.id, studentId: bundleStudent.id, shiftId: evening.id, multiShiftId: fullDay.id },
+          { branchId: branch.id, seatId: morningOnlySeat.id, studentId: morningOnlyStudent.id, shiftId: morning.id },
+          { branchId: branch.id, seatId: endedSeat.id, studentId: endedStudent.id, shiftId: morning.id, multiShiftId: fullDay.id, endDate: new Date("2026-02-01") },
         ],
       });
 

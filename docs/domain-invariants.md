@@ -37,12 +37,13 @@ Every statement uses one of these labels:
   same-branch checks in the services.
   (`prisma/schema.prisma`, `services/student.service.ts`,
   `services/seatAllocation.service.ts`, `services/payment.service.ts`)
-- **Known discrepancy—do not rely on:** Cross-branch mixing is not
-  structurally impossible. `SeatAllocation`, `Payment`, `MessageDraft`, the
-  student's fee-source IDs, and audit payment references do not use composite
-  tenant foreign keys. Direct Prisma writes can create relationships that the
-  normal services reject. Any documentation claiming database-enforced tenant
-  consistency is inaccurate.
+- **Must preserve—enforced:** Allocation, payment/student, payment-resolution,
+  payment-audit, draft/student, student fee-source and MultiShift-component links
+  use branch-scoped composite foreign keys. A component branch is inherited from
+  its parent bundle by nested Prisma writes. Draft student deletion nulls only
+  studentId, preserving branch history. Database integrity remains distinct from
+  caller authorization; other relationship coverage is tracked in the ongoing
+  architecture consolidation matrix.
 - **Known discrepancy—do not rely on:** Foreign and nonexistent IDs do not yet
   have one uniform response. Some scoped staff and MultiShift operations make
   both cases indistinguishable, while payment, allocation, and student mutation
@@ -81,6 +82,11 @@ Every statement uses one of these labels:
   unscoped helpers. UI visibility is not authorization.
 
 ## Organizations, branches, trials, and entitlements
+
+- **Must preserve—enforced:** New workspaces use canonical onboarding with an
+  explicit V2 commercial state and selected plan. Holding the V2 release flag
+  blocks new creation; it must never create new LEGACY writable workspaces.
+  Existing legacy compatibility and the once-per-owner trial policy remain intact.
 
 - **Must preserve—enforced:** User-initiated operational mutations require both
   the role/action permission and a writable branch entitlement. `ARCHIVED`,
@@ -181,11 +187,17 @@ Every statement uses one of these labels:
   neither. Missing times and equal endpoints represent a full-day interval.
   Overnight intervals are supported, and intervals that only touch at a
   boundary do not overlap. Active shifts in a branch must not overlap.
+  Onboarding and branch draft validation use those same full-day semantics.
   (`utils/shiftTime.ts`, `services/shift.service.ts`, shift-time and shift tests)
 - **Must preserve—enforced:** A branch retains at least one active shift.
   Removing a shift is a soft inactivation, closes or reallocates its direct
   active allocations, and clears students' direct `feeLinkedShiftId` references
   to that shift.
+- **Must preserve—enforced:** Shift deactivation and allocation creation share
+  serializable transactions with bounded whole-operation retry. Manual resolution
+  requires every current active source allocation exactly once; all targets must
+  be active in that branch. Affected bundle siblings are closed together by
+  student, seat, and bundle identity. Validation failure rolls back all changes.
 - **Service-layer contract—not DB-enforced:** Shift overlap and the minimum-one-
   active-shift rule are service checks, not schema constraints. Writes that
   bypass `ShiftService` can violate them.
@@ -193,6 +205,10 @@ Every statement uses one of these labels:
   two distinct, active, same-branch shifts. Component order does not define
   identity; another bundle with the same unordered shift set is rejected. Its
   name is unique in the branch by the database's exact-value comparison.
+- **Must preserve—enforced:** MultiShift component-set changes are rejected while
+  the bundle has active allocations. The check and update share the serializable
+  allocation transaction protocol. Name, price and component-order-only edits
+  remain supported; linked monthly fees retain their existing update behavior.
 - **Known discrepancy—do not rely on:** Soft-deleting a component Shift does
   not remove or rewrite `MultiShiftComponent` rows and does not clear students'
   `feeLinkedMultiShiftId`. An existing MultiShift can therefore retain an
@@ -215,9 +231,13 @@ Every statement uses one of these labels:
   component of a bundle ends the whole bundle allocation.
 - **Service-layer contract—not DB-enforced:** Active-allocation uniqueness and
   overlap exclusion are protected by a serializable service transaction with
-  bounded retry, not by a partial unique or composite tenant constraint. All
+  bounded retry, not by a partial unique or overlap constraint. All
   competing allocation writes must use this path.
   (`services/seatAllocation.service.ts`, seat-allocation integration tests)
+- **Must preserve—enforced:** `SeatAllocation.branchId` participates in composite
+  foreign keys to its student, seat, shift, and optional MultiShift. PostgreSQL
+  rejects cross-branch links, including historical rows. These constraints do
+  not authorize actors or enforce active-state, overlap, or bundle completeness.
 
 ## Attendance
 
@@ -330,6 +350,19 @@ Every statement uses one of these labels:
   retrieves provider-side objects, and matches expected organization intent,
   subscription, payment, plan, quantity, and payment state before trusting the
   result.
+- **Must preserve—enforced:** Replacement creation freezes its provider start,
+  expiry and total count and records dispatch before creation. Recovery fetches
+  the retained provider ID or discovers one exact uncharged candidate, without
+  another create or duplicate cleanup. No match, multiple live matches, and
+  authorized/charged matches stay in manual review. Source cancellation uses
+  its own processing attempt and immutable admission audit; neither candidate
+  evidence nor overwritten lifecycle fields permits replay. A failed source
+  action is recovered by source-specific provider reads: terminal source truth
+  or the retained confirmed cancellation response and exact scheduled boundary.
+  Ambiguous scheduled-change flags remain held. Checkout replacement waits for
+  provider-confirmed terminality, and legacy cancellation preserves the supplied
+  idempotency key without compensating reversal.
+  (`services/billingReplacement.service.ts`, billing-mutation fault tests)
 - **Must preserve—enforced:** A webhook is only a signed reconciliation trigger,
   not proof of quantity or entitlement. The public body is bounded to 512 KiB;
   its signature and payload hash are verified over the same untouched bytes
@@ -861,6 +894,28 @@ Every statement uses one of these labels:
 
 ## Analytics
 
+- **Must preserve—enforced:** Report/draft admission is serialized per branch
+  and generation kind. Only the current unexpired token publishes; stale cleanup
+  cannot clear a successor. Draft admission reserves the five-minute cooldown
+  before Gemini, including failed publication, and GET/POST expose that deadline.
+  Draft replacement is transactional with one non-null-student logical draft per
+  branch/student/action/language. Reports keep existing cache/staleness rules.
+- **Must preserve—enforced:** Report confirmation/stop redelivery is deduplicated
+  by sender and provider message ID, atomically with challenge mutation, even
+  across different webhook batches. Full STOP and outbox delivery rules remain
+  unchanged. (`services/whatsappWebhook.service.ts`)
+- **Must preserve—enforced:** Import payment aliases are explicit normalized
+  values. Unsupported nonempty methods, including cheque, create
+  `INVALID_PAYMENT_METHOD` row errors; empty optional methods remain optional.
+
+- **Must preserve—enforced:** Daily trend ranges contain at most 31 points,
+  preserve existing month-to-date and 30-day presets, and require real dates in
+  ascending order before any per-day snapshot queries. AI report access requires
+  `analytics` and `view_payments` for the entire cached/generated response.
+- **Must preserve—enforced:** Branch detail and settings response staff
+  projections require `manage_branch` and `STAFF_MANAGEMENT`, including counts
+  and nested identities. Ownership alone does not bypass this entitlement.
+
 - **Must preserve—enforced:** Capacity and utilization are measured in
   seat-shift slots, not distinct physical seats: physical seats multiplied by
   active shifts. Organization rollups use the same slot unit. Legacy fields
@@ -891,3 +946,48 @@ Before changing any rule above:
    idempotency behavior, and failure rollback where applicable.
 4. Update this document when an enforced rule, service-only contract, or known
    discrepancy changes.
+
+- **Must preserve—enforced:** Subscription replacements, commercial intents,
+  invoices, billing audit/history and attached Razorpay webhook subscriptions
+  agree on organization. WhatsApp branch, sender, consent, template, message,
+  report, receipt and incident links agree on each shared organization, branch
+  or sender dimension declared in `prisma/tenant-relationship-contracts.json`.
+  Optional references may detach only their foreign ID; ownership is retained.
+  Database constraints do not authorize actors or establish provider truth.
+
+- **Must preserve—enforced:** Import rows, evaluations, plans, runs and items
+  agree with linked parents on branch. Questions reference rows in their own
+  session. Grouped WhatsApp payment sources agree with the message branch.
+  Persisted import target IDs populate a typed reference ledger in the same
+  transaction; live student, seat, shift, bundle, allocation and payment targets
+  have branch-scoped foreign keys. Deleted target snapshots remain historical
+  evidence, not writable targets. Staging retention removes its owned ledger.
+
+- **Must preserve—enforced:** Every SaaS subscription-changing provider action
+  goes through the durable billing executor. Distinct source/candidate/create
+  actions have distinct immutable identities and outcomes. ADMITTED or UNKNOWN
+  cannot be replayed by lease expiry or a new client key. CONFIRMED responses
+  are reusable evidence; paid entitlement still requires exact settlement.
+# Consolidation invariants — 2026-09-06
+
+- **Must preserve—enforced:** Retained import-plan input student IDs have
+  branch-scoped typed ledger references, in addition to staged output and run
+  item targets. Foreign historical targets block migration; missing historical
+  targets detach, while new missing/foreign references are rejected.
+
+- **Must preserve—enforced:** Shared AccessPolicy derives branch membership,
+  role/overrides and scope from the database; returned interactive contexts are
+  frozen and runtime-issued. AI services recheck policy and reject fabricated
+  contexts. Contexts are not cached globally or used as permanent grants.
+- **Must preserve—enforced:** Explicit permission denials and entitlement
+  failures protect complete AI/staff/analytics responses. Billing recovery
+  remains owner-accessible while branch or workspace is read-only.
+- **Must preserve—enforced:** Import analysis publication/cleanup match the
+  session's unique analysisLeaseToken and original draftRevision. Expiry
+  permits a new token; old success/failure cannot mutate or release it. Workflow
+  and existing atomic mutation item finalization remain the active executor.
+- **Service-layer contract—not DB-enforced:** System contexts remain the
+  authenticated cron/provider entry points and persisted Workflow ownership
+  protocols documented in [access/worker contracts](ai/access-and-worker-contracts.md).
+  This change does not resolve or approve the daily dues cron writability
+  discrepancy recorded below.

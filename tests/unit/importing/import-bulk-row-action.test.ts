@@ -100,3 +100,11 @@ describe("all-affected import row actions", () => {
         expect(mocks.tx.importRow.updateMany).not.toHaveBeenCalled();
     });
 });
+
+vi.mock("@/services/accessPolicy.service", async importOriginal => {
+    const actual = await importOriginal<typeof import("@/services/accessPolicy.service")>();
+    const { callerPolicyMock } = await import("@/tests/helpers/accessPolicyCallerMock");
+    const { StaffService } = await import("@/services/staff.service");
+    const { EntitlementService } = await import("@/services/entitlement.service");
+    return { ...actual, AccessPolicy: callerPolicyMock(actual.AccessPolicy, StaffService, EntitlementService) };
+});

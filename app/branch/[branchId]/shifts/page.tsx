@@ -685,6 +685,7 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                                 <span className="font-semibold text-[color:var(--text-primary)]">{analysis.studentsInShift} student{analysis.studentsInShift !== 1 ? "s" : ""}</span>
                                 <span className={formHelpTextClass}>currently in this shift</span>
                             </div>
+                            <p className={cn("text-xs", formHelpTextClass)}>Removing this shift also ends affected bundle allocations on each student&apos;s current seat. Reallocation assigns only the selected target shift.</p>
                             <div className={cn("flex items-center gap-2 text-xs", formHelpTextClass)}>
                                 <ArrowRight size={12} />
                                 <span>Empty seats elsewhere: <span className="text-[color:var(--text-primary)]">{analysis.totalEmptyElsewhere}</span></span>
@@ -716,7 +717,7 @@ function DeleteShiftDialog({ shift, branchId, existingShifts, onClose, onDeleted
                             >
                                 {mode === "END_ALL" && (
                                     <p className="text-xs text-red-400/80 mt-2 pl-1">
-                                        {analysis.studentsInShift} student{analysis.studentsInShift !== 1 ? "s" : ""} will be unallocated.
+                                        {analysis.studentsInShift} student{analysis.studentsInShift !== 1 ? "s" : ""} will be unallocated. Related bundle allocations on their current seat will also end.
                                     </p>
                                 )}
                             </OptionCard>

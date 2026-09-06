@@ -1,8 +1,7 @@
 import { runBranchAI } from "@/ai/orchestrator/branchAI.orchestrator"
 import { getSessionUser } from "@/lib/auth"
 import { checkRateLimit, getRequestRateLimitKey } from "@/lib/rateLimit"
-import { StaffService } from "@/services/staff.service"
-import { EntitlementService } from "@/services/entitlement.service"
+import { AccessPolicy, BranchAccessNotFoundError } from "@/services/accessPolicy.service"
 
 export async function GET(
     request: Request,
@@ -15,9 +14,7 @@ export async function GET(
             return Response.json({ error: "Unauthorized" }, { status: 401 })
         }
 
-        await StaffService.authorize(user.id, params.branchId, "analytics")
-        await EntitlementService.assertBranchEntitlement(params.branchId, "AI_ACCESS")
-        await EntitlementService.assertBranchWritable(params.branchId)
+        const access = await AccessPolicy.authorizeCapability(user.id, params.branchId, "aiGenerate")
 
         const rateLimit = checkRateLimit(
             getRequestRateLimitKey(request, "ai-report", `${user.id}:${params.branchId}`),
@@ -34,11 +31,12 @@ export async function GET(
             )
         }
 
-        const result = await runBranchAI(params.branchId)
+        const result = await runBranchAI(access)
 
         return Response.json(result)
 
     } catch (error) {
+        if (error instanceof BranchAccessNotFoundError) return Response.json({ error: error.message }, { status: 404 });
         console.error("AI GENERATION ERROR:", error);
         const message = String(error)
         const status = message.includes("Unauthorized") || message.includes("disabled") ? 403 : 500

@@ -1,3 +1,4 @@
+import { assertTrendRange } from "./range"
 // analytics/trends/seat.trends.ts
 
 import { getSeatOccupancySnapshot } from "../seat.analytics"
@@ -7,6 +8,8 @@ export async function getSeatUtilizationTrend(
   from: Date,
   to: Date
 ) {
+  assertTrendRange(from, to)
+
   const points: {
     asOf: Date
     utilizationRatio: number
