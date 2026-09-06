@@ -1,3 +1,4 @@
+import { AccessPolicy, type BranchAccessContext } from "@/services/accessPolicy.service";
 import { claimGeneration, publishGeneration, releaseGeneration } from "@/ai/generationLease";
 import { readBranchSnapshotForAI } from "../readers/branch.reader"
 import { detectBranchRisks } from "../riskDetection/branchRiskDetector"
@@ -73,8 +74,9 @@ function buildReportSnapshot(snapshot: Awaited<ReturnType<typeof readBranchSnaps
 }
 
 export async function runBranchAI(
-    branchId: string
+    access: BranchAccessContext
 ): Promise<BranchAIResponse> {
+    const { branchId } = await AccessPolicy.recheckCapability(access, "aiGenerate");
     const now = new Date();
 
     // 0️⃣ Check Caching & Rate Limiting & Concurrency

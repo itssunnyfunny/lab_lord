@@ -1460,7 +1460,6 @@ export class BillingMutationService {
     if (change.type !== "UNSUPPORTED_METHOD_CANCELLATION") {
       assertRazorpayBillingWritesEnabled(change.organizationId);
     }
-    const razorpay = getRazorpayClient();
     const intendedQuantity = change.toQuantity ?? subscription.quantity;
     let target = {
       providerPlanId: subscription.razorpayPlanId,

@@ -50,7 +50,7 @@ describe("SeatService Integration", () => {
       const wrongUser = await createUser();
       await expect(
         SeatService.createSeat(wrongUser.id, branch.id, "X1")
-      ).rejects.toThrow(/Unauthorized/i);
+      ).rejects.toThrow("Branch not found");
     });
 
     it("REJECTS STAFF role users from creating physical seats", async () => {

@@ -207,7 +207,7 @@ describe("SeatAllocationService Integration", () => {
 
       await expect(
         SeatAllocationService.unassignSeat(stranger.id, alloc.id)
-      ).rejects.toThrow(/Unauthorized|Not a staff member/i);
+      ).rejects.toThrow("Allocation not found");
     });
   });
 

@@ -1,14 +1,9 @@
 import { draftOverdueMessages } from "@/ai/messageDrafting/branchMessageDrafter"
 import { getSessionUser } from "@/lib/auth"
 import { checkRateLimit, getRequestRateLimitKey } from "@/lib/rateLimit"
-import { StaffService } from "@/services/staff.service"
-import { EntitlementService } from "@/services/entitlement.service"
+import { AccessPolicy, BranchAccessNotFoundError } from "@/services/accessPolicy.service"
 import { NextRequest, NextResponse } from "next/server"
 
-async function authorizeMessageAccess(userId: string, branchId: string) {
-    await StaffService.authorize(userId, branchId, "analytics")
-    await StaffService.authorize(userId, branchId, "view_payments")
-}
 
 export async function GET(
     req: NextRequest,
@@ -21,11 +16,10 @@ export async function GET(
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
         }
 
-        await authorizeMessageAccess(user.id, branchId)
-        await EntitlementService.assertBranchEntitlement(branchId, "AI_ACCESS")
+        const access = await AccessPolicy.authorizeCapability(user.id, branchId, "aiUse")
 
         const { searchParams } = new URL(req.url)
-        const result = await draftOverdueMessages(branchId, {
+        const result = await draftOverdueMessages(access, {
             language: searchParams.get("lang") === "hi" ? "hi" : searchParams.get("lang") === "en" ? "en" : undefined,
             tone: searchParams.get("tone") === "friendly" || searchParams.get("tone") === "firm" || searchParams.get("tone") === "polite"
                 ? searchParams.get("tone") as "friendly" | "firm" | "polite"
@@ -37,6 +31,7 @@ export async function GET(
         return NextResponse.json(result)
 
     } catch (error) {
+        if (error instanceof BranchAccessNotFoundError) return Response.json({ error: error.message }, { status: 404 });
         console.error("[AI MESSAGES ERROR]", error)
         const message = String(error)
         return NextResponse.json(
@@ -57,9 +52,7 @@ export async function POST(
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
         }
 
-        await authorizeMessageAccess(user.id, branchId)
-        await EntitlementService.assertBranchEntitlement(branchId, "AI_ACCESS")
-        await EntitlementService.assertBranchWritable(branchId)
+        const access = await AccessPolicy.authorizeCapability(user.id, branchId, "aiGenerate")
 
         const rateLimit = checkRateLimit(
             getRequestRateLimitKey(req, "ai-message-generation", `${user.id}:${branchId}`),
@@ -86,7 +79,7 @@ export async function POST(
             ? body.studentIds.filter((value): value is string => typeof value === "string")
             : []
 
-        const result = await draftOverdueMessages(branchId, {
+        const result = await draftOverdueMessages(access, {
             language: body.language,
             tone: body.tone,
             include: body.include,
@@ -98,6 +91,7 @@ export async function POST(
         return NextResponse.json(result)
 
     } catch (error) {
+        if (error instanceof BranchAccessNotFoundError) return Response.json({ error: error.message }, { status: 404 });
         console.error("[AI MESSAGES ERROR]", error)
         const message = String(error)
         return NextResponse.json(

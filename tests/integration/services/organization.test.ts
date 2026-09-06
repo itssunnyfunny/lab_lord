@@ -75,21 +75,26 @@ describe("OrganizationService Integration", () => {
 
   // ─── getOrganizationById ──────────────────────────────────────────────────
 
-  describe("getOrganizationById", () => {
+  describe("getOrganizationForOwnerAccess", () => {
     it("returns org with branches included", async () => {
       const user = await createUser();
       const org = await createOrg({ ownerId: user.id });
       await createBranch({ organizationId: org.id, name: "Branch One" });
 
-      const found = await OrganizationService.getOrganizationById(org.id);
+      const found = await OrganizationService.getOrganizationForOwnerAccess(org.id, user.id);
       expect(found).not.toBeNull();
       expect(found!.branches).toHaveLength(1);
       expect(found!.branches[0].name).toBe("Branch One");
     });
 
-    it("returns null for unknown org id", async () => {
-      const found = await OrganizationService.getOrganizationById("nonexistent");
-      expect(found).toBeNull();
+    it("returns the same safe error for unknown and foreign organizations", async () => {
+      const user = await createUser();
+      const foreignOwner = await createUser();
+      const foreign = await createOrg({ ownerId: foreignOwner.id });
+      for (const id of ["nonexistent", foreign.id]) {
+        await expect(OrganizationService.getOrganizationForOwnerAccess(id, user.id))
+          .rejects.toMatchObject({ code: "ORGANIZATION_NOT_FOUND" });
+      }
     });
   });
 

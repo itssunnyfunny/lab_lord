@@ -1146,6 +1146,8 @@ model ImportSession {
   goal                     ImportGoal?
   draftRevision            Int                 @default(0)
   activeEvaluationRevision Int?
+  analysisLeaseToken       String?             @unique
+  analysisLeaseUntil       DateTime?
   archivedAt               DateTime?
   purgeAfter               DateTime?
   createdAt                DateTime            @default(now())
@@ -1277,6 +1279,7 @@ model ImportPlan {
 
   session    ImportSession @relation(fields: [importSessionId, branchId], references: [id, branchId], onDelete: Cascade, map: "TI_ImportPlan_session_branchId")
   compiledBy User          @relation("ImportPlanCompiledBy", fields: [compiledByUserId], references: [id])
+  targetReferences ImportTargetReference[]
   runs       ImportRun[]
 
   @@unique([importSessionId, revision, readinessPolicy])
@@ -2385,6 +2388,7 @@ model ImportTargetReference {
   branchId String
   importRowId String?
   importRunItemId String?
+  importPlanId String?
   usage String
   entityType String
   targetId String
@@ -2396,6 +2400,7 @@ model ImportTargetReference {
   paymentId String?
   row ImportRow? @relation(fields: [importRowId, branchId], references: [id, branchId], onDelete: Cascade)
   item ImportRunItem? @relation(fields: [importRunItemId, branchId], references: [id, branchId], onDelete: Cascade)
+  plan ImportPlan? @relation(fields: [importPlanId, branchId], references: [id, branchId], onDelete: Cascade)
   student Student? @relation(fields: [studentId, branchId], references: [id, branchId], onDelete: SetNull)
   seat Seat? @relation(fields: [seatId, branchId], references: [id, branchId], onDelete: SetNull)
   shift Shift? @relation(fields: [shiftId, branchId], references: [id, branchId], onDelete: SetNull)
@@ -2404,6 +2409,7 @@ model ImportTargetReference {
   payment Payment? @relation(fields: [paymentId, branchId], references: [id, branchId], onDelete: SetNull)
   @@unique([importRowId, usage, entityType, targetId])
   @@unique([importRunItemId, usage, entityType, targetId])
+  @@unique([importPlanId, usage, entityType, targetId])
   @@index([branchId])
 }
 

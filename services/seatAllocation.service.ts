@@ -1,9 +1,9 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { prisma } from "@/lib/prisma";
 import { StaffService } from "@/services/staff.service";
 import { StudentStatus, SeatAllocationFilters } from "@/types";
 import type { Prisma, SeatAllocation } from "@/app/generated/prisma/client";
 import { parseNullableTime, timesOverlap } from "@/utils/shiftTime";
-import { EntitlementService } from "@/services/entitlement.service";
 import {
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -100,8 +100,7 @@ export class SeatAllocationService {
         const seat = await tx.seat.findUnique({ where: { id: seatId } });
         if (!seat) throw new Error("Seat not found");
         const branchId = seat.branchId;
-        await StaffService.authorize(userId, branchId, "seat_allocation", tx);
-        await EntitlementService.assertBranchWritable(branchId, tx);
+        await AccessPolicy.authorizeRecord(userId, branchId, "seat_allocation", "Seat", tx, true);
 
             // 3. Fetch student
             const student = await tx.student.findUnique({ where: { id: studentId } });
@@ -265,8 +264,7 @@ export class SeatAllocationService {
      */
     static async unassignSeat(userId: string, allocationId: string) {
         const allocation = await this.getAllocationWithBranch(allocationId);
-        await StaffService.authorize(userId, allocation.seat.branchId, "seat_allocation");
-        await EntitlementService.assertBranchWritable(allocation.seat.branchId);
+        await AccessPolicy.authorizeRecord(userId, allocation.seat.branchId, "seat_allocation", "Allocation", undefined, true);
 
         return runAllocationTransaction(async (tx) => {
             const scopedAllocation = await tx.seatAllocation.findUnique({
@@ -339,8 +337,7 @@ export class SeatAllocationService {
 
         const allocationBranch = await this.getAllocationWithBranch(existing.id);
         const branchId = allocationBranch.seat.branchId;
-        await StaffService.authorize(userId, branchId, "seat_allocation");
-        await EntitlementService.assertBranchWritable(branchId);
+        await AccessPolicy.authorizeRecord(userId, branchId, "seat_allocation", "Allocation", undefined, true);
 
         const uniqueAllocationIds = [...new Set(allocationIds)];
         const scopedAllocations = await prisma.seatAllocation.findMany({

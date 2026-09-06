@@ -5,14 +5,15 @@ their regressions. No Production, provider mutations, push, deployment or
 historical reset. New disposable database: `lab_lords_architecture_test` on the
 verified local hardening container, loopback 55439.
 
-| Outcome | Current evidence | Gap | Implementation | Validation |
+| Outcome | Current evidence | Gap / condition | Implementation | Validation |
 | --- | --- | --- | --- | --- |
-| A Tenant integrity | Allocation composite FKs; most other models have independent IDs | Payment/history, fee source, component, draft, billing, import and WhatsApp links need full coverage | In progress: scoped FKs and explicit historical-data blockers; coverage matrix follows actual relationships | Direct PostgreSQL mixed-parent rejection, supported history, blocker rollback |
-| B Canonical commercial flow | V2-only onboarding and disabled alternate organization creator; legacy access retained | Inventory/remove unused paths and isolate historical compatibility | Pending | Creation/flag controls; historical access preserved |
-| C Billing protocol | Durable admission in initial, replacement and generic mutation services | Mutating adapter calls still spread across three services | Pending common dispatch boundary and enforceable import rule | Response loss, stale ownership, independent actions, confirmed-result reuse |
-| D Authorization | StaffService, entitlement and owner helpers exist | Policy composition remains duplicated | Pending canonical server-derived policy and caller migration | Role/override/entitlement/writability parity, system exceptions |
-| E Work ownership | AI tokens, WhatsApp receipts and import leases exist | Verify remaining publication/cleanup predicates and event scope | Pending bounded contract mapping and missing fences | Takeover, redelivery, durable progress |
-| F Bootstrap/cutover | 41-migration fresh rehearsal and blocker fixtures retained | Repeatable safe bootstrap, complete preflight and migration-vs-fresh decision conditions | Pending; Production choice evidence-gated | New empty database, upgrade fixtures, clean complete test invocation |
+| A Tenant integrity | 166 owning relationships inventoried and checked against PostgreSQL | None in implemented tenant relationship scope | Composite keys, scope-presence checks and typed row/run/retained-plan target ledger; historical foreign references block | Direct mixed-parent writes, good/bad upgrade fixtures and installed catalog |
+| B Canonical commercial flow | V2-only onboarding, one cancellation/provisioning protocol | Final historical retirement requires authorized data/provider inventory and owner disposition | Unused creation dispatcher removed; necessary legacy access/cancellation policy isolated | Creation/flag controls and historical access tests retained |
+| C Billing protocol | All ten subscription mutation sites use durable per-action executor | Provider canary requires separate authorization | Immutable admission, independent outcomes, UNKNOWN replay hold, exact finalizers and AST boundary | Fault injection, delayed evidence, stale ownership, confirmed-result reuse, healthy-source regression |
+| D Authorization | Shared AccessPolicy, pure overrides, capability definitions, delegating facades | Daily dues cron policy discrepancy retained for owner decision | Branch/org/billing ownership, interactive analytics, direct AI rechecks, staff projections and import/domain mutations | Owner/manager/staff/foreign, forged/stale context, entitlement and read-only parity |
+| E Work ownership | Existing AI/WhatsApp/Workflow protocols retained | External uncertainty remains separate from lease ownership | Added analysis token fencing; removed unused unfenced V1 executor | Late success/failure takeover, inbound replay, item atomicity and durable Workflow replay |
+| F Bootstrap/cutover | New empty database applies all 48 migrations and required identity, repeat succeeds | Production migrate-vs-fresh choice remains approval/evidence-gated | Safe local bootstrap, executable restricted inventory/preflights, writer drain and forward-repair plan | Fresh rehearsal and upgrade/blocker fixtures; final complete verification recorded below |
+
 
 First slice: payments/history, student fee sources, drafts and bundle components
 currently permit independent mixed-parent references. Preserve existing branch
@@ -69,3 +70,7 @@ passed: 46 files / 486 tests. TypeScript and diff checks passed. Prior focused
 failures corrected a unit mock of the replaced boundary, recognized application
 methods with similar names, and retained provider discovery before fallback to a
 confirmed identity. No provider evidence or rejection protection was weakened.
+
+Authorization/ownership/bootstrap completion: shared policy and protected analytics entry points are implemented; direct AI calls require issued contexts and mutable-policy rechecks. Import analysis uses a five-minute token lease with token/revision publication and cleanup predicates. Retained retry-plan student inputs now share the typed target ledger (migration 48). The inactive V1 import executor, its isolated tests and two obsolete unscoped AI scripts were removed; active Workflow/domain regression tests remain.
+
+`pnpm test import-target-migration` passed 6 tests including retained-plan history/blockers. The other targeted policy/tenant/analytics/caller suites passed 148 tests. All 48 migrations and a repeat bootstrap passed on new `lab_lords_final_fresh_test`. Preflight SQL executed successfully on the isolated rehearsal database. No sample data, provider objects, grants or external accounts were seeded.

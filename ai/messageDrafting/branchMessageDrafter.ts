@@ -1,3 +1,4 @@
+import { AccessPolicy, type BranchAccessContext } from "@/services/accessPolicy.service";
 import { claimGeneration, publishGeneration, releaseGeneration } from "@/ai/generationLease";
 import { getOverduePayments } from "@/analytics/payment.analytics";
 import {
@@ -282,12 +283,13 @@ async function getLastMessageGeneratedAt(branchId: string) {
 }
 
 export async function draftOverdueMessages(
-    branchId: string,
+    access: BranchAccessContext,
     optionsOrLanguage: DraftOverdueMessagesOptions | MessageLanguage = {}
 ): Promise<DraftOverdueMessagesResult> {
     const options = typeof optionsOrLanguage === "string"
         ? { language: optionsOrLanguage }
         : optionsOrLanguage;
+    const { branchId } = await AccessPolicy.recheckCapability(access, options.allowGeneration === false ? "aiUse" : "aiGenerate");
     const now = options.now ?? new Date();
     const branch = await prisma.branch.findUnique({
         where: { id: branchId },

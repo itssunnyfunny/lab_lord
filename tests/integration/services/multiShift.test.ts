@@ -315,7 +315,7 @@ describe("MultiShiftService Integration", () => {
       const wrongUser = await createUser();
       await expect(
         MultiShiftService.deleteMultiShift(wrongUser.id, ms.id)
-      ).rejects.toThrow(/Unauthorized/i);
+      ).rejects.toThrow("Multi-shift not found");
     });
   });
 

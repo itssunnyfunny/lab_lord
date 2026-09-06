@@ -1,3 +1,4 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 
 import { prisma } from "@/lib/prisma";
 import { StaffService } from "@/services/staff.service";
@@ -14,7 +15,6 @@ import {
     validateRequiredText,
 } from "@/lib/formValidation";
 import { DEFAULT_PRIMARY_SHIFTS, ensureDefaultShiftsAndFullTime } from "@/services/defaultShifts";
-import { EntitlementService } from "@/services/entitlement.service";
 
 export const DEFAULT_SHIFTS = DEFAULT_PRIMARY_SHIFTS;
 
@@ -100,8 +100,7 @@ export class ShiftService {
         data: CreateShiftDto,
         tx: Prisma.TransactionClient
     ) {
-        await StaffService.authorize(userId, branchId, "manage_branch", tx);
-        await EntitlementService.assertBranchWritable(branchId, tx);
+        await AccessPolicy.authorizeAction(userId, branchId, "manage_branch", tx, true);
         const nameResult = validateRequiredText(data.name, "Shift name", 50);
         if (!nameResult.ok) throw new Error(nameResult.error);
         const startResult = validateOptionalTime(data.startTime, "Start time");
@@ -144,8 +143,7 @@ export class ShiftService {
     ) {
         const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
         if (!shift) throw new Error("Shift not found");
-        await this.assertBranchAccess(userId, shift.branchId, "manage_branch");
-        await EntitlementService.assertBranchWritable(shift.branchId);
+        await AccessPolicy.authorizeRecord(userId, shift.branchId, "manage_branch", "Shift", undefined, true);
 
         const nameResult = data.name !== undefined ? validateRequiredText(data.name, "Shift name", 50) : null;
         if (nameResult && !nameResult.ok) throw new Error(nameResult.error);
@@ -216,8 +214,7 @@ export class ShiftService {
     static async analyzeShiftDeletion(userId: string, shiftId: string): Promise<ShiftImpactAnalysis> {
         const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
         if (!shift) throw new Error("Shift not found");
-        await this.assertBranchAccess(userId, shift.branchId, "manage_branch");
-        await EntitlementService.assertBranchWritable(shift.branchId);
+        await AccessPolicy.authorizeRecord(userId, shift.branchId, "manage_branch", "Shift", undefined, true);
 
         const branchId = shift.branchId;
 
@@ -295,8 +292,7 @@ export class ShiftService {
             } });
             if (!shift) throw new Error("Shift not found");
             const branchId = shift.branchId;
-            await StaffService.authorize(userId, branchId, "manage_branch", tx);
-            await EntitlementService.assertBranchWritable(branchId, tx);
+            await AccessPolicy.authorizeAction(userId, branchId, "manage_branch", tx, true);
             if (shift.status !== "ACTIVE") throw new Error("Shift not found");
             if (await tx.shift.count({ where: { branchId, status: "ACTIVE" } }) <= 1) {
                 throw new Error("Cannot delete the last active shift in this branch.");

@@ -219,6 +219,10 @@ export async function executeImportAnalysis(importRunId: string) {
             revision: detail.activeEvaluationRevision,
         };
     } catch (error) {
+        // A duplicate or superseded analysis attempt owns neither run failure
+        // publication nor staging cleanup. Let Workflow retry/read durable progress.
+        if (error && typeof error === "object" && "code" in error
+            && ["IMPORT_ANALYSIS_BUSY", "IMPORT_ANALYSIS_OWNERSHIP_LOST"].includes(String(error.code))) throw error;
         const failure = classifyImportRunError(error);
         await ImportRunRunner.setAnalysisStatus({
             importRunId: run.id,

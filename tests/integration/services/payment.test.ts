@@ -185,11 +185,11 @@ describe("PaymentService Integration", () => {
       expect(result.totalStudents).toBe(0);
     });
 
-    it("throws Unauthorized for non-owner", async () => {
+    it("hides a foreign branch from non-members", async () => {
       const { branch } = await createTestWorld();
       await expect(
         PaymentService.generateDuePaymentsForBranch("wrong_user", branch.id)
-      ).rejects.toThrow("Unauthorized");
+      ).rejects.toThrow("Branch not found");
     });
 
     it("rejects STAFF role users from generating payments", async () => {

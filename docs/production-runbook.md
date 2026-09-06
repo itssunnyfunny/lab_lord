@@ -2402,3 +2402,103 @@ subscription counts unchanged, then the new action catalog/immutable-trigger
 checks. Resume one controlled worker population. Old dispatch code must not run
 alongside the new protocol. Rollback to unfenced dispatch is unsafe; keep the
 writer gate closed and forward-repair. Never erase action receipts to retry.
+
+### Consolidation bootstrap and cutover (48 migrations, September 2026)
+
+Local bootstrap uses `pnpm exec node scripts/bootstrap-isolated-database.mjs`.
+Supply `BOOTSTRAP_DATABASE_URL` explicitly and `BOOTSTRAP_DATABASE_CONFIRM` as
+the exact disposable database name. The script permits loopback test targets
+only, verifies the connected name, refuses application records, applies the
+maintained chain, checks all constraints and required BillingDatabaseIdentity,
+and is repeatable on the resulting empty application database. It does not
+call `prisma/seed.ts` (that is destructive sample data), create users, grants,
+offers, provider plans, senders or subscriptions, or contact providers.
+
+Required non-secret configuration is versioned in code: billing plan/pricing
+and capability definitions, default shifts/seat numbering used by onboarding,
+import engine contracts, WhatsApp managed template definitions and rate-card
+validation rules. Enabling WhatsApp delivery additionally requires approved
+non-secret `WHATSAPP_UTILITY_RATE_MICROS_INR`, `WHATSAPP_RATE_CARD_VERSION`,
+`WHATSAPP_RATE_CARD_EFFECTIVE_AT` and `WHATSAPP_RATE_CARD_EXPIRES_AT` values;
+bootstrap does not invent provider prices or change those environment values.
+Provider plans/templates/senders are external identities,
+not fake seed records; provision them only through their existing approved
+environment/mode-bound workflows. The migration creates the one database
+billing identity. A fresh database receives a NEW identity: never copy that
+identity as a shortcut around target-bound operator approvals. Existing
+identity mappings and provider notes must be reviewed during a data cutover.
+
+Production choice is evidence-gated; neither alternative is selected here.
+
+| Evidence | Migrate existing database | Fresh database with controlled cutover |
+| --- | --- | --- |
+| Legitimate organizations, owner/trial grants, data and provider obligations exist | Preferred when blockers can be resolved with approved, history-preserving repair | Requires an explicit transfer/reconciliation inventory and validated preservation of every legitimate dependency; an empty schema is insufficient |
+| All tenant preflight counts zero; operations can drain | Apply maintained additive chain with writer drain | Still requires identity and event routing review, stable URLs/IDs and retained receipt/action evidence |
+| Inconsistent rows or UNKNOWN external actions | Stop, inventory exact IDs, repair/reconcile with separate approval | Also blocks discarding affected records; moving databases cannot erase uncertain effects |
+| No legitimate retained records or provider obligations, proven by authorized inventory | Still viable; no mandatory cleanup | May be chosen by the owner after approving external identity handling, rollback and cutover verification |
+
+Executable sequence for the authorized operator (not performed on Production):
+
+1. Verify selected project/environment, database identity and exact commit.
+   Take a restorable backup and prove restoration on an isolated database.
+   Use `psql -X -v ON_ERROR_STOP=1 -f prisma/preflight/cutover-inventory.sql`
+   with an explicitly bound connection, saving restricted output. It provides
+   exact table counts, operation IDs, provider mappings, active Workflow IDs
+   and unresolved delivery/event counts without bodies or credentials.
+2. Run existing allocation/operational migration preflight SQL and all files
+   under `prisma/preflight/` appropriate to the installed schema. Run
+   `billing-and-whatsapp-tenants.sql`, `import-and-collection-tenants.sql`,
+   `import-targets.sql` and the pre-46 section of `billing-action-cutover.sql`.
+   `tenant-blocker-identities.sql` emits exact child IDs for the 55 scoped
+   billing/WhatsApp parent pairs. For any other nonzero count, retain the same
+   WHERE predicate and select the child ID instead of COUNT in the restricted
+   investigation; never infer or overwrite ownership. All blocker counts must
+   be zero. Detached historical import-target counts may be nonzero and must
+   be preserved and reconciled, not deleted.
+3. Inventory legitimate data, Clerk owner identities, once-per-owner trial
+   consumption, historical LEGACY organizations, offer/provider IDs, pending
+   invoices, cancellation/source/replacement obligations, provider mode,
+   webhook/event/action receipts and database-bound plan provisioning records.
+   Reconcile unresolved external actions read-only or retain manual review.
+   No final legacy deletion or fresh cutover is authorized by this document.
+4. Drain interactive writes, billing and WhatsApp cron/dispatch, import
+   Workflow steps and staging retention. Stop old worker populations and
+   record their deployment/run IDs; do not clear leases to simulate a drain.
+   Keep inbound events durably queued/retriable at the provider; verify retry
+   windows and signature/mode routing before reopening ingestion. Capture
+   final counts after the drain. New required branch columns and durable
+   action/token protocols mean old and new writers cannot overlap.
+5. Apply `pnpm exec node node_modules/prisma/build/index.js migrate deploy`
+   with the approved target-bound environment. The bootstrap wrapper itself
+   intentionally cannot operate on Production. Migrations 42–45 validate
+   historical ownership before backfill/keys; 46 starts an empty action ledger;
+   47 adds nullable analysis token/expiry with a paired-null CHECK and unique
+   token. Old ANALYZING rows retain their status; new workers may recover them
+   after the verified drain. Migration 48 extends the typed target ledger to
+   retained retry-plan student IDs; run `import-plan-targets.sql` first and
+   require zero FOREIGN_BLOCKER rows. Detached historical IDs remain detached.
+   Plan/target/student writers must be drained during its atomic backfill and
+   trigger installation. Plan counts must be unchanged; new ledger rows equal
+   distinct retained plan/input/student IDs. No rows are deleted or reassigned.
+6. Deploy the compatible application and Workflow manifest together; validate
+   migration ledger/checks, rerun counts/integrity queries, compare every
+   existing table count and import ledger live/detached scope. New tables are
+   accounted for separately. The first action rows must correspond to newly
+   admitted actions; old uncertain operations still retain their old fences.
+7. Reopen one controlled worker population and verify owner/manager/restricted
+   access, read-only recovery, student dues, import replay, checkout/callback
+   and signed event redelivery in the approved environment. Provider canaries
+   require separate authorization; local mocks are not a Production canary.
+8. For a fresh cutover, preserve approved IDs and history, move connection and
+   event routing only after the transfer comparison and identity reconciliation
+   pass, and retain the old database read-only for the approved recovery window.
+   Avoid dual writers. A database change does not retire Clerk/Meta/Razorpay
+   accounts or their financial obligations.
+
+Rollback before new writes can restore the isolated rehearsal backup and
+redeploy compatible code. After new writes/provider actions, a blind database
+restore loses durable evidence and may replay effects: close writers, retain
+both evidence sets and forward-repair with a new migration. Do not roll back
+to the old dispatch, branch-omitting import writers or unfenced analysis code.
+Never rewrite applied migrations or delete receipts to recover. Record the
+operator's chosen option, exact counts, approval and reconciliation evidence.

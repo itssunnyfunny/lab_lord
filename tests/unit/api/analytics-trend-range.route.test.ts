@@ -25,3 +25,5 @@ describe("trend route bounds", () => {
     expect(mocks.seat).toHaveBeenCalledOnce();
   });
 });
+
+vi.mock("@/services/accessPolicy.service", () => ({ AccessPolicy: { authorizeCapability: async () => ({}) } }));

@@ -909,3 +909,23 @@ only the matching purpose. The canonical cancellation entry point is
 BillingService.requestCancellation; historical access/cancellation policy is in
 legacyCommercialCompatibility. See `commercial-consolidation-contracts.md` for
 all ten call sites and evidence-gated legacy retirement.
+# Architecture consolidation update — 2026-09-06
+
+Migration 48 extends typed tenant integrity to retained retry-plan student
+inputs. Fresh bootstrap and repeat execution have passed with all 48 migrations
+on `lab_lords_final_fresh_test`; no sample/customer/provider rows were seeded.
+
+The modular monolith now has a shared server-derived AccessPolicy boundary,
+delegating StaffService/OrganizationService facades, protected interactive
+analytics service, direct AI context rechecks, and common billing recovery
+ownership reads. Role defaults and explicit overrides have one implementation.
+The uncalled V1 import executor and two obsolete unscoped AI scripts are removed.
+Active imports retain Workflow and atomic item/domain finalization. Analysis
+now adds session token/expiry fencing (migration 47) to existing revision CAS.
+See [access/worker contracts](access-and-worker-contracts.md), the complete
+[166-relationship catalog](tenant-relationship-coverage.md), and the
+[execution matrix](architecture-consolidation-2026-09-05.md). The isolated
+bootstrap applies all maintained migrations and required billing identity;
+Production migration versus fresh cutover remains an evidence-dependent choice
+in the production runbook. Historical LEGACY access and the unresolved daily
+dues cron writability policy are unchanged.

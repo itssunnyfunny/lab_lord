@@ -1,14 +1,13 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { Prisma, type PaymentMethod, type PaymentStatus } from "@/app/generated/prisma/client";
 import { FORM_LIMITS } from "@/lib/formValidation";
 import { prisma } from "@/lib/prisma";
 import { MultiShiftService } from "@/services/multiShift.service";
-import { EntitlementService } from "@/services/entitlement.service";
 import { PaymentService } from "@/services/payment.service";
 import { SeatService } from "@/services/seat.service";
 import { SeatAllocationService } from "@/services/seatAllocation.service";
 import { ShiftService } from "@/services/shift.service";
 import { StudentService } from "@/services/student.service";
-import { StaffService } from "@/services/staff.service";
 import { PaymentResolutionEventSource } from "@/types";
 import type { ClaimedImportRunItem, ImportRunItemResult } from "../contracts/import-v2.contract";
 import { ImportRunRunner } from "./import-runner.service";
@@ -91,8 +90,7 @@ async function applyConfigurationItem(
     branchId: string,
     payload: Record<string, unknown>
 ): Promise<ImportRunItemResult> {
-    await StaffService.authorize(userId, branchId, "manage_branch", tx);
-    await EntitlementService.assertBranchWritable(branchId, tx);
+    await AccessPolicy.authorizeAction(userId, branchId, "manage_branch", tx, true);
     const type = requiredString(payload.type, "Configuration type");
     const name = optionalString(payload.name);
     const label = optionalString(payload.label);

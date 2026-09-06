@@ -22,6 +22,7 @@ vi.mock("@/services/entitlement.service", () => ({
 }));
 
 import { OrganizationService } from "@/services/organization.service";
+import { prisma } from "@/lib/prisma";
 
 describe("OrganizationService writable settings guard", () => {
   beforeEach(() => {
@@ -36,7 +37,7 @@ describe("OrganizationService writable settings guard", () => {
       OrganizationService.updateSettings("org_1", "owner_1", { unknownField: true })
     ).rejects.toThrow("Workspace is read-only");
 
-    expect(mocks.assertOrganizationWritable).toHaveBeenCalledWith("org_1");
+    expect(mocks.assertOrganizationWritable).toHaveBeenCalledWith("org_1", prisma);
     expect(mocks.findFirst).toHaveBeenCalledWith({
       where: { id: "org_1", ownerId: "owner_1" },
       select: { id: true },

@@ -1,5 +1,5 @@
-import { getBranchHealthSnapshot } from "@/analytics/branch.analytics"
-import { AnalyticsPeriod, getPaymentPeriodStats } from "@/analytics/payment.analytics"
+import { AnalyticsAccessService } from "@/services/analyticsAccess.service"
+import type { AnalyticsPeriod } from "@/analytics/payment.analytics"
 import { getSessionUser } from "@/lib/auth"
 import { StaffService } from "@/services/staff.service"
 import { NextResponse } from "next/server"
@@ -21,10 +21,7 @@ export async function GET(
         const periodParam = url.searchParams.get("period");
         const period: AnalyticsPeriod = periodParam === "month" ? "month" : "all";
 
-        const [health, finance] = await Promise.all([
-            getBranchHealthSnapshot(branchId),
-            getPaymentPeriodStats(branchId, undefined, period)
-        ])
+        const { health, finance } = await AnalyticsAccessService.branchSnapshot(user.id, branchId, period)
 
         // Transform to match BranchSnapshot interface in lib/api/analytics.ts
         const totalSeats = health.seats.occupancySnapshot.totalShiftCapacity;

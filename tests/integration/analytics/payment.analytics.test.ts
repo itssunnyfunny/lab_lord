@@ -340,7 +340,7 @@ describe("Analytics corrections", () => {
         { params: Promise.resolve({ branchId: branch.id }) }
       );
 
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(404);
     });
 
     it("returns slot-based utilization counts for branch cards", async () => {

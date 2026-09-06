@@ -740,3 +740,20 @@ receipts preserve immutable intent, mode, independent dispatch ownership and
 uncertain outcomes. A stored provider response is not domain authorization or
 paid entitlement. Reconcilers may resolve only the action whose exact evidence
 they validated; candidate evidence cannot resolve a source cancellation.
+# Shared access and analysis ownership consolidation — 2026-09-06
+
+Interactive policy is centralized in `services/accessPolicy.service.ts` with
+pure role/override definitions and shared capability requirements. Facades
+delegate; client DTOs cannot issue contexts. Direct AI services reject copied
+or fabricated contexts and recheck mutable policy. Analytics route imports
+must use the protected service rather than the internal raw read layer.
+Billing recovery requires ownership but does not require currently paid access;
+provider-authoritative billing checks remain separate. Machine entry points
+retain their documented authenticated, scoped, idempotent protocols; they do
+not fabricate interactive contexts or acquire a generic entitlement bypass.
+
+Import analysis now admits a session-scoped token and expiry atomically.
+Publication and failure cleanup require that token and the original revision;
+duplicate or superseded attempts cannot publish run failure. The old uncalled
+V1 executor and its unfenced retry/compensation path have been removed. Drain
+old analysis/Workflow workers before installing migration 47 and compatible code.

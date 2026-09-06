@@ -1,0 +1,2170 @@
+[
+  {
+    "model": "Organization",
+    "field": "owner",
+    "parent": "User",
+    "fields": [
+      "ownerId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "Branch",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "Student",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "Student",
+    "field": "feeLinkedShift",
+    "parent": "Shift",
+    "fields": [
+      "feeLinkedShiftId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "Student",
+    "field": "feeLinkedMultiShift",
+    "parent": "MultiShift",
+    "fields": [
+      "feeLinkedMultiShiftId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "Seat",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "Shift",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "MultiShift",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "MultiShiftComponent",
+    "field": "multiShift",
+    "parent": "MultiShift",
+    "fields": [
+      "multiShiftId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "MultiShiftComponent",
+    "field": "shift",
+    "parent": "Shift",
+    "fields": [
+      "shiftId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "SeatAllocation",
+    "field": "seat",
+    "parent": "Seat",
+    "fields": [
+      "seatId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "SeatAllocation",
+    "field": "shift",
+    "parent": "Shift",
+    "fields": [
+      "shiftId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "SeatAllocation",
+    "field": "student",
+    "parent": "Student",
+    "fields": [
+      "studentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "SeatAllocation",
+    "field": "multiShift",
+    "parent": "MultiShift",
+    "fields": [
+      "multiShiftId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "Payment",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "Payment",
+    "field": "student",
+    "parent": "Student",
+    "fields": [
+      "studentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "PaymentResolutionEvent",
+    "field": "payment",
+    "parent": "Payment",
+    "fields": [
+      "paymentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "PaymentResolutionEvent",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "PaymentResolutionEvent",
+    "field": "actor",
+    "parent": "User",
+    "fields": [
+      "actorUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "Staff",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "Staff",
+    "field": "user",
+    "parent": "User",
+    "fields": [
+      "userId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "StaffPermissionOverride",
+    "field": "staff",
+    "parent": "Staff",
+    "fields": [
+      "staffId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "StaffInvite",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "BranchAIReport",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "MessageDraft",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "MessageDraft",
+    "field": "student",
+    "parent": "Student",
+    "fields": [
+      "studentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "BranchGenerationLease",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppInboundMessageReceipt",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppSender",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppSender",
+    "field": "connectedBy",
+    "parent": "User",
+    "fields": [
+      "connectedByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppConnectionIntent",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppConnectionIntent",
+    "field": "actor",
+    "parent": "User",
+    "fields": [
+      "actorUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "BranchWhatsAppSettings",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "BranchWhatsAppSettings",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "BranchWhatsAppSettings",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "BranchWhatsAppSettings",
+    "field": "automationEnabledBy",
+    "parent": "User",
+    "fields": [
+      "automationEnabledByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppTemplate",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppConsent",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppConsent",
+    "field": "recordedBy",
+    "parent": "User",
+    "fields": [
+      "recordedByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppConsentEvent",
+    "field": "consent",
+    "parent": "WhatsAppConsent",
+    "fields": [
+      "consentId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppConsentEvent",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppConsentEvent",
+    "field": "actor",
+    "parent": "User",
+    "fields": [
+      "actorUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppStudentRecipient",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppStudentRecipient",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppStudentRecipient",
+    "field": "student",
+    "parent": "Student",
+    "fields": [
+      "studentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppStudentRecipient",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppStudentRecipient",
+    "field": "consent",
+    "parent": "WhatsAppConsent",
+    "fields": [
+      "consentId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppStudentRecipient",
+    "field": "createdBy",
+    "parent": "User",
+    "fields": [
+      "createdByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppManagedTemplateProvisioning",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppTemplateBinding",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppTemplateBinding",
+    "field": "template",
+    "parent": "WhatsAppTemplate",
+    "fields": [
+      "templateId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppTemplateBinding",
+    "field": "provisioning",
+    "parent": "WhatsAppManagedTemplateProvisioning",
+    "fields": [
+      "provisioningId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppAutomationRule",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppAutomationRule",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppManualSendRequest",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppManualSendRequest",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppManualSendRequest",
+    "field": "actor",
+    "parent": "User",
+    "fields": [
+      "actorUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppReportSubscription",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppReportSubscription",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppReportSubscription",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppReportSubscription",
+    "field": "user",
+    "parent": "User",
+    "fields": [
+      "userId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppReportSubscription",
+    "field": "consent",
+    "parent": "WhatsAppConsent",
+    "fields": [
+      "consentId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationWhatsAppReportSettings",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OrganizationWhatsAppReportSettings",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppDailyReportSnapshot",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppDailyReportSnapshot",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppServiceNotice",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppServiceNotice",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppServiceNotice",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppServiceNotice",
+    "field": "actor",
+    "parent": "User",
+    "fields": [
+      "actorUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppSenderSafetyState",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppSenderSafetyState",
+    "field": "pausedBy",
+    "parent": "User",
+    "fields": [
+      "pausedByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppOperationalIncident",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppOperationalIncident",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppOperationalIncident",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppOperationalIncident",
+    "field": "message",
+    "parent": "WhatsAppMessage",
+    "fields": [
+      "messageId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppOperationalIncident",
+    "field": "acknowledgedBy",
+    "parent": "User",
+    "fields": [
+      "acknowledgedByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppOperationalIncident",
+    "field": "messageBybranchId",
+    "parent": "WhatsAppMessage",
+    "fields": [
+      "messageId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppOperationalIncident",
+    "field": "messageBysenderId",
+    "parent": "WhatsAppMessage",
+    "fields": [
+      "messageId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "student",
+    "parent": "Student",
+    "fields": [
+      "studentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "payment",
+    "parent": "Payment",
+    "fields": [
+      "paymentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "paymentResolutionEvent",
+    "parent": "PaymentResolutionEvent",
+    "fields": [
+      "paymentResolutionEventId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "template",
+    "parent": "WhatsAppTemplate",
+    "fields": [
+      "templateId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "templateBinding",
+    "parent": "WhatsAppTemplateBinding",
+    "fields": [
+      "templateBindingId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "manualSendRequest",
+    "parent": "WhatsAppManualSendRequest",
+    "fields": [
+      "manualSendRequestId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "reportSubscription",
+    "parent": "WhatsAppReportSubscription",
+    "fields": [
+      "reportSubscriptionId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "dailyReportSnapshot",
+    "parent": "WhatsAppDailyReportSnapshot",
+    "fields": [
+      "dailyReportSnapshotId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "serviceNotice",
+    "parent": "WhatsAppServiceNotice",
+    "fields": [
+      "serviceNoticeId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "createdBy",
+    "parent": "User",
+    "fields": [
+      "createdByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "manualSendRequestBybranchId",
+    "parent": "WhatsAppManualSendRequest",
+    "fields": [
+      "manualSendRequestId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "reportSubscriptionBybranchId",
+    "parent": "WhatsAppReportSubscription",
+    "fields": [
+      "reportSubscriptionId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "reportSubscriptionBysenderId",
+    "parent": "WhatsAppReportSubscription",
+    "fields": [
+      "reportSubscriptionId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "dailyReportSnapshotBybranchId",
+    "parent": "WhatsAppDailyReportSnapshot",
+    "fields": [
+      "dailyReportSnapshotId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "serviceNoticeBybranchId",
+    "parent": "WhatsAppServiceNotice",
+    "fields": [
+      "serviceNoticeId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessage",
+    "field": "serviceNoticeBysenderId",
+    "parent": "WhatsAppServiceNotice",
+    "fields": [
+      "serviceNoticeId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessagePayment",
+    "field": "message",
+    "parent": "WhatsAppMessage",
+    "fields": [
+      "messageId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppMessagePayment",
+    "field": "payment",
+    "parent": "Payment",
+    "fields": [
+      "paymentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppMessageEvent",
+    "field": "message",
+    "parent": "WhatsAppMessage",
+    "fields": [
+      "messageId",
+      "senderId"
+    ],
+    "references": [
+      "id",
+      "senderId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppMessageEvent",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppWebhookReceipt",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppWebhookReceipt",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppAuditEvent",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "WhatsAppAuditEvent",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppAuditEvent",
+    "field": "sender",
+    "parent": "WhatsAppSender",
+    "fields": [
+      "senderId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "WhatsAppAuditEvent",
+    "field": "actor",
+    "parent": "User",
+    "fields": [
+      "actorUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportSession",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportSession",
+    "field": "uploadedBy",
+    "parent": "User",
+    "fields": [
+      "uploadedByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportRow",
+    "field": "session",
+    "parent": "ImportSession",
+    "fields": [
+      "importSessionId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportQuestion",
+    "field": "session",
+    "parent": "ImportSession",
+    "fields": [
+      "importSessionId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportQuestion",
+    "field": "row",
+    "parent": "ImportRow",
+    "fields": [
+      "rowId",
+      "importSessionId"
+    ],
+    "references": [
+      "id",
+      "importSessionId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportCommit",
+    "field": "session",
+    "parent": "ImportSession",
+    "fields": [
+      "importSessionId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportCommit",
+    "field": "committedBy",
+    "parent": "User",
+    "fields": [
+      "committedByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportRowEvaluation",
+    "field": "row",
+    "parent": "ImportRow",
+    "fields": [
+      "importRowId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportPlan",
+    "field": "session",
+    "parent": "ImportSession",
+    "fields": [
+      "importSessionId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportPlan",
+    "field": "compiledBy",
+    "parent": "User",
+    "fields": [
+      "compiledByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportRun",
+    "field": "session",
+    "parent": "ImportSession",
+    "fields": [
+      "importSessionId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportRun",
+    "field": "plan",
+    "parent": "ImportPlan",
+    "fields": [
+      "importPlanId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportRun",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportRun",
+    "field": "requestedBy",
+    "parent": "User",
+    "fields": [
+      "requestedByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportRun",
+    "field": "cancelRequestedBy",
+    "parent": "User",
+    "fields": [
+      "cancelRequestedByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportRunItem",
+    "field": "run",
+    "parent": "ImportRun",
+    "fields": [
+      "importRunId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportRunItem",
+    "field": "row",
+    "parent": "ImportRow",
+    "fields": [
+      "importRowId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportRunItem",
+    "field": "evaluation",
+    "parent": "ImportRowEvaluation",
+    "fields": [
+      "evaluationId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportRecipe",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "ImportRecipe",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportRecipe",
+    "field": "createdBy",
+    "parent": "User",
+    "fields": [
+      "createdByUserId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "AuditLog",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "AuditLog",
+    "field": "user",
+    "parent": "User",
+    "fields": [
+      "userId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "AuditLog",
+    "field": "payment",
+    "parent": "Payment",
+    "fields": [
+      "paymentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OwnerTrialGrant",
+    "field": "owner",
+    "parent": "User",
+    "fields": [
+      "ownerId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OwnerTrialGrant",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationOfferGrant",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OrganizationOfferGrant",
+    "field": "billingOffer",
+    "parent": "BillingOffer",
+    "fields": [
+      "billingOfferId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OrganizationSubscription",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OrganizationSubscription",
+    "field": "currentForOrganization",
+    "parent": "Organization",
+    "fields": [
+      "currentOrganizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationSubscription",
+    "field": "pendingReplacementForOrganization",
+    "parent": "Organization",
+    "fields": [
+      "pendingReplacementOrganizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationSubscription",
+    "field": "replacesSubscription",
+    "parent": "OrganizationSubscription",
+    "fields": [
+      "replacesSubscriptionId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationSubscription",
+    "field": "billingOffer",
+    "parent": "BillingOffer",
+    "fields": [
+      "billingOfferId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationSubscription",
+    "field": "confirmedCommercialIntentChange",
+    "parent": "OrganizationBillingChange",
+    "fields": [
+      "confirmedCommercialIntentChangeId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationBillingChange",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OrganizationBillingChange",
+    "field": "organizationSubscription",
+    "parent": "OrganizationSubscription",
+    "fields": [
+      "organizationSubscriptionId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationBillingChange",
+    "field": "replacementSubscription",
+    "parent": "OrganizationSubscription",
+    "fields": [
+      "replacementSubscriptionId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationBillingChange",
+    "field": "branch",
+    "parent": "Branch",
+    "fields": [
+      "branchId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationBillingChangeAudit",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OrganizationBillingChangeAudit",
+    "field": "change",
+    "parent": "OrganizationBillingChange",
+    "fields": [
+      "changeId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OrganizationSubscriptionInvoice",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OrganizationSubscriptionInvoice",
+    "field": "organizationSubscription",
+    "parent": "OrganizationSubscription",
+    "fields": [
+      "organizationSubscriptionId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationSubscriptionInvoice",
+    "field": "commercialIntentChange",
+    "parent": "OrganizationBillingChange",
+    "fields": [
+      "commercialIntentChangeId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "OrganizationSubscriptionHistory",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "OrganizationSubscriptionHistory",
+    "field": "organizationSubscription",
+    "parent": "OrganizationSubscription",
+    "fields": [
+      "organizationSubscriptionId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "RazorpayWebhookEvent",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "RazorpayWebhookEvent",
+    "field": "organizationSubscription",
+    "parent": "OrganizationSubscription",
+    "fields": [
+      "organizationSubscriptionId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportTargetReference",
+    "field": "row",
+    "parent": "ImportRow",
+    "fields": [
+      "importRowId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportTargetReference",
+    "field": "item",
+    "parent": "ImportRunItem",
+    "fields": [
+      "importRunItemId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportTargetReference",
+    "field": "plan",
+    "parent": "ImportPlan",
+    "fields": [
+      "importPlanId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportTargetReference",
+    "field": "student",
+    "parent": "Student",
+    "fields": [
+      "studentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportTargetReference",
+    "field": "seat",
+    "parent": "Seat",
+    "fields": [
+      "seatId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportTargetReference",
+    "field": "shift",
+    "parent": "Shift",
+    "fields": [
+      "shiftId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportTargetReference",
+    "field": "multiShift",
+    "parent": "MultiShift",
+    "fields": [
+      "multiShiftId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportTargetReference",
+    "field": "seatAllocation",
+    "parent": "SeatAllocation",
+    "fields": [
+      "seatAllocationId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "ImportTargetReference",
+    "field": "payment",
+    "parent": "Payment",
+    "fields": [
+      "paymentId",
+      "branchId"
+    ],
+    "references": [
+      "id",
+      "branchId"
+    ],
+    "nullable": true
+  },
+  {
+    "model": "BillingProviderAction",
+    "field": "organization",
+    "parent": "Organization",
+    "fields": [
+      "organizationId"
+    ],
+    "references": [
+      "id"
+    ],
+    "nullable": false
+  },
+  {
+    "model": "BillingProviderAction",
+    "field": "change",
+    "parent": "OrganizationBillingChange",
+    "fields": [
+      "changeId",
+      "organizationId"
+    ],
+    "references": [
+      "id",
+      "organizationId"
+    ],
+    "nullable": true
+  }
+]

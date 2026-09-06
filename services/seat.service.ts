@@ -1,3 +1,4 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { prisma } from "@/lib/prisma";
 import { StaffService } from "@/services/staff.service";
 import type { StaffAction } from "@/types";
@@ -133,8 +134,7 @@ export class SeatService {
         label: string,
         tx: Prisma.TransactionClient
     ) {
-        await StaffService.authorize(userId, branchId, "manage_branch", tx);
-        await EntitlementService.assertBranchWritable(branchId, tx);
+        await AccessPolicy.authorizeAction(userId, branchId, "manage_branch", tx, true);
         const labelResult = validateSeatLabel(label);
         if (!labelResult.ok) throw new Error(labelResult.error);
 

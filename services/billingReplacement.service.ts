@@ -1401,7 +1401,6 @@ export class BillingReplacementService {
     });
     if (!snapshot) throw new Error("Replacement billing change not found");
     assertRazorpayBillingWritesEnabled(snapshot.organizationId);
-    const razorpay = getRazorpayClient();
     const leaseToken = crypto.randomUUID();
     const claimed = await prisma.$transaction(async tx => {
       await tx.$queryRaw<Array<{ id: string }>>`
@@ -2228,7 +2227,6 @@ export class BillingReplacementService {
     });
     if (!snapshot) throw new Error("Replacement billing change not found");
     assertRazorpayBillingWritesEnabled(snapshot.organizationId);
-    const razorpay = getRazorpayClient();
     const leaseToken = crypto.randomUUID();
     const intent: CandidateCancellationIntent = options.branchDisposition === "ARCHIVE"
       ? "UNDO_ARCHIVE"

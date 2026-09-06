@@ -1,3 +1,4 @@
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import { prisma } from "@/lib/prisma";
 import {
     isDueResolution,
@@ -116,7 +117,7 @@ export class StudentService {
             throw new Error("Student not found");
         }
 
-        await StaffService.authorize(userId, student.branchId, "students");
+        await AccessPolicy.authorizeRecord(userId, student.branchId, "students", "Student");
 
         return student;
     }
@@ -351,8 +352,7 @@ export class StudentService {
         data: CreateImportedStudentDto,
         tx: Prisma.TransactionClient
     ) {
-        await StaffService.authorize(userId, branchId, "students", tx);
-        await EntitlementService.assertBranchWritable(branchId, tx);
+        await AccessPolicy.authorizeAction(userId, branchId, "students", tx, true);
         const branch = await tx.branch.findUnique({ where: { id: branchId } });
         if (!branch) throw new Error("Branch not found");
 

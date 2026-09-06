@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { AccessPolicy } from "@/services/accessPolicy.service";
 import {
     assertKnownFields,
     assertPlainObject,
@@ -51,13 +52,6 @@ export class OrganizationService {
         });
     }
 
-    static async getOrganizationById(id: string) {
-        return await prisma.organization.findUnique({
-            where: { id },
-            include: ORGANIZATION_OWNER_VIEW,
-        });
-    }
-
     static async getOrganizationForOwner(id: string, userId: string) {
         const org = await this.getOrganizationForOwnerAccess(id, userId);
         await EntitlementService.assertOrganizationWritable(id);
@@ -65,12 +59,7 @@ export class OrganizationService {
     }
 
     static async getOrganizationForOwnerAccess(id: string, userId: string) {
-        const org = await prisma.organization.findFirst({
-            where: { id, ownerId: userId },
-            include: ORGANIZATION_OWNER_VIEW,
-        });
-        if (!org) throw new OrganizationAccessNotFoundError();
-        return org;
+        return AccessPolicy.readOwnerOrganization(userId, id, ORGANIZATION_OWNER_VIEW);
     }
 
     static parseSettingsPayload(body: unknown): UpdateOrganizationSettingsDto {
@@ -132,20 +121,12 @@ export class OrganizationService {
     }
 
     private static async assertOwnerCanWrite(id: string, userId: string) {
-        const org = await prisma.organization.findFirst({
-            where: { id, ownerId: userId },
-            select: { id: true },
-        });
-        if (!org) throw new OrganizationAccessNotFoundError();
-        await EntitlementService.assertOrganizationWritable(id);
+        await AccessPolicy.authorizeOrganization(userId, id, { write: true });
     }
 
     static async isOwner(organizationId: string, userId: string): Promise<boolean> {
-        const org = await prisma.organization.findFirst({
-            where: { id: organizationId, ownerId: userId },
-            select: { id: true },
-        });
-        return org != null;
+        try { await AccessPolicy.authorizeOrganization(userId, organizationId); return true; }
+        catch (error) { if (error instanceof OrganizationAccessNotFoundError) return false; throw error; }
     }
 }
 

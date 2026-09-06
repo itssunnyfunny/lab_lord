@@ -968,3 +968,26 @@ Before changing any rule above:
   actions have distinct immutable identities and outcomes. ADMITTED or UNKNOWN
   cannot be replayed by lease expiry or a new client key. CONFIRMED responses
   are reusable evidence; paid entitlement still requires exact settlement.
+# Consolidation invariants — 2026-09-06
+
+- **Must preserve—enforced:** Retained import-plan input student IDs have
+  branch-scoped typed ledger references, in addition to staged output and run
+  item targets. Foreign historical targets block migration; missing historical
+  targets detach, while new missing/foreign references are rejected.
+
+- **Must preserve—enforced:** Shared AccessPolicy derives branch membership,
+  role/overrides and scope from the database; returned interactive contexts are
+  frozen and runtime-issued. AI services recheck policy and reject fabricated
+  contexts. Contexts are not cached globally or used as permanent grants.
+- **Must preserve—enforced:** Explicit permission denials and entitlement
+  failures protect complete AI/staff/analytics responses. Billing recovery
+  remains owner-accessible while branch or workspace is read-only.
+- **Must preserve—enforced:** Import analysis publication/cleanup match the
+  session's unique analysisLeaseToken and original draftRevision. Expiry
+  permits a new token; old success/failure cannot mutate or release it. Workflow
+  and existing atomic mutation item finalization remain the active executor.
+- **Service-layer contract—not DB-enforced:** System contexts remain the
+  authenticated cron/provider entry points and persisted Workflow ownership
+  protocols documented in [access/worker contracts](ai/access-and-worker-contracts.md).
+  This change does not resolve or approve the daily dues cron writability
+  discrepancy recorded below.
